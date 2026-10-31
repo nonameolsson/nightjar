@@ -27,7 +27,7 @@ case "$*" in
   "api user") echo '{"login":"ann"}' ;;
   "api repos/o/r/issues?"*) echo "[$issue]" ;;
   "api -X POST repos/"*"/labels "*)
-    name="@{*#*-f name=}"; name="@{name%% -f*}"
+    all="$*"; name="@{all#*-f name=}"; name="@{name%% -f*}"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then
       echo '{"message":"Validation Failed","errors":[{"code":"already_exists"}]}'
       echo "gh: Validation Failed (HTTP 422)" >&2; exit 1
@@ -35,7 +35,7 @@ case "$*" in
     if [ -n "$FAKE_GH_NO_LABELS" ]; then echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; fi
     echo '{}' ;;
   "api repos/"*"/labels/"*)
-    name="@{*#api repos/*/labels/}"; name="@{name//%20/ }"
+    all="$*"; name="@{all#api repos/*/labels/}"; name="@{name//%20/ }"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then echo '{}'; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
 esac`;
@@ -46,7 +46,7 @@ echo "$*" >> "$FAKE_AZ_CALLS"
 if [ -n "$FAKE_AZ_SIGNED_OUT" ]; then
   echo "ERROR: Please run 'az login' to setup account." >&2; exit 1
 fi
-echo '{"accessToken":"fake-token"}'`;
+echo '{"accessToken":"fake-azure-devops"}'`;
 
 // claude: FAKE_CLAUDE_SIGNED_OUT makes `claude auth status` exit 1 as a signed-out claude does
 const CLAUDE = String.raw`#!/bin/bash

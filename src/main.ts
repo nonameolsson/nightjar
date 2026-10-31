@@ -8,7 +8,9 @@ import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import type { Ask } from './ask.js';
 import { runDoctor } from './doctor.js';
+import { runInitCommand } from './init.js';
 import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
@@ -62,6 +64,8 @@ export interface Host {
 	readonly cwd: string;
 	// answers every Azure DevOps call; a spec passes a fake Azure DevOps
 	readonly request?: AzureDevOpsRequest;
+	// where init's questions are put; standard input unless a spec passes its own
+	readonly ask?: Ask;
 }
 
 export async function runNightjar(
@@ -79,6 +83,7 @@ export async function runNightjar(
 		console.error(`nightjar: ${unsupported}`);
 		return 2;
 	}
+	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	const args = parseArgs(argv);
