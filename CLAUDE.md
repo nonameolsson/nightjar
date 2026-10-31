@@ -2,9 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status
+## What this is
 
-No source, build system or tests yet: only the agent skills and their setup docs. Nightjar is specced in #1, with its tickets as that issue's sub-issues. Update this file once code lands: add build/lint/test commands (incl. single-test invocation) and architecture notes.
+Nightjar builds a repo's Features with nobody at the keyboard: it reads Tickets from a Tracker, has a Coding agent build each one, and opens one draft pull request per Feature on a Code host. Specced in #1, with its tickets as that issue's sub-issues.
+
+Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`.
+
+Nothing in Nightjar may assume a language or toolchain of the repo it builds.
+
+No source, build system or tests yet. Update this file once code lands: add build/lint/test commands (incl. single-test invocation) and architecture notes.
 
 ## Agent skills
 
