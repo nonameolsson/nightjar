@@ -26,7 +26,7 @@ issue='{"number":1,"title":"One escape","body":"","state":"open","labels":[{"nam
 case "$*" in
   "api user") echo '{"login":"ann"}' ;;
   "api repos/o/r/issues?"*) echo "[$issue]" ;;
-  "api -X POST repos/o/r/labels "*)
+  "api -X POST repos/"*"/labels "*)
     name="@{*#*-f name=}"; name="@{name%% -f*}"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then
       echo '{"message":"Validation Failed","errors":[{"code":"already_exists"}]}'
@@ -34,8 +34,8 @@ case "$*" in
     fi
     if [ -n "$FAKE_GH_NO_LABELS" ]; then echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; fi
     echo '{}' ;;
-  "api repos/o/r/labels/"*)
-    name="@{*#api repos/o/r/labels/}"; name="@{name//%20/ }"
+  "api repos/"*"/labels/"*)
+    name="@{*#api repos/*/labels/}"; name="@{name//%20/ }"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then echo '{}'; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
 esac`;

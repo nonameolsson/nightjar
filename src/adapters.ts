@@ -17,6 +17,7 @@ import { CONFIG_FILE, ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
 import { GitHubApi, ghRunner, repoFromRemote } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
+import { createSignalLabels } from './github/labels.js';
 import { GitHubTracker } from './github/tracker.js';
 import {
 	canCreate,
@@ -35,6 +36,8 @@ export interface Adapters {
 	readonly checked: (person: string) => string;
 	// reaches the Code host, so a run that cannot push stops before it builds anything
 	readonly reachCodeHost: () => Promise<void>;
+	// makes the Tracker show the Signals (labels on GitHub), and says what it did
+	readonly prepareSignals: () => Promise<readonly string[]>;
 	// the Tracker as one that makes Features and Tickets, or why it cannot
 	readonly writer: (Tracker & FeatureWriter) | string;
 }
@@ -96,10 +99,13 @@ export async function makeAdapters(
 	let checked: (person: string) => string;
 	let trackerRepo: string | null = null;
 	let cannotCreate: string | null = null;
+	let prepareSignals: () => Promise<readonly string[]>;
 	if (config.tracker.type === 'module') {
 		const { path } = config.tracker;
 		tracker = await trackerFromModule(config.tracker, context);
 		checked = (person) => `${path} as ${person}`;
+		prepareSignals = () =>
+			Promise.resolve([`${path} shows Signals its own way: Nightjar creates nothing for it.`]);
 		if (!canCreate(tracker)) {
 			cannotCreate = `${CONFIG_FILE}: tracker: ${path} makes no Features; its Tracker needs ${WRITER_LIST}`;
 		}
@@ -108,6 +114,10 @@ export async function makeAdapters(
 		const api = azureDevOps(organization);
 		tracker = new AzureBoardsTracker(api, config.tracker, config.signals, config.trusted);
 		checked = (person) => `Azure DevOps as ${person} on ${organization}/${project}`;
+		prepareSignals = () =>
+			Promise.resolve([
+				'Azure DevOps shows Signals as tags, which appear on first use: there is nothing to create.'
+			]);
 		if (config.tracker.ticketType === undefined) {
 			cannotCreate = `${CONFIG_FILE}: tracker.ticketType: name the work item type each Ticket is made as, such as User Story`;
 		}
@@ -116,6 +126,7 @@ export async function makeAdapters(
 		trackerRepo = named;
 		tracker = new GitHubTracker(named, gh, config.signals, config.trusted);
 		checked = (person) => `gh as ${person} on ${named}`;
+		prepareSignals = () => createSignalLabels(gh, named, config.signals);
 	}
 	// taken before any wrapping for the Code host, which keeps only the Tracker's own methods
 	const writer =
@@ -131,6 +142,7 @@ export async function makeAdapters(
 			repo: config.codeHost.path,
 			checked,
 			reachCodeHost: () => Promise.resolve(),
+			prepareSignals,
 			writer
 		};
 	}
@@ -141,7 +153,7 @@ export async function makeAdapters(
 		const reachCodeHost = async () => {
 			await new GitHubApi(repo, gh).call('read the signed-in user', ['user']);
 		};
-		return { tracker, codeHost, repo, checked, reachCodeHost, writer };
+		return { tracker, codeHost, repo, checked, reachCodeHost, prepareSignals, writer };
 	}
 
 	const { organization, project, repo } = config.codeHost;
@@ -170,6 +182,7 @@ export async function makeAdapters(
 		repo: `${organization}/${project}/${repo}`,
 		checked: (person) => `${checked(person)}, Azure Repos ${organization}/${project}/${repo}`,
 		reachCodeHost: () => codeHost.check(),
+		prepareSignals,
 		writer
 	};
 }
