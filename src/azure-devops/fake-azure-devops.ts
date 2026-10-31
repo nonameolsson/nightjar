@@ -212,6 +212,14 @@ export class FakeAzureDevOps {
 		if (call.method === 'GET' && path === `${org}/_apis/wit/workitems`) {
 			return this.batch(url.searchParams);
 		}
+		const made = new RegExp(`^${project}/_apis/wit/workitems/(?:\\$|%24)(.+)$`).exec(path);
+		if (call.method === 'POST' && made) {
+			this.query(url, { 'api-version': API });
+			if (call.headers['Content-Type'] !== 'application/json-patch+json') {
+				throw fault('a work item is made with application/json-patch+json');
+			}
+			return this.create(decodeURIComponent(made[1] ?? ''), body);
+		}
 		const one = new RegExp(`^${project}/_apis/wit/workitems/(\\d+)$`).exec(path);
 		if (call.method === 'PATCH' && one) {
 			this.query(url, { 'api-version': API });
@@ -333,6 +341,15 @@ export class FakeAzureDevOps {
 		if (!Array.isArray(body)) throw fault('a patch is a list of operations');
 		const fields = { ...item.fields };
 		for (const op of body as { op?: unknown; path?: unknown; value?: unknown }[]) {
+			const dependency = op.op === 'add' && op.path === '/relations/-' ? relation(op.value) : null;
+			if (dependency?.rel === PREDECESSOR) {
+				const blocker = this.items.get(dependency.id);
+				if (blocker === undefined) {
+					return refusal(404, `TF401232: Work item ${String(dependency.id)} does not exist.`);
+				}
+				this.precede(blocker.id, id);
+				continue;
+			}
 			if ((op.op === 'add' || op.op === 'replace') && op.path === '/fields/System.Tags') {
 				const tags: string[] = [];
 				for (const tag of tagList(op.value)) {
@@ -344,9 +361,43 @@ export class FakeAzureDevOps {
 				throw fault(`a patch Nightjar may not send: ${JSON.stringify(op)}`);
 			}
 		}
-		const changed = { ...item, rev: item.rev + 1, fields };
+		const changed = { ...this.get(id), rev: item.rev + 1, fields };
 		this.items.set(id, changed);
 		return json(200, this.render(changed, undefined, false));
+	}
+
+	// A work item made with fields and a parent link, as Nightjar makes a Feature or Ticket; any other field is a fault.
+	private create(type: string, body: unknown): AzureDevOpsReply {
+		if (!Array.isArray(body)) throw fault('a work item is made from a list of operations');
+		let title: string | undefined;
+		let description: string | undefined;
+		let markdown = false;
+		let parent: number | undefined;
+		for (const op of body as { op?: unknown; path?: unknown; value?: unknown }[]) {
+			if (op.op !== 'add') throw fault(`a work item is made with add, not ${JSON.stringify(op)}`);
+			const value = op.value;
+			if (op.path === '/fields/System.Title' && typeof value === 'string') title = value;
+			else if (op.path === '/fields/System.Description' && typeof value === 'string') {
+				description = value;
+			} else if (op.path === '/multilineFieldsFormat/System.Description') {
+				markdown = typeof value === 'string' && value.toLowerCase() === 'markdown';
+			} else if (op.path === '/relations/-' && relation(value)?.rel === PARENT) {
+				parent = relation(value)?.id;
+				if (parent === undefined || !this.items.has(parent)) {
+					return refusal(404, `TF401232: Work item ${String(parent)} does not exist.`);
+				}
+			} else throw fault(`a field Nightjar may not make: ${JSON.stringify(op)}`);
+		}
+		if (title === undefined || title.trim() === '') {
+			return refusal(400, 'TF401320: Rule Error for field Title. Error code: Required.');
+		}
+		const id = this.workItem({
+			type,
+			title,
+			...(description === undefined ? {} : { description, html: !markdown })
+		});
+		if (parent !== undefined) this.addChild(parent, id);
+		return json(200, this.render(this.get(id), undefined, true));
 	}
 
 	// Azure DevOps answers newest first unless asked otherwise, a page at a time.
@@ -512,4 +563,12 @@ function tagList(value: unknown): string[] {
 		.split(';')
 		.map((t) => t.trim())
 		.filter((t) => t !== '');
+}
+
+// The link a patch adds: its type and the id its address names.
+function relation(value: unknown): { rel: string; id: number } | null {
+	const link = value as { rel?: unknown; url?: unknown } | null;
+	if (typeof link?.rel !== 'string' || typeof link.url !== 'string') return null;
+	const id = /\/workItems\/(\d+)$/i.exec(link.url)?.[1];
+	return id === undefined ? null : { rel: link.rel, id: Number(id) };
 }
