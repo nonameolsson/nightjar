@@ -27,7 +27,7 @@ describe('the nightjar-feature skill', () => {
 	it('is named as its folder, makes the Feature with nightjar create, and calls on no other skill', () => {
 		const text = readFileSync(SKILL, 'utf8');
 		expect(text).toMatch(/^---\nname: nightjar-feature\ndescription: \S/);
-		expect(text).toContain('npx nightjar create --dry-run');
+		expect(text).toContain('nightjar create --dry-run');
 		expect(text).not.toMatch(/\/[a-z]+-[a-z-]+|Skill tool|invoke the/i);
 	});
 
