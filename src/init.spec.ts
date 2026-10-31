@@ -217,6 +217,7 @@ describe('nightjar init with a module', () => {
 			'me',
 			'assignedFeatures',
 			'feature',
+			'standing',
 			'tickets',
 			'comments',
 			'addSignal',

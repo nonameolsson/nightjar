@@ -5,6 +5,7 @@ export type {
 	Feature,
 	FeatureWriter,
 	ItemText,
+	Standing,
 	Ticket,
 	TicketReference,
 	Tracker

@@ -40,12 +40,20 @@ export interface TicketReference {
 	readonly text: string;
 }
 
+// Who a Feature is assigned to and which Signals it carries.
+export interface Standing {
+	readonly assignees: readonly string[];
+	readonly signals: readonly Signal[];
+}
+
 export interface Tracker {
 	// the signed-in person
 	me(): Promise<string>;
 	// the open Features assigned to `person` that carry the Go, oldest first
 	assignedFeatures(person: string): Promise<Feature[]>;
 	feature(id: ItemId): Promise<Feature>;
+	// read before `nightjar <id>` claims a Feature; the signed-in person goes by the name `me` gives
+	standing(id: ItemId): Promise<Standing>;
 	// the Feature's Tickets in its own child order, each with its blockers
 	tickets(featureId: ItemId): Promise<Ticket[]>;
 	// the comments on a Feature or Ticket, oldest first

@@ -10,6 +10,7 @@ import type {
 	FeatureWriter,
 	ItemId,
 	ItemText,
+	Standing,
 	Ticket,
 	TicketReference,
 	Tracker
@@ -248,6 +249,18 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 
 	async feature(id: ItemId): Promise<Feature> {
 		return this.toFeature(await this.item(workItem(id)));
+	}
+
+	async standing(id: ItemId): Promise<Standing> {
+		const item = await this.item(workItem(id));
+		const assigned = IdentityRefSchema.safeParse(item.fields['System.AssignedTo']);
+		const me = await this.signedIn('');
+		const name = !assigned.success
+			? null
+			: assigned.data.id === me.id
+				? me.name
+				: (assigned.data.uniqueName ?? assigned.data.displayName ?? null);
+		return { assignees: name === null ? [] : [name], signals: this.signalsOf(item) };
 	}
 
 	async tickets(featureId: ItemId): Promise<Ticket[]> {

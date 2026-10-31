@@ -16,7 +16,7 @@ import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildOne, handBack, queue, type QueueDeps } from './queue.js';
+import { buildOne, cannotClaim, handBack, queue, why, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
 import { StatusBoard, statusPath } from './status.js';
 import { worktreesFor } from './worktree.js';
@@ -207,6 +207,16 @@ export async function runNightjar(
 	});
 
 	if (args.mode === 'feature' && args.feature !== undefined) {
+		let refusal: string | null;
+		try {
+			refusal = await cannotClaim(queueDeps, args.feature);
+		} catch (fault) {
+			refusal = why(fault);
+		}
+		if (refusal !== null) {
+			console.error(`nightjar: ${refusal}`);
+			return 2;
+		}
 		const outcome = await buildOne(queueDeps, args.feature);
 		return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
 	}

@@ -50,6 +50,7 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 		me: () => tracker.me(),
 		assignedFeatures: (person) => tracker.assignedFeatures(person),
 		feature: (id) => tracker.feature(id),
+		standing: (id) => tracker.standing(id),
 		tickets: (featureId) => tracker.tickets(featureId),
 		comments: (id) => tracker.comments(id),
 		addSignal: (id, signal) => tracker.addSignal(id, signal),

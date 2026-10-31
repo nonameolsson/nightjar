@@ -139,6 +139,29 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 	),
 
 	trackerCase(
+		'says who a Feature is assigned to and which Signals it carries',
+		given({
+			items: [
+				{ key: 'mine', title: 'Mine', assignees: [ANN], signals: ['go'], children: ['a'] },
+				{ key: 'theirs', title: 'Theirs', assignees: ['bob'], children: ['a'] },
+				{ key: 'nobody', title: 'Nobody', signals: ['working'], children: ['a'] },
+				{ key: 'a', title: 'Ticket a' }
+			]
+		}),
+		async ({ tracker, id }) => {
+			assert.deepEqual(await tracker.standing(id('mine')), {
+				assignees: [ANN],
+				signals: ['go']
+			});
+			assert.deepEqual(await tracker.standing(id('theirs')), { assignees: ['bob'], signals: [] });
+			assert.deepEqual(await tracker.standing(id('nobody')), {
+				assignees: [],
+				signals: ['working']
+			});
+		}
+	),
+
+	trackerCase(
 		"reads a Feature's Tickets in its own child order, open or closed, with their Signals",
 		given({
 			items: [

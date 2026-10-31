@@ -48,6 +48,8 @@ export function createTracker({ options, signals, trusted }) {
 		// the open Features assigned to a person that carry the Go, oldest first
 		assignedFeatures: todo('assignedFeatures'),
 		feature: todo('feature'),
+		// { assignees, signals } of a Feature, which `nightjar <id>` reads before it claims one
+		standing: todo('standing'),
 		// the Feature's Tickets in its own child order, each with its blockers
 		tickets: todo('tickets'),
 		// oldest first; `trusted` says whether the Coding agent may read the comment
@@ -126,7 +128,7 @@ Tracker contract
         my-tracker: assignedFeatures is not written yet
   ...
 
-11 of 11 behaviours fail.
+12 of 12 behaviours fail.
 ```
 
 Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.

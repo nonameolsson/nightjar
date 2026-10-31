@@ -37,10 +37,11 @@ function script(dir: string, name: string, body: string) {
 const GH = String.raw`
 echo "$*" >> "$FAKE_GH_CALLS"
 issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
+feature() { printf '{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"%s"}],"assignees":[{"login":"%s"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}' "${'$'}{FAKE_GH_FEATURE_LABEL:-factory-go}" "${'$'}{FAKE_GH_FEATURE_ASSIGNEE:-ann}"; }
 for a in "$@"; do case "$a" in
   user) echo '{"login":"ann"}'; exit 0 ;;
-  repos/o/r/issues\?*) echo "[$(issue 1 'One escape' ',"sub_issues_summary":{"total":1}')]"; exit 0 ;;
-  repos/o/r/issues/1) issue 1 "One escape" ',"sub_issues_summary":{"total":1}'; exit 0 ;;
+  repos/o/r/issues\?*) echo "[$(feature)]"; exit 0 ;;
+  repos/o/r/issues/1) feature; exit 0 ;;
   repos/o/r/issues/1/sub_issues*)
     [ -n "$FAKE_GH_FAIL_TICKETS" ] && { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
     echo "[$(issue 2 'Share the escape' '')]"; exit 0 ;;
@@ -207,6 +208,7 @@ export const createTracker = () => ({
 	me: async () => 'ann',
 	assignedFeatures: async () => [],
 	feature: async (id) => ({ id, title: items[id].title, body: '' }),
+	standing: async (id) => ({ assignees: ['ann'], signals: [...items[id].signals] }),
 	tickets: async (id) => items[id].children.map((c) => ({
 		id: c, title: items[c].title, body: '', open: true, signals: [...items[c].signals], blockedBy: []
 	})),
@@ -216,6 +218,33 @@ export const createTracker = () => ({
 	comment: async (id, body) => { said.push([id, body]); },
 	reference: (id) => ({ id, text: id })
 });`;
+
+describe('nightjar FEATURE that may not be claimed', () => {
+	it.each([
+		['assigned to someone else', { FAKE_GH_FEATURE_ASSIGNEE: 'bob' }, /#1 is not assigned to ann/],
+		['without the Go', { FAKE_GH_FEATURE_LABEL: 'ready-for-agent' }, /#1 does not carry the Go/],
+		['already being worked on', { FAKE_GH_FEATURE_LABEL: 'agent-working' }, /#1 already carries/]
+	])(
+		'refuses one %s, and touches nothing',
+		(_name, extra, said) => {
+			const { nightjar, calls, sessions } = world();
+			const run = nightjar(['1'], extra);
+			expect(run.stderr).toMatch(said);
+			expect(run.status).toBe(2);
+			expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);
+			expect(sessions()).not.toContain('--session-id');
+		},
+		30_000
+	);
+
+	it('says so when the Feature cannot be read', () => {
+		const { nightjar, calls } = world();
+		const run = nightjar(['99']);
+		expect(run.stderr).toContain('nightjar: gh could not read issue #99');
+		expect(run.status).toBe(2);
+		expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);
+	}, 30_000);
+});
 
 describe('nightjar FEATURE on a Tracker module keyed by strings', () => {
 	it('builds PROJ-1 and names its Tickets by their own keys', () => {
@@ -404,6 +433,7 @@ describe('nightjar doctor', () => {
 	me: async () => options.who,
 	assignedFeatures: async (person) => [{ id: 7, title: 'Seen by ' + person, body: '' }],
 	feature: async () => { throw new Error('unused'); },
+	standing: async () => { throw new Error('unused'); },
 	tickets: async () => [],
 	comments: async () => [],
 	addSignal: async () => {},

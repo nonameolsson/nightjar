@@ -9,6 +9,7 @@ import type {
 	FeatureWriter,
 	ItemId,
 	ItemText,
+	Standing,
 	Ticket,
 	TicketReference,
 	Tracker
@@ -99,6 +100,16 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		return toFeature(
 			await this.api.parse(`read issue #${n}`, [`repos/${this.repo}/issues/${n}`], IssueSchema)
 		);
+	}
+
+	async standing(id: ItemId): Promise<Standing> {
+		const n = issue(id);
+		const raw = await this.api.parse(
+			`read issue #${n}`,
+			[`repos/${this.repo}/issues/${n}`],
+			IssueSchema
+		);
+		return { assignees: (raw.assignees ?? []).map((a) => a.login), signals: this.signalsOf(raw) };
 	}
 
 	async tickets(featureId: ItemId): Promise<Ticket[]> {

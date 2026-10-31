@@ -186,7 +186,7 @@ What is yours rather than the repo's lives outside it, in `config.json` under `$
 | Key        | Default                | What it does                                                                                                                                                |
 | ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dailyUsd` | `60`                   | The estimated spend per local day in a repo, from its `.factory/runs.jsonl`, at which a run pauses. `--watch` looks again after 30 minutes.                                          |
-| `assignee` | the signed-in person   | Whose Features to build: `--once`, `--watch` and `doctor` take the Features assigned to this login with the Go. |
+| `assignee` | the signed-in person   | Whose Features to build: `--once`, `--watch` and `doctor` take the Features assigned to this login with the Go, and `nightjar <id>` refuses one assigned to anyone else. |
 
 Nightjar refuses to start when the file is not JSON or a key is wrong or unknown, and names each one. `doctor` lists what it read.
 
@@ -274,7 +274,7 @@ nightjar doctor
 | `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
 | `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
-| `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). |
+| `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). It refuses a Feature not assigned to you, without the Go, or already carrying the working Signal. |
 | `--use-api-key`        | Lets the sessions bill `ANTHROPIC_API_KEY` instead of your Claude plan.                                |
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |

@@ -6,6 +6,7 @@ import type {
 	FeatureWriter,
 	ItemId,
 	ItemText,
+	Standing,
 	Ticket,
 	TicketReference,
 	Tracker
@@ -94,6 +95,11 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	feature = (id: ItemId): Promise<Feature> => {
 		const { title, body } = this.get(id);
 		return Promise.resolve({ id, title, body });
+	};
+
+	standing = (id: ItemId): Promise<Standing> => {
+		const { assignees, signals } = this.get(id);
+		return Promise.resolve({ assignees, signals });
 	};
 
 	tickets = (featureId: ItemId): Promise<Ticket[]> =>

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FeatureOutcome } from './build.js';
 import { FakeTracker } from './fakes/tracker.js';
-import { dryRun, queue, type QueueDeps } from './queue.js';
+import { cannotClaim, dryRun, queue, type QueueDeps } from './queue.js';
 import type { Doing, Happened } from './status.js';
 
 function world() {
@@ -84,6 +84,42 @@ describe('queue --watch', () => {
 			kind: 'idle',
 			nextPollAt: new Date(2026, 9, 30, 9, 2).toISOString()
 		});
+	});
+});
+
+describe('cannotClaim', () => {
+	it('lets the person take a Feature assigned to them with the Go', async () => {
+		const w = world();
+		expect(await cannotClaim(w.deps, '2')).toBeNull();
+	});
+
+	it('reads the person in any case, as a Tracker does', async () => {
+		const w = world();
+		expect(await cannotClaim({ ...w.deps, person: 'ANN' }, '2')).toBeNull();
+	});
+
+	it('refuses a Feature assigned to someone else', async () => {
+		const w = world();
+		expect(await cannotClaim(w.deps, '6')).toBe(
+			'#6 is not assigned to ann, so Nightjar leaves it alone. Assign it to ann first.'
+		);
+	});
+
+	it('refuses a Feature without the Go', async () => {
+		const w = world();
+		expect(await cannotClaim(w.deps, '8')).toBe(
+			'#8 does not carry the Go, so Nightjar leaves it alone. Give it the Go first.'
+		);
+	});
+
+	it('refuses a Feature already carrying working, whether or not the Go is back', async () => {
+		const w = world();
+		await w.tracker.addSignal('2', 'working');
+		const refusal =
+			'#2 already carries the working Signal: another run is building it, or one stopped without clearing it. If none is running, take the Signal off and run again.';
+		expect(await cannotClaim(w.deps, '2')).toBe(refusal);
+		await w.tracker.removeSignal('2', 'go');
+		expect(await cannotClaim(w.deps, '2')).toBe(refusal);
 	});
 });
 

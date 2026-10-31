@@ -27,6 +27,7 @@ const TRACKER_METHODS: Record<keyof Tracker, true> = {
 	me: true,
 	assignedFeatures: true,
 	feature: true,
+	standing: true,
 	tickets: true,
 	comments: true,
 	addSignal: true,

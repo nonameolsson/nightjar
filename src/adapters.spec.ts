@@ -77,7 +77,8 @@ describe('makeAdapters', () => {
 const trackerBody = (over = '') => `{
 	me: async () => 'zed',
 	assignedFeatures: async () => [],
-	feature: async () => ({ id: 1, title: 't', body: '' }),
+	feature: async () => ({ id: '1', title: 't', body: '' }),
+	standing: async () => ({ assignees: [], signals: [] }),
 	tickets: async () => [],
 	comments: async () => [],
 	addSignal: async () => {},

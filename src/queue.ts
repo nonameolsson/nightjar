@@ -47,6 +47,26 @@ export async function buildOne(deps: QueueDeps, id: ItemId): Promise<FeatureOutc
 	}
 }
 
+const samePerson = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+// Why `nightjar <id>` may not claim this Feature, or null when it may. Working comes first: a claim takes the Go off.
+export async function cannotClaim(
+	deps: Pick<QueueDeps, 'tracker' | 'person'>,
+	id: ItemId
+): Promise<string | null> {
+	const { assignees, signals } = await deps.tracker.standing(id);
+	if (signals.includes('working')) {
+		return `#${id} already carries the working Signal: another run is building it, or one stopped without clearing it. If none is running, take the Signal off and run again.`;
+	}
+	if (!assignees.some((a) => samePerson(a, deps.person))) {
+		return `#${id} is not assigned to ${deps.person}, so Nightjar leaves it alone. Assign it to ${deps.person} first.`;
+	}
+	if (!signals.includes('go')) {
+		return `#${id} does not carry the Go, so Nightjar leaves it alone. Give it the Go first.`;
+	}
+	return null;
+}
+
 const none = (deps: Pick<QueueDeps, 'person'>) =>
 	`no Feature with the Go is assigned to ${deps.person}`;
 
