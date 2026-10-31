@@ -7,3 +7,18 @@ export { FakeCodeHost, type FakePull } from './fakes/code-host.js';
 export { GitHubTracker } from './github/tracker.js';
 export { GitHubCodeHost } from './github/code-host.js';
 export { GitHubFailure, type GhRunner } from './github/api.js';
+export type { ContractCase } from './contract/case.js';
+export {
+	trackerContract,
+	type TrackerHarness,
+	type TrackerSubject,
+	type TrackerWorld,
+	type WorldComment,
+	type WorldItem
+} from './contract/tracker.js';
+export {
+	codeHostContract,
+	type CodeHostHarness,
+	type CodeHostSubject,
+	type PullView
+} from './contract/code-host.js';
