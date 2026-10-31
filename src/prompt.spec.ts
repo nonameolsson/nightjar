@@ -92,7 +92,7 @@ describe('buildPrompt', () => {
 	it('holds only how Nightjar works, and sends the agent to the repo for its conventions', () => {
 		const plain = buildPrompt({ ...context, allowed: ['run-it'], check: 'run-check' });
 		const rules = plain.slice(0, plain.indexOf(feature.body));
-		expect(rules).not.toMatch(/\b(tests?|testing|coverage|typescript|kestrel)\b/i);
+		expect(rules).not.toMatch(/\b(tests?|testing|coverage|typescript)\b/i);
 		expect(rules).toMatch(/do not commit/i);
 		expect(rules).toContain('outcome "questions"');
 		expect(rules).toContain('CLAUDE.md or AGENTS.md');

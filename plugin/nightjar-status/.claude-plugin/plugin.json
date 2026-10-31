@@ -1,0 +1,5 @@
+{
+	"name": "nightjar-status",
+	"version": "0.1.0",
+	"description": "Nightjar in the Claude Code status line, and a toast when it builds a Ticket, opens a pull request or needs a person."
+}

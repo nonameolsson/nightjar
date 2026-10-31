@@ -83,6 +83,10 @@ export async function runNightjar(
 		console.error(`nightjar: ${unsupported}`);
 		return 2;
 	}
+	if (argv.length === 1 && ['--help', '-h', 'help'].includes(argv[0] ?? '')) {
+		console.log(USAGE);
+		return 0;
+	}
 	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));

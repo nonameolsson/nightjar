@@ -4,7 +4,7 @@ Nightjar builds a repo's Features with nobody at the keyboard. It reads a Featur
 
 Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is GitHub or Azure Repos, chosen apart. The words used here (Feature, Ticket, Signal, Go, …) are defined in [GLOSSARY.md](GLOSSARY.md).
 
-## Requirements
+## Platforms and requirements
 
 - macOS, Linux, or WSL2 on Windows. On native Windows every command stops with a message saying so.
 - Node 24 or later.
@@ -16,7 +16,7 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Install
 
-> Not published to npm yet. Until it is, install from a tarball (below).
+> Not published to npm yet; until it is, install from a tarball (below). Check an install with `npx nightjar --help`.
 
 From npm, in the repo you want built:
 
@@ -195,6 +195,10 @@ mkdir -p .claude/skills
 cp -R node_modules/@nonameolsson/nightjar/skills/nightjar-feature .claude/skills/
 ```
 
+## The Ticket contract
+
+Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it.
+
 ## Give the Go
 
 Nightjar builds a Feature that is **assigned to you** and carries the **Go** Signal (the label `factory-go` by default). Nothing else starts a build.
@@ -280,11 +284,15 @@ Also:
 - The agent never commits, pushes, switches branches, reaches the network, or runs `gh`. Nightjar does that, and `factory.json` cannot loosen it.
 - One run builds one Feature at a time.
 
-## Coming
+## Status line plugin (optional)
 
-Planned, not built yet:
+The package ships `nightjar-status`, a Claude Code plugin that shows Nightjar in the status line (what it builds now, the day's spend) and toasts when it builds a Ticket, opens a pull request or needs a person. It reads `.factory/status.json`, so it works in any session opened in a checkout Nightjar runs in, and Nightjar works the same without it. Load it from the installed package:
 
-- Publishing to npm.
+```bash
+claude --plugin-dir node_modules/@nonameolsson/nightjar/plugin/nightjar-status
+```
+
+The shape of the file is defined once, in `src/status-shape.ts`, which the package ships beside the plugin.
 
 ## Develop
 

@@ -3,6 +3,24 @@
 	"version": "0.0.0",
 	"description": "Builds a repo's Features from its Tracker with nobody at the keyboard, one draft pull request per Feature.",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/nonameolsson/nightjar.git"
+	},
+	"homepage": "https://github.com/nonameolsson/nightjar#readme",
+	"bugs": {
+		"url": "https://github.com/nonameolsson/nightjar/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"keywords": [
+		"claude-code",
+		"agent",
+		"automation",
+		"github",
+		"azure-devops"
+	],
 	"type": "module",
 	"bin": {
 		"nightjar": "dist/cli.js"
@@ -19,20 +37,25 @@
 		"!dist/**/*.spec.*",
 		"schema",
 		"skills",
-		"docs/ticket-contract.md"
+		"docs/ticket-contract.md",
+		"plugin/nightjar-status",
+		"!plugin/**/*.spec.ts",
+		"src/status-shape.ts"
 	],
 	"engines": {
 		"node": ">=24"
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && tsc --noEmit -p plugin",
 		"lint": "eslint .",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"test": "vitest run",
 		"schema": "tsx scripts/schema.ts",
-		"check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build",
+		"leaks": "tsx scripts/leak-check.ts",
+		"pack:check": "tsx scripts/pack-install.ts",
+		"check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build && npm run leaks && npm run pack:check",
 		"prepack": "npm run build"
 	},
 	"dependencies": {
