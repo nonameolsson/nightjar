@@ -1,6 +1,14 @@
 // A Tracker kept in memory, for the build loop's specs and for anyone testing against the seam.
 import type { Signal } from '../signals.js';
-import type { Comment, Feature, Ticket, TicketReference, Tracker } from '../tracker.js';
+import type {
+	Comment,
+	Feature,
+	FeatureWriter,
+	ItemText,
+	Ticket,
+	TicketReference,
+	Tracker
+} from '../tracker.js';
 
 export interface FakeItem {
 	readonly id: number;
@@ -17,7 +25,7 @@ export interface FakeItem {
 
 export type NewItem = Pick<FakeItem, 'id' | 'title'> & Partial<FakeItem>;
 
-export class FakeTracker implements Tracker {
+export class FakeTracker implements Tracker, FeatureWriter {
 	readonly items = new Map<number, FakeItem>();
 
 	constructor(
@@ -121,4 +129,26 @@ export class FakeTracker implements Tracker {
 	};
 
 	reference = (id: number): TicketReference => ({ id, text: `#${String(id)}` });
+
+	createFeature = ({ title, body }: ItemText): Promise<number> => {
+		const id = Math.max(0, ...this.items.keys()) + 1;
+		this.add({ id, title, body });
+		return Promise.resolve(id);
+	};
+
+	createTicket = async (featureId: number, ticket: ItemText): Promise<number> => {
+		const feature = this.get(featureId);
+		const id = await this.createFeature(ticket);
+		this.items.set(featureId, { ...feature, children: [...feature.children, id] });
+		return id;
+	};
+
+	block = (id: number, blocker: number): Promise<void> => {
+		const item = this.get(id);
+		this.get(blocker);
+		if (!item.blockedBy.includes(blocker)) {
+			this.items.set(id, { ...item, blockedBy: [...item.blockedBy, blocker] });
+		}
+		return Promise.resolve();
+	};
 }
