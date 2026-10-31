@@ -487,7 +487,7 @@ describe('buildFeature', () => {
 		expect(world.tracker.signalsOf(1)).toEqual(['go']);
 	});
 
-	it("runs each build on the Ticket's own Model and Effort lines, else on --model and --effort", async () => {
+	it("runs each build on the flags, else the Ticket's own Model and Effort lines, else factory.json's defaults", async () => {
 		const world = makeWorld();
 		world.tracker.add({
 			id: 2,
@@ -495,13 +495,87 @@ describe('buildFeature', () => {
 			signals: ['ready'],
 			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
 		});
-		const flags = { model: 'sonnet', effort: 'high', allowApiKey: true };
-		await buildFeature(deps(world), setup(world, flags), 1);
+		const defaults = { defaults: { model: 'haiku', effort: 'low' }, allowApiKey: true };
+		await buildFeature(deps(world), setup(world, defaults), 1);
 		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
 		expect(builds.map((s) => [s.model, s.effort, s.allowApiKey])).toEqual([
 			['opus', 'xhigh', true],
-			['sonnet', 'high', true]
+			['haiku', 'low', true]
 		]);
+	});
+
+	it("runs every build on --model and --effort over the Ticket's lines and the defaults", async () => {
+		const flagged = makeWorld();
+		flagged.tracker.add({
+			id: 2,
+			title: 'Share the function',
+			signals: ['ready'],
+			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
+		});
+		const flags = { defaults: { model: 'haiku', effort: 'low' }, model: 'sonnet', effort: 'high' };
+		await buildFeature(deps(flagged), setup(flagged, flags), 1);
+		const flaggedBuilds = flagged.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(flaggedBuilds.map((s) => [s.model, s.effort])).toEqual([
+			['sonnet', 'high'],
+			['sonnet', 'high']
+		]);
+	});
+
+	it("runs a Ticket with no Model or Effort line, and no default, on the agent's own", async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), 1);
+		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(builds.map((s) => [s.model, s.effort])).toEqual([
+			[undefined, undefined],
+			[undefined, undefined]
+		]);
+	});
+
+	it('runs the review on its own Model and Effort, else the flags, else the defaults', async () => {
+		const own = makeWorld();
+		const review = { enabled: true, model: 'opus', effort: 'max' };
+		await buildFeature(deps(own), setup(own, { defaults: { model: 'haiku' }, review }), 1);
+		const ownReview = own.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([ownReview?.model, ownReview?.effort]).toEqual(['opus', 'max']);
+	});
+
+	it('runs the review on --model and --effort over its own', async () => {
+		const world = makeWorld();
+		const review = { model: 'opus', effort: 'max' };
+		await buildFeature(deps(world), setup(world, { model: 'sonnet', effort: 'high', review }), 1);
+		const got = world.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([got?.model, got?.effort]).toEqual(['sonnet', 'high']);
+	});
+
+	it('runs the review on the defaults when it has no Model or Effort of its own', async () => {
+		const inherited = makeWorld();
+		await buildFeature(deps(inherited), setup(inherited, { defaults: { model: 'haiku' } }), 1);
+		const inheritedReview = inherited.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([inheritedReview?.model, inheritedReview?.effort]).toEqual(['haiku', undefined]);
+	});
+
+	it('skips the review when factory.json switches it off, and says nothing of one', async () => {
+		const world = makeWorld();
+		const got = await buildFeature(deps(world), setup(world, { review: { enabled: false } }), 1);
+		expect(got).toMatchObject({ kind: 'pull', built: [2, 3] });
+		expect(world.sessions.some((s) => s.schema === REVIEW_SCHEMA)).toBe(false);
+		expect(world.host.pulls[0]?.body).not.toContain('## Review');
+		expect(world.host.pulls[0]?.comments).toEqual([]);
+		const ledger = readFileSync(ledgerPath(world.root), 'utf8').trim().split('\n');
+		expect(ledger.map((l) => (JSON.parse(l) as { step: string }).step)).toEqual(['build', 'build']);
+	});
+
+	it("gives the build and the review sessions the repo's rules text", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			setup(world, { rules: 'Name every variable after a bird.' }),
+			1
+		);
+		expect(world.sessions).toHaveLength(3);
+		for (const session of world.sessions.filter((s) => !s.resume)) {
+			expect(session.prompt).toContain('Name every variable after a bird.');
+		}
 	});
 
 	it('passes on only Trusted comments', async () => {

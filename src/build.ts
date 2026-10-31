@@ -71,14 +71,25 @@ export interface Setup {
 	// factory.json's check and allowedCommands
 	readonly check: string;
 	readonly allowedCommands: readonly string[];
+	// the text of factory.json's rules file, added to the build and review prompts
+	readonly rules?: string;
 	// factory.json's setup: run once in each new worktree, before the first session
 	readonly setupCommand?: string;
 	// the reserved ports as environment variables, held by the run for its whole life
 	readonly portEnv?: Readonly<Record<string, string>>;
 	readonly allowApiKey: boolean;
 	readonly env: Env;
+	// --model and --effort: they win over a Ticket's lines and over the defaults
 	readonly model?: string;
 	readonly effort?: string;
+	// factory.json's model and effort: what a Ticket without its own lines runs on
+	readonly defaults?: { readonly model?: string; readonly effort?: string };
+	// factory.json's review settings; the review is on when it says nothing
+	readonly review?: {
+		readonly enabled?: boolean;
+		readonly model?: string;
+		readonly effort?: string;
+	};
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
 }
@@ -103,7 +114,7 @@ const logsPath = (root: string) => join(root, '.factory', 'logs');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
-// A Ticket's own `**Model:**` and `**Effort:**` lines win over the run's flags.
+// A Ticket's own `**Model:**` and `**Effort:**` lines.
 export function ticketLine(body: string, name: string): string | undefined {
 	const match = new RegExp(`^(?:\\*\\*)?${name}:(?:\\*\\*)?\\s*(\\S+)`, 'im').exec(body);
 	return match?.[1]?.toLowerCase();
@@ -287,14 +298,16 @@ class FeatureRun {
 			ticketComments,
 			built: this.tickets.filter((t) => this.built.has(t.id)),
 			allowed: this.setup.allowedCommands,
-			check: this.setup.check
+			check: this.setup.check,
+			rules: this.setup.rules
 		});
 		const result = await this.deps.session(
 			this.request({
 				prompt,
 				sessionId,
-				model: ticketLine(ticket.body, 'Model') ?? this.setup.model,
-				effort: ticketLine(ticket.body, 'Effort') ?? this.setup.effort
+				model: this.setup.model ?? ticketLine(ticket.body, 'Model') ?? this.setup.defaults?.model,
+				effort:
+					this.setup.effort ?? ticketLine(ticket.body, 'Effort') ?? this.setup.defaults?.effort
 			})
 		);
 		const cost = 'costUsd' in result ? result.costUsd : 0;
@@ -463,9 +476,12 @@ class FeatureRun {
 		const red =
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? 0, tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
-		const review = await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
-			this.log(e)
-		);
+		const review =
+			this.setup.review?.enabled === false
+				? 'off'
+				: await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
+						this.log(e)
+					);
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
 		const body = pullBody({
@@ -486,7 +502,7 @@ class FeatureRun {
 			pull,
 			linked.map((n) => tracker.reference(n))
 		);
-		if (review) await codeHost.comment(pull, reviewComment(review));
+		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
 		this.deps.status.happened({ kind: 'pull', feature: id, url: pull.url });
 		if (!paused && (left.length > 0 || red)) {
@@ -552,12 +568,14 @@ async function reviewFeature(
 	});
 	const result = await deps.session({
 		cwd: tree.at.folder,
-		prompt: reviewPrompt(feature, tree.at.base, built),
+		prompt: reviewPrompt(feature, tree.at.base, built, setup.rules),
 		schema: REVIEW_SCHEMA,
 		tools: REVIEW_TOOLS,
 		settings: reviewSettings(),
 		budgetUsd: setup.limits.reviewUsd,
 		minutes: setup.limits.reviewMinutes,
+		model: setup.model ?? setup.review?.model ?? setup.defaults?.model,
+		effort: setup.effort ?? setup.review?.effort ?? setup.defaults?.effort,
 		sessionId,
 		log: join(logsPath(setup.root), `${sessionId}.jsonl`),
 		allowApiKey: setup.allowApiKey,
@@ -593,7 +611,7 @@ function pullBody(p: {
 	done: readonly Ticket[];
 	left: readonly Waiting[];
 	red: { ticket: number; tail: string } | null;
-	review: Review | null;
+	review: Review | 'off' | null;
 	spent: number;
 	paused: string | null;
 }): string {
@@ -612,9 +630,10 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
-	parts.push(
-		`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
-	);
+	if (p.review !== 'off')
+		parts.push(
+			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
+		);
 	parts.push(`Estimated cost of this run: ${dollars(p.spent)}.`);
 	return `${parts.join('\n\n')}${FOOTER}`;
 }

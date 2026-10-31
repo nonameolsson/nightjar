@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, configJsonSchema, loadConfig } from './config.js';
+import { ConfigError, configJsonSchema, loadConfig, loadRules } from './config.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 
 let root: string;
@@ -25,6 +25,11 @@ const write = (value: unknown) =>
 const without = (key: keyof typeof VALID) =>
 	Object.fromEntries(Object.entries(VALID).filter(([k]) => k !== key));
 
+const loadValid = () => {
+	write(VALID);
+	return loadConfig(root);
+};
+
 const refusal = (): string => {
 	try {
 		loadConfig(root);
@@ -45,6 +50,31 @@ describe('loadConfig', () => {
 			allowedCommands: ['make test', 'make lint *'],
 			signals: DEFAULT_SIGNAL_NAMES
 		});
+	});
+
+	it('loads the prompt, model and review settings, and leaves them out when not set', () => {
+		write({
+			...VALID,
+			rules: 'docs/rules.md',
+			model: 'sonnet',
+			effort: 'high',
+			review: { enabled: false, model: 'opus', effort: 'medium' }
+		});
+		expect(loadConfig(root)).toMatchObject({
+			rules: 'docs/rules.md',
+			model: 'sonnet',
+			effort: 'high',
+			review: { enabled: false, model: 'opus', effort: 'medium' }
+		});
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('review');
+	});
+
+	it('refuses a review setting that is not one it knows', () => {
+		write({ ...VALID, review: { enabled: 'no' } });
+		expect(refusal()).toMatch(/^factory\.json: review\.enabled: /m);
+		write({ ...VALID, review: { model: 'opus', off: true } });
+		expect(refusal()).toMatch(/off/);
 	});
 
 	it('refuses a file with no check command, and never supplies one', () => {
@@ -107,6 +137,20 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/no factory\.json/);
 		writeFileSync(join(root, 'factory.json'), '{"check":');
 		expect(refusal()).toMatch(/factory\.json is not JSON/);
+	});
+});
+
+describe('loadRules', () => {
+	it('is null without a rules file, else the text of the file named, from the repo root', () => {
+		const config = { ...loadValid(), rules: 'rules.md' };
+		expect(loadRules(root, loadValid())).toBeNull();
+		writeFileSync(join(root, 'rules.md'), 'Write small functions.\n');
+		expect(loadRules(root, config)).toBe('Write small functions.');
+	});
+
+	it('refuses a rules file that cannot be read, naming it', () => {
+		const config = { ...loadValid(), rules: 'missing.md' };
+		expect(() => loadRules(root, config)).toThrow(/factory\.json: rules: cannot read missing\.md/);
 	});
 });
 

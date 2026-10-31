@@ -55,6 +55,7 @@ echo "gh: Not Found (HTTP 404)" >&2; exit 1`;
 // claude: a build writes a file in the worktree and answers built; a review approves
 const CLAUDE = String.raw`
 [ "$1" = --version ] && { echo "2.1.314 (Claude Code)"; exit 0; }
+echo "$*" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
   *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
   *) echo work > built.txt; echo "${'$'}{WEB_PORT:-none}" > port.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
@@ -88,7 +89,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 		GIT_COMMITTER_EMAIL: 'test@example.com',
 		// the port locks live in the temporary folder, so each run of the spec has its own
 		TMPDIR: base,
-		FAKE_GH_CALLS: join(base, 'gh-calls.txt')
+		FAKE_GH_CALLS: join(base, 'gh-calls.txt'),
+		FAKE_CLAUDE_CALLS: join(base, 'claude-calls.txt')
 	};
 	delete env.ANTHROPIC_API_KEY;
 	const git = (cwd: string, ...args: string[]) =>
@@ -119,7 +121,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 			timeout: 25_000
 		});
 	const calls = () => readFileSync(env.FAKE_GH_CALLS ?? '', 'utf8');
-	return { root, env, git, origin, nightjar, calls };
+	const sessions = () => readFileSync(env.FAKE_CLAUDE_CALLS ?? '', 'utf8');
+	return { root, env, git, origin, nightjar, calls, sessions };
 }
 
 describe('nightjar FEATURE', () => {
@@ -189,6 +192,36 @@ describe('nightjar FEATURE', () => {
 			recent: unknown[];
 		};
 		expect(status.recent).toMatchObject([{ kind: 'failed', feature: 1 }]);
+	}, 30_000);
+});
+
+describe('nightjar FEATURE with factory.json settings', () => {
+	it('runs the sessions on the configured model, with the rules file, and no review when it is off', () => {
+		const settings = {
+			model: 'haiku',
+			effort: 'low',
+			rules: 'rules.md',
+			review: { enabled: false }
+		};
+		const { root, git, nightjar, sessions } = world(true, settings);
+		writeFileSync(join(root, 'rules.md'), 'Name every variable after a bird.\n');
+		git(root, 'add', '.');
+		git(root, 'commit', '-q', '-m', 'rules');
+		const run = nightjar(['1']);
+		expect(run.stderr).toBe('');
+		expect(run.status).toBe(0);
+		const calls = sessions();
+		// one build and no review
+		expect(calls.match(/--session-id/g)).toHaveLength(1);
+		expect(calls).toContain('--model haiku --effort low');
+		expect(calls).toContain('Name every variable after a bird.');
+	}, 30_000);
+
+	it('refuses to start when the rules file named cannot be read', () => {
+		const { nightjar } = world(true, { rules: 'missing.md' });
+		const run = nightjar(['--dry-run']);
+		expect(run.status).toBe(2);
+		expect(run.stderr).toContain('factory.json: rules: cannot read missing.md');
 	}, 30_000);
 });
 
