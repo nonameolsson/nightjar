@@ -51,7 +51,7 @@ describe('waiting', () => {
 		expect(waiting(tickets, new Set([1]))).toEqual([
 			{ id: 2, title: 'Ticket 2', why: 'needs info' },
 			{ id: 3, title: 'Ticket 3', why: 'needs a person' },
-			{ id: 4, title: 'Ticket 4', why: 'blocked by #2' },
+			{ id: 4, title: 'Ticket 4', why: 'blocked by', blocker: 2 },
 			{ id: 5, title: 'Ticket 5', why: 'not marked ready' }
 		]);
 	});

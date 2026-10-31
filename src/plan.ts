@@ -19,20 +19,22 @@ export interface Waiting {
 	readonly id: number;
 	readonly title: string;
 	readonly why: string;
+	// the Ticket it waits for, which `why` leaves each place to name its own way
+	readonly blocker?: number;
 }
 
 // The open Tickets a run leaves unbuilt, for the pull request and the Feature's comment.
 export function waiting(tickets: readonly Ticket[], built: ReadonlySet<number>): Waiting[] {
 	return tickets
 		.filter((t) => t.open && !built.has(t.id))
-		.map((t) => ({ id: t.id, title: t.title, why: whyWaiting(t, built) }));
+		.map((t) => ({ id: t.id, title: t.title, ...whyWaiting(t, built) }));
 }
 
-function whyWaiting(ticket: Ticket, built: ReadonlySet<number>): string {
-	if (ticket.signals.includes('human')) return 'needs a person';
-	if (ticket.signals.includes('needsInfo')) return 'needs info';
+function whyWaiting(ticket: Ticket, built: ReadonlySet<number>): Pick<Waiting, 'why' | 'blocker'> {
+	if (ticket.signals.includes('human')) return { why: 'needs a person' };
+	if (ticket.signals.includes('needsInfo')) return { why: 'needs info' };
 	const blocker = ticket.blockedBy.find((b) => b.open && !built.has(b.id));
-	if (blocker) return `blocked by #${String(blocker.id)}`;
-	if (!ticket.signals.includes('ready')) return 'not marked ready';
-	return 'not reached';
+	if (blocker) return { why: 'blocked by', blocker: blocker.id };
+	if (!ticket.signals.includes('ready')) return { why: 'not marked ready' };
+	return { why: 'not reached' };
 }
