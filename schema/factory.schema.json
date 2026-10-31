@@ -65,6 +65,42 @@
 				"pattern": "\\S"
 			},
 			"description": "The commands the agent may run, as Claude Code Bash permission patterns without Bash( ), such as \"make test\" or \"make lint *\". Committing, pushing, switching branches, the network and gh stay denied."
+		},
+		"rules": {
+			"description": "A text file, relative to the repo root, whose text is added to the agent prompt. Conventions normally live in CLAUDE.md or AGENTS.md.",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"model": {
+			"description": "The default model of every session; a Ticket's **Model:** line overrides it and --model overrides both",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"effort": {
+			"description": "The default effort of every session; a Ticket's **Effort:** line overrides it and --effort overrides both",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"review": {
+			"description": "The read-only review of the whole diff, run before the draft pull request opens",
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"description": "false switches the review off; on by default",
+					"type": "boolean"
+				},
+				"model": {
+					"description": "The review session's own model; else the default model",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"effort": {
+					"description": "The review session's own effort; else the default effort",
+					"type": "string",
+					"pattern": "\\S"
+				}
+			},
+			"additionalProperties": false
 		}
 	},
 	"required": [

@@ -22,6 +22,9 @@ const GitHubCodeHost = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
 
+const modelField = z.string().regex(/\S/, 'a model is empty').optional();
+const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
+
 const missingOr = (what: string) => (issue: { input: unknown }) =>
 	issue.input === undefined ? `missing: ${what}` : undefined;
 
@@ -48,6 +51,36 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					'The commands the agent may run, as Claude Code Bash permission patterns without Bash( ), such as "make test" or "make lint *". Committing, pushing, switching branches, the network and gh stay denied.'
+			}),
+		rules: z.string().regex(/\S/, 'a rules file path is empty').optional().meta({
+			description:
+				'A text file, relative to the repo root, whose text is added to the agent prompt. Conventions normally live in CLAUDE.md or AGENTS.md.'
+		}),
+		model: modelField.meta({
+			description:
+				"The default model of every session; a Ticket's **Model:** line overrides it and --model overrides both"
+		}),
+		effort: effortField.meta({
+			description:
+				"The default effort of every session; a Ticket's **Effort:** line overrides it and --effort overrides both"
+		}),
+		review: z
+			.strictObject({
+				enabled: z
+					.boolean()
+					.optional()
+					.meta({ description: 'false switches the review off; on by default' }),
+				model: modelField.meta({
+					description: "The review session's own model; else the default model"
+				}),
+				effort: effortField.meta({
+					description: "The review session's own effort; else the default effort"
+				})
+			})
+			.optional()
+			.meta({
+				description:
+					'The read-only review of the whole diff, run before the draft pull request opens'
 			})
 	})
 	.meta({ title: 'Nightjar factory.json' });
@@ -56,6 +89,16 @@ export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'>;
 
 export function configJsonSchema(): object {
 	return z.toJSONSchema(ConfigSchema, { io: 'input' });
+}
+
+// The text of the rules file factory.json names, or null when it names none.
+export function loadRules(root: string, config: Config): string | null {
+	if (config.rules === undefined) return null;
+	try {
+		return readFileSync(join(root, config.rules), 'utf8').trim();
+	} catch {
+		throw new ConfigError(`${CONFIG_FILE}: rules: cannot read ${config.rules} in ${root}`);
+	}
 }
 
 const where = (path: readonly PropertyKey[]) =>
