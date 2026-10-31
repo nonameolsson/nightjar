@@ -65,6 +65,52 @@
 				"pattern": "\\S"
 			},
 			"description": "The commands the agent may run, as Claude Code Bash permission patterns without Bash( ), such as \"make test\" or \"make lint *\". Committing, pushing, switching branches, the network and gh stay denied."
+		},
+		"signals": {
+			"description": "The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.",
+			"default": {},
+			"type": "object",
+			"properties": {
+				"go": {
+					"default": "factory-go",
+					"description": "The Go: put on a Feature assigned to you to have it built. Give it the name of ready to use one mark for both",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"ready": {
+					"default": "ready-for-agent",
+					"description": "A Ticket that is ready to be built",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"working": {
+					"default": "agent-working",
+					"description": "Nightjar is working on it",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"needsInfo": {
+					"default": "needs-info",
+					"description": "Nightjar needs an answer to go on",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"human": {
+					"default": "ready-for-human",
+					"description": "A person has to take it from here",
+					"type": "string",
+					"pattern": "\\S"
+				}
+			},
+			"additionalProperties": false
+		},
+		"trusted": {
+			"description": "The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.",
+			"type": "array",
+			"items": {
+				"type": "string",
+				"pattern": "\\S"
+			}
 		}
 	},
 	"required": [
