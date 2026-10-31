@@ -20,9 +20,9 @@ export interface CodeHost {
 	// the open pull request whose head is `branch`, else null
 	openPull(branch: string): Promise<Pull | null>;
 	createDraft(request: DraftRequest): Promise<Pull>;
-	// replaces the body, references included; placeReferences puts them back
+	// replaces the body; the references placed before stay
 	editBody(pull: Pull, body: string): Promise<void>;
-	// links each Ticket to the pull request; never closes one or sets its state
+	// links each Ticket not linked yet; never closes one or sets its state
 	placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void>;
 	comment(pull: Pull, body: string): Promise<void>;
 }
