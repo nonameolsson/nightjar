@@ -1,5 +1,6 @@
 export type { Blocker, Comment, Feature, Ticket, TicketReference, Tracker } from './tracker.js';
 export type { CodeHost, DraftRequest, Pull } from './code-host.js';
+export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';
 export { DEFAULT_SIGNAL_NAMES, SIGNALS, type Signal, type SignalNames } from './signals.js';
 export { ConfigError, ConfigSchema, configJsonSchema, loadConfig, type Config } from './config.js';
 export { FakeTracker, type FakeItem, type NewItem } from './fakes/tracker.js';
