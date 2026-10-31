@@ -54,7 +54,7 @@ export const featureWriterContract: readonly ContractCase<TrackerHarness>[] = [
 				title: 'Share the escape',
 				body: 'The spec.\n\n## Solution\n\nOne escape.'
 			});
-			const made = [];
+			const made: number[] = [];
 			for (const title of ['First', 'Second', 'Third']) {
 				made.push(await tracker.createTicket(feature, { title, body: `Build ${title}.` }));
 			}
