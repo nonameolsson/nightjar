@@ -1,0 +1,8 @@
+.agents/
+.claude/
+dist/
+.factory/
+*.md
+package-lock.json
+skills-lock.json
+schema/

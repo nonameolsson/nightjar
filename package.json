@@ -1,0 +1,50 @@
+{
+	"name": "@nonameolsson/nightjar",
+	"version": "0.0.0",
+	"description": "Builds a repo's Features from its Tracker with nobody at the keyboard, one draft pull request per Feature.",
+	"license": "MIT",
+	"type": "module",
+	"bin": {
+		"nightjar": "dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./schema/factory.schema.json": "./schema/factory.schema.json"
+	},
+	"files": [
+		"dist",
+		"!dist/**/*.spec.*",
+		"schema"
+	],
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint .",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"test": "vitest run",
+		"schema": "tsx scripts/schema.ts",
+		"check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build",
+		"prepack": "npm run build"
+	},
+	"dependencies": {
+		"zod": "^4.6.7"
+	},
+	"devDependencies": {
+		"@eslint/js": "^10.0.1",
+		"@types/node": "^24",
+		"eslint": "^10.14.0",
+		"eslint-config-prettier": "^10.1.8",
+		"prettier": "^3.9.10",
+		"tsx": "^4.23.15",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.72.1",
+		"vitest": "^5.0.5"
+	}
+}
