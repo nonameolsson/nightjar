@@ -80,6 +80,19 @@ describe('AzureBoardsTracker', () => {
 		expect((await tracker.comments(id)).map((c) => c.trusted)).toEqual([true]);
 	});
 
+	it("asks for the signed-in person's Features as @Me, so no spelling of their name can miss them", async () => {
+		const { ado, tracker } = setUp();
+		await tracker.assignedFeatures(await tracker.me());
+		await tracker.assignedFeatures('bob@contoso.com');
+		const queries = ado.asked.flatMap((a) =>
+			a.url.includes('/wiql') ? [(a.body as { query: string }).query] : []
+		);
+		expect(queries.map((q) => /\[System\.AssignedTo\] = (\S+)/.exec(q)?.[1])).toEqual([
+			'@Me',
+			"'bob@contoso.com'"
+		]);
+	});
+
 	it('finds the Features of a person whose sign-in name holds a quote', async () => {
 		const { ado, tracker } = setUp();
 		const person = "o'neil@contoso.com";

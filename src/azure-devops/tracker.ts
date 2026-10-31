@@ -195,10 +195,12 @@ export class AzureBoardsTracker implements Tracker {
 	}
 
 	async assignedFeatures(person: string): Promise<Feature[]> {
+		// @Me matches the signed-in person however the directory spells their name
+		const assignee = same(person, await this.me()) ? '@Me' : quoted(person);
 		const query =
 			'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project' +
 			` AND [System.WorkItemType] = ${quoted(this.settings.featureType)}` +
-			` AND [System.AssignedTo] = ${quoted(person)}` +
+			` AND [System.AssignedTo] = ${assignee}` +
 			` AND [System.Tags] CONTAINS ${quoted(this.names.go)}` +
 			' ORDER BY [System.Id]';
 		const found = await this.api.parse(

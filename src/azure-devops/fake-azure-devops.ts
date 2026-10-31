@@ -250,7 +250,7 @@ export class FakeAzureDevOps {
 			query.trim()
 		);
 		if (!shape) throw fault(`WIQL of a shape not known: ${query}`);
-		const clause = /\s*(?:AND\s+)?\[([\w.]+)\]\s+(=|CONTAINS)\s+('(?:[^']|'')*'|@project)\s*/y;
+		const clause = /\s*(?:AND\s+)?\[([\w.]+)\]\s+(=|CONTAINS)\s+('(?:[^']|'')*'|@project|@Me)\s*/y;
 		const tests: ((item: WorkItem) => boolean)[] = [];
 		const where = shape[1] ?? '';
 		while (clause.lastIndex < where.length) {
@@ -270,6 +270,10 @@ export class FakeAzureDevOps {
 		if (raw === '@project') {
 			if (field !== 'System.TeamProject' || op !== '=') throw fault(`@project with ${field}`);
 			return () => true;
+		}
+		if (raw === '@Me') {
+			if (field !== 'System.AssignedTo' || op !== '=') throw fault(`@Me with ${field}`);
+			return this.clause(field, op, `'${this.person.replace(/'/g, "''")}'`);
 		}
 		const value = raw.slice(1, -1).replace(/''/g, "'").toLowerCase();
 		const text = (item: WorkItem) => {
