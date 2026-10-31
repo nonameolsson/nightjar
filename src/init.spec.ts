@@ -48,7 +48,7 @@ describe('nightjar init on GitHub', () => {
 	it('writes a factory.json that passes the schema, from the answers', async () => {
 		expect(await init(['github', '', 'github', '', 'make check', 'make check, make test'])).toBe(0);
 		expect(m.readConfig()).toEqual({
-			$schema: './node_modules/@nonameolsson/nightjar/schema/factory.schema.json',
+			$schema: 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json',
 			tracker: { type: 'github' },
 			codeHost: { type: 'github' },
 			check: 'make check',

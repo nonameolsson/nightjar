@@ -81,5 +81,5 @@ The package ships a Claude Code skill, `nightjar-feature`, that writes a Feature
 
 ```bash
 mkdir -p .claude/skills
-cp -R node_modules/@nonameolsson/nightjar/skills/nightjar-feature .claude/skills/
+cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-feature" .claude/skills/
 ```

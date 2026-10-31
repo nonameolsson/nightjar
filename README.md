@@ -16,13 +16,25 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Install
 
-> Not published to npm yet; until it is, install from a tarball (below). Check an install with `npx nightjar --help`.
+> Not published to npm yet; until it is, install from a tarball (below). Check an install with `nightjar --help`.
 
-From npm, in the repo you want built:
+Nightjar needs Node, but the repo it builds need not be a Node project. Install it once for your user, so the repo gets no `package.json` or `node_modules`:
+
+```bash
+npm i -g @nonameolsson/nightjar
+nightjar init
+```
+
+Or run it without installing, each time through `npx`:
+
+```bash
+npx @nonameolsson/nightjar init
+```
+
+The commands below are written as `nightjar …`; with `npx`, put `npx @nonameolsson/nightjar` in its place. In a repo that is a Node project already, you can also pin the version with the repo, as a dev dependency, and run it as `npx nightjar …`:
 
 ```bash
 npm i -D @nonameolsson/nightjar
-npx nightjar init
 ```
 
 From a tarball, built from a clone of this repo:
@@ -32,10 +44,10 @@ npm ci
 npm pack
 ```
 
-`npm pack` builds `dist/` first and writes `nonameolsson-nightjar-<version>.tgz`. Install that file in the repo you want built:
+`npm pack` builds `dist/` first and writes `nonameolsson-nightjar-<version>.tgz`. Install that file the same way:
 
 ```bash
-npm i -D /path/to/nonameolsson-nightjar-0.0.0.tgz
+npm i -g /path/to/nonameolsson-nightjar-0.0.0.tgz
 ```
 
 ## Set up: `nightjar init`
@@ -43,7 +55,7 @@ npm i -D /path/to/nonameolsson-nightjar-0.0.0.tgz
 In the repo you want built, run:
 
 ```bash
-npx nightjar init
+nightjar init
 ```
 
 It asks for:
@@ -69,7 +81,7 @@ A minimal one needs a Tracker, a Code host, the check command, and the commands 
 
 ```json
 {
-	"$schema": "./node_modules/@nonameolsson/nightjar/schema/factory.schema.json",
+	"$schema": "https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json",
 	"tracker": { "type": "github" },
 	"codeHost": { "type": "github" },
 	"check": "make check",
@@ -81,7 +93,7 @@ A full one:
 
 ```json
 {
-	"$schema": "./node_modules/@nonameolsson/nightjar/schema/factory.schema.json",
+	"$schema": "https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json",
 	"tracker": { "type": "github", "repo": "acme/widgets" },
 	"codeHost": { "type": "github", "repo": "acme/widgets" },
 	"check": "make check",
@@ -123,7 +135,7 @@ With Azure DevOps Boards as the Tracker, and the code on GitHub:
 
 ```json
 {
-	"$schema": "./node_modules/@nonameolsson/nightjar/schema/factory.schema.json",
+	"$schema": "https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json",
 	"tracker": {
 		"type": "azure-devops",
 		"organization": "contoso",
@@ -140,7 +152,7 @@ Fully on Azure DevOps, with the code on Azure Repos:
 
 ```json
 {
-	"$schema": "./node_modules/@nonameolsson/nightjar/schema/factory.schema.json",
+	"$schema": "https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json",
 	"tracker": {
 		"type": "azure-devops",
 		"organization": "contoso",
@@ -158,7 +170,7 @@ Fully on Azure DevOps, with the code on Azure Repos:
 }
 ```
 
-The JSON Schema for editor completion is at `schema/factory.schema.json` in the package.
+The JSON Schema for editor completion is `schema/factory.schema.json` in the package, published at the `$schema` URL above, so it works whether or not the repo installs Nightjar.
 
 ## Another Tracker or Code host
 
@@ -172,7 +184,7 @@ Name your own Adapter in `factory.json` as a module, resolved from the repo's ro
 ```
 
 ```bash
-npx nightjar contract ./tools/my-tracker.contract.js
+nightjar contract ./tools/my-tracker.contract.js
 ```
 
 `nightjar contract` runs the same contract suite the built-in Adapters meet over the harnesses a module exports, prints every behaviour, names each one that fails, and exits 1 if any does. Nightjar refuses to start when a named module cannot be loaded or lacks a method of the interface. [docs/custom-adapters.md](docs/custom-adapters.md) has a minimal module and a test harness.
@@ -182,8 +194,8 @@ npx nightjar contract ./tools/my-tracker.contract.js
 What a Ticket must hold (acceptance criteria, blocking links, optional Model and Effort lines) is the [Ticket contract](docs/ticket-contract.md). Write a Feature and its Tickets by hand on the Tracker, as in [Give the Go](#give-the-go), or as one Markdown file in the contract's shape and let Nightjar make them through the configured Tracker:
 
 ```bash
-npx nightjar create --dry-run plans/escape.md   # says what it would make
-npx nightjar create plans/escape.md
+nightjar create --dry-run plans/escape.md   # says what it would make
+nightjar create plans/escape.md
 ```
 
 `nightjar create` makes the Feature with no Signal and each Ticket ready, linked to its blockers. It works with GitHub Issues, with Azure DevOps Boards once `tracker.ticketType` is set, and with a Tracker module that makes Features ([docs/custom-adapters.md](docs/custom-adapters.md)).
@@ -192,8 +204,10 @@ The package ships a Claude Code skill, `nightjar-feature`, that writes that file
 
 ```bash
 mkdir -p .claude/skills
-cp -R node_modules/@nonameolsson/nightjar/skills/nightjar-feature .claude/skills/
+cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-feature" .claude/skills/
 ```
+
+With Nightjar as a dev dependency, the package is at `node_modules/@nonameolsson/nightjar` instead, here and below.
 
 ## The Ticket contract
 
@@ -233,7 +247,7 @@ While it works, Nightjar puts the working Signal (`agent-working`) on the Featur
 From anywhere inside the repo:
 
 ```bash
-npx nightjar doctor
+nightjar doctor
 ```
 
 | Command                | What it does                                                                                           |
@@ -289,7 +303,7 @@ Also:
 The package ships `nightjar-status`, a Claude Code plugin that shows Nightjar in the status line (what it builds now, the day's spend) and toasts when it builds a Ticket, opens a pull request or needs a person. It reads `.factory/status.json`, so it works in any session opened in a checkout Nightjar runs in, and Nightjar works the same without it. Load it from the installed package:
 
 ```bash
-claude --plugin-dir node_modules/@nonameolsson/nightjar/plugin/nightjar-status
+claude --plugin-dir "$(npm root -g)/@nonameolsson/nightjar/plugin/nightjar-status"
 ```
 
 The shape of the file is defined once, in `src/status-shape.ts`, which the package ships beside the plugin.

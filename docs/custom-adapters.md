@@ -113,7 +113,7 @@ export async function trackerHarness(world) {
 Then run, from the repo:
 
 ```bash
-npx nightjar contract ./tools/my-tracker.contract.js
+nightjar contract ./tools/my-tracker.contract.js
 ```
 
 The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:

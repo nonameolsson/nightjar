@@ -24,7 +24,8 @@ const say = (line: string) => console.log(`nightjar: ${line}`);
 
 const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
-const SCHEMA_URL = './node_modules/@nonameolsson/nightjar/schema/factory.schema.json';
+// the published schema, so a repo that is no npm project gets editor completion too
+const SCHEMA_URL = 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json';
 
 const KINDS = ['github', 'azure-devops', 'module'] as const;
 type Kind = (typeof KINDS)[number];
