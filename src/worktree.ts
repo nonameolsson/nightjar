@@ -1,8 +1,8 @@
 // The Feature's own branch and worktree, and every git command Nightjar runs in it. The agent
 // edits files there; only Nightjar commits or saves a failed attempt, and the Code host pushes.
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { firstLine, run, type Env } from './git.js';
 
 // A git command Nightjar cannot go on without.
@@ -49,6 +49,17 @@ export class Worktree {
 		if (!got.ok) throw new GitFailure(`git ${args[0] ?? ''} failed: ${firstLine(got.err)}`);
 		return got.out;
 	}
+
+	// A marker in git's own folder for this worktree records that the setup command passed, so
+	// neither `git clean` nor a commit ever touches it.
+	private async setupMarker(): Promise<string> {
+		const path = (await this.git(['rev-parse', '--git-path', 'nightjar-setup'])).trim();
+		return resolve(this.at.folder, path);
+	}
+
+	isSetUp = async () => existsSync(await this.setupMarker());
+
+	markSetUp = async () => writeFileSync(await this.setupMarker(), '');
 
 	head = async () => (await this.git(['rev-parse', 'HEAD'])).trim();
 

@@ -9,6 +9,7 @@ import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build
 import { runCheck } from './check.js';
 import { ConfigError, loadConfig, type Config } from './config.js';
 import { firstLine, run, type Env } from './git.js';
+import { claimPorts, portEnv } from './ports.js';
 import { buildOne, dryRun, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
 import { StatusBoard, statusPath } from './status.js';
@@ -99,12 +100,28 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 		pid: process.pid,
 		dailyUsd: LIMITS.dailyUsd
 	});
+	// the reserved ports are held until the process ends, whatever ends it
+	const claim =
+		args.mode === 'dry-run' || config.ports === undefined
+			? null
+			: await claimPorts({ count: config.ports.count });
+	if (config.ports !== undefined && args.mode !== 'dry-run') {
+		if (claim === null) {
+			console.error(
+				`nightjar: no ${String(config.ports.count)} free, unclaimed ports to reserve; stop another run or lower ports.count in factory.json.`
+			);
+			return 2;
+		}
+		process.once('exit', () => claim.release());
+		say(`ports ${String(claim.port)} to ${String(claim.port + config.ports.count - 1)}`);
+	}
 	const stop = new AbortController();
 	const deps: Deps = {
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
 		session: (req) => runSession(req),
-		runCheck: (command, cwd) => runCheck(command, cwd, env),
+		runCheck,
+		runSetup: runCheck,
 		now: () => new Date(),
 		newId: () => randomUUID(),
 		say,
@@ -117,6 +134,10 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 		baseBranch: ready.baseBranch,
 		check: config.check,
 		allowedCommands: config.allowedCommands,
+		...(config.setup === undefined ? {} : { setupCommand: config.setup }),
+		...(config.ports === undefined || claim === null
+			? {}
+			: { portEnv: portEnv(claim.port, config.ports.env) }),
 		allowApiKey: args.useApiKey,
 		env,
 		...(args.model === undefined ? {} : { model: args.model }),
