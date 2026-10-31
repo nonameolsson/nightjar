@@ -53,12 +53,11 @@ export class FakeGitHub {
 		this.change(blocked, (i) => ({ blockedBy: [...i.blockedBy, by] }));
 	}
 
-	say(number: number, login: string, body: string): void {
+	say(number: number, login: string, body: string): IssueComment {
 		const at = new Date(Date.UTC(2026, 9, 30, 9, this.commentCount())).toISOString();
-		this.comments.set(number, [
-			...(this.comments.get(number) ?? []),
-			{ login, body, createdAt: at }
-		]);
+		const comment = { login, body, createdAt: at };
+		this.comments.set(number, [...(this.comments.get(number) ?? []), comment]);
+		return comment;
 	}
 
 	// Makes `login` a collaborator with `permission` (read, write, maintain, admin).
@@ -88,7 +87,35 @@ export class FakeGitHub {
 		if (method === 'GET' && rest === '/comments') {
 			return ok((this.comments.get(issue.number) ?? []).map((c) => this.renderComment(c)));
 		}
+		if (method === 'POST' && rest === '/comments') {
+			return ok(this.renderComment(this.say(issue.number, this.person, String(call.fields.body))));
+		}
+		if (method === 'POST' && rest === '/labels') return this.label(issue, call);
+		const label = /^\/labels\/([^/]+)$/.exec(rest);
+		if (method === 'DELETE' && label)
+			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
 		return NOT_FOUND;
+	}
+
+	private label(issue: Issue, call: GhCall): Run {
+		const asked = call.fields['labels[]'];
+		const added = (Array.isArray(asked) ? asked : []).filter((l) => !issue.labels.includes(l));
+		const labels = [...issue.labels, ...added];
+		this.change(issue.number, () => ({ labels }));
+		return ok(labels.map((name) => ({ name })));
+	}
+
+	// GitHub answers 404 for a label the issue lacks.
+	private unlabel(issue: Issue, name: string): Run {
+		if (!issue.labels.includes(name)) {
+			return {
+				...failed('gh: Label does not exist (HTTP 404)'),
+				out: '{"message":"Label does not exist"}'
+			};
+		}
+		const labels = issue.labels.filter((l) => l !== name);
+		this.change(issue.number, () => ({ labels }));
+		return ok(labels.map((l) => ({ name: l })));
 	}
 
 	// The issue a path such as repos/o/r/issues/7/comments names.

@@ -2,7 +2,7 @@
 // built-in one or a repo's own module. Each case asks the harness for a Tracker that holds a small
 // world, then drives it only through the Tracker interface.
 import assert from 'node:assert/strict';
-import type { Signal } from '../signals.js';
+import { SIGNALS, type Signal } from '../signals.js';
 import type { Tracker } from '../tracker.js';
 import type { ContractCase } from './case.js';
 
@@ -246,6 +246,110 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 				[['bob', 'Do it my way.', false]]
 			);
 			assert.deepEqual(await tracker.comments(id('b')), []);
+		}
+	),
+
+	trackerCase(
+		'adds each Signal to a Ticket as a mark of its own',
+		given({
+			items: [
+				{ key: 'feature', title: 'Feature', children: [...SIGNALS] },
+				...SIGNALS.map((s) => ({ key: s, title: `Ticket ${s}` }))
+			]
+		}),
+		async ({ tracker, id }) => {
+			for (const s of SIGNALS) await tracker.addSignal(id(s), s);
+			assert.deepEqual(
+				(await tracker.tickets(id('feature'))).map((t) => t.signals),
+				SIGNALS.map((s) => [s])
+			);
+		}
+	),
+
+	trackerCase(
+		'keeps a Signal added twice once, takes one off, and takes off one the item lacks without a fault',
+		given({
+			items: [
+				{ key: 'feature', title: 'Feature', children: ['a'] },
+				{ key: 'a', title: 'Ticket a', signals: ['ready'] }
+			]
+		}),
+		async ({ tracker, id }) => {
+			const signals = async () =>
+				[...((await tracker.tickets(id('feature')))[0]?.signals ?? [])].sort();
+			await tracker.addSignal(id('a'), 'working');
+			await tracker.addSignal(id('a'), 'working');
+			assert.deepEqual(await signals(), ['ready', 'working']);
+			await tracker.removeSignal(id('a'), 'ready');
+			assert.deepEqual(await signals(), ['working']);
+			await tracker.removeSignal(id('a'), 'needsInfo');
+			assert.deepEqual(await signals(), ['working']);
+		}
+	),
+
+	trackerCase(
+		'gives a Feature the Go and takes it off again',
+		given({
+			items: [
+				{ key: 'feature', title: 'Feature', assignees: [ANN], children: ['a'] },
+				{ key: 'a', title: 'Ticket a' }
+			]
+		}),
+		async ({ tracker, id }) => {
+			const listed = async () => (await tracker.assignedFeatures(ANN)).map((f) => f.id);
+			assert.deepEqual(await listed(), []);
+			await tracker.addSignal(id('feature'), 'go');
+			assert.deepEqual(await listed(), [id('feature')]);
+			await tracker.removeSignal(id('feature'), 'go');
+			assert.deepEqual(await listed(), []);
+		}
+	),
+
+	trackerCase(
+		'comments as the signed-in person, below the comments already there, with the body unchanged',
+		given({
+			items: [
+				{ key: 'feature', title: 'Feature', children: ['a'] },
+				{ key: 'a', title: 'Ticket a', comments: [{ author: 'bob', body: 'Before.' }] }
+			]
+		}),
+		async ({ tracker, id }) => {
+			const body = 'Two questions:\n\n1. "Which" one?\n2. `$(rm -rf /)` @here & <b>this</b>';
+			await tracker.comment(id('a'), body);
+			await tracker.comment(id('feature'), 'Built nothing.');
+			const me = await tracker.me();
+			assert.deepEqual(
+				(await tracker.comments(id('a'))).map((c) => [c.author, c.body, c.trusted]),
+				[
+					['bob', 'Before.', false],
+					[me, body, true]
+				]
+			);
+			assert.deepEqual(
+				(await tracker.comments(id('feature'))).map((c) => [c.author, c.body]),
+				[[me, 'Built nothing.']]
+			);
+		}
+	),
+
+	trackerCase(
+		'gives each Ticket a reference of its own that names its id, for the Code host to place',
+		given({
+			items: [
+				{ key: 'feature', title: 'Feature', children: ['a', 'b'] },
+				{ key: 'a', title: 'Ticket a' },
+				{ key: 'b', title: 'Ticket b' }
+			]
+		}),
+		({ tracker, id }) => {
+			const a = tracker.reference(id('a'));
+			const b = tracker.reference(id('b'));
+			assert.equal(a.id, id('a'));
+			assert.equal(b.id, id('b'));
+			assert.ok(a.text.includes(String(id('a'))), `${a.text} names ${String(id('a'))}`);
+			assert.notEqual(a.text, b.text);
+			assert.deepEqual(tracker.reference(id('a')), a);
+			return Promise.resolve();
 		}
 	)
 ];
