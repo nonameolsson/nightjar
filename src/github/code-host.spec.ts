@@ -99,6 +99,18 @@ describe('GitHubCodeHost', () => {
 		expect(body.match(/^Closes .*$/gm)).toEqual(['Closes #2', 'Closes #3', 'Closes #1']);
 	});
 
+	it('places a reference from another Tracker as it is, AB#N or PROJ-123, with no Closes', async () => {
+		const pull = onePull('Body');
+		const host = new GitHubCodeHost('o/r', fakeGh(...pull.routes).gh, noGit);
+		await host.placeReferences(PULL, [
+			{ id: '7', text: 'AB#7' },
+			{ id: 'PROJ-123', text: 'PROJ-123' },
+			{ id: '2', text: '#2' }
+		]);
+		const lines = pull.body().split('<!-- nightjar:references -->\n')[1]?.split('\n');
+		expect(lines).toEqual(['AB#7', 'PROJ-123', 'Closes #2']);
+	});
+
 	it('comments on the pull request', async () => {
 		const { gh, calls } = fakeGh(on('POST', 'repos/o/r/issues/9/comments', ok({})));
 		await new GitHubCodeHost('o/r', gh, noGit).comment(PULL, 'A review');
