@@ -251,12 +251,12 @@ Nightjar builds a Feature that is **assigned to you** and carries the **Go** Sig
 On Azure DevOps Boards the same steps read:
 
 1. Write the Feature as a work item of the type `featureType` names, with its spec in the Description.
-2. Add its Tickets as **child** work items. They are built in backlog order, then the ones nobody has ordered in the order they were linked.
+2. Add its Tickets as **child** work items. The Build order is: Predecessor links first (step 3), then backlog rank (the Stack Rank or Backlog Priority your process keeps), then, for the children nobody has ranked, the order they were linked to the Feature.
 3. Mark the dependencies with **Predecessor** and **Successor** links: a Ticket waits for its Predecessors.
 4. The `**Model:**` and `**Effort:**` lines work in the Markdown and the HTML editor alike.
 5. Assign the Feature to yourself and add the Go tag. Signals are tags, which appear on first use, so there is nothing to create first.
 
-A work item counts as closed once Azure DevOps has stamped its Closed Date, which it does when the item reaches a closed state of your process; Nightjar reads that date and never the state.
+A work item counts as closed once Azure DevOps has stamped its Closed Date, which it does when the item reaches a closed state of your process; Nightjar reads that date and never the state ([ADR 0002](docs/adr/0002-signals-are-labels-or-tags-never-states.md)). A known limit follows: a **Removed** work item has no Closed Date, so Nightjar counts it as open. A removed Ticket that still carries the ready Signal is built, and one that blocks others keeps them waiting. Take the ready Signal off a Ticket before you remove it, and the Predecessor links from it.
 
 While it works, Nightjar puts the working Signal (`agent-working`) on the Feature. When it cannot build a Ticket it takes the ready Signal off, puts on needs info (`needs-info`) or needs a person (`ready-for-human`), and comments with why. Answer by commenting on the Ticket, put the ready Signal back on it, and give the Go again: the next run continues on the same branch and pull request. Only Trusted comments reach the agent. Nightjar never closes a Ticket and never sets a tracker state.
 
@@ -288,7 +288,7 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 ## What you get
 
 - **One branch** per Feature, `factory/<id>-<title-slug>`, with one commit per Ticket, pushed to `origin` on GitHub, or to the repo `factory.json` names on Azure Repos.
-- **One draft pull request** per Feature. On GitHub each built GitHub issue is placed as `Closes #N`, so GitHub closes it on merge; any other Ticket by its plain reference, `AB#N` for an Azure DevOps work item (which the [Azure Boards app](https://learn.microsoft.com/azure/devops/boards/github/) links once it is installed on the repo) or a Tracker module's own text. On Azure Repos each built Ticket from Azure DevOps Boards in the same organization is attached as a linked work item and named `#N`; a Ticket from anywhere else is named in the description by a link to its page, because Azure Repos reads `#N` as one of its own work items. Azure Repos keeps 4000 characters of a description, so a longer one is cut, never its references. Nightjar never completes, abandons or publishes the pull request. When the review is on, its summary is the pull request's first comment.
+- **One draft pull request** per Feature. On GitHub each built GitHub issue is placed as `Closes #N`, so GitHub closes it on merge; any other Ticket by its plain reference, `AB#N` for an Azure DevOps work item (which the [Azure Boards app](https://learn.microsoft.com/azure/devops/boards/github/) links once it is installed on the repo) or a Tracker module's own text. On Azure Repos each built Ticket from Azure DevOps Boards in the same organization is attached as a linked work item and named `#N`; a Ticket from anywhere else is named in the description by a link to its page, because Azure Repos reads `#N` as one of its own work items. Azure Repos keeps 4000 characters of a description, so a longer one is cut, never its references. When every Ticket is built and the check passes, the Feature itself is placed as a reference too, the same way, so it closes or links with its Tickets. Nightjar never completes, abandons or publishes the pull request. When the review is on, its summary is the pull request's first comment.
 - **`.factory/status.json`**: what Nightjar is doing now and what it did last, rewritten at every change.
 - **`.factory/runs.jsonl`**: one line per session, with its outcome and cost. Each session's log is in `.factory/logs/`.
 - **Worktrees** under `~/.nightjar/worktrees/`, outside your checkout, which is never touched. Add `.factory/` to the repo's `.gitignore`.
@@ -315,6 +315,8 @@ Also:
 - GitHub Issues and Azure DevOps Boards are the Trackers built in, and GitHub and Azure Repos the Code hosts; others are [custom Adapter modules](#another-tracker-or-code-host).
 - The agent never commits, pushes, switches branches, reaches the network, or runs `gh`. Nightjar does that, and `factory.json` cannot loosen it.
 - One run builds one Feature at a time.
+- On Azure DevOps Boards a Removed work item counts as open, because it has no Closed Date and Nightjar never reads a state (see [Give the Go](#give-the-go)).
+- When a Feature is complete, its draft pull request references the Feature as well as its Tickets: on GitHub `Closes #N` closes it on merge too.
 
 ## Status line plugin (optional)
 
