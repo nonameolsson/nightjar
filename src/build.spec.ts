@@ -1,10 +1,10 @@
 // The build loop over a real git (a clone of a bare origin), the in-memory Tracker and Code host,
 // and a scripted session that edits the worktree the way an agent would.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildFeature, LIMITS, ledgerPath, type Deps, type Setup } from './build.js';
 import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
@@ -13,6 +13,10 @@ import { record } from './ledger.js';
 import { QUESTIONS_MARK, REVIEW_SCHEMA } from './prompt.js';
 import type { SessionRequest, SessionResult } from './session.js';
 import type { Doing, Happened } from './status.js';
+
+// Each test runs a few dozen real git processes, which takes seconds when the suite runs in
+// parallel on a busy machine; 5s is for in-memory tests.
+vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
 type Act = 'build' | 'ask' | 'fail';
@@ -38,6 +42,41 @@ interface World {
 }
 
 let base: string;
+let template: string;
+
+// No gc or maintenance: git starts them detached after a commit or fetch, and they can still be
+// writing into the folder when afterEach removes it.
+const GITCONFIG = '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n';
+
+const gitEnv = (config: string) => ({
+	...process.env,
+	GIT_CONFIG_GLOBAL: config,
+	GIT_CONFIG_NOSYSTEM: '1',
+	GIT_AUTHOR_NAME: 'Test',
+	GIT_AUTHOR_EMAIL: 'test@example.com',
+	GIT_COMMITTER_NAME: 'Test',
+	GIT_COMMITTER_EMAIL: 'test@example.com'
+});
+
+// The bare origin and its clone with one commit are made once and copied per test: real git is
+// the slow part of this file, and every test starts from the same repo.
+beforeAll(() => {
+	template = mkdtempSync(join(tmpdir(), 'nightjar-build-template-'));
+	const config = join(template, 'gitconfig');
+	writeFileSync(config, GITCONFIG);
+	const origin = join(template, 'origin.git');
+	const app = join(template, 'app');
+	const sh = (...args: string[]) =>
+		execFileSync('git', args, { env: gitEnv(config), stdio: 'pipe' });
+	sh('init', '-q', '--bare', '-b', 'main', origin);
+	sh('clone', '-q', origin, app);
+	writeFileSync(join(app, 'README.md'), 'hello\n');
+	sh('-C', app, 'add', '.');
+	sh('-C', app, 'commit', '-q', '-m', 'first');
+	sh('-C', app, 'push', '-q', 'origin', 'main');
+});
+afterAll(() => rmSync(template, { recursive: true, force: true }));
+
 beforeEach(() => {
 	base = mkdtempSync(join(tmpdir(), 'nightjar-build-'));
 });
@@ -45,25 +84,13 @@ afterEach(() => rmSync(base, { recursive: true, force: true }));
 
 function makeWorld(): World {
 	const home = join(base, 'gitconfig');
-	writeFileSync(home, '');
-	const env = {
-		...process.env,
-		GIT_CONFIG_GLOBAL: home,
-		GIT_CONFIG_NOSYSTEM: '1',
-		GIT_AUTHOR_NAME: 'Test',
-		GIT_AUTHOR_EMAIL: 'test@example.com',
-		GIT_COMMITTER_NAME: 'Test',
-		GIT_COMMITTER_EMAIL: 'test@example.com'
-	};
+	writeFileSync(home, GITCONFIG);
+	const env = gitEnv(home);
 	const origin = join(base, 'origin.git');
 	const root = join(base, 'app');
-	const sh = (...args: string[]) => execFileSync('git', args, { env, stdio: 'pipe' });
-	sh('init', '-q', '--bare', '-b', 'main', origin);
-	sh('clone', '-q', origin, root);
-	writeFileSync(join(root, 'README.md'), 'hello\n');
-	sh('-C', root, 'add', '.');
-	sh('-C', root, 'commit', '-q', '-m', 'first');
-	sh('-C', root, 'push', '-q', 'origin', 'main');
+	cpSync(join(template, 'origin.git'), origin, { recursive: true });
+	cpSync(join(template, 'app'), root, { recursive: true });
+	execFileSync('git', ['-C', root, 'remote', 'set-url', 'origin', origin], { env, stdio: 'pipe' });
 
 	const tracker = new FakeTracker('ann', () => new Date(2026, 9, 30, 8));
 	// the Feature lists 3 first, but 3 waits for 2
@@ -193,6 +220,20 @@ const tree = () => join(base, 'worktrees', '1-one-escape');
 const refs = (world: World) => world.host.pulls[0]?.references.map((r) => r.text);
 
 const PORTS = { WEB_PORT: '4500', DB_PORT: '4501' };
+
+describe('the test repo', () => {
+	it('leaves no detached git maintenance behind to write into the folder after the test', async () => {
+		const world = makeWorld();
+		const trace = join(base, 'trace.jsonl');
+		world.env['GIT_TRACE2_EVENT'] = trace;
+		await buildFeature(deps(world), setup(world), 1);
+		const started = readFileSync(trace, 'utf8')
+			.split('\n')
+			.filter(Boolean)
+			.map((line) => (JSON.parse(line) as { event: string; argv?: string[] }).argv ?? []);
+		expect(started.filter((argv) => argv.includes('maintenance'))).toEqual([]);
+	});
+});
 
 describe('worktree setup', () => {
 	it('runs the setup command once in a new worktree, before the first session', async () => {
