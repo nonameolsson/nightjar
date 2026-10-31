@@ -10,8 +10,6 @@ Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`.
 
 Nothing in Nightjar may assume a language or toolchain of the repo it builds.
 
-No source, build system or tests yet. Update this file once code lands: add build/lint/test commands (incl. single-test invocation) and architecture notes.
-
 ## Build, lint, test
 
 Node 24, TypeScript, npm.
