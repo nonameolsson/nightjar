@@ -24,7 +24,8 @@ Node 24, TypeScript, npm.
 
 - `src/build.ts` is the build loop: one Feature from the Go to a draft pull request. It talks only to the `Tracker` (`src/tracker.ts`) and `CodeHost` (`src/code-host.ts`) interfaces, and speaks of Signals (`src/signals.ts`), never label names.
 - `src/github/` holds the GitHub adapters, the only code that calls `gh` (a lint rule holds this). `src/fakes/` holds the in-memory Tracker and Code host the build loop's specs run over, with a scripted session.
-- `src/config.ts` loads and validates `factory.json`; `src/adapters.ts` builds the adapters it names.
+- `src/config.ts` loads and validates `factory.json`; `src/adapters.ts` builds the adapters it names. `src/adapter-module.ts` loads a repo's own adapter from a `type: "module"` entry and refuses one that lacks an export or a method (`docs/custom-adapters.md`).
+- `src/contract/` is the Adapter contract suite; `run.ts` runs it without a test runner and `command.ts` is `nightjar contract MODULE` (the module exports `trackerHarness` and/or `codeHostHarness`).
 - `src/main.ts` is the command (`src/cli.ts` runs it); `src/queue.ts` picks the next Feature for `--once` and `--watch`.
 - Around the loop: `worktree.ts` (git in the Feature's worktree under `~/.nightjar/worktrees/`), `session.ts` (one headless `claude -p`), `settings.ts` (the agent's allow list from config, and the deny rules config cannot loosen), `check.ts` (the repo's check command), `prompt.ts`, `plan.ts` (Build order), and `ports.ts` (the lock scheme that reserves `ports` per run, held until the process ends), and `ledger.ts` and `status.ts` (`.factory/runs.jsonl` and `.factory/status.json` in the repo).
 - Specs sit beside their code as `*.spec.ts`. `src/cli.run.spec.ts` runs the real command end to end over stand-ins for `gh` and `claude`.

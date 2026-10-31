@@ -9,7 +9,9 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | --dry-run> [
   --dry-run      check this machine and list the Features it would build, building nothing
   --use-api-key  let the sessions bill ANTHROPIC_API_KEY instead of your Claude plan
   --model M      the model of every session, over a Ticket's own line and factory.json
-  --effort LEVEL the effort of every session, over a Ticket's own line and factory.json`;
+  --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
+
+       nightjar contract MODULE   check a module's own Tracker or Code host against the contract suites`;
 
 export interface Args {
 	readonly mode: 'watch' | 'once' | 'feature' | 'dry-run';

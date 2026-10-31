@@ -309,4 +309,42 @@ describe('nightjar --dry-run', () => {
 		expect(run.status).toBe(2);
 		expect(run.stderr).toContain(`nightjar: no factory.json in ${root}`);
 	}, 30_000);
+
+	it("reads the Features from the Tracker module factory.json names, resolved from the repo's root", () => {
+		const { root, nightjar } = world(true, {
+			tracker: { type: 'module', path: './tools/tracker.mjs', options: { who: 'zed' } }
+		});
+		mkdirSync(join(root, 'tools'));
+		writeFileSync(
+			join(root, 'tools', 'tracker.mjs'),
+			`export const createTracker = ({ options }) => ({
+	me: async () => options.who,
+	assignedFeatures: async (person) => [{ id: 7, title: 'Seen by ' + person, body: '' }],
+	feature: async () => { throw new Error('unused'); },
+	tickets: async () => [],
+	comments: async () => [],
+	addSignal: async () => {},
+	removeSignal: async () => {},
+	comment: async () => {},
+	reference: (id) => ({ id, text: '#' + id })
+});`
+		);
+		const run = nightjar(['--dry-run']);
+		expect(run.stderr).toBe('');
+		expect(run.stdout).toContain('./tools/tracker.mjs as zed');
+		expect(run.stdout).toContain('nightjar: would build #7 Seen by zed');
+		expect(run.status).toBe(0);
+	}, 30_000);
+
+	it('refuses to start when the Tracker module lacks what it must export, naming it', () => {
+		const { root, nightjar } = world(true, {
+			tracker: { type: 'module', path: './tracker.mjs' }
+		});
+		writeFileSync(join(root, 'tracker.mjs'), 'export const createTracker = () => ({ me() {} });');
+		const run = nightjar(['--dry-run']);
+		expect(run.status).toBe(2);
+		expect(run.stderr).toContain(
+			'nightjar: factory.json: tracker: createTracker in ./tracker.mjs returned a Tracker without these methods: assignedFeatures, feature,'
+		);
+	}, 30_000);
 });
