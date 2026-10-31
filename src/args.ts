@@ -1,20 +1,21 @@
 // The `nightjar` command's arguments.
 import type { Env } from './git.js';
 
-export const USAGE = `usage: nightjar <--watch | --once | FEATURE | --dry-run> [--use-api-key] [--model M] [--effort LEVEL]
+export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--use-api-key] [--model M] [--effort LEVEL]
 
   --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes
   --once         build the oldest Feature assigned to you with the Go, then exit
   FEATURE        build that Feature, by its number, now
-  --dry-run      check this machine and list the Features it would build, building nothing
+  doctor         check this machine and list the Features it would build, building nothing (--dry-run is the old name)
   --use-api-key  let the sessions bill ANTHROPIC_API_KEY instead of your Claude plan
   --model M      the model of every session, over a Ticket's own line and factory.json
   --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
 
+       nightjar init              ask for the Tracker and Code host, write factory.json, create the Signal labels, check the logins
        nightjar contract MODULE   check a module's own Tracker or Code host against the contract suites`;
 
 export interface Args {
-	readonly mode: 'watch' | 'once' | 'feature' | 'dry-run';
+	readonly mode: 'watch' | 'once' | 'feature' | 'doctor';
 	readonly feature?: number;
 	readonly useApiKey: boolean;
 	readonly model?: string;
@@ -30,7 +31,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 	let effort: string | undefined;
 	const pick = (m: Args['mode']) => {
 		if (chosen.mode !== null && chosen.mode !== m)
-			return 'choose one of --watch, --once, a Feature and --dry-run';
+			return 'choose one of --watch, --once, a Feature and doctor';
 		chosen.mode = m;
 		return null;
 	};
@@ -39,7 +40,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 		let fault: string | null = null;
 		if (a === '--watch') fault = pick('watch');
 		else if (a === '--once') fault = pick('once');
-		else if (a === '--dry-run') fault = pick('dry-run');
+		else if (a === 'doctor' || a === '--dry-run') fault = pick('doctor');
 		else if (a === '--use-api-key') useApiKey = true;
 		else if (a === '--model' || a === '--effort') {
 			const value = argv[i + 1];
@@ -67,4 +68,11 @@ export function parseArgs(argv: readonly string[]): Args | string {
 export function apiKeyProblem(env: Env, useApiKey: boolean): string | null {
 	if (useApiKey || !env.ANTHROPIC_API_KEY) return null;
 	return 'ANTHROPIC_API_KEY is set, so every session would bill it per token instead of your Claude plan. Unset it, or pass --use-api-key if that is what you want.';
+}
+
+// WSL2 reports linux, so only a native Windows process is stopped.
+export function platformProblem(platform: NodeJS.Platform): string | null {
+	return platform === 'win32'
+		? 'native Windows is not supported; Nightjar runs on macOS, Linux and WSL2.'
+		: null;
 }

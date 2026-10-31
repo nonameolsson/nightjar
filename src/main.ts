@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { makeAdapters, type Adapters } from './adapters.js';
-import { apiKeyProblem, parseArgs, USAGE, type Args } from './args.js';
+import { apiKeyProblem, parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
 import { runContractCommand } from './contract/command.js';
@@ -80,7 +80,20 @@ async function preflight(args: Args, env: Env): Promise<Ready> {
 	return { root, config, adapters, me, baseBranch, rules };
 }
 
-export async function runNightjar(argv: readonly string[]): Promise<number> {
+// What the command reads of the machine it runs on; a spec passes its own.
+export interface Host {
+	readonly platform: NodeJS.Platform;
+}
+
+export async function runNightjar(
+	argv: readonly string[],
+	host: Partial<Host> = {}
+): Promise<number> {
+	const unsupported = platformProblem(host.platform ?? process.platform);
+	if (unsupported !== null) {
+		console.error(`nightjar: ${unsupported}`);
+		return 2;
+	}
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
@@ -107,7 +120,7 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 	});
 	// the reserved ports are held until the process ends, whatever ends it
 	const claim =
-		args.mode === 'dry-run' || config.ports === undefined
+		args.mode === 'doctor' || config.ports === undefined
 			? null
 			: await claimPorts({ count: config.ports.count });
 	if (config.ports !== undefined && args.mode !== 'dry-run') {
@@ -173,7 +186,7 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 		signal: stop.signal
 	};
 
-	if (args.mode === 'dry-run') {
+	if (args.mode === 'doctor') {
 		await dryRun(queueDeps);
 		return 0;
 	}
