@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'vitest';
 import { run } from '../git.js';
 import {
+	DEFAULT_SIGNAL_NAMES,
 	GitHubCodeHost,
 	GitHubTracker,
 	codeHostContract,
@@ -16,16 +17,33 @@ import {
 } from '../index.js';
 import { FakeGitHub } from './fake-github.js';
 
-// the Go has a name of its own, as the contract asks of every Signal
-const NAMES: SignalNames = {
-	go: 'factory-go',
-	ready: 'ready-for-agent',
-	working: 'agent-working',
-	needsInfo: 'needs-info',
-	human: 'ready-for-human'
+// Signal names and a trusted list as a repo's factory.json may set them.
+const CONFIGURED: SignalNames = {
+	go: 'build-this',
+	ready: 'agent-may-build',
+	working: 'agent-on-it',
+	needsInfo: 'agent-asks',
+	human: 'for-a-person'
 };
 
-function gitHubTracker(world: TrackerWorld) {
+// The world's trust comes from write access by default, or from factory.json's trusted list,
+// which then wins over the write access every author is given.
+const gitHubTracker =
+	(names: SignalNames, trust: 'write access' | 'trusted list') => (world: TrackerWorld) => {
+		const { github, id } = gitHubWorld(world, names);
+		const list = trust === 'trusted list' ? world.trusted : undefined;
+		if (list) {
+			for (const item of world.items) {
+				for (const c of item.comments ?? []) github.grant(c.author, 'write');
+			}
+			github.grant(world.person, 'write');
+		} else {
+			for (const person of world.trusted) github.grant(person, 'write');
+		}
+		return Promise.resolve({ tracker: new GitHubTracker('o/r', github.gh, names, list), id });
+	};
+
+function gitHubWorld(world: TrackerWorld, names: SignalNames) {
 	const github = new FakeGitHub('o/r', world.person);
 	const numbers = new Map<string, number>();
 	const id = (key: string) => {
@@ -40,7 +58,7 @@ function gitHubTracker(world: TrackerWorld) {
 				title: item.title,
 				body: item.body ?? null,
 				state: item.open === false ? 'closed' : 'open',
-				labels: (item.signals ?? []).map((s) => NAMES[s]),
+				labels: (item.signals ?? []).map((s) => names[s]),
 				assignees: item.assignees ?? []
 			})
 		);
@@ -50,8 +68,7 @@ function gitHubTracker(world: TrackerWorld) {
 		for (const blocker of item.blockedBy ?? []) github.block(id(item.key), id(blocker));
 		for (const c of item.comments ?? []) github.say(id(item.key), c.author, c.body);
 	}
-	for (const person of world.trusted) github.grant(person, 'write');
-	return Promise.resolve({ tracker: new GitHubTracker('o/r', github.gh, NAMES), id });
+	return { github, id };
 }
 
 // GitHub links a pull request to each issue named after one of its closing keywords.
@@ -119,7 +136,15 @@ async function gitHubCodeHost() {
 }
 
 describe('GitHubTracker meets the Tracker contract', () => {
-	for (const c of trackerContract) it(c.name, () => c.run(gitHubTracker));
+	describe('with the default Signal names and write access as trust', () => {
+		const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
+		for (const c of trackerContract) it(c.name, () => c.run(harness));
+	});
+
+	describe("with factory.json's own Signal names and trusted list", () => {
+		const harness = gitHubTracker(CONFIGURED, 'trusted list');
+		for (const c of trackerContract) it(c.name, () => c.run(harness));
+	});
 });
 
 // real git on a busy machine is slow
