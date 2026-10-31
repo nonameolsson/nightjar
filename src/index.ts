@@ -12,8 +12,10 @@ export {
 	AzureBoardsTracker,
 	AzureDevOpsApi,
 	AzureDevOpsFailure,
+	AzureReposCodeHost,
 	openAzureDevOps,
 	type AzureBoardsSettings,
+	type AzureReposSettings,
 	type AzureDevOpsSignIn
 } from './azure-devops/index.js';
 export type { ContractCase } from './contract/case.js';

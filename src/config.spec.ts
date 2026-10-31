@@ -179,6 +179,44 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/^factory\.json: tracker\.organization: /m);
 	});
 
+	it('loads Azure Repos as the Code host, with its organization, project and repo', () => {
+		const codeHost = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam Fiber',
+			repo: 'Fiber App'
+		};
+		write({ ...VALID, codeHost });
+		expect(loadConfig(root).codeHost).toEqual(codeHost);
+	});
+
+	it.each([
+		['organization', 'codeHost.organization'],
+		['project', 'codeHost.project'],
+		['repo', 'codeHost.repo']
+	])('refuses an Azure Repos Code host with no %s, naming the field', (key, field) => {
+		const whole = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			repo: 'app'
+		};
+		const codeHost = Object.fromEntries(Object.entries(whole).filter(([k]) => k !== key));
+		write({ ...VALID, codeHost });
+		expect(refusal()).toMatch(new RegExp(`^factory\\.json: ${field}: missing: `, 'm'));
+	});
+
+	it('refuses an Azure Repos organization given as an address, not a name', () => {
+		const codeHost = {
+			type: 'azure-devops',
+			organization: 'dev.azure.com/contoso',
+			project: 'Fabrikam',
+			repo: 'app'
+		};
+		write({ ...VALID, codeHost });
+		expect(refusal()).toMatch(/^factory\.json: codeHost\.organization: /m);
+	});
+
 	it('refuses a code host repo that is not owner/name', () => {
 		write({ ...VALID, codeHost: { type: 'github', repo: 'just-a-name' } });
 		expect(refusal()).toMatch(/^factory\.json: codeHost\.repo: /m);

@@ -122,6 +122,45 @@
 					"properties": {
 						"type": {
 							"type": "string",
+							"const": "azure-devops"
+						},
+						"organization": {
+							"type": "string",
+							"allOf": [
+								{
+									"pattern": "\\S"
+								},
+								{
+									"pattern": "^[^/\\s:]+$"
+								}
+							],
+							"description": "The organization, as in dev.azure.com/<organization>"
+						},
+						"project": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The project that holds the repo"
+						},
+						"repo": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The Git repo on Azure Repos, by name"
+						}
+					},
+					"required": [
+						"type",
+						"organization",
+						"project",
+						"repo"
+					],
+					"additionalProperties": false,
+					"description": "Azure Repos: the branch is pushed to the repo and a draft pull request opened, signed in as for Azure DevOps Boards"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
 							"const": "module"
 						},
 						"path": {
