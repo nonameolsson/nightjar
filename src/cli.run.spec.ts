@@ -219,7 +219,7 @@ describe('nightjar FEATURE with factory.json settings', () => {
 
 	it('refuses to start when the rules file named cannot be read', () => {
 		const { nightjar } = world(true, { rules: 'missing.md' });
-		const run = nightjar(['--dry-run']);
+		const run = nightjar(['doctor']);
 		expect(run.status).toBe(2);
 		expect(run.stderr).toContain('factory.json: rules: cannot read missing.md');
 	}, 30_000);
@@ -266,18 +266,20 @@ describe('nightjar --once', () => {
 	it('builds the oldest Feature assigned to the person with the Go, then exits', () => {
 		const { nightjar } = world();
 		const run = nightjar(['--once']);
+		expect(run.stdout).toContain(
+			`nightjar: checked: no ANTHROPIC_API_KEY, Node ${process.versions.node}, factory.json, gh as ann on o/r, claude 2.1.314 (Claude Code), commits unsigned`
+		);
 		expect(run.stdout).toContain('nightjar: #1: draft pull request https://github.com/o/r/pull/9');
 		expect(run.status).toBe(0);
 	}, 30_000);
 });
 
-describe('nightjar --dry-run', () => {
+describe('nightjar doctor', () => {
 	it('names each check it passed, and what it would build', () => {
 		const { nightjar, calls } = world();
-		const run = nightjar(['--dry-run']);
-		expect(run.stdout).toContain(
-			`nightjar: checked: no ANTHROPIC_API_KEY, Node ${process.versions.node}, factory.json, gh as ann on o/r, claude 2.1.314 (Claude Code), commits unsigned`
-		);
+		const run = nightjar(['doctor']);
+		expect(run.stdout).toContain('  ok    Tracker: gh as ann on o/r');
+		expect(run.stdout).toContain('  ok    claude: 2.1.314 (Claude Code), signed in');
 		expect(run.stdout).toContain('nightjar: would build #1 One escape');
 		expect(run.status).toBe(0);
 		expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);
@@ -285,29 +287,29 @@ describe('nightjar --dry-run', () => {
 
 	it('looks for the Go under the name factory.json gives it', () => {
 		const { nightjar, calls } = world(true, { signals: { go: 'ship-it' } });
-		const run = nightjar(['--dry-run']);
+		const run = nightjar(['doctor']);
 		expect(run.status).toBe(0);
 		expect(calls()).toMatch(/repos\/o\/r\/issues\?[^\n]*labels=ship-it/);
 	}, 30_000);
 
 	it('looks for factory-go unless factory.json names the Go', () => {
 		const { nightjar, calls } = world();
-		nightjar(['--dry-run']);
+		nightjar(['doctor']);
 		expect(calls()).toMatch(/repos\/o\/r\/issues\?[^\n]*labels=factory-go/);
 	}, 30_000);
 
 	it('refuses a Signal named needs-triage, naming the field', () => {
 		const { nightjar } = world(true, { signals: { human: 'needs-triage' } });
-		const run = nightjar(['--dry-run']);
+		const run = nightjar(['doctor']);
 		expect(run.status).toBe(2);
 		expect(run.stderr).toContain('factory.json: signals.human: ');
 	}, 30_000);
 
 	it('refuses to start without a factory.json, and says why', () => {
 		const { root, nightjar } = world(false);
-		const run = nightjar(['--dry-run']);
+		const run = nightjar(['doctor']);
 		expect(run.status).toBe(2);
-		expect(run.stderr).toContain(`nightjar: no factory.json in ${root}`);
+		expect(run.stderr).toContain(`FAIL  factory.json: no factory.json in ${root}`);
 	}, 30_000);
 
 	it("reads the Features from the Tracker module factory.json names, resolved from the repo's root", () => {
@@ -329,7 +331,7 @@ describe('nightjar --dry-run', () => {
 	reference: (id) => ({ id, text: '#' + id })
 });`
 		);
-		const run = nightjar(['--dry-run']);
+		const run = nightjar(['doctor']);
 		expect(run.stderr).toBe('');
 		expect(run.stdout).toContain('./tools/tracker.mjs as zed');
 		expect(run.stdout).toContain('nightjar: would build #7 Seen by zed');
@@ -341,10 +343,10 @@ describe('nightjar --dry-run', () => {
 			tracker: { type: 'module', path: './tracker.mjs' }
 		});
 		writeFileSync(join(root, 'tracker.mjs'), 'export const createTracker = () => ({ me() {} });');
-		const run = nightjar(['--dry-run']);
+		const run = nightjar(['doctor']);
 		expect(run.status).toBe(2);
 		expect(run.stderr).toContain(
-			'nightjar: factory.json: tracker: createTracker in ./tracker.mjs returned a Tracker without these methods: assignedFeatures, feature,'
+			'FAIL  Tracker: tracker: createTracker in ./tracker.mjs returned a Tracker without these methods: assignedFeatures, feature,'
 		);
 	}, 30_000);
 });

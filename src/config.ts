@@ -240,7 +240,7 @@ export function loadConfig(root: string): Config {
 	try {
 		text = readFileSync(join(root, CONFIG_FILE), 'utf8');
 	} catch {
-		throw new ConfigError(`no ${CONFIG_FILE} in ${root}; write one that names the check command`);
+		throw new ConfigError(`no ${CONFIG_FILE} in ${root}; run \`nightjar init\` to write one`);
 	}
 	let value: unknown;
 	try {

@@ -27,7 +27,7 @@ case "$*" in
   "api user") echo '{"login":"ann"}' ;;
   "api repos/o/r/issues?"*) echo "[$issue]" ;;
   "api -X POST repos/o/r/labels "*)
-    name="${*#*-f name=}"; name="${name%% -f*}"
+    name="@{*#*-f name=}"; name="@{name%% -f*}"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then
       echo '{"message":"Validation Failed","errors":[{"code":"already_exists"}]}'
       echo "gh: Validation Failed (HTTP 422)" >&2; exit 1
@@ -35,7 +35,7 @@ case "$*" in
     if [ -n "$FAKE_GH_NO_LABELS" ]; then echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; fi
     echo '{}' ;;
   "api repos/o/r/labels/"*)
-    name="${*#api repos/o/r/labels/}"; name="${name//%20/ }"
+    name="@{*#api repos/o/r/labels/}"; name="@{name//%20/ }"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then echo '{}'; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
 esac`;
@@ -71,9 +71,10 @@ export interface Machine {
 	remove(): void;
 }
 
+// `@{` stands for a shell's own brace expansion, which a template literal cannot hold
 function script(dir: string, name: string, body: string) {
 	const path = join(dir, name);
-	writeFileSync(path, `${body}\n`);
+	writeFileSync(path, `${body.replaceAll('@{', '$' + '{')}\n`);
 	chmodSync(path, 0o755);
 }
 
@@ -106,7 +107,8 @@ export function machine(without: readonly Tool[] = []): Machine {
 	for (const calls of [env.FAKE_GH_CALLS, env.FAKE_AZ_CALLS, env.FAKE_CLAUDE_CALLS]) {
 		writeFileSync(calls ?? '', '');
 	}
-	const inRoot = (...args: string[]) => spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
+	const inRoot = (...args: string[]) =>
+		spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
 	inRoot('init', '-q', '-b', 'main');
 	inRoot('remote', 'add', 'origin', 'git@github.com:o/r.git');
 	const file = join(root, 'factory.json');

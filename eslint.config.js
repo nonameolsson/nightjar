@@ -22,9 +22,9 @@ export default defineConfig(
 		}
 	},
 	{
-		// only the GitHub adapters call gh (ticket N1); a spec may name its stand-in
+		// only the GitHub adapters call gh (ticket N1); a spec, or the stand-in machine, may name its stand-in
 		files: ['src/**/*.ts'],
-		ignores: ['src/github/**', 'src/**/*.spec.ts'],
+		ignores: ['src/github/**', 'src/**/*.spec.ts', 'src/fakes/machine.ts'],
 		rules: {
 			'no-restricted-syntax': [
 				'error',

@@ -15,7 +15,7 @@ import {
 import type { CodeHost } from './code-host.js';
 import { CONFIG_FILE, ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
-import { ghRunner, repoFromRemote } from './github/api.js';
+import { GitHubApi, ghRunner, repoFromRemote } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
 import { GitHubTracker } from './github/tracker.js';
 import {
@@ -137,7 +137,11 @@ export async function makeAdapters(
 	if (config.codeHost.type === 'github') {
 		const repo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
 		const codeHost = new GitHubCodeHost(repo, gh, git);
-		return { tracker, codeHost, repo, checked, reachCodeHost: () => Promise.resolve(), writer };
+		// the branch is pushed and the pull request opened as the person gh is signed in as
+		const reachCodeHost = async () => {
+			await new GitHubApi(repo, gh).call('read the signed-in user', ['user']);
+		};
+		return { tracker, codeHost, repo, checked, reachCodeHost, writer };
 	}
 
 	const { organization, project, repo } = config.codeHost;
