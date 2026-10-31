@@ -13,10 +13,23 @@ export interface NewIssue {
 	readonly assignees: readonly string[];
 }
 
+interface PullHead {
+	readonly head: string;
+	readonly base: string;
+	readonly draft: boolean;
+}
+
+// On GitHub a pull request is an issue too, numbered with the issues.
 interface Issue extends NewIssue {
 	readonly number: number;
 	readonly subIssues: readonly number[];
 	readonly blockedBy: readonly number[];
+	readonly pull?: PullHead;
+}
+
+export interface ShownPull extends PullHead {
+	readonly title: string;
+	readonly body: string;
 }
 
 interface IssueComment {
@@ -65,6 +78,20 @@ export class FakeGitHub {
 		this.permissions.set(login, permission);
 	}
 
+	// Pull request `number` as GitHub shows it.
+	pullAt(number: number): ShownPull {
+		const issue = this.issues.get(number);
+		if (issue?.pull === undefined) {
+			throw new Error(`the fake GitHub has no pull request #${String(number)}`);
+		}
+		return { ...issue.pull, title: issue.title, body: issue.body ?? '' };
+	}
+
+	// The bodies of the comments on issue or pull request `number`, oldest first.
+	said(number: number): string[] {
+		return (this.comments.get(number) ?? []).map((c) => c.body);
+	}
+
 	readonly gh: GhRunner = (args) => Promise.resolve(this.answer(readCall(args)));
 
 	private answer(call: GhCall): Run {
@@ -72,6 +99,16 @@ export class FakeGitHub {
 		const repo = `repos/${this.repo}`;
 		if (method === 'GET' && path === 'user') return ok({ login: this.person });
 		if (method === 'GET' && path === `${repo}/issues`) return ok(this.list(call.query));
+		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
+		if (method === 'POST' && path === `${repo}/pulls`) return this.openPull(call);
+		const pullNumber = new RegExp(`^${repo}/pulls/(\\d+)$`).exec(path);
+		const pull = pullNumber ? this.issues.get(Number(pullNumber[1])) : undefined;
+		if (pull?.pull !== undefined && method === 'GET') return ok(this.renderPull(pull));
+		if (pull?.pull !== undefined && method === 'PATCH') {
+			const body = call.fields.body;
+			if (typeof body === 'string') this.change(pull.number, () => ({ body }));
+			return ok(this.renderPull(this.get(pull.number)));
+		}
 		const asked = new RegExp(`^${repo}/collaborators/([^/]+)/permission$`).exec(path);
 		if (method === 'GET' && asked) {
 			return ok({ permission: this.permissions.get(decodeURIComponent(asked[1] ?? '')) ?? 'none' });
@@ -95,6 +132,61 @@ export class FakeGitHub {
 		if (method === 'DELETE' && label)
 			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
 		return NOT_FOUND;
+	}
+
+	// GitHub refuses a second open pull request for one head branch.
+	private openPull(call: GhCall): Run {
+		const field = (name: string) => {
+			const value = call.fields[name];
+			return typeof value === 'string' ? value : '';
+		};
+		const head = field('head');
+		const taken = [...this.issues.values()].some(
+			(i) => i.state === 'open' && i.pull?.head === head
+		);
+		if (taken) return failed(`gh: A pull request already exists for ${head}. (HTTP 422)`);
+		const number = this.issue({
+			title: field('title'),
+			body: field('body'),
+			state: 'open',
+			labels: [],
+			assignees: []
+		});
+		const pull = { head, base: field('base'), draft: field('draft') === 'true' };
+		this.change(number, () => ({ pull }));
+		return ok(this.renderPull(this.get(number)));
+	}
+
+	// GitHub's filters: state open by default, and head as owner:branch.
+	private pulls(query: URLSearchParams) {
+		const state = query.get('state') ?? 'open';
+		const head = query.get('head');
+		const owner = this.repo.split('/')[0] ?? '';
+		return [...this.issues.values()]
+			.filter(
+				(i) =>
+					i.pull !== undefined &&
+					(state === 'all' || i.state === state) &&
+					(head === null || head === `${owner}:${i.pull.head}`)
+			)
+			.map((i) => this.renderPull(i));
+	}
+
+	private renderPull(issue: Issue) {
+		return {
+			number: issue.number,
+			html_url: this.url(issue.number),
+			title: issue.title,
+			body: issue.body,
+			state: issue.state,
+			draft: issue.pull?.draft ?? false,
+			head: { ref: issue.pull?.head ?? '' },
+			base: { ref: issue.pull?.base ?? '' }
+		};
+	}
+
+	private url(number: number): string {
+		return `https://github.com/${this.repo}/pull/${String(number)}`;
 	}
 
 	private label(issue: Issue, call: GhCall): Run {
@@ -166,7 +258,8 @@ export class FakeGitHub {
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },
-			sub_issues_summary: { total: issue.subIssues.length }
+			sub_issues_summary: { total: issue.subIssues.length },
+			...(issue.pull ? { pull_request: { html_url: this.url(issue.number) } } : {})
 		};
 	}
 
@@ -174,9 +267,14 @@ export class FakeGitHub {
 		return [...this.comments.values()].reduce((n, list) => n + list.length, 0);
 	}
 
-	private change(number: number, over: (issue: Issue) => Partial<Issue>): void {
+	private get(number: number): Issue {
 		const issue = this.issues.get(number);
 		if (issue === undefined) throw new Error(`the fake GitHub has no issue #${String(number)}`);
+		return issue;
+	}
+
+	private change(number: number, over: (issue: Issue) => Partial<Issue>): void {
+		const issue = this.get(number);
 		this.issues.set(number, { ...issue, ...over(issue) });
 	}
 }

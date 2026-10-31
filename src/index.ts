@@ -16,3 +16,9 @@ export {
 	type WorldComment,
 	type WorldItem
 } from './contract/tracker.js';
+export {
+	codeHostContract,
+	type CodeHostHarness,
+	type CodeHostSubject,
+	type PullView
+} from './contract/code-host.js';

@@ -1,7 +1,19 @@
 // The GitHub adapters against the Adapter contract suites, over a fake GitHub behind `gh api`: no
 // spec here reaches the network.
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'vitest';
-import { GitHubTracker, trackerContract, type SignalNames, type TrackerWorld } from '../index.js';
+import { run } from '../git.js';
+import {
+	GitHubCodeHost,
+	GitHubTracker,
+	codeHostContract,
+	trackerContract,
+	type Pull,
+	type SignalNames,
+	type TrackerWorld
+} from '../index.js';
 import { FakeGitHub } from './fake-github.js';
 
 // the Go has a name of its own, as the contract asks of every Signal
@@ -42,6 +54,75 @@ function gitHubTracker(world: TrackerWorld) {
 	return Promise.resolve({ tracker: new GitHubTracker('o/r', github.gh, NAMES), id });
 }
 
+// GitHub links a pull request to each issue named after one of its closing keywords.
+const CLOSING = /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(\S+)\s*$/gim;
+
+// The branch is pushed by real git to a bare origin in a temporary folder; the pull requests live
+// in the fake GitHub.
+async function gitHubCodeHost() {
+	const base = await mkdtemp(join(tmpdir(), 'nightjar-contract-'));
+	const config = join(base, 'gitconfig');
+	await writeFile(config, '');
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: config,
+		GIT_CONFIG_NOSYSTEM: '1',
+		GIT_AUTHOR_NAME: 'Test',
+		GIT_AUTHOR_EMAIL: 'test@example.com',
+		GIT_COMMITTER_NAME: 'Test',
+		GIT_COMMITTER_EMAIL: 'test@example.com'
+	};
+	const git = async (args: readonly string[], cwd: string) => {
+		const got = await run('git', args, cwd, env);
+		if (!got.ok) throw new Error(`git ${args.join(' ')} failed: ${got.err}`);
+		return got.out.trim();
+	};
+	const origin = join(base, 'origin.git');
+	const folder = join(base, 'work');
+	await git(['init', '-q', '--bare', '-b', 'main', origin], base);
+	await git(['clone', '-q', origin, folder], base);
+	let made = 0;
+	const commit = async () => {
+		made += 1;
+		await writeFile(join(folder, `${String(made)}.txt`), 'a change\n');
+		await git(['add', '.'], folder);
+		await git(['commit', '-q', '-m', `change ${String(made)}`], folder);
+		return { folder, commit: await git(['rev-parse', 'HEAD'], folder) };
+	};
+	await commit();
+	await git(['push', '-q', 'origin', 'main'], folder);
+
+	const github = new FakeGitHub('o/r', 'ann');
+	return {
+		codeHost: new GitHubCodeHost('o/r', github.gh, (args, cwd) => run('git', args, cwd, env)),
+		base: 'main',
+		commit,
+		branch: async (name: string) => {
+			const got = await run(
+				'git',
+				['rev-parse', '--verify', '-q', `refs/heads/${name}`],
+				origin,
+				env
+			);
+			return got.ok ? got.out.trim() : null;
+		},
+		pull: (pull: Pull) => {
+			const shown = github.pullAt(pull.id);
+			return Promise.resolve({
+				...shown,
+				references: [...shown.body.matchAll(CLOSING)].map((m) => m[1] ?? ''),
+				comments: github.said(pull.id)
+			});
+		},
+		close: () => rm(base, { recursive: true, force: true })
+	};
+}
+
 describe('GitHubTracker meets the Tracker contract', () => {
 	for (const c of trackerContract) it(c.name, () => c.run(gitHubTracker));
+});
+
+// real git on a busy machine is slow
+describe('GitHubCodeHost meets the Code host contract', { timeout: 30_000 }, () => {
+	for (const c of codeHostContract) it(c.name, () => c.run(gitHubCodeHost));
 });
