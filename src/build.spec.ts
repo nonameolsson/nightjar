@@ -51,12 +51,13 @@ function makeWorld(): World {
 	};
 	const origin = join(base, 'origin.git');
 	const root = join(base, 'app');
-	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env });
-	execFileSync('git', ['clone', '-q', origin, root], { env });
+	const sh = (...args: string[]) => execFileSync('git', args, { env, stdio: 'pipe' });
+	sh('init', '-q', '--bare', '-b', 'main', origin);
+	sh('clone', '-q', origin, root);
 	writeFileSync(join(root, 'README.md'), 'hello\n');
-	execFileSync('git', ['-C', root, 'add', '.'], { env });
-	execFileSync('git', ['-C', root, 'commit', '-q', '-m', 'first'], { env });
-	execFileSync('git', ['-C', root, 'push', '-q', 'origin', 'main'], { env });
+	sh('-C', root, 'add', '.');
+	sh('-C', root, 'commit', '-q', '-m', 'first');
+	sh('-C', root, 'push', '-q', 'origin', 'main');
 
 	const tracker = new FakeTracker('ann', () => new Date(2026, 9, 30, 8));
 	// the Feature lists 3 first, but 3 waits for 2
