@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError, configJsonSchema, loadConfig } from './config.js';
+import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 
 let root: string;
 beforeEach(() => {
@@ -41,7 +42,8 @@ describe('loadConfig', () => {
 			tracker: { type: 'github' },
 			codeHost: { type: 'github', repo: 'o/r' },
 			check: 'make check',
-			allowedCommands: ['make test', 'make lint *']
+			allowedCommands: ['make test', 'make lint *'],
+			signals: DEFAULT_SIGNAL_NAMES
 		});
 	});
 
@@ -105,6 +107,60 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/no factory\.json/);
 		writeFileSync(join(root, 'factory.json'), '{"check":');
 		expect(refusal()).toMatch(/factory\.json is not JSON/);
+	});
+});
+
+describe('Signal names in factory.json', () => {
+	it('defaults to the names that match the triage roles, with a Go of its own', () => {
+		write(VALID);
+		expect(loadConfig(root).signals).toEqual({
+			go: 'factory-go',
+			ready: 'ready-for-agent',
+			working: 'agent-working',
+			needsInfo: 'needs-info',
+			human: 'ready-for-human'
+		});
+	});
+
+	it('renames one Signal and leaves the rest at their defaults', () => {
+		write({ ...VALID, signals: { working: 'bot-busy' } });
+		expect(loadConfig(root).signals).toEqual({ ...DEFAULT_SIGNAL_NAMES, working: 'bot-busy' });
+	});
+
+	it('lets the Go share the name of ready, which gives the one-label behaviour', () => {
+		write({ ...VALID, signals: { go: 'ready-for-agent' } });
+		const { signals } = loadConfig(root);
+		expect(signals.go).toBe('ready-for-agent');
+		expect(signals.ready).toBe('ready-for-agent');
+	});
+
+	it.each(['needs-triage', 'wontfix'])('refuses %s, which Nightjar never reads or sets', (name) => {
+		write({ ...VALID, signals: { human: name } });
+		expect(refusal()).toMatch(/^factory\.json: signals\.human: .*never reads or sets/m);
+	});
+
+	it('refuses an empty name and a Signal it does not know', () => {
+		write({ ...VALID, signals: { go: ' ' } });
+		expect(refusal()).toMatch(/^factory\.json: signals\.go: /m);
+		write({ ...VALID, signals: { stuck: 'stuck' } });
+		expect(refusal()).toMatch(/stuck/);
+	});
+});
+
+describe('the trusted list in factory.json', () => {
+	it('is left out unless the repo writes one, so the Tracker adapter default holds', () => {
+		write(VALID);
+		expect(loadConfig(root).trusted).toBeUndefined();
+	});
+
+	it('loads the logins it names', () => {
+		write({ ...VALID, trusted: ['ann', 'bob'] });
+		expect(loadConfig(root).trusted).toEqual(['ann', 'bob']);
+	});
+
+	it('refuses an empty login', () => {
+		write({ ...VALID, trusted: ['ann', ''] });
+		expect(refusal()).toMatch(/^factory\.json: trusted\.1: /m);
 	});
 });
 

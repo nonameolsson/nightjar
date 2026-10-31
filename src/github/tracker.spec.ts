@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FIXED_SIGNAL_NAMES } from '../signals.js';
+import { DEFAULT_SIGNAL_NAMES, type SignalNames } from '../signals.js';
 import { GitHubFailure } from './api.js';
 import { failed, fakeGh, ok, on } from './fake-gh.js';
 import { GitHubTracker } from './tracker.js';
@@ -22,8 +22,19 @@ const rawComment = (login: string, body: string, association = 'NONE') => ({
 	author_association: association
 });
 
-const tracker = (gh: ReturnType<typeof fakeGh>['gh']) =>
-	new GitHubTracker('o/r', gh, FIXED_SIGNAL_NAMES);
+const tracker = (
+	gh: ReturnType<typeof fakeGh>['gh'],
+	names: SignalNames = DEFAULT_SIGNAL_NAMES,
+	trusted?: readonly string[]
+) => new GitHubTracker('o/r', gh, names, trusted);
+
+const MINE: SignalNames = {
+	go: 'ship-it',
+	ready: 'queued',
+	working: 'bot-busy',
+	needsInfo: 'bot-asks',
+	human: 'over-to-you'
+};
 
 describe('GitHubTracker', () => {
 	it('names the signed-in person', async () => {
@@ -47,7 +58,7 @@ describe('GitHubTracker', () => {
 		expect(features).toEqual([{ id: 1, title: 'Issue 1', body: 'the body' }]);
 		expect(Object.fromEntries(calls[0]?.query ?? [])).toMatchObject({
 			assignee: 'ann',
-			labels: FIXED_SIGNAL_NAMES.go,
+			labels: DEFAULT_SIGNAL_NAMES.go,
 			state: 'open',
 			sort: 'created',
 			direction: 'asc'
@@ -93,7 +104,7 @@ describe('GitHubTracker', () => {
 				title: 'Issue 2',
 				body: 'the body',
 				open: false,
-				signals: ['go', 'ready'],
+				signals: ['ready'],
 				blockedBy: []
 			}
 		]);
@@ -188,5 +199,106 @@ describe('GitHubTracker', () => {
 		await expect(tracker(gh).feature(1)).rejects.toThrow(
 			new GitHubFailure('gh could not read issue #1: HTTP 401: Bad credentials')
 		);
+	});
+
+	describe('Signal names from config', () => {
+		it('lists the Features that carry the Go under its configured name', async () => {
+			const { gh, calls } = fakeGh(on('GET', 'repos/o/r/issues', ok([])));
+			await tracker(gh, MINE).assignedFeatures('ann');
+			expect(calls[0]?.query.get('labels')).toBe('ship-it');
+		});
+
+		it('reads each Signal from the label of its configured name', async () => {
+			const labels = ['ship-it', 'queued', 'bot-busy', 'bot-asks', 'over-to-you'];
+			const { gh } = fakeGh(
+				on(
+					'GET',
+					'repos/o/r/issues/1/sub_issues',
+					ok([
+						rawIssue(2, { labels: labels.map((name) => ({ name })) }),
+						rawIssue(3, { labels: [{ name: 'ready-for-agent' }, { name: 'agent-working' }] })
+					])
+				),
+				on('GET', 'repos/o/r/issues/2/dependencies/blocked_by', ok([])),
+				on('GET', 'repos/o/r/issues/3/dependencies/blocked_by', ok([]))
+			);
+			const found = await tracker(gh, MINE).tickets(1);
+			expect(found.map((t) => t.signals)).toEqual([
+				['go', 'ready', 'working', 'needsInfo', 'human'],
+				[]
+			]);
+		});
+
+		it('adds and removes a Signal under its configured name', async () => {
+			const { gh, calls } = fakeGh(on('POST', 'repos/o/r/issues/7/labels', ok([])));
+			const t = tracker(gh, MINE);
+			await t.addSignal(7, 'needsInfo');
+			await t.removeSignal(7, 'go');
+			expect(calls.map((c) => [c.method, c.path, c.fields])).toEqual([
+				['POST', 'repos/o/r/issues/7/labels', { 'labels[]': ['bot-asks'] }],
+				['DELETE', 'repos/o/r/issues/7/labels/ship-it', {}]
+			]);
+		});
+
+		it('with the Go named as ready, one label is both, as before the Go had a mark of its own', async () => {
+			const one = { ...DEFAULT_SIGNAL_NAMES, go: 'ready-for-agent' };
+			const { gh, calls } = fakeGh(
+				on('GET', 'repos/o/r/issues', ok([rawIssue(1, { sub_issues_summary: { total: 1 } })]))
+			);
+			const features = await tracker(gh, one).assignedFeatures('ann');
+			expect(features.map((f) => f.id)).toEqual([1]);
+			expect(calls[0]?.query.get('labels')).toBe('ready-for-agent');
+		});
+
+		it('never reads needs-triage or wontfix, and never sets them', async () => {
+			const { gh, calls } = fakeGh(
+				on(
+					'GET',
+					'repos/o/r/issues/1/sub_issues',
+					ok([rawIssue(2, { labels: [{ name: 'needs-triage' }, { name: 'wontfix' }] })])
+				),
+				on('GET', 'repos/o/r/issues/2/dependencies/blocked_by', ok([])),
+				on('GET', 'repos/o/r/issues', ok([])),
+				on('POST', 'repos/o/r/issues/2/labels', ok([]))
+			);
+			const t = tracker(gh);
+			const [ticket] = await t.tickets(1);
+			expect(ticket?.signals).toEqual([]);
+			await t.assignedFeatures('ann');
+			for (const signal of ['go', 'ready', 'working', 'needsInfo', 'human'] as const) {
+				await t.addSignal(2, signal);
+				await t.removeSignal(2, signal);
+			}
+			expect(JSON.stringify(calls)).not.toMatch(/needs-triage|wontfix/);
+		});
+	});
+
+	describe('a trusted list', () => {
+		const comments = ok([
+			rawComment('Ann', 'a'),
+			rawComment('bob', 'b', 'OWNER'),
+			rawComment('eve', 'c', 'MEMBER')
+		]);
+
+		it('replaces write access: only the logins it names are trusted, whatever their permission', async () => {
+			const { gh, calls } = fakeGh(
+				on('GET', 'repos/o/r/issues/5/comments', comments),
+				on('GET', 'repos/o/r/collaborators/bob/permission', ok({ permission: 'admin' }))
+			);
+			const got = await tracker(gh, DEFAULT_SIGNAL_NAMES, ['eve', 'ann']).comments(5);
+			// GitHub logins are case-insensitive
+			expect(got.map((c) => [c.author, c.trusted])).toEqual([
+				['Ann', true],
+				['bob', false],
+				['eve', true]
+			]);
+			expect(calls.filter((c) => c.path.endsWith('/permission'))).toEqual([]);
+		});
+
+		it('trusts nobody when it is empty', async () => {
+			const { gh } = fakeGh(on('GET', 'repos/o/r/issues/5/comments', comments));
+			const got = await tracker(gh, DEFAULT_SIGNAL_NAMES, []).comments(5);
+			expect(got.map((c) => c.trusted)).toEqual([false, false, false]);
+		});
 	});
 });
