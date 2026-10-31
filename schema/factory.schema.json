@@ -31,6 +31,45 @@
 					"properties": {
 						"type": {
 							"type": "string",
+							"const": "azure-devops"
+						},
+						"organization": {
+							"type": "string",
+							"allOf": [
+								{
+									"pattern": "\\S"
+								},
+								{
+									"pattern": "^[^/\\s:]+$"
+								}
+							],
+							"description": "The organization, as in dev.azure.com/<organization>"
+						},
+						"project": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The project that holds the Features"
+						},
+						"featureType": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The work item type that plays the Feature, such as Feature, Epic or Product Backlog Item"
+						}
+					},
+					"required": [
+						"type",
+						"organization",
+						"project",
+						"featureType"
+					],
+					"additionalProperties": false,
+					"description": "Azure DevOps Boards: a Feature is a work item of featureType, its child work items its Tickets"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
 							"const": "module"
 						},
 						"path": {
@@ -159,7 +198,7 @@
 			"additionalProperties": false
 		},
 		"signals": {
-			"description": "The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.",
+			"description": "The name each Signal has on a Tracker: a label on GitHub, a tag on Azure DevOps. Leave out the ones you do not rename. needs-triage and wontfix are refused.",
 			"default": {},
 			"type": "object",
 			"properties": {
@@ -197,7 +236,7 @@
 			"additionalProperties": false
 		},
 		"trusted": {
-			"description": "The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.",
+			"description": "The logins whose comments reach the agent (on Azure DevOps, sign-in names such as ann@contoso.com). When set, it replaces the Tracker default (GitHub: write access; Azure DevOps: the project's Contributors group); leave it out to keep the default.",
 			"type": "array",
 			"items": {
 				"type": "string",

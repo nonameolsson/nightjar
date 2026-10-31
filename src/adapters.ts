@@ -1,5 +1,6 @@
 // The Tracker and Code host factory.json names, built over this machine's gh and git.
 import { codeHostFromModule, trackerFromModule } from './adapter-module.js';
+import { AzureBoardsTracker, openAzureDevOps } from './azure-devops/index.js';
 import type { CodeHost } from './code-host.js';
 import { ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
@@ -45,6 +46,11 @@ export async function makeAdapters(config: Config, root: string, env: Env): Prom
 		const { path } = config.tracker;
 		tracker = await trackerFromModule(config.tracker, context);
 		checked = (person) => `${path} as ${person}`;
+	} else if (config.tracker.type === 'azure-devops') {
+		const { organization, project } = config.tracker;
+		const api = openAzureDevOps(organization, root, env);
+		tracker = new AzureBoardsTracker(api, config.tracker, config.signals, config.trusted);
+		checked = (person) => `Azure DevOps as ${person} on ${organization}/${project}`;
 	} else {
 		const trackerRepo = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
 		tracker = new GitHubTracker(trackerRepo, gh, config.signals, config.trusted);

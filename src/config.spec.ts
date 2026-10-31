@@ -141,6 +141,44 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/^factory\.json: tracker\.type: /m);
 	});
 
+	it('loads Azure DevOps Boards as the Tracker, with its organization, project and Feature type', () => {
+		const tracker = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam Fiber',
+			featureType: 'Product Backlog Item'
+		};
+		write({ ...VALID, tracker });
+		expect(loadConfig(root).tracker).toEqual(tracker);
+	});
+
+	it.each([
+		['organization', 'tracker.organization'],
+		['project', 'tracker.project'],
+		['featureType', 'tracker.featureType']
+	])('refuses an Azure DevOps Tracker with no %s, naming the field', (key, field) => {
+		const whole = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		const tracker = Object.fromEntries(Object.entries(whole).filter(([k]) => k !== key));
+		write({ ...VALID, tracker });
+		expect(refusal()).toMatch(new RegExp(`^factory\\.json: ${field}: missing: `, 'm'));
+	});
+
+	it('refuses an Azure DevOps organization given as an address, not a name', () => {
+		const tracker = {
+			type: 'azure-devops',
+			organization: 'https://dev.azure.com/contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		write({ ...VALID, tracker });
+		expect(refusal()).toMatch(/^factory\.json: tracker\.organization: /m);
+	});
+
 	it('refuses a code host repo that is not owner/name', () => {
 		write({ ...VALID, codeHost: { type: 'github', repo: 'just-a-name' } });
 		expect(refusal()).toMatch(/^factory\.json: codeHost\.repo: /m);
