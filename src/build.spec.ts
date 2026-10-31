@@ -388,6 +388,23 @@ describe('buildFeature', () => {
 		expect(world.tracker.signalsOf(1)).toEqual(['go']);
 	});
 
+	it("runs each build on the Ticket's own Model and Effort lines, else on --model and --effort", async () => {
+		const world = makeWorld();
+		world.tracker.add({
+			id: 2,
+			title: 'Share the function',
+			signals: ['ready'],
+			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
+		});
+		const flags = { model: 'sonnet', effort: 'high', allowApiKey: true };
+		await buildFeature(deps(world), setup(world, flags), 1);
+		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(builds.map((s) => [s.model, s.effort, s.allowApiKey])).toEqual([
+			['opus', 'xhigh', true],
+			['sonnet', 'high', true]
+		]);
+	});
+
 	it('passes on only Trusted comments', async () => {
 		const world = makeWorld();
 		world.tracker.say(2, { author: 'ann', body: 'Keep it small.', trusted: true });
