@@ -25,6 +25,34 @@
 					],
 					"additionalProperties": false,
 					"description": "GitHub Issues: a Feature is an issue with sub-issues, its Tickets"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "module"
+						},
+						"path": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The module that builds the Tracker, as a path from the repo's root"
+						},
+						"options": {
+							"description": "Handed to the module as it is, for its own settings",
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {}
+						}
+					},
+					"required": [
+						"type",
+						"path"
+					],
+					"additionalProperties": false,
+					"description": "A Tracker of the repo's own, built by a module"
 				}
 			],
 			"description": "Where the Features and Tickets live"
@@ -49,6 +77,34 @@
 					],
 					"additionalProperties": false,
 					"description": "GitHub: the branch is pushed to origin and a draft pull request opened"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "module"
+						},
+						"path": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The module that builds the Code host, as a path from the repo's root"
+						},
+						"options": {
+							"description": "Handed to the module as it is, for its own settings",
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {}
+						}
+					},
+					"required": [
+						"type",
+						"path"
+					],
+					"additionalProperties": false,
+					"description": "A Code host of the repo's own, built by a module"
 				}
 			],
 			"description": "Where the branch is pushed and the draft pull request opened"

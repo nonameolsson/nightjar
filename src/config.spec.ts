@@ -77,6 +77,24 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/off/);
 	});
 
+	it('loads a Tracker and a Code host named as a module path, with their options', () => {
+		const modules = {
+			tracker: { type: 'module', path: './adapters/tracker.js', options: { project: 'x' } },
+			codeHost: { type: 'module', path: './adapters/host.js' }
+		};
+		write({ ...VALID, ...modules });
+		expect(loadConfig(root)).toMatchObject(modules);
+	});
+
+	it.each([
+		['no path', { type: 'module' }, 'tracker.path'],
+		['an empty path', { type: 'module', path: ' ' }, 'tracker.path'],
+		['a field it does not know', { type: 'module', path: './t.js', repo: 'o/r' }, 'tracker']
+	])('refuses a module Tracker with %s, naming the field', (_what, tracker, field) => {
+		write({ ...VALID, tracker });
+		expect(refusal()).toContain(`factory.json: ${field}`);
+	});
+
 	it('refuses a file with no check command, and never supplies one', () => {
 		write(without('check'));
 		expect(refusal()).toMatch(/^factory\.json: check: missing/m);

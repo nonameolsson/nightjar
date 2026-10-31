@@ -81,8 +81,8 @@ A full one:
 
 | Key               | Required | What it does                                                                                                                                                                                                       |
 | ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out.                                                                       |
-| `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above.                                                                                                         |
+| `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
+| `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or a `module`, as for `tracker`.                                                                         |
 | `check`           | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
 | `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list. The list may be empty. |
 | `signals`         | no       | The name each Signal has on the Tracker (a label on GitHub). Leave out the ones you do not rename. Defaults are shown above. `needs-triage` and `wontfix` are refused: Nightjar never reads or sets them.          |
@@ -96,6 +96,23 @@ A full one:
 Model and effort are chosen, strongest first: the `--model` / `--effort` option, the Ticket's own `**Model:**` / `**Effort:**` line, then `factory.json`.
 
 The JSON Schema for editor completion is at `schema/factory.schema.json` in the package.
+
+## Another Tracker or Code host
+
+Name your own Adapter in `factory.json` as a module, resolved from the repo's root, and check it before a build:
+
+```json
+{
+	"tracker": { "type": "module", "path": "./tools/my-tracker.js" },
+	"codeHost": { "type": "github" }
+}
+```
+
+```bash
+npx nightjar contract ./tools/my-tracker.contract.js
+```
+
+`nightjar contract` runs the same contract suite the built-in Adapters meet over the harnesses a module exports, prints every behaviour, names each one that fails, and exits 1 if any does. Nightjar refuses to start when a named module cannot be loaded or lacks a method of the interface. [docs/custom-adapters.md](docs/custom-adapters.md) has a minimal module and a test harness.
 
 ## Give the Go
 
@@ -167,7 +184,7 @@ A Ticket still unclear after its question rounds goes to a person.
 Also:
 
 - Claude Code is the only Coding agent.
-- GitHub Issues and GitHub are the only Tracker and Code host.
+- GitHub Issues and GitHub are the only Tracker and Code host built in; others are [custom Adapter modules](#another-tracker-or-code-host).
 - The agent never commits, pushes, switches branches, reaches the network, or runs `gh`. Nightjar does that, and `factory.json` cannot loosen it.
 - One run builds one Feature at a time.
 
@@ -178,7 +195,6 @@ Planned, not built yet:
 - `nightjar init`: asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins.
 - `nightjar doctor`: re-runs those checks at any time (today's `--dry-run`).
 - Azure DevOps Boards as a Tracker and Azure Repos as a Code host.
-- Custom Adapter modules named in `factory.json`, with a contract test suite to check them.
 - A skill that writes a Feature and its Tickets through the configured Tracker.
 - Publishing to npm.
 

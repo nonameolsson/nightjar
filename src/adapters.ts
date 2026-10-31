@@ -1,4 +1,5 @@
 // The Tracker and Code host factory.json names, built over this machine's gh and git.
+import { codeHostFromModule, trackerFromModule } from './adapter-module.js';
 import type { CodeHost } from './code-host.js';
 import { ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
@@ -33,12 +34,30 @@ export async function makeAdapters(config: Config, root: string, env: Env): Prom
 	const gh = ghRunner(root, env);
 	const git = (args: readonly string[], cwd: string) => run('git', args, cwd, env);
 
-	const trackerRepo = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
-	const hostRepo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
-	return {
-		tracker: new GitHubTracker(trackerRepo, gh, config.signals, config.trusted),
-		codeHost: new GitHubCodeHost(hostRepo, gh, git),
-		repo: hostRepo,
-		checked: (person) => `gh as ${person} on ${trackerRepo}`
+	const context = {
+		root,
+		signals: config.signals,
+		...(config.trusted === undefined ? {} : { trusted: config.trusted })
 	};
+	let tracker: Tracker;
+	let checked: (person: string) => string;
+	if (config.tracker.type === 'module') {
+		const { path } = config.tracker;
+		tracker = await trackerFromModule(config.tracker, context);
+		checked = (person) => `${path} as ${person}`;
+	} else {
+		const trackerRepo = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
+		tracker = new GitHubTracker(trackerRepo, gh, config.signals, config.trusted);
+		checked = (person) => `gh as ${person} on ${trackerRepo}`;
+	}
+	let codeHost: CodeHost;
+	let repo: string;
+	if (config.codeHost.type === 'module') {
+		codeHost = await codeHostFromModule(config.codeHost, context);
+		repo = config.codeHost.path;
+	} else {
+		repo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
+		codeHost = new GitHubCodeHost(repo, gh, git);
+	}
+	return { tracker, codeHost, repo, checked };
 }
