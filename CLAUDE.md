@@ -12,6 +12,25 @@ Nothing in Nightjar may assume a language or toolchain of the repo it builds.
 
 No source, build system or tests yet. Update this file once code lands: add build/lint/test commands (incl. single-test invocation) and architecture notes.
 
+## Build, lint, test
+
+Node 24, TypeScript, npm.
+
+- `npm run check`: typecheck, lint, format check, every spec, then the build. Run it before a commit.
+- `npm test`: every spec (Vitest). One file: `npx vitest run src/build.spec.ts`; one test: `npx vitest run src/build.spec.ts -t 'hands back a Ticket'`.
+- `npm run build`: compiles `src/` to `dist/`; `dist/cli.js` is the `nightjar` bin.
+- `npm run lint`, `npm run format`, `npm run typecheck`.
+- `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
+
+## Architecture
+
+- `src/build.ts` is the build loop: one Feature from the Go to a draft pull request. It talks only to the `Tracker` (`src/tracker.ts`) and `CodeHost` (`src/code-host.ts`) interfaces, and speaks of Signals (`src/signals.ts`), never label names.
+- `src/github/` holds the GitHub adapters, the only code that calls `gh` (a lint rule holds this). `src/fakes/` holds the in-memory Tracker and Code host the build loop's specs run over, with a scripted session.
+- `src/config.ts` loads and validates `factory.json`; `src/adapters.ts` builds the adapters it names.
+- `src/main.ts` is the command (`src/cli.ts` runs it); `src/queue.ts` picks the next Feature for `--once` and `--watch`.
+- Around the loop: `worktree.ts` (git in the Feature's worktree under `~/.nightjar/worktrees/`), `session.ts` (one headless `claude -p`), `settings.ts` (the agent's allow list from config, and the deny rules config cannot loosen), `check.ts` (the repo's check command), `prompt.ts`, `plan.ts` (Build order), and `ledger.ts` and `status.ts` (`.factory/runs.jsonl` and `.factory/status.json` in the repo).
+- Specs sit beside their code as `*.spec.ts`. `src/cli.run.spec.ts` runs the real command end to end over stand-ins for `gh` and `claude`.
+
 ## Agent skills
 
 ### Issue tracker
