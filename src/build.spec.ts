@@ -432,6 +432,40 @@ describe('buildFeature', () => {
 		]);
 	});
 
+	it('runs the review on its own Model and Effort, else the flags, else the defaults', async () => {
+		const own = makeWorld();
+		const review = { enabled: true, model: 'opus', effort: 'max' };
+		await buildFeature(deps(own), setup(own, { defaults: { model: 'haiku' }, review }), 1);
+		const ownReview = own.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([ownReview?.model, ownReview?.effort]).toEqual(['opus', 'max']);
+	});
+
+	it('runs the review on --model and --effort over its own', async () => {
+		const world = makeWorld();
+		const review = { model: 'opus', effort: 'max' };
+		await buildFeature(deps(world), setup(world, { model: 'sonnet', effort: 'high', review }), 1);
+		const got = world.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([got?.model, got?.effort]).toEqual(['sonnet', 'high']);
+	});
+
+	it('runs the review on the defaults when it has no Model or Effort of its own', async () => {
+		const inherited = makeWorld();
+		await buildFeature(deps(inherited), setup(inherited, { defaults: { model: 'haiku' } }), 1);
+		const inheritedReview = inherited.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([inheritedReview?.model, inheritedReview?.effort]).toEqual(['haiku', undefined]);
+	});
+
+	it('skips the review when factory.json switches it off, and says nothing of one', async () => {
+		const world = makeWorld();
+		const got = await buildFeature(deps(world), setup(world, { review: { enabled: false } }), 1);
+		expect(got).toMatchObject({ kind: 'pull', built: [2, 3] });
+		expect(world.sessions.some((s) => s.schema === REVIEW_SCHEMA)).toBe(false);
+		expect(world.host.pulls[0]?.body).not.toContain('## Review');
+		expect(world.host.pulls[0]?.comments).toEqual([]);
+		const ledger = readFileSync(ledgerPath(world.root), 'utf8').trim().split('\n');
+		expect(ledger.map((l) => (JSON.parse(l) as { step: string }).step)).toEqual(['build', 'build']);
+	});
+
 	it('passes on only Trusted comments', async () => {
 		const world = makeWorld();
 		world.tracker.say(2, { author: 'ann', body: 'Keep it small.', trusted: true });

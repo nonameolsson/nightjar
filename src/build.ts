@@ -76,6 +76,12 @@ export interface Setup {
 	readonly effort?: string;
 	// factory.json's model and effort: what a Ticket without its own lines runs on
 	readonly defaults?: { readonly model?: string; readonly effort?: string };
+	// factory.json's review settings; the review is on when it says nothing
+	readonly review?: {
+		readonly enabled?: boolean;
+		readonly model?: string;
+		readonly effort?: string;
+	};
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
 }
@@ -430,9 +436,12 @@ class FeatureRun {
 		const red =
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? 0, tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
-		const review = await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
-			this.log(e)
-		);
+		const review =
+			this.setup.review?.enabled === false
+				? 'off'
+				: await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
+						this.log(e)
+					);
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
 		const body = pullBody({
@@ -453,7 +462,7 @@ class FeatureRun {
 			pull,
 			linked.map((n) => tracker.reference(n))
 		);
-		if (review) await codeHost.comment(pull, reviewComment(review));
+		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
 		this.deps.status.happened({ kind: 'pull', feature: id, url: pull.url });
 		if (!paused && (left.length > 0 || red)) {
@@ -525,6 +534,8 @@ async function reviewFeature(
 		settings: reviewSettings(),
 		budgetUsd: setup.limits.reviewUsd,
 		minutes: setup.limits.reviewMinutes,
+		model: setup.model ?? setup.review?.model ?? setup.defaults?.model,
+		effort: setup.effort ?? setup.review?.effort ?? setup.defaults?.effort,
 		sessionId,
 		log: join(logsPath(setup.root), `${sessionId}.jsonl`),
 		allowApiKey: setup.allowApiKey,
@@ -560,7 +571,7 @@ function pullBody(p: {
 	done: readonly Ticket[];
 	left: readonly Waiting[];
 	red: { ticket: number; tail: string } | null;
-	review: Review | null;
+	review: Review | 'off' | null;
 	spent: number;
 	paused: string | null;
 }): string {
@@ -579,9 +590,10 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
-	parts.push(
-		`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
-	);
+	if (p.review !== 'off')
+		parts.push(
+			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
+		);
 	parts.push(`Estimated cost of this run: ${dollars(p.spent)}.`);
 	return `${parts.join('\n\n')}${FOOTER}`;
 }
