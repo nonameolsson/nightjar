@@ -6,11 +6,14 @@ export type Signal = (typeof SIGNALS)[number];
 
 export type SignalNames = Readonly<Record<Signal, string>>;
 
-// The names until factory.json can set them; the Go shares its name with ready for now.
-export const FIXED_SIGNAL_NAMES: SignalNames = {
-	go: 'ready-for-agent',
+// The names factory.json leaves unset: the Go has a mark of its own; the rest match the triage roles.
+export const DEFAULT_SIGNAL_NAMES: SignalNames = {
+	go: 'factory-go',
 	ready: 'ready-for-agent',
 	working: 'agent-working',
 	needsInfo: 'needs-info',
 	human: 'ready-for-human'
 };
+
+// Triage roles of someone else's process: Nightjar never reads or sets them, so no Signal may take one.
+export const RESERVED_NAMES = ['needs-triage', 'wontfix'] as const;

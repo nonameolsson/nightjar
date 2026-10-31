@@ -5,7 +5,6 @@ import { run, type Env } from './git.js';
 import { ghRunner, repoFromRemote } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
 import { GitHubTracker } from './github/tracker.js';
-import { FIXED_SIGNAL_NAMES } from './signals.js';
 import type { Tracker } from './tracker.js';
 
 export interface Adapters {
@@ -37,7 +36,7 @@ export async function makeAdapters(config: Config, root: string, env: Env): Prom
 	const trackerRepo = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
 	const hostRepo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
 	return {
-		tracker: new GitHubTracker(trackerRepo, gh, FIXED_SIGNAL_NAMES),
+		tracker: new GitHubTracker(trackerRepo, gh, config.signals, config.trusted),
 		codeHost: new GitHubCodeHost(hostRepo, gh, git),
 		repo: hostRepo,
 		checked: (person) => `gh as ${person} on ${trackerRepo}`
