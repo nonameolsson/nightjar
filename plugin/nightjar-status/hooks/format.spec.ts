@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Status } from '../../../src/status-shape.js';
-import { StatusBoard } from '../../../src/status.js';
+import { StatusFile } from '../../../src/status.js';
 import { line, toast } from './format';
 
 const NOW = new Date(2026, 9, 31, 10, 30).getTime();
@@ -107,15 +107,15 @@ describe('the file the writer makes', () => {
 	it('is read by the plugin into its line and toasts', () => {
 		const path = join(dir, '.factory', 'status.json');
 		const now = new Date(NOW);
-		const board = new StatusBoard({
+		const file = new StatusFile({
 			path,
 			ledger: join(dir, 'runs.jsonl'),
 			now: () => now,
 			pid: 7,
 			dailyUsd: 60
 		});
-		board.happened({ kind: 'built', feature: '5', ticket: '6' });
-		board.doing({
+		file.happened({ kind: 'built', feature: '5', ticket: '6' });
+		file.doing({
 			kind: 'building',
 			feature: '5',
 			ticket: '7',

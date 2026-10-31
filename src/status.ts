@@ -31,7 +31,7 @@ export function readStatus(path: string): Status | null {
 	}
 }
 
-export class StatusBoard implements StatusReport {
+export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
 	private recent: Event[];
 

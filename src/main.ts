@@ -18,7 +18,7 @@ import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
 import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
-import { StatusBoard, statusPath } from './status.js';
+import { StatusFile, statusPath } from './status.js';
 import { worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
 
@@ -112,7 +112,7 @@ export async function runNightjar(
 	}
 	const { root, config, adapters } = ready;
 
-	const status = new StatusBoard({
+	const status = new StatusFile({
 		path: statusPath(root),
 		ledger: ledgerPath(root),
 		now: () => new Date(),
