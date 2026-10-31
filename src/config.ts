@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { DEFAULT_SIGNAL_NAMES, RESERVED_NAMES, type SignalNames } from './signals.js';
 
 export class ConfigError extends Error {}
 
@@ -27,6 +28,33 @@ const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
 
 const missingOr = (what: string) => (issue: { input: unknown }) =>
 	issue.input === undefined ? `missing: ${what}` : undefined;
+
+const signalName = (fallback: string, what: string) =>
+	z
+		.string()
+		.regex(/\S/, 'a Signal name is empty')
+		.refine((name) => !(RESERVED_NAMES as readonly string[]).includes(name.trim().toLowerCase()), {
+			error: 'this is a triage role; Nightjar never reads or sets it'
+		})
+		.default(fallback)
+		.meta({ description: what });
+
+const Signals = z
+	.strictObject({
+		go: signalName(
+			DEFAULT_SIGNAL_NAMES.go,
+			'The Go: put on a Feature assigned to you to have it built. Give it the name of ready to use one mark for both'
+		),
+		ready: signalName(DEFAULT_SIGNAL_NAMES.ready, 'A Ticket that is ready to be built'),
+		working: signalName(DEFAULT_SIGNAL_NAMES.working, 'Nightjar is working on it'),
+		needsInfo: signalName(DEFAULT_SIGNAL_NAMES.needsInfo, 'Nightjar needs an answer to go on'),
+		human: signalName(DEFAULT_SIGNAL_NAMES.human, 'A person has to take it from here')
+	})
+	.prefault({})
+	.meta({
+		description:
+			'The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
+	});
 
 export const ConfigSchema = z
 	.strictObject({
@@ -81,11 +109,18 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					'The read-only review of the whole diff, run before the draft pull request opens'
-			})
+			}),
+		signals: Signals,
+		trusted: z.array(z.string().regex(/\S/, 'a trusted login is empty')).optional().meta({
+			description:
+				'The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.'
+		})
 	})
 	.meta({ title: 'Nightjar factory.json' });
 
-export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'>;
+export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'> & {
+	readonly signals: SignalNames;
+};
 
 export function configJsonSchema(): object {
 	return z.toJSONSchema(ConfigSchema, { io: 'input' });
