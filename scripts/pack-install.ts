@@ -23,7 +23,11 @@ try {
 	if (!/nightjar/i.test(help)) throw new Error('nightjar --help printed nothing about nightjar');
 
 	const pkg = join(project, 'node_modules', '@nonameolsson', 'nightjar');
-	for (const file of ['plugin/nightjar-status/.claude-plugin/plugin.json', 'README.md', 'LICENSE']) {
+	for (const file of [
+		'plugin/nightjar-status/.claude-plugin/plugin.json',
+		'README.md',
+		'LICENSE'
+	]) {
 		if (!existsSync(join(pkg, file))) throw new Error(`the installed package lacks ${file}`);
 	}
 	console.log('pack and install: nightjar --help works from the tarball');
