@@ -65,6 +65,119 @@
 				"pattern": "\\S"
 			},
 			"description": "The commands the agent may run, as Claude Code Bash permission patterns without Bash( ), such as \"make test\" or \"make lint *\". Committing, pushing, switching branches, the network and gh stay denied."
+		},
+		"rules": {
+			"description": "A text file, relative to the repo root, whose text is added to the agent prompt. Conventions normally live in CLAUDE.md or AGENTS.md.",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"model": {
+			"description": "The default model of every session; a Ticket's **Model:** line overrides it and --model overrides both",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"effort": {
+			"description": "The default effort of every session; a Ticket's **Effort:** line overrides it and --effort overrides both",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"review": {
+			"description": "The read-only review of the whole diff, run before the draft pull request opens",
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"description": "false switches the review off; on by default",
+					"type": "boolean"
+				},
+				"model": {
+					"description": "The review session's own model; else the default model",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"effort": {
+					"description": "The review session's own effort; else the default effort",
+					"type": "string",
+					"pattern": "\\S"
+				}
+			},
+			"additionalProperties": false
+		},
+		"signals": {
+			"description": "The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.",
+			"default": {},
+			"type": "object",
+			"properties": {
+				"go": {
+					"default": "factory-go",
+					"description": "The Go: put on a Feature assigned to you to have it built. Give it the name of ready to use one mark for both",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"ready": {
+					"default": "ready-for-agent",
+					"description": "A Ticket that is ready to be built",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"working": {
+					"default": "agent-working",
+					"description": "Nightjar is working on it",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"needsInfo": {
+					"default": "needs-info",
+					"description": "Nightjar needs an answer to go on",
+					"type": "string",
+					"pattern": "\\S"
+				},
+				"human": {
+					"default": "ready-for-human",
+					"description": "A person has to take it from here",
+					"type": "string",
+					"pattern": "\\S"
+				}
+			},
+			"additionalProperties": false
+		},
+		"trusted": {
+			"description": "The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.",
+			"type": "array",
+			"items": {
+				"type": "string",
+				"pattern": "\\S"
+			}
+		},
+		"setup": {
+			"description": "The shell command run once in each new worktree, before the first session, such as one that installs dependencies. When it fails, the Feature stops with a comment saying why. Left out, nothing is run.",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"ports": {
+			"description": "Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.",
+			"type": "object",
+			"properties": {
+				"count": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100,
+					"description": "How many ports to reserve"
+				},
+				"env": {
+					"minItems": 1,
+					"type": "array",
+					"items": {
+						"type": "string",
+						"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+					},
+					"description": "The environment variables that carry the ports to every session, the check and the setup command: the first name gets the first reserved port, the next name the next port, and so on"
+				}
+			},
+			"required": [
+				"count",
+				"env"
+			],
+			"additionalProperties": false
 		}
 	},
 	"required": [

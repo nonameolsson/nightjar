@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildFeature, LIMITS, ledgerPath, type Deps, type Setup } from './build.js';
+import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { record } from './ledger.js';
@@ -24,8 +25,13 @@ interface World {
 	readonly sessions: SessionRequest[];
 	// each check command run, with the folder it ran in
 	readonly checks: { readonly command: string; readonly cwd: string }[];
+	// each setup command run, with the folder and the environment it ran with
+	// the environment each check ran with
+	readonly checkEnvs: Env[];
+	readonly setups: { readonly command: string; readonly cwd: string; readonly env: Env }[];
 	acts: Record<number, Act>;
 	checkOk: boolean;
+	setupOk: boolean;
 	// what the loop told .factory/status.json, in order
 	readonly doing: Doing[];
 	readonly happened: Happened[];
@@ -77,8 +83,11 @@ function makeWorld(): World {
 		host: new FakeCodeHost(),
 		sessions: [],
 		checks: [],
+		checkEnvs: [],
+		setups: [],
 		acts: {},
 		checkOk: true,
+		setupOk: true,
 		doing: [],
 		happened: []
 	};
@@ -143,10 +152,15 @@ function deps(world: World): Deps {
 				output: { outcome: 'built', summary: `Built #${String(n)}`, questions: [] }
 			});
 		},
-		runCheck: (command, cwd) => {
+		runCheck: (command, cwd, env) => {
 			world.checks.push({ command, cwd });
+			world.checkEnvs.push(env);
 			const tail = `lint: 1 problem (run ${String(world.checks.length)})`;
 			return Promise.resolve({ ok: world.checkOk, tail });
+		},
+		runSetup: (command, cwd, env) => {
+			world.setups.push({ command, cwd, env });
+			return Promise.resolve({ ok: world.setupOk, tail: 'deps: registry unreachable' });
 		},
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
@@ -177,6 +191,91 @@ const git = (world: World, cwd: string, ...args: string[]) =>
 const tree = () => join(base, 'worktrees', '1-one-escape');
 
 const refs = (world: World) => world.host.pulls[0]?.references.map((r) => r.text);
+
+const PORTS = { WEB_PORT: '4500', DB_PORT: '4501' };
+
+describe('worktree setup', () => {
+	it('runs the setup command once in a new worktree, before the first session', async () => {
+		const world = makeWorld();
+		const order: string[] = [];
+		const inner = deps(world);
+		await buildFeature(
+			{
+				...inner,
+				runSetup: (command, cwd, env) => {
+					order.push('setup');
+					return inner.runSetup(command, cwd, env);
+				},
+				session: (req) => {
+					order.push('session');
+					return inner.session(req);
+				}
+			},
+			setup(world, { setupCommand: 'make deps' }),
+			1
+		);
+		expect(world.setups.map((s) => [s.command, s.cwd])).toEqual([['make deps', tree()]]);
+		expect(order.slice(0, 2)).toEqual(['setup', 'session']);
+	});
+
+	it('does not run it again when a later run goes on in the same worktree', async () => {
+		const world = makeWorld();
+		world.acts[3] = 'ask';
+		await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), 1);
+		world.acts[3] = 'build';
+		await world.tracker.addSignal(3, 'ready');
+		await world.tracker.addSignal(1, 'go');
+		await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), 1);
+		expect(world.setups).toHaveLength(1);
+	});
+
+	it('stops the Feature with a comment saying why when it fails, and runs it again next time', async () => {
+		const world = makeWorld();
+		world.setupOk = false;
+		const got = await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), 1);
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.sessions).toEqual([]);
+		expect(world.tracker.signalsOf(1)).toEqual(['needsInfo']);
+		expect(world.tracker.said(1)[0]).toContain('`make deps`');
+		expect(world.tracker.said(1)[0]).toContain('deps: registry unreachable');
+		expect(world.tracker.said(1)[0]).toMatch(/Built by Nightjar\._$/);
+		expect(world.happened.at(-1)).toMatchObject({ kind: 'needs-info', feature: 1, ticket: null });
+		expect(world.host.pulls).toEqual([]);
+
+		world.setupOk = true;
+		await world.tracker.addSignal(1, 'go');
+		await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), 1);
+		expect(world.setups).toHaveLength(2);
+		expect(world.host.pulls).toHaveLength(1);
+	});
+
+	it('runs nothing when no setup command is set', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), 1);
+		expect(world.setups).toEqual([]);
+	});
+});
+
+describe('reserved ports', () => {
+	it('hands them to every session, the check and the setup command as environment variables', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world, { portEnv: PORTS, setupCommand: 'make deps' }), 1);
+		// builds, fix rounds and the review
+		expect(world.sessions.length).toBeGreaterThan(3);
+		for (const s of world.sessions) expect(s.env).toMatchObject(PORTS);
+		expect(world.setups[0]?.env).toMatchObject(PORTS);
+		expect(world.checkEnvs.length).toBeGreaterThan(0);
+		for (const e of world.checkEnvs) expect(e).toMatchObject(PORTS);
+	});
+
+	it('adds nothing to the environment when none are reserved', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), 1);
+		for (const s of world.sessions) expect(s.env).toEqual(world.env);
+	});
+});
 
 describe('buildFeature', () => {
 	it('builds the Tickets in Build order, one commit each, then reviews and opens one draft', async () => {
@@ -388,7 +487,7 @@ describe('buildFeature', () => {
 		expect(world.tracker.signalsOf(1)).toEqual(['go']);
 	});
 
-	it("runs each build on the Ticket's own Model and Effort lines, else on --model and --effort", async () => {
+	it("runs each build on the flags, else the Ticket's own Model and Effort lines, else factory.json's defaults", async () => {
 		const world = makeWorld();
 		world.tracker.add({
 			id: 2,
@@ -396,13 +495,87 @@ describe('buildFeature', () => {
 			signals: ['ready'],
 			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
 		});
-		const flags = { model: 'sonnet', effort: 'high', allowApiKey: true };
-		await buildFeature(deps(world), setup(world, flags), 1);
+		const defaults = { defaults: { model: 'haiku', effort: 'low' }, allowApiKey: true };
+		await buildFeature(deps(world), setup(world, defaults), 1);
 		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
 		expect(builds.map((s) => [s.model, s.effort, s.allowApiKey])).toEqual([
 			['opus', 'xhigh', true],
-			['sonnet', 'high', true]
+			['haiku', 'low', true]
 		]);
+	});
+
+	it("runs every build on --model and --effort over the Ticket's lines and the defaults", async () => {
+		const flagged = makeWorld();
+		flagged.tracker.add({
+			id: 2,
+			title: 'Share the function',
+			signals: ['ready'],
+			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
+		});
+		const flags = { defaults: { model: 'haiku', effort: 'low' }, model: 'sonnet', effort: 'high' };
+		await buildFeature(deps(flagged), setup(flagged, flags), 1);
+		const flaggedBuilds = flagged.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(flaggedBuilds.map((s) => [s.model, s.effort])).toEqual([
+			['sonnet', 'high'],
+			['sonnet', 'high']
+		]);
+	});
+
+	it("runs a Ticket with no Model or Effort line, and no default, on the agent's own", async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), 1);
+		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(builds.map((s) => [s.model, s.effort])).toEqual([
+			[undefined, undefined],
+			[undefined, undefined]
+		]);
+	});
+
+	it('runs the review on its own Model and Effort, else the flags, else the defaults', async () => {
+		const own = makeWorld();
+		const review = { enabled: true, model: 'opus', effort: 'max' };
+		await buildFeature(deps(own), setup(own, { defaults: { model: 'haiku' }, review }), 1);
+		const ownReview = own.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([ownReview?.model, ownReview?.effort]).toEqual(['opus', 'max']);
+	});
+
+	it('runs the review on --model and --effort over its own', async () => {
+		const world = makeWorld();
+		const review = { model: 'opus', effort: 'max' };
+		await buildFeature(deps(world), setup(world, { model: 'sonnet', effort: 'high', review }), 1);
+		const got = world.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([got?.model, got?.effort]).toEqual(['sonnet', 'high']);
+	});
+
+	it('runs the review on the defaults when it has no Model or Effort of its own', async () => {
+		const inherited = makeWorld();
+		await buildFeature(deps(inherited), setup(inherited, { defaults: { model: 'haiku' } }), 1);
+		const inheritedReview = inherited.sessions.find((s) => s.schema === REVIEW_SCHEMA);
+		expect([inheritedReview?.model, inheritedReview?.effort]).toEqual(['haiku', undefined]);
+	});
+
+	it('skips the review when factory.json switches it off, and says nothing of one', async () => {
+		const world = makeWorld();
+		const got = await buildFeature(deps(world), setup(world, { review: { enabled: false } }), 1);
+		expect(got).toMatchObject({ kind: 'pull', built: [2, 3] });
+		expect(world.sessions.some((s) => s.schema === REVIEW_SCHEMA)).toBe(false);
+		expect(world.host.pulls[0]?.body).not.toContain('## Review');
+		expect(world.host.pulls[0]?.comments).toEqual([]);
+		const ledger = readFileSync(ledgerPath(world.root), 'utf8').trim().split('\n');
+		expect(ledger.map((l) => (JSON.parse(l) as { step: string }).step)).toEqual(['build', 'build']);
+	});
+
+	it("gives the build and the review sessions the repo's rules text", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			setup(world, { rules: 'Name every variable after a bird.' }),
+			1
+		);
+		expect(world.sessions).toHaveLength(3);
+		for (const session of world.sessions.filter((s) => !s.resume)) {
+			expect(session.prompt).toContain('Name every variable after a bird.');
+		}
 	});
 
 	it('passes on only Trusted comments', async () => {

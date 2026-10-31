@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { DEFAULT_SIGNAL_NAMES, RESERVED_NAMES, type SignalNames } from './signals.js';
 
 export class ConfigError extends Error {}
 
@@ -22,8 +23,38 @@ const GitHubCodeHost = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
 
+const modelField = z.string().regex(/\S/, 'a model is empty').optional();
+const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
+
 const missingOr = (what: string) => (issue: { input: unknown }) =>
 	issue.input === undefined ? `missing: ${what}` : undefined;
+
+const signalName = (fallback: string, what: string) =>
+	z
+		.string()
+		.regex(/\S/, 'a Signal name is empty')
+		.refine((name) => !(RESERVED_NAMES as readonly string[]).includes(name.trim().toLowerCase()), {
+			error: 'this is a triage role; Nightjar never reads or sets it'
+		})
+		.default(fallback)
+		.meta({ description: what });
+
+const Signals = z
+	.strictObject({
+		go: signalName(
+			DEFAULT_SIGNAL_NAMES.go,
+			'The Go: put on a Feature assigned to you to have it built. Give it the name of ready to use one mark for both'
+		),
+		ready: signalName(DEFAULT_SIGNAL_NAMES.ready, 'A Ticket that is ready to be built'),
+		working: signalName(DEFAULT_SIGNAL_NAMES.working, 'Nightjar is working on it'),
+		needsInfo: signalName(DEFAULT_SIGNAL_NAMES.needsInfo, 'Nightjar needs an answer to go on'),
+		human: signalName(DEFAULT_SIGNAL_NAMES.human, 'A person has to take it from here')
+	})
+	.prefault({})
+	.meta({
+		description:
+			'The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
+	});
 
 export const ConfigSchema = z
 	.strictObject({
@@ -48,14 +79,89 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					'The commands the agent may run, as Claude Code Bash permission patterns without Bash( ), such as "make test" or "make lint *". Committing, pushing, switching branches, the network and gh stay denied.'
+			}),
+		rules: z.string().regex(/\S/, 'a rules file path is empty').optional().meta({
+			description:
+				'A text file, relative to the repo root, whose text is added to the agent prompt. Conventions normally live in CLAUDE.md or AGENTS.md.'
+		}),
+		model: modelField.meta({
+			description:
+				"The default model of every session; a Ticket's **Model:** line overrides it and --model overrides both"
+		}),
+		effort: effortField.meta({
+			description:
+				"The default effort of every session; a Ticket's **Effort:** line overrides it and --effort overrides both"
+		}),
+		review: z
+			.strictObject({
+				enabled: z
+					.boolean()
+					.optional()
+					.meta({ description: 'false switches the review off; on by default' }),
+				model: modelField.meta({
+					description: "The review session's own model; else the default model"
+				}),
+				effort: effortField.meta({
+					description: "The review session's own effort; else the default effort"
+				})
+			})
+			.optional()
+			.meta({
+				description:
+					'The read-only review of the whole diff, run before the draft pull request opens'
+			}),
+		signals: Signals,
+		trusted: z.array(z.string().regex(/\S/, 'a trusted login is empty')).optional().meta({
+			description:
+				'The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.'
+		}),
+		// worktree setup and reserved ports (N5)
+		setup: z.string().regex(/\S/, 'name the setup command, or leave setup out').optional().meta({
+			description:
+				'The shell command run once in each new worktree, before the first session, such as one that installs dependencies. When it fails, the Feature stops with a comment saying why. Left out, nothing is run.'
+		}),
+		ports: z
+			.strictObject({
+				count: z.number().int().min(1).max(100).meta({ description: 'How many ports to reserve' }),
+				env: z
+					.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'not a valid variable name'), {
+						error: missingOr('name the environment variables that carry the ports')
+					})
+					.min(1, 'name at least one environment variable')
+					.refine((names) => new Set(names).size === names.length, 'a name is used twice')
+					.meta({
+						description:
+							'The environment variables that carry the ports to every session, the check and the setup command: the first name gets the first reserved port, the next name the next port, and so on'
+					})
+			})
+			.refine((p) => p.env.length <= p.count, {
+				path: ['env'],
+				error: 'more names than reserved ports'
+			})
+			.optional()
+			.meta({
+				description:
+					'Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.'
 			})
 	})
 	.meta({ title: 'Nightjar factory.json' });
 
-export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'>;
+export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'> & {
+	readonly signals: SignalNames;
+};
 
 export function configJsonSchema(): object {
 	return z.toJSONSchema(ConfigSchema, { io: 'input' });
+}
+
+// The text of the rules file factory.json names, or null when it names none.
+export function loadRules(root: string, config: Config): string | null {
+	if (config.rules === undefined) return null;
+	try {
+		return readFileSync(join(root, config.rules), 'utf8').trim();
+	} catch {
+		throw new ConfigError(`${CONFIG_FILE}: rules: cannot read ${config.rules} in ${root}`);
+	}
 }
 
 const where = (path: readonly PropertyKey[]) =>

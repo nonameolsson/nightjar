@@ -53,6 +53,8 @@ export interface Deps {
 	readonly codeHost: CodeHost;
 	readonly session: Session;
 	readonly runCheck: RunCheck;
+	// the worktree setup command, run through the same shell as the check
+	readonly runSetup: RunCheck;
 	readonly now: () => Date;
 	readonly newId: () => string;
 	readonly say: (line: string) => void;
@@ -69,10 +71,25 @@ export interface Setup {
 	// factory.json's check and allowedCommands
 	readonly check: string;
 	readonly allowedCommands: readonly string[];
+	// the text of factory.json's rules file, added to the build and review prompts
+	readonly rules?: string;
+	// factory.json's setup: run once in each new worktree, before the first session
+	readonly setupCommand?: string;
+	// the reserved ports as environment variables, held by the run for its whole life
+	readonly portEnv?: Readonly<Record<string, string>>;
 	readonly allowApiKey: boolean;
 	readonly env: Env;
+	// --model and --effort: they win over a Ticket's lines and over the defaults
 	readonly model?: string;
 	readonly effort?: string;
+	// factory.json's model and effort: what a Ticket without its own lines runs on
+	readonly defaults?: { readonly model?: string; readonly effort?: string };
+	// factory.json's review settings; the review is on when it says nothing
+	readonly review?: {
+		readonly enabled?: boolean;
+		readonly model?: string;
+		readonly effort?: string;
+	};
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
 }
@@ -89,12 +106,15 @@ export type FeatureOutcome =
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
 
+// What every session and command of the run sees: the machine's environment and the reserved ports.
+const envOf = (setup: Setup): Env => ({ ...setup.env, ...setup.portEnv });
+
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
 const logsPath = (root: string) => join(root, '.factory', 'logs');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
-// A Ticket's own `**Model:**` and `**Effort:**` lines win over the run's flags.
+// A Ticket's own `**Model:**` and `**Effort:**` lines.
 export function ticketLine(body: string, name: string): string | undefined {
 	const match = new RegExp(`^(?:\\*\\*)?${name}:(?:\\*\\*)?\\s*(\\S+)`, 'im').exec(body);
 	return match?.[1]?.toLowerCase();
@@ -133,8 +153,36 @@ export async function buildFeature(deps: Deps, setup: Setup, id: number): Promis
 	});
 	const tickets = await tracker.tickets(id);
 	const tree = await openWorktree(setup.root, setup.worktrees, branch, setup.baseBranch, setup.env);
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, await tree.built());
+	const built = await tree.built();
+	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
+		const command = setup.setupCommand;
+		deps.say(`${hash(id)}: setup: ${command}`);
+		const got = await deps.runSetup(command, tree.at.folder, envOf(setup));
+		if (!got.ok) return setupFailed(deps, id, command, got.tail, waiting(tickets, built));
+		await tree.markSetUp();
+	}
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built);
 	return run.build();
+}
+
+// The setup command failed: the Feature goes back to a person with the output, and the next run
+// sets the worktree up again.
+async function setupFailed(
+	deps: Deps,
+	id: number,
+	command: string,
+	tail: string,
+	left: Waiting[]
+): Promise<FeatureOutcome> {
+	const why = `the setup command \`${command}\` failed`;
+	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
+	await deps.tracker.removeSignal(id, 'working');
+	await deps.tracker.addSignal(id, 'needsInfo');
+	await deps.tracker.comment(
+		id,
+		`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${tail}\n\`\`\`${FOOTER}`
+	);
+	return { kind: 'nothing', waiting: left };
 }
 
 class FeatureRun {
@@ -201,7 +249,7 @@ class FeatureRun {
 			minutes: setup.limits.ticketMinutes,
 			log: join(logsPath(setup.root), `${over.sessionId}.jsonl`),
 			allowApiKey: setup.allowApiKey,
-			env: setup.env,
+			env: envOf(setup),
 			signal: setup.signal,
 			...over
 		};
@@ -250,14 +298,16 @@ class FeatureRun {
 			ticketComments,
 			built: this.tickets.filter((t) => this.built.has(t.id)),
 			allowed: this.setup.allowedCommands,
-			check: this.setup.check
+			check: this.setup.check,
+			rules: this.setup.rules
 		});
 		const result = await this.deps.session(
 			this.request({
 				prompt,
 				sessionId,
-				model: ticketLine(ticket.body, 'Model') ?? this.setup.model,
-				effort: ticketLine(ticket.body, 'Effort') ?? this.setup.effort
+				model: this.setup.model ?? ticketLine(ticket.body, 'Model') ?? this.setup.defaults?.model,
+				effort:
+					this.setup.effort ?? ticketLine(ticket.body, 'Effort') ?? this.setup.defaults?.effort
 			})
 		);
 		const cost = 'costUsd' in result ? result.costUsd : 0;
@@ -325,7 +375,7 @@ class FeatureRun {
 		const { limits, check: command } = this.setup;
 		let summary = built;
 		let ticketSpent = cost;
-		let check = await this.deps.runCheck(command, this.tree.at.folder);
+		let check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
 		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
 			const budget = limits.ticketUsd - ticketSpent;
 			if (budget < 1) break;
@@ -352,7 +402,7 @@ class FeatureRun {
 			});
 			if (!done || this.aborted) break;
 			summary = `${summary}\n\n${fixed.summary}`;
-			check = await this.deps.runCheck(command, this.tree.at.folder);
+			check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
 		}
 		if (this.aborted) {
 			await this.tree.discard(before, ticket.id);
@@ -426,9 +476,12 @@ class FeatureRun {
 		const red =
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? 0, tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
-		const review = await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
-			this.log(e)
-		);
+		const review =
+			this.setup.review?.enabled === false
+				? 'off'
+				: await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
+						this.log(e)
+					);
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
 		const body = pullBody({
@@ -449,7 +502,7 @@ class FeatureRun {
 			pull,
 			linked.map((n) => tracker.reference(n))
 		);
-		if (review) await codeHost.comment(pull, reviewComment(review));
+		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
 		this.deps.status.happened({ kind: 'pull', feature: id, url: pull.url });
 		if (!paused && (left.length > 0 || red)) {
@@ -515,16 +568,18 @@ async function reviewFeature(
 	});
 	const result = await deps.session({
 		cwd: tree.at.folder,
-		prompt: reviewPrompt(feature, tree.at.base, built),
+		prompt: reviewPrompt(feature, tree.at.base, built, setup.rules),
 		schema: REVIEW_SCHEMA,
 		tools: REVIEW_TOOLS,
 		settings: reviewSettings(),
 		budgetUsd: setup.limits.reviewUsd,
 		minutes: setup.limits.reviewMinutes,
+		model: setup.model ?? setup.review?.model ?? setup.defaults?.model,
+		effort: setup.effort ?? setup.review?.effort ?? setup.defaults?.effort,
 		sessionId,
 		log: join(logsPath(setup.root), `${sessionId}.jsonl`),
 		allowApiKey: setup.allowApiKey,
-		env: setup.env,
+		env: envOf(setup),
 		signal: setup.signal
 	});
 	const review = result.kind === 'done' ? readReview(result.output) : null;
@@ -556,7 +611,7 @@ function pullBody(p: {
 	done: readonly Ticket[];
 	left: readonly Waiting[];
 	red: { ticket: number; tail: string } | null;
-	review: Review | null;
+	review: Review | 'off' | null;
 	spent: number;
 	paused: string | null;
 }): string {
@@ -575,9 +630,10 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
-	parts.push(
-		`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
-	);
+	if (p.review !== 'off')
+		parts.push(
+			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
+		);
 	parts.push(`Estimated cost of this run: ${dollars(p.spent)}.`);
 	return `${parts.join('\n\n')}${FOOTER}`;
 }
