@@ -191,3 +191,60 @@ describe('makeAdapters with a module', () => {
 		);
 	});
 });
+
+const WRITER = `createFeature: async () => 1, createTicket: async () => 2, block: async () => {},`;
+
+describe('makeAdapters and creating Features', () => {
+	it('gives GitHub Issues as the Tracker that makes Features and Tickets', async () => {
+		const { tracker, writer } = await makeAdapters(config({}), dir, env());
+		expect(writer).toBe(tracker);
+	});
+
+	it('gives Azure DevOps Boards as one only once factory.json names the type of a Ticket', async () => {
+		const tracker = {
+			type: 'azure-devops' as const,
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		const without = await makeAdapters(config({ tracker }), dir, env());
+		expect(without.writer).toBe(
+			'factory.json: tracker.ticketType: name the work item type each Ticket is made as, such as User Story'
+		);
+		const named = await makeAdapters(
+			config({ tracker: { ...tracker, ticketType: 'User Story' } }),
+			dir,
+			env()
+		);
+		expect(named.writer).toBe(named.tracker);
+	});
+
+	it('gives a module that has every method of FeatureWriter, and says why not of one that has none', async () => {
+		moduleFile('writes.mjs', `export const createTracker = () => (${trackerBody(WRITER)});`);
+		moduleFile('reads.mjs', `export const createTracker = () => (${trackerBody()});`);
+		const writes = await makeAdapters(
+			config({ tracker: { type: 'module', path: './writes.mjs' } }),
+			dir,
+			env()
+		);
+		expect(writes.writer).toBe(writes.tracker);
+		const reads = await makeAdapters(
+			config({ tracker: { type: 'module', path: './reads.mjs' } }),
+			dir,
+			env()
+		);
+		expect(reads.writer).toBe(
+			'factory.json: tracker: ./reads.mjs makes no Features; its Tracker needs createFeature, createTicket and block'
+		);
+	});
+
+	it('refuses a module that has some methods of FeatureWriter and not all, naming the rest', async () => {
+		moduleFile(
+			'half.mjs',
+			`export const createTracker = () => (${trackerBody('createFeature: async () => 1,')});`
+		);
+		expect(await refusal(config({ tracker: { type: 'module', path: './half.mjs' } }))).toBe(
+			'factory.json: tracker: createTracker in ./half.mjs returned a Tracker that makes Features without these methods: createTicket, block'
+		);
+	});
+});
