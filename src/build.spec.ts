@@ -388,7 +388,7 @@ describe('buildFeature', () => {
 		expect(world.tracker.signalsOf(1)).toEqual(['go']);
 	});
 
-	it("runs each build on the Ticket's own Model and Effort lines, else on --model and --effort", async () => {
+	it("runs each build on the flags, else the Ticket's own Model and Effort lines, else factory.json's defaults", async () => {
 		const world = makeWorld();
 		world.tracker.add({
 			id: 2,
@@ -396,12 +396,39 @@ describe('buildFeature', () => {
 			signals: ['ready'],
 			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
 		});
-		const flags = { model: 'sonnet', effort: 'high', allowApiKey: true };
-		await buildFeature(deps(world), setup(world, flags), 1);
+		const defaults = { defaults: { model: 'haiku', effort: 'low' }, allowApiKey: true };
+		await buildFeature(deps(world), setup(world, defaults), 1);
 		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
 		expect(builds.map((s) => [s.model, s.effort, s.allowApiKey])).toEqual([
 			['opus', 'xhigh', true],
-			['sonnet', 'high', true]
+			['haiku', 'low', true]
+		]);
+	});
+
+	it("runs every build on --model and --effort over the Ticket's lines and the defaults", async () => {
+		const flagged = makeWorld();
+		flagged.tracker.add({
+			id: 2,
+			title: 'Share the function',
+			signals: ['ready'],
+			body: '**Model:** opus\n**Effort:** xhigh\n\nShare it.'
+		});
+		const flags = { defaults: { model: 'haiku', effort: 'low' }, model: 'sonnet', effort: 'high' };
+		await buildFeature(deps(flagged), setup(flagged, flags), 1);
+		const flaggedBuilds = flagged.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(flaggedBuilds.map((s) => [s.model, s.effort])).toEqual([
+			['sonnet', 'high'],
+			['sonnet', 'high']
+		]);
+	});
+
+	it("runs a Ticket with no Model or Effort line, and no default, on the agent's own", async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), 1);
+		const builds = world.sessions.filter((s) => s.schema !== REVIEW_SCHEMA);
+		expect(builds.map((s) => [s.model, s.effort])).toEqual([
+			[undefined, undefined],
+			[undefined, undefined]
 		]);
 	});
 

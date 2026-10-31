@@ -71,8 +71,11 @@ export interface Setup {
 	readonly allowedCommands: readonly string[];
 	readonly allowApiKey: boolean;
 	readonly env: Env;
+	// --model and --effort: they win over a Ticket's lines and over the defaults
 	readonly model?: string;
 	readonly effort?: string;
+	// factory.json's model and effort: what a Ticket without its own lines runs on
+	readonly defaults?: { readonly model?: string; readonly effort?: string };
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
 }
@@ -94,7 +97,7 @@ const logsPath = (root: string) => join(root, '.factory', 'logs');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
-// A Ticket's own `**Model:**` and `**Effort:**` lines win over the run's flags.
+// A Ticket's own `**Model:**` and `**Effort:**` lines.
 export function ticketLine(body: string, name: string): string | undefined {
 	const match = new RegExp(`^(?:\\*\\*)?${name}:(?:\\*\\*)?\\s*(\\S+)`, 'im').exec(body);
 	return match?.[1]?.toLowerCase();
@@ -256,8 +259,9 @@ class FeatureRun {
 			this.request({
 				prompt,
 				sessionId,
-				model: ticketLine(ticket.body, 'Model') ?? this.setup.model,
-				effort: ticketLine(ticket.body, 'Effort') ?? this.setup.effort
+				model: this.setup.model ?? ticketLine(ticket.body, 'Model') ?? this.setup.defaults?.model,
+				effort:
+					this.setup.effort ?? ticketLine(ticket.body, 'Effort') ?? this.setup.defaults?.effort
 			})
 		);
 		const cost = 'costUsd' in result ? result.costUsd : 0;
