@@ -60,6 +60,32 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/^factory\.json: allowedCommands: /m);
 	});
 
+	it('loads a setup command and reserved ports, and sets neither by itself', () => {
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('setup');
+		expect(loadConfig(root)).not.toHaveProperty('ports');
+		const asked = { setup: 'make deps', ports: { count: 5, env: ['WEB_PORT', 'DB_PORT'] } };
+		write({ ...VALID, ...asked });
+		expect(loadConfig(root)).toMatchObject(asked);
+	});
+
+	it('refuses an empty setup command', () => {
+		write({ ...VALID, setup: ' ' });
+		expect(refusal()).toMatch(/^factory\.json: setup: /m);
+	});
+
+	it.each([
+		['no ports', { count: 0, env: ['WEB_PORT'] }, 'ports.count'],
+		['no variable names', { count: 2, env: [] }, 'ports.env'],
+		['more names than ports', { count: 1, env: ['A_PORT', 'B_PORT'] }, 'ports.env'],
+		['a name twice', { count: 2, env: ['A_PORT', 'A_PORT'] }, 'ports.env'],
+		['a name that is no variable', { count: 2, env: ['A PORT'] }, 'ports.env.0'],
+		['no variable names at all', { count: 2 }, 'ports.env']
+	])('refuses reserved ports with %s, naming the field', (_what, ports, field) => {
+		write({ ...VALID, ports });
+		expect(refusal()).toContain(`factory.json: ${field}: `);
+	});
+
 	it('refuses a tracker it does not know, naming the field', () => {
 		write({ ...VALID, tracker: { type: 'paper' } });
 		expect(refusal()).toMatch(/^factory\.json: tracker\.type: /m);

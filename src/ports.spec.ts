@@ -67,7 +67,9 @@ describe('claimPorts', () => {
 	});
 
 	it('finds no block when none is free', async () => {
-		expect(await claimPorts({ count: COUNT, locks, free: () => Promise.resolve(false) })).toBeNull();
+		expect(
+			await claimPorts({ count: COUNT, locks, free: () => Promise.resolve(false) })
+		).toBeNull();
 	});
 });
 
