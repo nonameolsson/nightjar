@@ -78,7 +78,9 @@ const WRITER_METHODS: Record<keyof FeatureWriter, true> = {
 	block: true
 };
 
-export const FEATURE_WRITER_METHODS = Object.keys(WRITER_METHODS) as readonly (keyof FeatureWriter)[];
+export const FEATURE_WRITER_METHODS = Object.keys(
+	WRITER_METHODS
+) as readonly (keyof FeatureWriter)[];
 
 export function canCreate(tracker: Tracker): tracker is Tracker & FeatureWriter {
 	const methods = tracker as unknown as Record<string, unknown>;

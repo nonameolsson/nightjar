@@ -8,6 +8,7 @@ import { apiKeyProblem, parseArgs, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
 import { runContractCommand } from './contract/command.js';
+import { runCreateCommand } from './create.js';
 import { ConfigError, loadConfig, loadRules, type Config } from './config.js';
 import { firstLine, run, type Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
@@ -81,6 +82,7 @@ async function preflight(args: Args, env: Env): Promise<Ready> {
 
 export async function runNightjar(argv: readonly string[]): Promise<number> {
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
+	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);

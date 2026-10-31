@@ -130,17 +130,13 @@ export const featureWriterContract: readonly ContractCase<TrackerHarness>[] = [
 		}
 	),
 
-	writerCase(
-		'takes a Signal on a Ticket it made',
-		[],
-		async ({ tracker }) => {
-			const feature = await tracker.createFeature({ title: 'Feature', body: 'The spec.' });
-			const ticket = await tracker.createTicket(feature, { title: 'Ticket', body: 'Build it.' });
-			await tracker.addSignal(ticket, 'ready');
-			assert.deepEqual(
-				(await tracker.tickets(feature)).map((t) => t.signals),
-				[['ready']]
-			);
-		}
-	)
+	writerCase('takes a Signal on a Ticket it made', [], async ({ tracker }) => {
+		const feature = await tracker.createFeature({ title: 'Feature', body: 'The spec.' });
+		const ticket = await tracker.createTicket(feature, { title: 'Ticket', body: 'Build it.' });
+		await tracker.addSignal(ticket, 'ready');
+		assert.deepEqual(
+			(await tracker.tickets(feature)).map((t) => t.signals),
+			[['ready']]
+		);
+	})
 ];
