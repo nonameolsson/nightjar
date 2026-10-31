@@ -23,6 +23,22 @@ const GitHubCodeHost = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
 
+// An Adapter the repo brings itself: a module (docs/custom-adapters.md) that builds the Tracker or Code host.
+const adapterModule = (what: string) =>
+	z
+		.strictObject({
+			type: z.literal('module'),
+			path: z
+				.string({ error: missingOr('name the module') })
+				.regex(/\S/, 'name the module')
+				.meta({ description: `The module that builds the ${what}, as a path from the repo's root` }),
+			options: z
+				.record(z.string(), z.unknown())
+				.optional()
+				.meta({ description: 'Handed to the module as it is, for its own settings' })
+		})
+		.meta({ description: `A ${what} of the repo's own, built by a module` });
+
 const modelField = z.string().regex(/\S/, 'a model is empty').optional();
 const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
 
@@ -60,10 +76,10 @@ export const ConfigSchema = z
 	.strictObject({
 		$schema: z.string().optional(),
 		tracker: z
-			.discriminatedUnion('type', [GitHubTracker], { error: missingOr('name the Tracker') })
+			.discriminatedUnion('type', [GitHubTracker, adapterModule('Tracker')], { error: missingOr('name the Tracker') })
 			.meta({ description: 'Where the Features and Tickets live' }),
 		codeHost: z
-			.discriminatedUnion('type', [GitHubCodeHost], { error: missingOr('name the Code host') })
+			.discriminatedUnion('type', [GitHubCodeHost, adapterModule('Code host')], { error: missingOr('name the Code host') })
 			.meta({ description: 'Where the branch is pushed and the draft pull request opened' }),
 		check: z
 			.string({ error: missingOr('name the command that checks the work') })
