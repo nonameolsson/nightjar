@@ -3,7 +3,15 @@
 import { z } from 'zod';
 import { firstLine } from '../git.js';
 import { SIGNALS, type Signal, type SignalNames } from '../signals.js';
-import type { Comment, Feature, Ticket, TicketReference, Tracker } from '../tracker.js';
+import type {
+	Comment,
+	Feature,
+	FeatureWriter,
+	ItemText,
+	Ticket,
+	TicketReference,
+	Tracker
+} from '../tracker.js';
 import {
 	GitHubApi,
 	GitHubFailure,
@@ -32,7 +40,7 @@ const toFeature = (raw: RawIssue): Feature => ({
 	body: raw.body ?? ''
 });
 
-export class GitHubTracker implements Tracker {
+export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
 	private readonly writers = new Map<string, boolean>();
 
@@ -207,5 +215,50 @@ export class GitHubTracker implements Tracker {
 
 	reference(id: number): TicketReference {
 		return { id, text: `#${String(id)}` };
+	}
+
+	async createFeature({ title, body }: ItemText): Promise<number> {
+		const made = await this.api.parse(
+			`open the issue ${title}`,
+			['-X', 'POST', `repos/${this.repo}/issues`, '-f', `title=${title}`, '-f', `body=${body}`],
+			IssueSchema
+		);
+		return made.number;
+	}
+
+	async createTicket(featureId: number, ticket: ItemText): Promise<number> {
+		const id = await this.createFeature(ticket);
+		const n = String(featureId);
+		await this.api.call(`make #${String(id)} a sub-issue of #${n}`, [
+			'-X',
+			'POST',
+			`repos/${this.repo}/issues/${n}/sub_issues`,
+			'-F',
+			`sub_issue_id=${String(await this.databaseId(id))}`
+		]);
+		return id;
+	}
+
+	async block(id: number, blocker: number): Promise<void> {
+		const n = String(id);
+		await this.api.call(`mark #${n} blocked by #${String(blocker)}`, [
+			'-X',
+			'POST',
+			`repos/${this.repo}/issues/${n}/dependencies/blocked_by`,
+			'-F',
+			`issue_id=${String(await this.databaseId(blocker))}`
+		]);
+	}
+
+	// GitHub's own id of issue `number`, which the sub-issue and dependency calls take.
+	private async databaseId(number: number): Promise<number> {
+		const n = String(number);
+		const issue = await this.api.parse(
+			`read issue #${n}`,
+			[`repos/${this.repo}/issues/${n}`],
+			IssueSchema
+		);
+		if (issue.id === undefined) throw new GitHubFailure(`GitHub gave no id for #${n}.`);
+		return issue.id;
 	}
 }

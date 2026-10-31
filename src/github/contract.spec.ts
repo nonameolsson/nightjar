@@ -9,6 +9,7 @@ import {
 	GitHubCodeHost,
 	GitHubTracker,
 	codeHostContract,
+	featureWriterContract,
 	trackerContract,
 	type Pull,
 	type SignalNames,
@@ -142,6 +143,11 @@ describe('GitHubTracker meets the Tracker contract', () => {
 		const harness = gitHubTracker(CONFIGURED, 'trusted list');
 		for (const c of trackerContract) it(c.name, () => c.run(harness));
 	});
+});
+
+describe('GitHubTracker meets the creation contract', () => {
+	const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
+	for (const c of featureWriterContract) it(c.name, () => c.run(harness));
 });
 
 // real git on a busy machine is slow
