@@ -6,7 +6,7 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Requirements
 
-- macOS, Linux, or WSL2 on Windows. Native Windows is not supported.
+- macOS, Linux, or WSL2 on Windows. On native Windows every command stops with a message saying so.
 - Node 24 or later.
 - `git`, in a checkout whose `origin` is the Code host's repo, which `git fetch` can read with your own git login.
 - With GitHub as the Tracker or the Code host: [`gh`](https://cli.github.com/), signed in (`gh auth login`).
@@ -22,7 +22,7 @@ From npm, in the repo you want built:
 
 ```bash
 npm i -D @nonameolsson/nightjar
-npx nightjar --dry-run
+npx nightjar init
 ```
 
 From a tarball, built from a clone of this repo:
@@ -38,9 +38,32 @@ npm pack
 npm i -D /path/to/nonameolsson-nightjar-0.0.0.tgz
 ```
 
+## Set up: `nightjar init`
+
+In the repo you want built, run:
+
+```bash
+npx nightjar init
+```
+
+It asks for:
+
+- the Tracker: `github`, `azure-devops` or `module` (your own, see [Another Tracker or Code host](#another-tracker-or-code-host)), and what that one needs: the `owner/name` repo on GitHub (it offers the one `origin` names), the organization, project and Feature type on Azure DevOps (and the type of a Ticket, which `nightjar create` needs), or the module's path;
+- the Code host, the same way (on Azure Repos: organization, project and repo);
+- the **check command**, which has no default: Nightjar assumes no language or toolchain, so it asks until you give one;
+- the commands the agent may run, which it offers as the check command alone.
+
+Then it writes `factory.json` (below), which you commit, and:
+
+- **on GitHub** creates the Signal labels (`factory-go`, `ready-for-agent`, `agent-working`, `needs-info`, `ready-for-human`, or the names `factory.json` gives them), leaving any that exist as they are;
+- **on Azure DevOps** says tags appear on first use, so there is nothing to create;
+- checks every login it needs and says how to fix each one that is missing: `gh auth login`, `az login` or a token in `AZURE_DEVOPS_EXT_PAT`, and `claude auth login`.
+
+It reads its answers from standard input, line by line, so a script can pipe them in; there is no need for a terminal. If `factory.json` is already there, `init` keeps it, asks nothing, and only creates the labels and checks the logins: run it that way after you have fixed a login, or when you join a repo that has one.
+
 ## Configure: `factory.json`
 
-Put a `factory.json` at the root of the repo and commit it. Nightjar refuses to start without one, and names each field that is wrong.
+`nightjar init` writes this file. You can also write it by hand, at the root of the repo, and commit it. Nightjar refuses to start without one, and names each field that is wrong.
 
 A minimal one needs a Tracker, a Code host, the check command, and the commands the agent may run:
 
@@ -206,12 +229,13 @@ While it works, Nightjar puts the working Signal (`agent-working`) on the Featur
 From anywhere inside the repo:
 
 ```bash
-npx nightjar --dry-run
+npx nightjar doctor
 ```
 
 | Command                | What it does                                                                                           |
 | ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `--dry-run`            | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here. |
+| `init`                 | Asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins. See [Set up](#set-up-nightjar-init). |
+| `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
 | `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
 | `<number>`             | Builds that Feature now (`nightjar 42`; `#42` also works).                                             |
@@ -219,9 +243,9 @@ npx nightjar --dry-run
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `--dry-run`, `--once`, `--watch` or a Feature number. `--use-api-key`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module.
+Pick exactly one of `doctor`, `--once`, `--watch` or a Feature number. `--use-api-key`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module.
 
-Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker login (`gh`, or the Azure DevOps sign-in), the Azure Repos repo when it is the Code host, `claude`, and commit signing, and prints what it found. Exit code 2 means it refused to start; the message says why.
+Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 
 Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again quits at once. On macOS, Nightjar keeps the machine awake while it runs.
 
@@ -260,8 +284,6 @@ Also:
 
 Planned, not built yet:
 
-- `nightjar init`: asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins.
-- `nightjar doctor`: re-runs those checks at any time (today's `--dry-run`).
 - Publishing to npm.
 
 ## Develop

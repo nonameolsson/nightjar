@@ -47,7 +47,8 @@ export async function buildOne(deps: QueueDeps, id: number): Promise<FeatureOutc
 	}
 }
 
-const none = (deps: QueueDeps) => `no Feature with the Go is assigned to ${deps.person}`;
+const none = (deps: Pick<QueueDeps, 'person'>) =>
+	`no Feature with the Go is assigned to ${deps.person}`;
 
 // The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
@@ -86,7 +87,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	return 130;
 }
 
-export async function dryRun(deps: QueueDeps): Promise<void> {
+export async function dryRun(deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
 	if (features.length === 0) deps.say(none(deps));
 	for (const f of features) deps.say(`would build #${String(f.id)} ${f.title}`);
