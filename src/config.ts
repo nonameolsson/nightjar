@@ -19,6 +19,28 @@ const GitHubTracker = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub Issues: a Feature is an issue with sub-issues, its Tickets' });
 
+const missingOr = (what: string) => (issue: { input: unknown }) =>
+	issue.input === undefined ? `missing: ${what}` : undefined;
+
+const named = (what: string) => z.string({ error: missingOr(what) }).regex(/\S/, what);
+
+const AzureDevOpsTracker = z
+	.strictObject({
+		type: z.literal('azure-devops'),
+		organization: named('name the organization')
+			.regex(/^[^/\s:]+$/, 'the organization name alone, as in dev.azure.com/<organization>')
+			.meta({ description: 'The organization, as in dev.azure.com/<organization>' }),
+		project: named('name the project').meta({ description: 'The project that holds the Features' }),
+		featureType: named('name the work item type that plays the Feature').meta({
+			description:
+				'The work item type that plays the Feature, such as Feature, Epic or Product Backlog Item'
+		})
+	})
+	.meta({
+		description:
+			'Azure DevOps Boards: a Feature is a work item of featureType, its child work items its Tickets'
+	});
+
 const GitHubCodeHost = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
@@ -44,9 +66,6 @@ const adapterModule = (what: string) =>
 const modelField = z.string().regex(/\S/, 'a model is empty').optional();
 const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
 
-const missingOr = (what: string) => (issue: { input: unknown }) =>
-	issue.input === undefined ? `missing: ${what}` : undefined;
-
 const signalName = (fallback: string, what: string) =>
 	z
 		.string()
@@ -71,14 +90,14 @@ const Signals = z
 	.prefault({})
 	.meta({
 		description:
-			'The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
+			'The name each Signal has on a Tracker: a label on GitHub, a tag on Azure DevOps. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
 	});
 
 export const ConfigSchema = z
 	.strictObject({
 		$schema: z.string().optional(),
 		tracker: z
-			.discriminatedUnion('type', [GitHubTracker, adapterModule('Tracker')], {
+			.discriminatedUnion('type', [GitHubTracker, AzureDevOpsTracker, adapterModule('Tracker')], {
 				error: missingOr('name the Tracker')
 			})
 			.meta({ description: 'Where the Features and Tickets live' }),
@@ -135,7 +154,7 @@ export const ConfigSchema = z
 		signals: Signals,
 		trusted: z.array(z.string().regex(/\S/, 'a trusted login is empty')).optional().meta({
 			description:
-				'The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.'
+				"The logins whose comments reach the agent (on Azure DevOps, sign-in names such as ann@contoso.com). When set, it replaces the Tracker default (GitHub: write access; Azure DevOps: the project's Contributors group); leave it out to keep the default."
 		}),
 		// worktree setup and reserved ports (N5)
 		setup: z.string().regex(/\S/, 'name the setup command, or leave setup out').optional().meta({

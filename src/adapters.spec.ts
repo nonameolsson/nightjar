@@ -45,6 +45,31 @@ describe('makeAdapters', () => {
 		const { tracker } = await makeAdapters(config({ trusted: ['ann'] }), dir, env());
 		expect((await tracker.comments(1)).map((c) => c.trusted)).toEqual([false]);
 	});
+
+	it('builds Azure DevOps Boards as the Tracker, which says how to sign in when it cannot', async () => {
+		// an az that is signed out, and no personal access token
+		const az = join(dir, 'az');
+		writeFileSync(
+			az,
+			`#!/usr/bin/env bash\necho "ERROR: Please run 'az login' to setup account." >&2\nexit 1`
+		);
+		chmodSync(az, 0o755);
+		const noToken = { ...env(), AZURE_DEVOPS_EXT_PAT: undefined };
+		const tracker = {
+			type: 'azure-devops' as const,
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		const adapters = await makeAdapters(config({ tracker }), dir, noToken);
+		expect(adapters.tracker.reference(7).text).toBe('AB#7');
+		expect(adapters.checked('ann@contoso.com')).toBe(
+			'Azure DevOps as ann@contoso.com on contoso/Fabrikam'
+		);
+		await expect(adapters.tracker.me()).rejects.toThrow(
+			/cannot sign in to Azure DevOps: run `az login`, or set AZURE_DEVOPS_EXT_PAT/
+		);
+	});
 });
 
 // Every method of the Tracker interface, as a module would write them; `over` adds or replaces one.

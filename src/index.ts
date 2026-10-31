@@ -8,6 +8,14 @@ export { FakeCodeHost, type FakePull } from './fakes/code-host.js';
 export { GitHubTracker } from './github/tracker.js';
 export { GitHubCodeHost } from './github/code-host.js';
 export { GitHubFailure, type GhRunner } from './github/api.js';
+export {
+	AzureBoardsTracker,
+	AzureDevOpsApi,
+	AzureDevOpsFailure,
+	openAzureDevOps,
+	type AzureBoardsSettings,
+	type AzureDevOpsSignIn
+} from './azure-devops/index.js';
 export type { ContractCase } from './contract/case.js';
 export {
 	trackerContract,

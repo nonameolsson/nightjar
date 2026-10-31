@@ -509,6 +509,37 @@ describe('buildFeature', () => {
 		});
 	});
 
+	it("names each Ticket in the pull request by the Tracker's reference, and on the Tracker as #N", async () => {
+		const world = makeWorld();
+		// as Azure Boards references a work item from a pull request on GitHub
+		world.tracker.reference = (id) => ({ id, text: `AB#${String(id)}` });
+		world.tracker.add({ id: 4, title: 'Mark the rest', signals: ['ready'], blockedBy: [3] });
+		world.tracker.add({
+			id: 1,
+			title: 'One escape',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: [3, 2, 4]
+		});
+		world.acts[3] = 'ask';
+		await buildFeature(deps(world), setup(world), 1);
+
+		const body = world.host.pulls[0]?.body ?? '';
+		expect(body).toContain('- AB#3 Use it in marks: needs info');
+		expect(body).toContain('- AB#4 Mark the rest: blocked by AB#3');
+		expect(body).not.toMatch(/(?<!AB)#\d/);
+		expect(world.tracker.said(1)[0]).toContain('- #4 Mark the rest: blocked by #3');
+	});
+
+	it('names the Ticket after which the check fails by its reference in the pull request', async () => {
+		const world = makeWorld();
+		world.tracker.reference = (id) => ({ id, text: `AB#${String(id)}` });
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), 1);
+		expect(world.host.pulls[0]?.body).toContain('After AB#2, `make check` still fails');
+		expect(world.tracker.said(1)[0]).toContain('The check fails after #2.');
+	});
+
 	it('pauses before a session once the day has spent its limit, and gives the Go back', async () => {
 		const world = makeWorld();
 		record(ledgerPath(world.root), {

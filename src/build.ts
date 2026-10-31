@@ -597,9 +597,12 @@ async function reviewFeature(
 	return review;
 }
 
-function waitingList(left: readonly Waiting[]): string {
+// `name` is how the place the list goes names a Ticket: #N on the Tracker, its reference on the Code host.
+function waitingList(left: readonly Waiting[], name: (id: number) => string = hash): string {
 	if (left.length === 0) return 'No Ticket is waiting.';
-	return `Waiting:\n\n${left.map((w) => `- ${hash(w.id)} ${w.title}: ${w.why}`).join('\n')}`;
+	const line = (w: Waiting) =>
+		`- ${name(w.id)} ${w.title}: ${w.why}${w.blocker === undefined ? '' : ` ${name(w.blocker)}`}`;
+	return `Waiting:\n\n${left.map(line).join('\n')}`;
 }
 
 function pullBody(p: {
@@ -622,10 +625,10 @@ function pullBody(p: {
 	];
 	if (p.red) {
 		parts.push(
-			`## The check fails\n\nAfter ${hash(p.red.ticket)}, \`${p.check}\` still fails after the fix rounds:\n\n\`\`\`\n${p.red.tail}\n\`\`\``
+			`## The check fails\n\nAfter ${ref(p.red.ticket)}, \`${p.check}\` still fails after the fix rounds:\n\n\`\`\`\n${p.red.tail}\n\`\`\``
 		);
 	}
-	if (p.left.length > 0) parts.push(`## ${waitingList(p.left)}`);
+	if (p.left.length > 0) parts.push(`## ${waitingList(p.left, ref)}`);
 	if (p.paused)
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
