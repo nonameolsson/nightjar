@@ -27,9 +27,9 @@ export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promis
 		console.error(`nightjar: ${count} failed; fix it, then run \`nightjar doctor\` again.`);
 		return 2;
 	}
-	const { adapters, me } = checked.ready;
+	const { adapters, assignee } = checked.ready;
 	try {
-		await dryRun({ tracker: adapters.tracker, person: me, say });
+		await dryRun({ tracker: adapters.tracker, person: assignee, say });
 	} catch (fault) {
 		console.error(`  FAIL  Features: ${fault instanceof Error ? fault.message : String(fault)}`);
 		return 2;

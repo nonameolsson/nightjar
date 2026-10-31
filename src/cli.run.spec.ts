@@ -93,6 +93,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 		FAKE_CLAUDE_CALLS: join(base, 'claude-calls.txt')
 	};
 	delete env.ANTHROPIC_API_KEY;
+	// the person's own config.json is read under HOME alone
+	delete env.XDG_CONFIG_HOME;
 	const git = (cwd: string, ...args: string[]) =>
 		spawnSync('git', args, { cwd, env, encoding: 'utf8' }).stdout.trim();
 	const origin = join(base, 'origin.git');
@@ -242,6 +244,35 @@ describe('nightjar FEATURE on a Tracker module keyed by strings', () => {
 			{ kind: 'built', feature: 'PROJ-1', ticket: 'PROJ-2' },
 			{ kind: 'pull', feature: 'PROJ-1' }
 		]);
+	}, 30_000);
+});
+
+describe("the person's own config.json", () => {
+	const own = (env: Record<string, string>, value: unknown) => {
+		const folder = join(env.HOME ?? '', '.config', 'nightjar');
+		mkdirSync(folder, { recursive: true });
+		writeFileSync(join(folder, 'config.json'), JSON.stringify(value));
+	};
+
+	it('caps the day at its dailyUsd and builds the Features of its assignee', () => {
+		const { root, env, nightjar, calls } = world();
+		own(env, { dailyUsd: 25, assignee: 'zed' });
+		expect(nightjar(['doctor']).status).toBe(0);
+		expect(calls()).toMatch(/repos\/o\/r\/issues\?[^\n]*assignee=zed/);
+		const run = nightjar(['--once']);
+		expect(run.stdout).toContain('building the Features assigned to zed');
+		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
+			dailyUsd: number;
+		};
+		expect(status.dailyUsd).toBe(25);
+	}, 30_000);
+
+	it('refuses to start when a field is wrong, naming it', () => {
+		const { env, nightjar } = world();
+		own(env, { dailyUsd: 'lots' });
+		const run = nightjar(['doctor']);
+		expect(run.status).toBe(2);
+		expect(run.stderr).toContain('config.json: dailyUsd: ');
 	}, 30_000);
 });
 

@@ -172,6 +172,24 @@ Fully on Azure DevOps, with the code on Azure Repos:
 
 The JSON Schema for editor completion is `schema/factory.schema.json` in the package, published at the `$schema` URL above, so it works whether or not the repo installs Nightjar.
 
+## Your own settings: `~/.config/nightjar/config.json`
+
+What is yours rather than the repo's lives outside it, in `config.json` under `$XDG_CONFIG_HOME/nightjar/` (`~/.config/nightjar/` when `XDG_CONFIG_HOME` is not set). The file is optional, and so is each key:
+
+```json
+{
+	"dailyUsd": 25,
+	"assignee": "alice"
+}
+```
+
+| Key        | Default                | What it does                                                                                                                                                |
+| ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dailyUsd` | `60`                   | The estimated spend per local day in a repo, from its `.factory/runs.jsonl`, at which a run pauses. `--watch` looks again after 30 minutes.                                          |
+| `assignee` | the signed-in person   | Whose Features to build: `--once`, `--watch` and `doctor` take the Features assigned to this login with the Go. |
+
+Nightjar refuses to start when the file is not JSON or a key is wrong or unknown, and names each one. `doctor` lists what it read.
+
 ## Another Tracker or Code host
 
 Name your own Adapter in `factory.json` as a module, resolved from the repo's root, and check it before a build:
@@ -277,7 +295,7 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 
 ## Limits
 
-Built in, not yet configurable:
+Built in; only the spend per day is yours to set, as `dailyUsd` in [your config.json](#your-own-settings-confignightjarconfigjson):
 
 | Limit                     | Value        |
 | ------------------------- | ------------ |
@@ -287,7 +305,7 @@ Built in, not yet configurable:
 | Question rounds per Ticket | 2           |
 | Spend per review          | $3           |
 | Minutes per review        | 10           |
-| Spend per day             | $60          |
+| Spend per day             | $60, or `dailyUsd` |
 
 A Ticket still unclear after its question rounds goes to a person.
 

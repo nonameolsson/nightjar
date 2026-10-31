@@ -4,6 +4,7 @@ import { makeAdapters, type Adapters } from './adapters.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
 import { defaultBranch, signing } from './worktree.js';
 
@@ -17,6 +18,9 @@ export interface Ready {
 	readonly me: string;
 	readonly baseBranch: string;
 	readonly rules: string | null;
+	readonly person: PersonConfig;
+	// whose Features to build: the config's assignee, else the signed-in person
+	readonly assignee: string;
 }
 
 export interface Line {
@@ -151,6 +155,14 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 					() => ({ detail: 'read', summary: 'factory.json' })
 				);
 	if (root === null) skip('factory.json', 'needs a git checkout');
+	const person = await step(
+		'config.json',
+		() => loadPersonConfig(o.env),
+		(p) => ({
+			detail: `$${String(p.dailyUsd)} a day, building for ${p.assignee ?? 'the signed-in person'}`,
+			summary: null
+		})
+	);
 
 	let adapters: Adapters | null = null;
 	let faulty = false;
@@ -237,10 +249,20 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 		me !== null &&
 		claude !== null &&
 		signs !== null &&
+		person !== null &&
 		lines.every((l) => l.status === 'ok')
 	) {
 		const baseBranch = (await defaultBranch(root, o.env)) ?? 'main';
-		ready = { root, config: loaded.config, adapters, me, baseBranch, rules: loaded.rules };
+		ready = {
+			root,
+			config: loaded.config,
+			adapters,
+			me,
+			baseBranch,
+			rules: loaded.rules,
+			person,
+			assignee: person.assignee ?? me
+		};
 	}
 	return { lines, ready, adapters, config: loaded?.config ?? null, trackerOk };
 }

@@ -1,0 +1,53 @@
+// ~/.config/nightjar/config.json: one person's own settings, which no repo's factory.json may set.
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+import { ConfigError, where } from './config.js';
+import type { Env } from './git.js';
+
+export const DEFAULT_DAILY_USD = 60;
+
+const PersonConfigSchema = z.strictObject({
+	dailyUsd: z.number().positive('a dollar amount above 0').optional(),
+	assignee: z.string().regex(/\S/, 'a login on the Tracker').optional()
+});
+
+export interface PersonConfig {
+	// the estimated spend per local day at which a run pauses
+	readonly dailyUsd: number;
+	// whose Features to build; left out, the person signed in to the Tracker
+	readonly assignee?: string;
+}
+
+export function personConfigPath(env: Env): string {
+	const base = env.XDG_CONFIG_HOME || join(env.HOME ?? homedir(), '.config');
+	return join(base, 'nightjar', 'config.json');
+}
+
+// The person's settings, the defaults where the file is missing or silent, or a ConfigError naming each wrong field.
+export function loadPersonConfig(env: Env): PersonConfig {
+	const path = personConfigPath(env);
+	let text: string;
+	try {
+		text = readFileSync(path, 'utf8');
+	} catch {
+		return { dailyUsd: DEFAULT_DAILY_USD };
+	}
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch (fault) {
+		throw new ConfigError(
+			`${path} is not JSON: ${fault instanceof Error ? fault.message : String(fault)}`
+		);
+	}
+	const parsed = PersonConfigSchema.safeParse(value);
+	if (!parsed.success) {
+		throw new ConfigError(
+			parsed.error.issues.map((i) => `${path}: ${where(i.path)}${i.message}`).join('\n')
+		);
+	}
+	const { dailyUsd = DEFAULT_DAILY_USD, assignee } = parsed.data;
+	return { dailyUsd, ...(assignee === undefined ? {} : { assignee }) };
+}

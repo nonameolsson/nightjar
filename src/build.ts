@@ -7,6 +7,7 @@ import type { RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
 import type { Env } from './git.js';
 import { record, spentOn, type Entry } from './ledger.js';
+import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, waiting, type Waiting } from './plan.js';
 import {
 	BUILD_SCHEMA,
@@ -45,7 +46,7 @@ export const LIMITS: Limits = {
 	reviewUsd: 3,
 	reviewMinutes: 10,
 	questionRounds: 2,
-	dailyUsd: 60
+	dailyUsd: DEFAULT_DAILY_USD
 };
 
 export interface Deps {

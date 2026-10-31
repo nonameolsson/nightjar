@@ -231,7 +231,7 @@ export function loadRules(root: string, config: Config): string | null {
 	}
 }
 
-const where = (path: readonly PropertyKey[]) =>
+export const where = (path: readonly PropertyKey[]) =>
 	path.length === 0 ? '' : `${path.map(String).join('.')}: `;
 
 // The repo's factory.json, or a ConfigError naming each field that is wrong.

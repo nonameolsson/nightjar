@@ -54,6 +54,9 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 	);
 	const found = checked.lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
+	const { assignee, person } = checked.ready;
+	if (assignee !== me) say(`building the Features assigned to ${assignee}`);
+	if (person.dailyUsd !== LIMITS.dailyUsd) say(`daily limit $${String(person.dailyUsd)}`);
 	return checked.ready;
 }
 
@@ -115,7 +118,7 @@ export async function runNightjar(
 		ledger: ledgerPath(root),
 		now: () => new Date(),
 		pid: process.pid,
-		dailyUsd: LIMITS.dailyUsd
+		dailyUsd: ready.person.dailyUsd
 	});
 	// the reserved ports are held until the process ends, whatever ends it
 	const claim = config.ports === undefined ? null : await claimPorts({ count: config.ports.count });
@@ -159,14 +162,14 @@ export async function runNightjar(
 		env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
-		limits: LIMITS,
+		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
 		signal: stop.signal
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: string | null = null;
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
-		person: ready.me,
+		person: ready.assignee,
 		build: async (id) => {
 			building = id;
 			try {
