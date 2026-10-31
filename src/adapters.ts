@@ -2,8 +2,8 @@
 import type { CodeHost } from './code-host.js';
 import { ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
+import { ghRunner, repoFromRemote } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
-import { repoFromRemote } from './github/api.js';
 import { GitHubTracker } from './github/tracker.js';
 import { FIXED_SIGNAL_NAMES } from './signals.js';
 import type { Tracker } from './tracker.js';
@@ -31,7 +31,7 @@ export async function makeAdapters(config: Config, root: string, env: Env): Prom
 		}
 		return origin;
 	};
-	const gh = (args: readonly string[]) => run('gh', args, root, env);
+	const gh = ghRunner(root, env);
 	const git = (args: readonly string[], cwd: string) => run('git', args, cwd, env);
 
 	const trackerRepo = config.tracker.repo ?? (await fromOrigin('tracker.repo'));

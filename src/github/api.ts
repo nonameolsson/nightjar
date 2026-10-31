@@ -2,12 +2,17 @@
 // what they answer. `gh` holds the login, so no token passes through here. Only the GitHub
 // adapters call `gh`.
 import { z } from 'zod';
-import { firstLine, type Run } from '../git.js';
+import { firstLine, run, type Env, type Run } from '../git.js';
 
 // A GitHub call Nightjar cannot do without; its message names the call and gh's reason.
 export class GitHubFailure extends Error {}
 
 export type GhRunner = (args: readonly string[]) => Promise<Run>;
+
+export const ghRunner =
+	(cwd: string, env: Env): GhRunner =>
+	(args) =>
+		run('gh', args, cwd, env);
 
 export const IssueSchema = z.looseObject({
 	number: z.int(),

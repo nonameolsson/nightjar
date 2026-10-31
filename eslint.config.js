@@ -22,6 +22,20 @@ export default defineConfig(
 		}
 	},
 	{
+		// only the GitHub adapters call gh (ticket N1); a spec may name its stand-in
+		files: ['src/**/*.ts'],
+		ignores: ['src/github/**', 'src/**/*.spec.ts'],
+		rules: {
+			'no-restricted-syntax': [
+				'error',
+				{
+					selector: "Literal[value='gh']",
+					message: 'Only the GitHub adapters in src/github/ call gh.'
+				}
+			]
+		}
+	},
+	{
 		files: ['**/*.js'],
 		...ts.configs.disableTypeChecked
 	}
