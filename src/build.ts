@@ -69,6 +69,8 @@ export interface Setup {
 	// factory.json's check and allowedCommands
 	readonly check: string;
 	readonly allowedCommands: readonly string[];
+	// the text of factory.json's rules file, added to the build and review prompts
+	readonly rules?: string;
 	readonly allowApiKey: boolean;
 	readonly env: Env;
 	// --model and --effort: they win over a Ticket's lines and over the defaults
@@ -259,7 +261,8 @@ class FeatureRun {
 			ticketComments,
 			built: this.tickets.filter((t) => this.built.has(t.id)),
 			allowed: this.setup.allowedCommands,
-			check: this.setup.check
+			check: this.setup.check,
+			rules: this.setup.rules
 		});
 		const result = await this.deps.session(
 			this.request({
@@ -528,7 +531,7 @@ async function reviewFeature(
 	});
 	const result = await deps.session({
 		cwd: tree.at.folder,
-		prompt: reviewPrompt(feature, tree.at.base, built),
+		prompt: reviewPrompt(feature, tree.at.base, built, setup.rules),
 		schema: REVIEW_SCHEMA,
 		tools: REVIEW_TOOLS,
 		settings: reviewSettings(),

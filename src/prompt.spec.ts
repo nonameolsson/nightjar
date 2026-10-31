@@ -5,7 +5,8 @@ import {
 	questionRounds,
 	questionsComment,
 	readBuildAnswer,
-	readReview
+	readReview,
+	reviewPrompt
 } from './prompt.js';
 import type { Comment, Feature } from './tracker.js';
 
@@ -60,7 +61,7 @@ describe('question rounds', () => {
 });
 
 describe('buildPrompt', () => {
-	const prompt = buildPrompt({
+	const context = {
 		feature,
 		ticket: { id: 2, title: 'T', body: 'ticket body', open: true, signals: [], blockedBy: [] },
 		featureComments: [],
@@ -68,7 +69,8 @@ describe('buildPrompt', () => {
 		built: [{ id: 3, title: 'Earlier' }],
 		allowed: ['make test', 'make lint *'],
 		check: 'make check'
-	});
+	};
+	const prompt = buildPrompt(context);
 
 	it('sets the rules before any Feature or Ticket text', () => {
 		expect(prompt.indexOf('Nobody is at the keyboard')).toBe(0);
@@ -85,6 +87,33 @@ describe('buildPrompt', () => {
 
 	it('assumes no language or toolchain', () => {
 		expect(prompt).not.toMatch(/\b(npm|npx|vitest|playwright|eslint|prettier|e2e)\b/i);
+	});
+
+	it('holds only how Nightjar works, and sends the agent to the repo for its conventions', () => {
+		const plain = buildPrompt({ ...context, allowed: ['run-it'], check: 'run-check' });
+		const rules = plain.slice(0, plain.indexOf(feature.body));
+		expect(rules).not.toMatch(/\b(tests?|testing|coverage|typescript|kestrel)\b/i);
+		expect(rules).toMatch(/do not commit/i);
+		expect(rules).toContain('outcome "questions"');
+		expect(rules).toContain('CLAUDE.md or AGENTS.md');
+	});
+
+	it("adds the repo's rules file after the built-in rules and before the Feature", () => {
+		const text = 'Name every variable after a bird.';
+		const withRules = buildPrompt({ ...context, rules: text });
+		expect(withRules.indexOf('the rules win')).toBeLessThan(withRules.indexOf(text));
+		expect(withRules.indexOf(text)).toBeLessThan(withRules.indexOf(feature.body));
+		expect(prompt).not.toContain('bird');
+	});
+});
+
+describe('reviewPrompt', () => {
+	it("judges the diff by the repo's rules file too, when it has one", () => {
+		const tickets = [{ id: 2, title: 'T', body: 'b', open: true, signals: [], blockedBy: [] }];
+		expect(reviewPrompt(feature, 'main', tickets, 'Name every variable after a bird.')).toContain(
+			'Name every variable after a bird.'
+		);
+		expect(reviewPrompt(feature, 'main', tickets)).not.toContain('bird');
 	});
 });
 

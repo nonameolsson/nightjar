@@ -466,6 +466,19 @@ describe('buildFeature', () => {
 		expect(ledger.map((l) => (JSON.parse(l) as { step: string }).step)).toEqual(['build', 'build']);
 	});
 
+	it("gives the build and the review sessions the repo's rules text", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			setup(world, { rules: 'Name every variable after a bird.' }),
+			1
+		);
+		expect(world.sessions).toHaveLength(3);
+		for (const session of world.sessions.filter((s) => !s.resume)) {
+			expect(session.prompt).toContain('Name every variable after a bird.');
+		}
+	});
+
 	it('passes on only Trusted comments', async () => {
 		const world = makeWorld();
 		world.tracker.say(2, { author: 'ann', body: 'Keep it small.', trusted: true });
