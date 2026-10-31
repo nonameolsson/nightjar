@@ -1,5 +1,4 @@
-// The GitHub adapters against the Adapter contract suites, over a fake GitHub behind `gh api`: no
-// spec here reaches the network.
+// The GitHub adapters against the contract suites, over a fake GitHub: no spec here reaches the network.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,8 +25,7 @@ const CONFIGURED: SignalNames = {
 	human: 'for-a-person'
 };
 
-// The world's trust comes from write access by default, or from factory.json's trusted list,
-// which then wins over the write access every author is given.
+// With a trusted list every author gets write access, so only the list can make the world's trust.
 const gitHubTracker =
 	(names: SignalNames, trust: 'write access' | 'trusted list') => (world: TrackerWorld) => {
 		const { github, id } = gitHubWorld(world, names);
@@ -74,8 +72,7 @@ function gitHubWorld(world: TrackerWorld, names: SignalNames) {
 // GitHub links a pull request to each issue named after one of its closing keywords.
 const CLOSING = /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(\S+)\s*$/gim;
 
-// The branch is pushed by real git to a bare origin in a temporary folder; the pull requests live
-// in the fake GitHub.
+// Real git pushes to a bare origin in a temporary folder; the pull requests live in the fake GitHub.
 async function gitHubCodeHost() {
 	const base = await mkdtemp(join(tmpdir(), 'nightjar-contract-'));
 	const config = join(base, 'gitconfig');

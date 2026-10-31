@@ -1,6 +1,4 @@
-// A small GitHub kept in memory behind a stand-in for `gh api`: issues, their sub-issues, blocking
-// links, labels and comments, as GitHub's REST API answers them. The GitHub adapters run over it
-// in the contract specs, so no spec reaches the network.
+// A small GitHub in memory behind a stand-in for `gh api`, answering as GitHub's REST API does.
 import type { Run } from '../git.js';
 import type { GhRunner } from './api.js';
 import { failed, ok, readCall, type GhCall } from './fake-gh.js';

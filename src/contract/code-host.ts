@@ -1,6 +1,4 @@
-// The Code host contract (docs/adr/0001): what every Code host Adapter must do, whether a fake, a
-// built-in one or a repo's own module. Each case asks the harness for an empty repo on the host
-// and drives it through the CodeHost interface, then looks at what the host shows.
+// The Code host contract (docs/adr/0001): what every Code host Adapter must do, fake, built in or a repo's own.
 import assert from 'node:assert/strict';
 import type { CodeHost, Pull } from '../code-host.js';
 import type { ContractCase } from './case.js';

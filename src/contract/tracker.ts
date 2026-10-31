@@ -1,6 +1,4 @@
-// The Tracker contract (docs/adr/0001): what every Tracker Adapter must do, whether a fake, a
-// built-in one or a repo's own module. Each case asks the harness for a Tracker that holds a small
-// world, then drives it only through the Tracker interface.
+// The Tracker contract (docs/adr/0001): what every Tracker Adapter must do, fake, built in or a repo's own.
 import assert from 'node:assert/strict';
 import { SIGNALS, type Signal } from '../signals.js';
 import type { Tracker } from '../tracker.js';
