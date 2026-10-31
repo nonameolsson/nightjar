@@ -2,6 +2,7 @@
 import { describe, it } from 'vitest';
 import {
 	DEFAULT_SIGNAL_NAMES,
+	featureWriterContract,
 	trackerContract,
 	type SignalNames,
 	type TrackerWorld
@@ -67,7 +68,7 @@ const azureBoardsTracker =
 		const list = trust === 'trusted list' ? world.trusted : undefined;
 		const tracker = new AzureBoardsTracker(
 			api,
-			{ project: PROJECT, featureType: 'Feature' },
+			{ project: PROJECT, featureType: 'Feature', ticketType: 'Product Backlog Item' },
 			names,
 			list
 		);
@@ -84,4 +85,9 @@ describe('AzureBoardsTracker meets the Tracker contract', () => {
 		const harness = azureBoardsTracker(CONFIGURED, 'trusted list');
 		for (const c of trackerContract) it(c.name, () => c.run(harness));
 	});
+});
+
+describe('AzureBoardsTracker meets the creation contract', () => {
+	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
+	for (const c of featureWriterContract) it(c.name, () => c.run(harness));
 });

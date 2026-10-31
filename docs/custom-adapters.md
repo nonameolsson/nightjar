@@ -63,6 +63,17 @@ export function createTracker({ options, signals, trusted }) {
 }
 ```
 
+To let `nightjar create` make Features on your Tracker ([ticket-contract.md](ticket-contract.md)), give it the three methods of the optional `FeatureWriter` interface too. A Tracker with none of them builds as before; one with some and not all is refused at start.
+
+```js
+		// a Feature that carries no Signal and is assigned to no one; resolves to its id
+		createFeature: todo('createFeature'),
+		// a Ticket made the Feature's last child, carrying no Signal; resolves to its id
+		createTicket: todo('createTicket'),
+		// links the first id as blocked by the second, so tickets() reads the blocker back
+		block: todo('block'),
+```
+
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
 Ids are numbers. A Tracker whose items are keyed otherwise maps its keys to numbers inside the module.
@@ -105,7 +116,7 @@ Then run, from the repo:
 npx nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -118,6 +129,6 @@ Tracker contract
 11 of 11 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

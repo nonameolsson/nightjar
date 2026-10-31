@@ -1,7 +1,9 @@
 // Runs the contract suites with no test runner, so an installed Nightjar can check a repo's own Adapter.
 import type { ContractCase } from './case.js';
 import { codeHostContract } from './code-host.js';
-import { trackerContract } from './tracker.js';
+import { canCreate } from '../tracker.js';
+import { featureWriterContract } from './feature-writer.js';
+import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
 
 // A module exports the harnesses of the Adapters it wants checked.
 export class ContractRefusal extends Error {}
@@ -53,7 +55,24 @@ function harnessOf(exports: Record<string, unknown>, name: string): unknown {
 	return found;
 }
 
-// The suites over the `trackerHarness` and `codeHostHarness` a module exports.
+// Whether the harness's Tracker makes Features, asked of one over an empty world; a harness that
+// cannot build one has already failed every Tracker case, so it is asked nothing more.
+async function makesFeatures(harness: TrackerHarness): Promise<boolean> {
+	let subject: TrackerSubject;
+	try {
+		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
+	} catch {
+		return false;
+	}
+	try {
+		return canCreate(subject.tracker);
+	} finally {
+		await subject.close?.();
+	}
+}
+
+// The suites over the `trackerHarness` and `codeHostHarness` a module exports; the creation suite
+// too when the Tracker makes Features.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -63,6 +82,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 	const suites: SuiteResult[] = [];
 	if (tracker !== undefined) {
 		suites.push(await runSuite('Tracker', trackerContract, tracker as never));
+		if (await makesFeatures(tracker as TrackerHarness)) {
+			suites.push(await runSuite('Tracker creation', featureWriterContract, tracker as never));
+		}
 	}
 	if (codeHost !== undefined) {
 		suites.push(await runSuite('Code host', codeHostContract, codeHost as never));

@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type { CodeHost } from './code-host.js';
 import { CONFIG_FILE, ConfigError } from './config.js';
 import type { SignalNames } from './signals.js';
-import type { Tracker } from './tracker.js';
+import { FEATURE_WRITER_METHODS, type Tracker } from './tracker.js';
 
 // What Nightjar hands the function that builds an adapter.
 export interface AdapterContext {
@@ -55,13 +55,16 @@ interface Kind {
 	readonly noun: string;
 	readonly factory: string;
 	readonly methods: readonly string[];
+	// methods an adapter may leave out, but only all of them
+	readonly optional?: readonly string[];
 }
 
 const TRACKER: Kind = {
 	field: 'tracker',
 	noun: 'Tracker',
 	factory: 'createTracker',
-	methods: Object.keys(TRACKER_METHODS)
+	methods: Object.keys(TRACKER_METHODS),
+	optional: FEATURE_WRITER_METHODS
 };
 
 const CODE_HOST: Kind = {
@@ -105,6 +108,14 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 	if (missing.length > 0) {
 		throw new ConfigError(
 			`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} without these methods: ${missing.join(', ')}`
+		);
+	}
+	// the optional methods come all together or not at all
+	const optional = kind.optional ?? [];
+	const lacking = optional.filter((name) => typeof have[name] !== 'function');
+	if (lacking.length > 0 && lacking.length < optional.length) {
+		throw new ConfigError(
+			`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} that makes Features without these methods: ${lacking.join(', ')}`
 		);
 	}
 	return built;

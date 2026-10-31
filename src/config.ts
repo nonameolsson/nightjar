@@ -36,7 +36,15 @@ const AzureDevOpsTracker = z
 		featureType: named('name the work item type that plays the Feature').meta({
 			description:
 				'The work item type that plays the Feature, such as Feature, Epic or Product Backlog Item'
-		})
+		}),
+		ticketType: z
+			.string()
+			.regex(/\S/, 'name the work item type of a Ticket, or leave ticketType out')
+			.optional()
+			.meta({
+				description:
+					'The work item type nightjar create makes each Ticket as, such as User Story, Product Backlog Item or Issue. Left out, nightjar create makes no Tickets.'
+			})
 	})
 	.meta({
 		description:

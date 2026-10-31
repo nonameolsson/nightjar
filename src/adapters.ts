@@ -13,12 +13,18 @@ import {
 	type ReferencesAs
 } from './azure-devops/index.js';
 import type { CodeHost } from './code-host.js';
-import { ConfigError, type Config } from './config.js';
+import { CONFIG_FILE, ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
 import { ghRunner, repoFromRemote } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
 import { GitHubTracker } from './github/tracker.js';
-import type { TicketReference, Tracker } from './tracker.js';
+import {
+	canCreate,
+	FEATURE_WRITER_METHODS,
+	type FeatureWriter,
+	type TicketReference,
+	type Tracker
+} from './tracker.js';
 
 export interface Adapters {
 	readonly tracker: Tracker;
@@ -29,7 +35,11 @@ export interface Adapters {
 	readonly checked: (person: string) => string;
 	// reaches the Code host, so a run that cannot push stops before it builds anything
 	readonly reachCodeHost: () => Promise<void>;
+	// the Tracker as one that makes Features and Tickets, or why it cannot
+	readonly writer: (Tracker & FeatureWriter) | string;
 }
+
+const WRITER_LIST = `${FEATURE_WRITER_METHODS.slice(0, -1).join(', ')} and ${FEATURE_WRITER_METHODS.at(-1) ?? ''}`;
 
 // The Tracker with its references rewritten for the Code host; every other call goes to it as it is.
 function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketReference): Tracker {
@@ -85,21 +95,33 @@ export async function makeAdapters(
 	let tracker: Tracker;
 	let checked: (person: string) => string;
 	let trackerRepo: string | null = null;
+	let cannotCreate: string | null = null;
 	if (config.tracker.type === 'module') {
 		const { path } = config.tracker;
 		tracker = await trackerFromModule(config.tracker, context);
 		checked = (person) => `${path} as ${person}`;
+		if (!canCreate(tracker)) {
+			cannotCreate = `${CONFIG_FILE}: tracker: ${path} makes no Features; its Tracker needs ${WRITER_LIST}`;
+		}
 	} else if (config.tracker.type === 'azure-devops') {
 		const { organization, project } = config.tracker;
 		const api = azureDevOps(organization);
 		tracker = new AzureBoardsTracker(api, config.tracker, config.signals, config.trusted);
 		checked = (person) => `Azure DevOps as ${person} on ${organization}/${project}`;
+		if (config.tracker.ticketType === undefined) {
+			cannotCreate = `${CONFIG_FILE}: tracker.ticketType: name the work item type each Ticket is made as, such as User Story`;
+		}
 	} else {
 		const named = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
 		trackerRepo = named;
 		tracker = new GitHubTracker(named, gh, config.signals, config.trusted);
 		checked = (person) => `gh as ${person} on ${named}`;
 	}
+	// taken before any wrapping for the Code host, which keeps only the Tracker's own methods
+	const writer =
+		cannotCreate === null && canCreate(tracker)
+			? tracker
+			: (cannotCreate ?? `${CONFIG_FILE}: tracker: this Tracker makes no Features`);
 
 	if (config.codeHost.type === 'module') {
 		const codeHost = await codeHostFromModule(config.codeHost, context);
@@ -108,13 +130,14 @@ export async function makeAdapters(
 			codeHost,
 			repo: config.codeHost.path,
 			checked,
-			reachCodeHost: () => Promise.resolve()
+			reachCodeHost: () => Promise.resolve(),
+			writer
 		};
 	}
 	if (config.codeHost.type === 'github') {
 		const repo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
 		const codeHost = new GitHubCodeHost(repo, gh, git);
-		return { tracker, codeHost, repo, checked, reachCodeHost: () => Promise.resolve() };
+		return { tracker, codeHost, repo, checked, reachCodeHost: () => Promise.resolve(), writer };
 	}
 
 	const { organization, project, repo } = config.codeHost;
@@ -142,6 +165,7 @@ export async function makeAdapters(
 		codeHost,
 		repo: `${organization}/${project}/${repo}`,
 		checked: (person) => `${checked(person)}, Azure Repos ${organization}/${project}/${repo}`,
-		reachCodeHost: () => codeHost.check()
+		reachCodeHost: () => codeHost.check(),
+		writer
 	};
 }

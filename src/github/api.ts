@@ -15,6 +15,8 @@ export const ghRunner =
 		run('gh', args, cwd, env);
 
 export const IssueSchema = z.looseObject({
+	// GitHub's own id, which the sub-issue and dependency calls take
+	id: z.int().optional(),
 	number: z.int(),
 	title: z.string(),
 	body: z.string().nullable(),

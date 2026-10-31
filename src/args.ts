@@ -12,6 +12,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--u
   --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
 
        nightjar init              ask for the Tracker and Code host, write factory.json, create the Signal labels, check the logins
+       nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
        nightjar contract MODULE   check a module's own Tracker or Code host against the contract suites`;
 
 export interface Args {

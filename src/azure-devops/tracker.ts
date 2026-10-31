@@ -3,7 +3,16 @@
 // referenced as AB#N. A work item's state is never read or set (docs/adr/0002).
 import { z } from 'zod';
 import { SIGNALS, type Signal, type SignalNames } from '../signals.js';
-import type { Blocker, Comment, Feature, Ticket, TicketReference, Tracker } from '../tracker.js';
+import type {
+	Blocker,
+	Comment,
+	Feature,
+	FeatureWriter,
+	ItemText,
+	Ticket,
+	TicketReference,
+	Tracker
+} from '../tracker.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
 
@@ -11,6 +20,8 @@ export interface AzureBoardsSettings {
 	readonly project: string;
 	// the work item type that plays the Feature
 	readonly featureType: string;
+	// the work item type a Ticket is made as; without one, no Ticket is made
+	readonly ticketType?: string | undefined;
 }
 
 const API = 'api-version=7.1';
@@ -22,6 +33,7 @@ const BATCH = 200;
 const COMMENTS_PAGE = 200;
 
 const CHILD = 'System.LinkTypes.Hierarchy-Forward';
+const PARENT = 'System.LinkTypes.Hierarchy-Reverse';
 const PREDECESSOR = 'System.LinkTypes.Dependency-Reverse';
 // Set when an item reaches a closed state of the team's process: whether it is closed, without reading the state.
 const CLOSED_DATE = 'Microsoft.VSTS.Common.ClosedDate';
@@ -120,7 +132,7 @@ function kept<T>(read: (key: string) => Promise<T>): (key: string) => Promise<T>
 	};
 }
 
-export class AzureBoardsTracker implements Tracker {
+export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	private readonly project: string;
 	private readonly signedIn = kept(() =>
 		this.api
@@ -367,5 +379,53 @@ export class AzureBoardsTracker implements Tracker {
 
 	reference(id: number): TicketReference {
 		return { id, text: `AB#${String(id)}` };
+	}
+
+	// A work item of `type` whose Description is Markdown, so a Ticket's lines read back as written.
+	private async create(type: string, item: ItemText, links: readonly unknown[]): Promise<number> {
+		const made = await this.api.parse(
+			`make the ${type} ${item.title}`,
+			{
+				method: 'POST',
+				url: this.api.at(`${this.project}/_apis/wit/workitems/$${encodeURIComponent(type)}?${API}`),
+				body: [
+					{ op: 'add', path: '/fields/System.Title', value: item.title },
+					{ op: 'add', path: '/fields/System.Description', value: item.body },
+					{ op: 'add', path: '/multilineFieldsFormat/System.Description', value: 'Markdown' },
+					...links.map((value) => ({ op: 'add', path: '/relations/-', value }))
+				],
+				contentType: 'application/json-patch+json'
+			},
+			ItemSchema
+		);
+		return made.id;
+	}
+
+	private link(rel: string, id: number) {
+		return { rel, url: this.api.at(`_apis/wit/workItems/${String(id)}`) };
+	}
+
+	createFeature(feature: ItemText): Promise<number> {
+		return this.create(this.settings.featureType, feature, []);
+	}
+
+	createTicket(featureId: number, ticket: ItemText): Promise<number> {
+		const type = this.settings.ticketType;
+		if (type === undefined) {
+			return Promise.reject(
+				new AzureDevOpsFailure('Name the work item type of a Ticket as tracker.ticketType.')
+			);
+		}
+		return this.create(type, ticket, [this.link(PARENT, featureId)]);
+	}
+
+	async block(id: number, blocker: number): Promise<void> {
+		const n = String(id);
+		await this.api.call(`link work item ${n} after ${String(blocker)}`, {
+			method: 'PATCH',
+			url: this.api.at(`${this.project}/_apis/wit/workitems/${n}?${API}`),
+			body: [{ op: 'add', path: '/relations/-', value: this.link(PREDECESSOR, blocker) }],
+			contentType: 'application/json-patch+json'
+		});
 	}
 }

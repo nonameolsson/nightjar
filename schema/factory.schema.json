@@ -54,6 +54,11 @@
 							"type": "string",
 							"pattern": "\\S",
 							"description": "The work item type that plays the Feature, such as Feature, Epic or Product Backlog Item"
+						},
+						"ticketType": {
+							"description": "The work item type nightjar create makes each Ticket as, such as User Story, Product Backlog Item or Issue. Left out, nightjar create makes no Tickets.",
+							"type": "string",
+							"pattern": "\\S"
 						}
 					},
 					"required": [
