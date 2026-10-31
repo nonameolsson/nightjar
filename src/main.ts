@@ -7,7 +7,7 @@ import { makeAdapters, type Adapters } from './adapters.js';
 import { apiKeyProblem, parseArgs, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
-import { ConfigError, loadConfig, type Config } from './config.js';
+import { ConfigError, loadConfig, loadRules, type Config } from './config.js';
 import { firstLine, run, type Env } from './git.js';
 import { buildOne, dryRun, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
@@ -45,6 +45,7 @@ interface Ready {
 	readonly adapters: Adapters;
 	readonly me: string;
 	readonly baseBranch: string;
+	readonly rules: string | null;
 }
 
 async function preflight(args: Args, env: Env): Promise<Ready> {
@@ -56,6 +57,7 @@ async function preflight(args: Args, env: Env): Promise<Ready> {
 	const top = ['rev-parse', '--show-toplevel'];
 	const root = await need('git', top, process.cwd(), env, 'not inside a git checkout');
 	const config = loadConfig(root);
+	const rules = loadRules(root, config);
 	const adapters = await makeAdapters(config, root, env);
 	const me = await adapters.tracker.me();
 	const claude = await need('claude', ['--version'], root, env, 'claude does not start');
@@ -72,7 +74,7 @@ async function preflight(args: Args, env: Env): Promise<Ready> {
 	say(
 		`checked: ${key}, Node ${process.versions.node}, factory.json, ${adapters.checked(me)}, claude ${claude}, ${sign}`
 	);
-	return { root, config, adapters, me, baseBranch };
+	return { root, config, adapters, me, baseBranch, rules };
 }
 
 export async function runNightjar(argv: readonly string[]): Promise<number> {
@@ -117,6 +119,9 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 		baseBranch: ready.baseBranch,
 		check: config.check,
 		allowedCommands: config.allowedCommands,
+		...(ready.rules === null ? {} : { rules: ready.rules }),
+		defaults: { model: config.model, effort: config.effort },
+		review: config.review,
 		allowApiKey: args.useApiKey,
 		env,
 		...(args.model === undefined ? {} : { model: args.model }),
