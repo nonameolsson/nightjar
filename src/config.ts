@@ -81,7 +81,35 @@ export const ConfigSchema = z
 		trusted: z.array(z.string().regex(/\S/, 'a trusted login is empty')).optional().meta({
 			description:
 				'The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.'
-		})
+		}),
+		// worktree setup and reserved ports (N5)
+		setup: z.string().regex(/\S/, 'name the setup command, or leave setup out').optional().meta({
+			description:
+				'The shell command run once in each new worktree, before the first session, such as one that installs dependencies. When it fails, the Feature stops with a comment saying why. Left out, nothing is run.'
+		}),
+		ports: z
+			.strictObject({
+				count: z.number().int().min(1).max(100).meta({ description: 'How many ports to reserve' }),
+				env: z
+					.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'not a valid variable name'), {
+						error: missingOr('name the environment variables that carry the ports')
+					})
+					.min(1, 'name at least one environment variable')
+					.refine((names) => new Set(names).size === names.length, 'a name is used twice')
+					.meta({
+						description:
+							'The environment variables that carry the ports to every session, the check and the setup command: the first name gets the first reserved port, the next name the next port, and so on'
+					})
+			})
+			.refine((p) => p.env.length <= p.count, {
+				path: ['env'],
+				error: 'more names than reserved ports'
+			})
+			.optional()
+			.meta({
+				description:
+					'Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.'
+			})
 	})
 	.meta({ title: 'Nightjar factory.json' });
 

@@ -53,6 +53,8 @@ export interface Deps {
 	readonly codeHost: CodeHost;
 	readonly session: Session;
 	readonly runCheck: RunCheck;
+	// the worktree setup command, run through the same shell as the check
+	readonly runSetup: RunCheck;
 	readonly now: () => Date;
 	readonly newId: () => string;
 	readonly say: (line: string) => void;
@@ -69,6 +71,10 @@ export interface Setup {
 	// factory.json's check and allowedCommands
 	readonly check: string;
 	readonly allowedCommands: readonly string[];
+	// factory.json's setup: run once in each new worktree, before the first session
+	readonly setupCommand?: string;
+	// the reserved ports as environment variables, held by the run for its whole life
+	readonly portEnv?: Readonly<Record<string, string>>;
 	readonly allowApiKey: boolean;
 	readonly env: Env;
 	readonly model?: string;
@@ -88,6 +94,9 @@ export type FeatureOutcome =
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
+
+// What every session and command of the run sees: the machine's environment and the reserved ports.
+const envOf = (setup: Setup): Env => ({ ...setup.env, ...setup.portEnv });
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
 const logsPath = (root: string) => join(root, '.factory', 'logs');
@@ -133,8 +142,36 @@ export async function buildFeature(deps: Deps, setup: Setup, id: number): Promis
 	});
 	const tickets = await tracker.tickets(id);
 	const tree = await openWorktree(setup.root, setup.worktrees, branch, setup.baseBranch, setup.env);
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, await tree.built());
+	const built = await tree.built();
+	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
+		const command = setup.setupCommand;
+		deps.say(`${hash(id)}: setup: ${command}`);
+		const got = await deps.runSetup(command, tree.at.folder, envOf(setup));
+		if (!got.ok) return setupFailed(deps, id, command, got.tail, waiting(tickets, built));
+		await tree.markSetUp();
+	}
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built);
 	return run.build();
+}
+
+// The setup command failed: the Feature goes back to a person with the output, and the next run
+// sets the worktree up again.
+async function setupFailed(
+	deps: Deps,
+	id: number,
+	command: string,
+	tail: string,
+	left: Waiting[]
+): Promise<FeatureOutcome> {
+	const why = `the setup command \`${command}\` failed`;
+	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
+	await deps.tracker.removeSignal(id, 'working');
+	await deps.tracker.addSignal(id, 'needsInfo');
+	await deps.tracker.comment(
+		id,
+		`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${tail}\n\`\`\`${FOOTER}`
+	);
+	return { kind: 'nothing', waiting: left };
 }
 
 class FeatureRun {
@@ -201,7 +238,7 @@ class FeatureRun {
 			minutes: setup.limits.ticketMinutes,
 			log: join(logsPath(setup.root), `${over.sessionId}.jsonl`),
 			allowApiKey: setup.allowApiKey,
-			env: setup.env,
+			env: envOf(setup),
 			signal: setup.signal,
 			...over
 		};
@@ -325,7 +362,7 @@ class FeatureRun {
 		const { limits, check: command } = this.setup;
 		let summary = built;
 		let ticketSpent = cost;
-		let check = await this.deps.runCheck(command, this.tree.at.folder);
+		let check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
 		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
 			const budget = limits.ticketUsd - ticketSpent;
 			if (budget < 1) break;
@@ -352,7 +389,7 @@ class FeatureRun {
 			});
 			if (!done || this.aborted) break;
 			summary = `${summary}\n\n${fixed.summary}`;
-			check = await this.deps.runCheck(command, this.tree.at.folder);
+			check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
 		}
 		if (this.aborted) {
 			await this.tree.discard(before, ticket.id);
@@ -524,7 +561,7 @@ async function reviewFeature(
 		sessionId,
 		log: join(logsPath(setup.root), `${sessionId}.jsonl`),
 		allowApiKey: setup.allowApiKey,
-		env: setup.env,
+		env: envOf(setup),
 		signal: setup.signal
 	});
 	const review = result.kind === 'done' ? readReview(result.output) : null;

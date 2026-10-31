@@ -57,7 +57,7 @@ const CLAUDE = String.raw`
 [ "$1" = --version ] && { echo "2.1.314 (Claude Code)"; exit 0; }
 case "$*" in
   *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
-  *) echo work > built.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
+  *) echo work > built.txt; echo "${'$'}{WEB_PORT:-none}" > port.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
 esac
 echo '{"type":"system","subtype":"init","apiKeySource":"none"}'
 echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.5,\"structured_output\":$out}"`;
@@ -86,6 +86,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 		GIT_AUTHOR_EMAIL: 'test@example.com',
 		GIT_COMMITTER_NAME: 'Test',
 		GIT_COMMITTER_EMAIL: 'test@example.com',
+		// the port locks live in the temporary folder, so each run of the spec has its own
+		TMPDIR: base,
 		FAKE_GH_CALLS: join(base, 'gh-calls.txt')
 	};
 	delete env.ANTHROPIC_API_KEY;
@@ -187,6 +189,43 @@ describe('nightjar FEATURE', () => {
 			recent: unknown[];
 		};
 		expect(status.recent).toMatchObject([{ kind: 'failed', feature: 1 }]);
+	}, 30_000);
+});
+
+describe('nightjar FEATURE with a setup command and reserved ports', () => {
+	const tree = (env: Record<string, string>) => {
+		const trees = join(env.HOME ?? '', '.nightjar', 'worktrees');
+		const [folder] = readdirSync(trees);
+		return join(trees, folder ?? '', '1-one-escape');
+	};
+
+	it('runs the setup in the new worktree and gives the session the reserved ports, held until it ends', () => {
+		const config = { setup: 'echo ready > setup.txt', ports: { count: 3, env: ['WEB_PORT'] } };
+		const { env, nightjar } = world(true, config);
+		const run = nightjar(['1']);
+		expect(run.status).toBe(0);
+		expect(run.stdout).toContain('nightjar: ports 4477 to 4479');
+		expect(readFileSync(join(tree(env), 'setup.txt'), 'utf8')).toBe('ready\n');
+		expect(readFileSync(join(tree(env), 'port.txt'), 'utf8')).toBe('4477\n');
+		// the locks are given back when the run ends
+		expect(readdirSync(join(env.TMPDIR ?? '', 'nightjar-ports'))).toEqual([]);
+	}, 30_000);
+
+	it('stops the Feature with a comment when the setup fails, before any session', () => {
+		const { env, nightjar, calls } = world(true, { setup: 'echo no network; exit 3' });
+		nightjar(['1']);
+		expect(calls()).toMatch(
+			/-X POST repos\/o\/r\/issues\/1\/comments -f body=Nightjar built nothing: the setup command `echo no network; exit 3` failed[\s\S]*no network/
+		);
+		expect(existsSync(join(tree(env), 'built.txt'))).toBe(false);
+	}, 30_000);
+
+	it('holds no port and runs no setup when neither is configured', () => {
+		const { env, nightjar } = world();
+		const run = nightjar(['1']);
+		expect(run.stdout).not.toContain('ports');
+		expect(readFileSync(join(tree(env), 'port.txt'), 'utf8')).toBe('none\n');
+		expect(existsSync(join(env.TMPDIR ?? '', 'nightjar-ports'))).toBe(false);
 	}, 30_000);
 });
 
