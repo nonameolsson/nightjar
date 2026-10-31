@@ -82,7 +82,7 @@ A full one:
 
 | Key               | Required | What it does                                                                                                                                                                                                       |
 | ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "azure-devops" }` with `organization` (as in `dev.azure.com/<organization>`), `project`, and `featureType`, the work item type that plays the Feature (`Feature`, `Epic`, `Product Backlog Item`, …): its child work items are its Tickets. Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
+| `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "azure-devops" }` with `organization` (as in `dev.azure.com/<organization>`), `project`, and `featureType`, the work item type that plays the Feature (`Feature`, `Epic`, `Product Backlog Item`, …): its child work items are its Tickets. `ticketType`, optional, is the work item type `nightjar create` makes each Ticket as (`User Story`, `Product Backlog Item`, `Issue`, …). Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
 | `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or `{ "type": "azure-devops" }` with `organization`, `project` and `repo`, the Git repo on Azure Repos the branch is pushed to and the draft pull request opened on. Or a `module`, as for `tracker`. |
 | `check`           | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
 | `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list. The list may be empty. |
@@ -154,6 +154,24 @@ npx nightjar contract ./tools/my-tracker.contract.js
 
 `nightjar contract` runs the same contract suite the built-in Adapters meet over the harnesses a module exports, prints every behaviour, names each one that fails, and exits 1 if any does. Nightjar refuses to start when a named module cannot be loaded or lacks a method of the interface. [docs/custom-adapters.md](docs/custom-adapters.md) has a minimal module and a test harness.
 
+## Write a Feature
+
+What a Ticket must hold (acceptance criteria, blocking links, optional Model and Effort lines) is the [Ticket contract](docs/ticket-contract.md). Write a Feature and its Tickets by hand on the Tracker, as in [Give the Go](#give-the-go), or as one Markdown file in the contract's shape and let Nightjar make them through the configured Tracker:
+
+```bash
+npx nightjar create --dry-run plans/escape.md   # says what it would make
+npx nightjar create plans/escape.md
+```
+
+`nightjar create` makes the Feature with no Signal and each Ticket ready, linked to its blockers. It works with GitHub Issues, with Azure DevOps Boards once `tracker.ticketType` is set, and with a Tracker module that makes Features ([docs/custom-adapters.md](docs/custom-adapters.md)).
+
+The package ships a Claude Code skill, `nightjar-feature`, that writes that file from an idea agreed in the conversation and runs `nightjar create`; it needs no other skill. Copy it into the repo to use it:
+
+```bash
+mkdir -p .claude/skills
+cp -R node_modules/@nonameolsson/nightjar/skills/nightjar-feature .claude/skills/
+```
+
 ## Give the Go
 
 Nightjar builds a Feature that is **assigned to you** and carries the **Go** Signal (the label `factory-go` by default). Nothing else starts a build.
@@ -201,7 +219,7 @@ npx nightjar --dry-run
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `--dry-run`, `--once`, `--watch` or a Feature number. `--use-api-key`, `--model` and `--effort` combine with any of them.
+Pick exactly one of `--dry-run`, `--once`, `--watch` or a Feature number. `--use-api-key`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module.
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker login (`gh`, or the Azure DevOps sign-in), the Azure Repos repo when it is the Code host, `claude`, and commit signing, and prints what it found. Exit code 2 means it refused to start; the message says why.
 
@@ -244,7 +262,6 @@ Planned, not built yet:
 
 - `nightjar init`: asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins.
 - `nightjar doctor`: re-runs those checks at any time (today's `--dry-run`).
-- A skill that writes a Feature and its Tickets through the configured Tracker.
 - Publishing to npm.
 
 ## Develop

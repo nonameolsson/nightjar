@@ -11,6 +11,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | --dry-run> [
   --model M      the model of every session, over a Ticket's own line and factory.json
   --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
 
+       nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
        nightjar contract MODULE   check a module's own Tracker or Code host against the contract suites`;
 
 export interface Args {

@@ -53,3 +53,36 @@ export interface Tracker {
 	comment(id: number, body: string): Promise<void>;
 	reference(id: number): TicketReference;
 }
+
+// The title and body of a Feature or Ticket to be made.
+export interface ItemText {
+	readonly title: string;
+	readonly body: string;
+}
+
+// The optional half of a Tracker that makes Features and Tickets (docs/ticket-contract.md). Apart from
+// `Tracker`, so a Tracker module written before it still loads; `nightjar create` needs it.
+export interface FeatureWriter {
+	// a Feature that carries no Signal and is assigned to no one; gives its id
+	createFeature(feature: ItemText): Promise<number>;
+	// a Ticket made the Feature's last child, carrying no Signal; gives its id
+	createTicket(featureId: number, ticket: ItemText): Promise<number>;
+	// links `id` as blocked by `blocker`, so `tickets` gives `blocker` among its blockers
+	block(id: number, blocker: number): Promise<void>;
+}
+
+// Typed as a record, so a method added to FeatureWriter fails to compile until it is listed here.
+const WRITER_METHODS: Record<keyof FeatureWriter, true> = {
+	createFeature: true,
+	createTicket: true,
+	block: true
+};
+
+export const FEATURE_WRITER_METHODS = Object.keys(
+	WRITER_METHODS
+) as readonly (keyof FeatureWriter)[];
+
+export function canCreate(tracker: Tracker): tracker is Tracker & FeatureWriter {
+	const methods = tracker as unknown as Record<string, unknown>;
+	return FEATURE_WRITER_METHODS.every((name) => typeof methods[name] === 'function');
+}

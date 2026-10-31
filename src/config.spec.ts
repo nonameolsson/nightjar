@@ -168,6 +168,20 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(new RegExp(`^factory\\.json: ${field}: missing: `, 'm'));
 	});
 
+	it('loads the work item type a Ticket is made as, for nightjar create', () => {
+		const tracker = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature',
+			ticketType: 'User Story'
+		};
+		write({ ...VALID, tracker });
+		expect(loadConfig(root).tracker).toEqual(tracker);
+		write({ ...VALID, tracker: { ...tracker, ticketType: ' ' } });
+		expect(refusal()).toMatch(/^factory\.json: tracker\.ticketType: /m);
+	});
+
 	it('refuses an Azure DevOps organization given as an address, not a name', () => {
 		const tracker = {
 			type: 'azure-devops',

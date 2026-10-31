@@ -38,6 +38,23 @@ interface IssueComment {
 
 const NOT_FOUND = failed('gh: Not Found (HTTP 404)');
 
+const INVALID = (why: string) => failed(`gh: Validation Failed: ${why} (HTTP 422)`);
+
+// GitHub's own id of an issue, which its sub-issue and dependency calls take, apart from its number.
+const databaseId = (number: number) => 4_000_000 + number * 7;
+
+// An integer field, as `gh api -F` sends one; `-f` would send it as a string, which GitHub refuses.
+function integerField(call: GhCall, name: string): number | null {
+	for (let i = 0; i < call.args.length - 1; i += 1) {
+		const field = call.args[i + 1] ?? '';
+		if (call.args[i] === '-F' && field.startsWith(`${name}=`)) {
+			const value = field.slice(name.length + 1);
+			return /^\d+$/.test(value) ? Number(value) : null;
+		}
+	}
+	return null;
+}
+
 export class FakeGitHub {
 	private readonly issues = new Map<number, Issue>();
 	private readonly comments = new Map<number, IssueComment[]>();
@@ -97,6 +114,7 @@ export class FakeGitHub {
 		const repo = `repos/${this.repo}`;
 		if (method === 'GET' && path === 'user') return ok({ login: this.person });
 		if (method === 'GET' && path === `${repo}/issues`) return ok(this.list(call.query));
+		if (method === 'POST' && path === `${repo}/issues`) return this.openIssue(call);
 		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
 		if (method === 'POST' && path === `${repo}/pulls`) return this.openPull(call);
 		const pullNumber = new RegExp(`^${repo}/pulls/(\\d+)$`).exec(path);
@@ -119,6 +137,8 @@ export class FakeGitHub {
 		if (method === 'GET' && rest === '/dependencies/blocked_by') {
 			return ok(this.renderAll(issue.blockedBy));
 		}
+		if (method === 'POST' && rest === '/sub_issues') return this.adopt(issue, call);
+		if (method === 'POST' && rest === '/dependencies/blocked_by') return this.blockBy(issue, call);
 		if (method === 'GET' && rest === '/comments') {
 			return ok((this.comments.get(issue.number) ?? []).map((c) => this.renderComment(c)));
 		}
@@ -130,6 +150,43 @@ export class FakeGitHub {
 		if (method === 'DELETE' && label)
 			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
 		return NOT_FOUND;
+	}
+
+	private openIssue(call: GhCall): Run {
+		const title = call.fields.title;
+		const body = call.fields.body;
+		if (typeof title !== 'string' || title.trim() === '') return INVALID('title is missing');
+		const number = this.issue({
+			title,
+			body: typeof body === 'string' ? body : null,
+			state: 'open',
+			labels: [],
+			assignees: []
+		});
+		return ok(this.render(this.get(number)));
+	}
+
+	// The issue whose id `field` names, as GitHub takes it.
+	private byId(call: GhCall, field: string): Issue | undefined {
+		const id = integerField(call, field);
+		return [...this.issues.values()].find((i) => databaseId(i.number) === id);
+	}
+
+	// GitHub gives a sub-issue one parent and puts it last among the parent's.
+	private adopt(parent: Issue, call: GhCall): Run {
+		const child = this.byId(call, 'sub_issue_id');
+		if (child === undefined) return INVALID('sub_issue_id is not the id of an issue');
+		const taken = [...this.issues.values()].some((i) => i.subIssues.includes(child.number));
+		if (taken) return INVALID('the issue already has a parent');
+		this.addSubIssue(parent.number, child.number);
+		return ok(this.render(this.get(parent.number)));
+	}
+
+	private blockBy(blocked: Issue, call: GhCall): Run {
+		const blocker = this.byId(call, 'issue_id');
+		if (blocker === undefined) return INVALID('issue_id is not the id of an issue');
+		if (!blocked.blockedBy.includes(blocker.number)) this.block(blocked.number, blocker.number);
+		return ok(this.render(blocker));
 	}
 
 	// GitHub refuses a second open pull request for one head branch.
@@ -249,6 +306,7 @@ export class FakeGitHub {
 
 	private render(issue: Issue) {
 		return {
+			id: databaseId(issue.number),
 			number: issue.number,
 			title: issue.title,
 			body: issue.body,

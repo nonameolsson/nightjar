@@ -193,6 +193,63 @@ describe('makeAdapters with a module', () => {
 	});
 });
 
+const WRITER = `createFeature: async () => 1, createTicket: async () => 2, block: async () => {},`;
+
+describe('makeAdapters and creating Features', () => {
+	it('gives GitHub Issues as the Tracker that makes Features and Tickets', async () => {
+		const { tracker, writer } = await makeAdapters(config({}), dir, env());
+		expect(writer).toBe(tracker);
+	});
+
+	it('gives Azure DevOps Boards as one only once factory.json names the type of a Ticket', async () => {
+		const tracker = {
+			type: 'azure-devops' as const,
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		const without = await makeAdapters(config({ tracker }), dir, env());
+		expect(without.writer).toBe(
+			'factory.json: tracker.ticketType: name the work item type each Ticket is made as, such as User Story'
+		);
+		const named = await makeAdapters(
+			config({ tracker: { ...tracker, ticketType: 'User Story' } }),
+			dir,
+			env()
+		);
+		expect(named.writer).toBe(named.tracker);
+	});
+
+	it('gives a module that has every method of FeatureWriter, and says why not of one that has none', async () => {
+		moduleFile('writes.mjs', `export const createTracker = () => (${trackerBody(WRITER)});`);
+		moduleFile('reads.mjs', `export const createTracker = () => (${trackerBody()});`);
+		const writes = await makeAdapters(
+			config({ tracker: { type: 'module', path: './writes.mjs' } }),
+			dir,
+			env()
+		);
+		expect(writes.writer).toBe(writes.tracker);
+		const reads = await makeAdapters(
+			config({ tracker: { type: 'module', path: './reads.mjs' } }),
+			dir,
+			env()
+		);
+		expect(reads.writer).toBe(
+			'factory.json: tracker: ./reads.mjs makes no Features; its Tracker needs createFeature, createTicket and block'
+		);
+	});
+
+	it('refuses a module that has some methods of FeatureWriter and not all, naming the rest', async () => {
+		moduleFile(
+			'half.mjs',
+			`export const createTracker = () => (${trackerBody('createFeature: async () => 1,')});`
+		);
+		expect(await refusal(config({ tracker: { type: 'module', path: './half.mjs' } }))).toBe(
+			'factory.json: tracker: createTracker in ./half.mjs returned a Tracker that makes Features without these methods: createTicket, block'
+		);
+	});
+});
+
 // An az signed in with the token the fake Azure DevOps takes, which notes each time it is asked.
 function signedInAz() {
 	const az = join(dir, 'az');
@@ -303,5 +360,20 @@ describe('makeAdapters pairs each Tracker with Azure Repos as the Code host', ()
 		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
 		const adapters = await makeAdapters(config({ codeHost: repos }), dir, env(), ado.request);
 		await expect(adapters.reachCodeHost()).rejects.toThrow(/could not read the repo app: HTTP 404/);
+	});
+
+	it('still makes Features through the Tracker whose references it rewrites for Azure Repos', async () => {
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		const tracker = { ...boards('contoso'), ticketType: 'Product Backlog Item' };
+		const adapters = await makeAdapters(
+			config({ tracker, codeHost: repos }),
+			dir,
+			env(),
+			ado.request
+		);
+		signedInAz();
+		if (typeof adapters.writer === 'string') throw new Error(adapters.writer);
+		const feature = await adapters.writer.createFeature({ title: 'A', body: 'The spec.' });
+		expect((await adapters.tracker.feature(feature)).title).toBe('A');
 	});
 });
