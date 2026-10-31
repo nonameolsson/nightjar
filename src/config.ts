@@ -24,12 +24,14 @@ const missingOr = (what: string) => (issue: { input: unknown }) =>
 
 const named = (what: string) => z.string({ error: missingOr(what) }).regex(/\S/, what);
 
+const organization = named('name the organization')
+	.regex(/^[^/\s:]+$/, 'the organization name alone, as in dev.azure.com/<organization>')
+	.meta({ description: 'The organization, as in dev.azure.com/<organization>' });
+
 const AzureDevOpsTracker = z
 	.strictObject({
 		type: z.literal('azure-devops'),
-		organization: named('name the organization')
-			.regex(/^[^/\s:]+$/, 'the organization name alone, as in dev.azure.com/<organization>')
-			.meta({ description: 'The organization, as in dev.azure.com/<organization>' }),
+		organization,
 		project: named('name the project').meta({ description: 'The project that holds the Features' }),
 		featureType: named('name the work item type that plays the Feature').meta({
 			description:
@@ -44,6 +46,18 @@ const AzureDevOpsTracker = z
 const GitHubCodeHost = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
+
+const AzureReposCodeHost = z
+	.strictObject({
+		type: z.literal('azure-devops'),
+		organization,
+		project: named('name the project').meta({ description: 'The project that holds the repo' }),
+		repo: named('name the repo').meta({ description: 'The Git repo on Azure Repos, by name' })
+	})
+	.meta({
+		description:
+			'Azure Repos: the branch is pushed to the repo and a draft pull request opened, signed in as for Azure DevOps Boards'
+	});
 
 // An Adapter the repo brings itself: a module (docs/custom-adapters.md) that builds the Tracker or Code host.
 const adapterModule = (what: string) =>
@@ -102,9 +116,13 @@ export const ConfigSchema = z
 			})
 			.meta({ description: 'Where the Features and Tickets live' }),
 		codeHost: z
-			.discriminatedUnion('type', [GitHubCodeHost, adapterModule('Code host')], {
-				error: missingOr('name the Code host')
-			})
+			.discriminatedUnion(
+				'type',
+				[GitHubCodeHost, AzureReposCodeHost, adapterModule('Code host')],
+				{
+					error: missingOr('name the Code host')
+				}
+			)
 			.meta({ description: 'Where the branch is pushed and the draft pull request opened' }),
 		check: z
 			.string({ error: missingOr('name the command that checks the work') })

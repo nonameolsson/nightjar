@@ -1,24 +1,60 @@
-// The Tracker and Code host factory.json names, built over this machine's gh and git.
+// The Tracker and Code host factory.json names, built over this machine's gh, git and Azure DevOps
+// sign-in, and paired so each Ticket reference is one the Code host can place.
 import { codeHostFromModule, trackerFromModule } from './adapter-module.js';
-import { AzureBoardsTracker, openAzureDevOps } from './azure-devops/index.js';
+import {
+	AzureBoardsTracker,
+	AzureReposCodeHost,
+	azRunner,
+	azureDevOpsSignIn,
+	fetchRequest,
+	openAzureDevOps,
+	type AzureDevOpsRequest,
+	type AzureDevOpsSignIn,
+	type ReferencesAs
+} from './azure-devops/index.js';
 import type { CodeHost } from './code-host.js';
 import { ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
 import { ghRunner, repoFromRemote } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
 import { GitHubTracker } from './github/tracker.js';
-import type { Tracker } from './tracker.js';
+import type { TicketReference, Tracker } from './tracker.js';
 
 export interface Adapters {
 	readonly tracker: Tracker;
 	readonly codeHost: CodeHost;
 	// what the ledger names the repo by
 	readonly repo: string;
-	// how the preflight line names the Tracker it reached, as `person`
+	// how the preflight line names the Tracker it reached, as `person`, and the Code host
 	readonly checked: (person: string) => string;
+	// reaches the Code host, so a run that cannot push stops before it builds anything
+	readonly reachCodeHost: () => Promise<void>;
 }
 
-export async function makeAdapters(config: Config, root: string, env: Env): Promise<Adapters> {
+// The Tracker with its references rewritten for the Code host; every other call goes to it as it is.
+function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketReference): Tracker {
+	return {
+		me: () => tracker.me(),
+		assignedFeatures: (person) => tracker.assignedFeatures(person),
+		feature: (id) => tracker.feature(id),
+		tickets: (featureId) => tracker.tickets(featureId),
+		comments: (id) => tracker.comments(id),
+		addSignal: (id, signal) => tracker.addSignal(id, signal),
+		removeSignal: (id, signal) => tracker.removeSignal(id, signal),
+		comment: (id, body) => tracker.comment(id, body),
+		reference: (id) => fit(tracker.reference(id))
+	};
+}
+
+const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+// `request` answers every Azure DevOps call; a spec passes a fake Azure DevOps.
+export async function makeAdapters(
+	config: Config,
+	root: string,
+	env: Env,
+	request: AzureDevOpsRequest = fetchRequest
+): Promise<Adapters> {
 	let origin: string | null | undefined;
 	const fromOrigin = async (field: string) => {
 		if (origin === undefined) {
@@ -34,6 +70,12 @@ export async function makeAdapters(config: Config, root: string, env: Env): Prom
 	};
 	const gh = ghRunner(root, env);
 	const git = (args: readonly string[], cwd: string) => run('git', args, cwd, env);
+	// one sign-in for every Azure DevOps Adapter, made when the first needs it
+	let signIn: AzureDevOpsSignIn | undefined;
+	const azureDevOps = (organization: string) => {
+		signIn ??= azureDevOpsSignIn(azRunner(root, env), env);
+		return openAzureDevOps(organization, root, env, signIn, request);
+	};
 
 	const context = {
 		root,
@@ -42,28 +84,64 @@ export async function makeAdapters(config: Config, root: string, env: Env): Prom
 	};
 	let tracker: Tracker;
 	let checked: (person: string) => string;
+	let trackerRepo: string | null = null;
 	if (config.tracker.type === 'module') {
 		const { path } = config.tracker;
 		tracker = await trackerFromModule(config.tracker, context);
 		checked = (person) => `${path} as ${person}`;
 	} else if (config.tracker.type === 'azure-devops') {
 		const { organization, project } = config.tracker;
-		const api = openAzureDevOps(organization, root, env);
+		const api = azureDevOps(organization);
 		tracker = new AzureBoardsTracker(api, config.tracker, config.signals, config.trusted);
 		checked = (person) => `Azure DevOps as ${person} on ${organization}/${project}`;
 	} else {
-		const trackerRepo = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
-		tracker = new GitHubTracker(trackerRepo, gh, config.signals, config.trusted);
-		checked = (person) => `gh as ${person} on ${trackerRepo}`;
+		const named = config.tracker.repo ?? (await fromOrigin('tracker.repo'));
+		trackerRepo = named;
+		tracker = new GitHubTracker(named, gh, config.signals, config.trusted);
+		checked = (person) => `gh as ${person} on ${named}`;
 	}
-	let codeHost: CodeHost;
-	let repo: string;
+
 	if (config.codeHost.type === 'module') {
-		codeHost = await codeHostFromModule(config.codeHost, context);
-		repo = config.codeHost.path;
-	} else {
-		repo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
-		codeHost = new GitHubCodeHost(repo, gh, git);
+		const codeHost = await codeHostFromModule(config.codeHost, context);
+		return {
+			tracker,
+			codeHost,
+			repo: config.codeHost.path,
+			checked,
+			reachCodeHost: () => Promise.resolve()
+		};
 	}
-	return { tracker, codeHost, repo, checked };
+	if (config.codeHost.type === 'github') {
+		const repo = config.codeHost.repo ?? (await fromOrigin('codeHost.repo'));
+		const codeHost = new GitHubCodeHost(repo, gh, git);
+		return { tracker, codeHost, repo, checked, reachCodeHost: () => Promise.resolve() };
+	}
+
+	const { organization, project, repo } = config.codeHost;
+	const t = config.tracker;
+	const linked = t.type === 'azure-devops' && sameName(t.organization, organization);
+	const referencesAs: ReferencesAs = linked ? 'work items' : 'text';
+	const codeHost = new AzureReposCodeHost(
+		azureDevOps(organization),
+		{ project, repo, referencesAs },
+		(args, cwd, extra) => run('git', args, cwd, { ...env, ...extra })
+	);
+	// Azure Repos reads #N as a work item of its own organization, so any other Ticket is named by its page
+	let fit: ((r: TicketReference) => TicketReference) | null = null;
+	if (linked) {
+		fit = (r) => ({ ...r, text: `#${String(r.id)}` });
+	} else if (t.type === 'azure-devops') {
+		const page = `https://dev.azure.com/${encodeURIComponent(t.organization)}/${encodeURIComponent(t.project)}/_workitems/edit/`;
+		fit = (r) => ({ ...r, text: `[work item ${String(r.id)}](${page}${String(r.id)})` });
+	} else if (trackerRepo !== null) {
+		const page = `https://github.com/${trackerRepo}/issues/`;
+		fit = (r) => ({ ...r, text: `[issue ${String(r.id)}](${page}${String(r.id)})` });
+	}
+	return {
+		tracker: fit === null ? tracker : referencing(tracker, fit),
+		codeHost,
+		repo: `${organization}/${project}/${repo}`,
+		checked: (person) => `${checked(person)}, Azure Repos ${organization}/${project}/${repo}`,
+		reachCodeHost: () => codeHost.check()
+	};
 }

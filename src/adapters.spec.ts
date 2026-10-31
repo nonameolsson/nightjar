@@ -1,9 +1,10 @@
 // The Tracker makeAdapters builds speaks the trust factory.json gives it.
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { makeAdapters } from './adapters.js';
+import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';
 import { ConfigError, type Config } from './config.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 let dir: string;
@@ -189,5 +190,118 @@ describe('makeAdapters with a module', () => {
 		expect(await refusal(config({ tracker: { type: 'module', path: './tracker.mjs' } }))).toBe(
 			'factory.json: tracker: createTracker in ./tracker.mjs failed: no token'
 		);
+	});
+});
+
+// An az signed in with the token the fake Azure DevOps takes, which notes each time it is asked.
+function signedInAz() {
+	const az = join(dir, 'az');
+	writeFileSync(
+		az,
+		`#!/usr/bin/env bash\necho asked >> "${join(dir, 'az-asked')}"\necho '{"accessToken":"fake-azure-devops"}'`
+	);
+	chmodSync(az, 0o755);
+	return () => readFileSync(join(dir, 'az-asked'), 'utf8').trim().split('\n').length;
+}
+
+const boards = (organization: string) => ({
+	type: 'azure-devops' as const,
+	organization,
+	project: 'Fabrikam',
+	featureType: 'Feature'
+});
+
+const repos = {
+	type: 'azure-devops' as const,
+	organization: 'contoso',
+	project: 'Fabrikam',
+	repo: 'app'
+};
+
+// The references a pull request on the fake Azure Repos shows: linked work items, and the body.
+async function placed(c: Config, ticket: (ado: FakeAzureDevOps) => number) {
+	const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+	ado.repository('app');
+	const id = ticket(ado);
+	const adapters = await makeAdapters(c, dir, env(), ado.request);
+	const pull = await adapters.codeHost.createDraft({
+		title: 'A',
+		head: 'factory/1-a',
+		base: 'main',
+		body: 'Built.'
+	});
+	await adapters.codeHost.placeReferences(pull, [adapters.tracker.reference(id)]);
+	return {
+		text: adapters.tracker.reference(id).text,
+		linked: ado.linkedWorkItems(pull.id),
+		body: ado.pullRequestAt(pull.id).description,
+		adapters
+	};
+}
+
+const pbi = (ado: FakeAzureDevOps) => ado.workItem({ type: 'Product Backlog Item', title: 'A' });
+
+describe('makeAdapters pairs each Tracker with Azure Repos as the Code host', () => {
+	it('links a work item of the same organization to the pull request, and names it #N', async () => {
+		signedInAz();
+		const got = await placed(config({ tracker: boards('Contoso'), codeHost: repos }), pbi);
+		expect(got.text).toBe('#1');
+		expect(got.linked).toEqual([1]);
+		expect(got.body).toBe('Built.');
+		expect(got.adapters.repo).toBe('contoso/Fabrikam/app');
+		expect(got.adapters.checked('ann@contoso.com')).toBe(
+			'Azure DevOps as ann@contoso.com on Contoso/Fabrikam, Azure Repos contoso/Fabrikam/app'
+		);
+	});
+
+	it('signs in once for the Tracker and the Code host', async () => {
+		const asked = signedInAz();
+		const got = await placed(config({ tracker: boards('contoso'), codeHost: repos }), pbi);
+		await got.adapters.tracker.me();
+		await got.adapters.reachCodeHost();
+		expect(asked()).toBe(1);
+	});
+
+	it('names a work item of another organization by its page, in the body', async () => {
+		signedInAz();
+		const got = await placed(config({ tracker: boards('northwind'), codeHost: repos }), () => 7);
+		expect(got.text).toBe(
+			'[work item 7](https://dev.azure.com/northwind/Fabrikam/_workitems/edit/7)'
+		);
+		expect(got.linked).toEqual([]);
+		expect(got.body).toContain(`- ${got.text}`);
+	});
+
+	it('names a GitHub issue by its page, never as #N, which Azure Repos reads as a work item', async () => {
+		signedInAz();
+		const got = await placed(config({ codeHost: repos }), () => 7);
+		expect(got.text).toBe('[issue 7](https://github.com/o/r/issues/7)');
+		expect(got.linked).toEqual([]);
+		expect(got.body).toContain(`- ${got.text}`);
+	});
+
+	it("places a module Tracker's own reference in the body", async () => {
+		signedInAz();
+		moduleFile('tracker.mjs', `export const createTracker = async () => (${trackerBody()});`);
+		const got = await placed(
+			config({ tracker: { type: 'module', path: './tracker.mjs' }, codeHost: repos }),
+			() => 7
+		);
+		expect(got.text).toBe('#7');
+		expect(got.linked).toEqual([]);
+		expect(got.body).toContain('- #7');
+	});
+
+	it('keeps the references GitHub as the Code host places: #N, and AB#N for a work item', async () => {
+		expect((await makeAdapters(config({}), dir, env())).tracker.reference(7).text).toBe('#7');
+		const adapters = await makeAdapters(config({ tracker: boards('contoso') }), dir, env());
+		expect(adapters.tracker.reference(7).text).toBe('AB#7');
+	});
+
+	it('stops before a build when the Azure Repos repo cannot be read', async () => {
+		signedInAz();
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		const adapters = await makeAdapters(config({ codeHost: repos }), dir, env(), ado.request);
+		await expect(adapters.reachCodeHost()).rejects.toThrow(/could not read the repo app: HTTP 404/);
 	});
 });
