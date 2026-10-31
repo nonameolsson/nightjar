@@ -65,7 +65,7 @@ echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_co
 // green, or with FAKE_CHECK_RED red, with colour codes as a real check prints them
 const CHECK = String.raw`[ -z "$FAKE_CHECK_RED" ] || { printf '\033[31mred: a failing check\033[0m\n'; exit 1; }`;
 
-function world(withConfig = true) {
+function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 	const bin = join(base, 'bin');
 	mkdirSync(bin);
 	script(bin, 'gh', GH);
@@ -101,7 +101,8 @@ function world(withConfig = true) {
 			tracker: { type: 'github', repo: 'o/r' },
 			codeHost: { type: 'github', repo: 'o/r' },
 			check: CHECK,
-			allowedCommands: ['make test']
+			allowedCommands: ['make test'],
+			...extraConfig
 		};
 		writeFileSync(join(root, 'factory.json'), JSON.stringify(config, null, '\t'));
 	}
@@ -208,6 +209,26 @@ describe('nightjar --dry-run', () => {
 		expect(run.stdout).toContain('nightjar: would build #1 One escape');
 		expect(run.status).toBe(0);
 		expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);
+	}, 30_000);
+
+	it('looks for the Go under the name factory.json gives it', () => {
+		const { nightjar, calls } = world(true, { signals: { go: 'ship-it' } });
+		const run = nightjar(['--dry-run']);
+		expect(run.status).toBe(0);
+		expect(calls()).toMatch(/repos\/o\/r\/issues\?[^\n]*labels=ship-it/);
+	}, 30_000);
+
+	it('looks for factory-go unless factory.json names the Go', () => {
+		const { nightjar, calls } = world();
+		nightjar(['--dry-run']);
+		expect(calls()).toMatch(/repos\/o\/r\/issues\?[^\n]*labels=factory-go/);
+	}, 30_000);
+
+	it('refuses a Signal named needs-triage, naming the field', () => {
+		const { nightjar } = world(true, { signals: { human: 'needs-triage' } });
+		const run = nightjar(['--dry-run']);
+		expect(run.status).toBe(2);
+		expect(run.stderr).toContain('factory.json: signals.human: ');
 	}, 30_000);
 
 	it('refuses to start without a factory.json, and says why', () => {

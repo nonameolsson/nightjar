@@ -39,7 +39,9 @@ export class GitHubTracker implements Tracker {
 	constructor(
 		readonly repo: string,
 		gh: GhRunner,
-		private readonly names: SignalNames
+		private readonly names: SignalNames,
+		// factory.json's trusted list; when set it replaces the write-access default
+		private readonly trusted?: readonly string[]
 	) {
 		this.api = new GitHubApi(repo, gh);
 	}
@@ -129,15 +131,19 @@ export class GitHubTracker implements Tracker {
 				author,
 				body: c.body ?? '',
 				at: c.created_at,
-				trusted: await this.canWrite(author, c.author_association)
+				trusted: await this.isTrusted(author, c.author_association)
 			});
 		}
 		return comments;
 	}
 
-	// Whether `login` may push to the repo. `association` is the comment's own author_association,
+	// Whether `login` is trusted: on the configured list, else may push to the repo. `association` is the comment's own author_association,
 	// which answers when a proxy refuses the permission call.
-	private async canWrite(login: string, association?: string): Promise<boolean> {
+	private async isTrusted(login: string, association?: string): Promise<boolean> {
+		// GitHub logins are case-insensitive
+		if (this.trusted !== undefined) {
+			return this.trusted.some((t) => t.toLowerCase() === login.toLowerCase());
+		}
 		const known = this.writers.get(login);
 		if (known !== undefined) return known;
 		const got = await this.api.raw([
