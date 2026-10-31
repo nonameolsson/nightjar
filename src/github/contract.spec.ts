@@ -39,7 +39,10 @@ const gitHubTracker =
 		} else {
 			for (const person of world.trusted) github.grant(person, 'write');
 		}
-		return Promise.resolve({ tracker: new GitHubTracker('o/r', github.gh, names, list), id });
+		return Promise.resolve({
+			tracker: new GitHubTracker('o/r', github.gh, names, list),
+			id: (key: string) => String(id(key))
+		});
 	};
 
 function gitHubWorld(world: TrackerWorld, names: SignalNames) {

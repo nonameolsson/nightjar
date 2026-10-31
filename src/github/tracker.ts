@@ -7,6 +7,7 @@ import type {
 	Comment,
 	Feature,
 	FeatureWriter,
+	ItemId,
 	ItemText,
 	Ticket,
 	TicketReference,
@@ -34,8 +35,14 @@ const TIED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
 
 const WRITE = ['admin', 'maintain', 'write'];
 
+// The issue number an id names; GitHub has no other kind of id.
+function issue(id: ItemId): string {
+	if (!/^\d+$/.test(id)) throw new GitHubFailure(`${id} is no GitHub issue number.`);
+	return id;
+}
+
 const toFeature = (raw: RawIssue): Feature => ({
-	id: raw.number,
+	id: String(raw.number),
 	title: raw.title,
 	body: raw.body ?? ''
 });
@@ -87,15 +94,15 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 			.map(toFeature);
 	}
 
-	async feature(id: number): Promise<Feature> {
-		const n = String(id);
+	async feature(id: ItemId): Promise<Feature> {
+		const n = issue(id);
 		return toFeature(
 			await this.api.parse(`read issue #${n}`, [`repos/${this.repo}/issues/${n}`], IssueSchema)
 		);
 	}
 
-	async tickets(featureId: number): Promise<Ticket[]> {
-		const n = String(featureId);
+	async tickets(featureId: ItemId): Promise<Ticket[]> {
+		const n = issue(featureId);
 		const children = await this.api.parse(
 			`list the sub-issues of #${n}`,
 			[`repos/${this.repo}/issues/${n}/sub_issues?${PAGE}`],
@@ -104,29 +111,29 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		const tickets: Ticket[] = [];
 		for (const child of children) {
 			tickets.push({
-				id: child.number,
+				id: String(child.number),
 				title: child.title,
 				body: child.body ?? '',
 				open: child.state === 'open',
 				signals: this.signalsOf(child),
-				blockedBy: await this.blockedBy(child.number)
+				blockedBy: await this.blockedBy(String(child.number))
 			});
 		}
 		return tickets;
 	}
 
-	private async blockedBy(id: number) {
-		const n = String(id);
+	private async blockedBy(id: ItemId) {
+		const n = issue(id);
 		const raw = await this.api.parse(
 			`list what blocks #${n}`,
 			[`repos/${this.repo}/issues/${n}/dependencies/blocked_by?${PAGE}`],
 			z.array(IssueSchema)
 		);
-		return raw.map((i) => ({ id: i.number, open: i.state === 'open' }));
+		return raw.map((i) => ({ id: String(i.number), open: i.state === 'open' }));
 	}
 
-	async comments(id: number): Promise<Comment[]> {
-		const n = String(id);
+	async comments(id: ItemId): Promise<Comment[]> {
+		const n = issue(id);
 		const raw = await this.api.parse(
 			`list the comments on #${n}`,
 			[`repos/${this.repo}/issues/${n}/comments?${PAGE}`],
@@ -177,8 +184,8 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		return can;
 	}
 
-	async addSignal(id: number, signal: Signal): Promise<void> {
-		const n = String(id);
+	async addSignal(id: ItemId, signal: Signal): Promise<void> {
+		const n = issue(id);
 		const label = this.names[signal];
 		await this.api.call(`label #${n} ${label}`, [
 			'-X',
@@ -189,8 +196,8 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		]);
 	}
 
-	async removeSignal(id: number, signal: Signal): Promise<void> {
-		const n = String(id);
+	async removeSignal(id: ItemId, signal: Signal): Promise<void> {
+		const n = issue(id);
 		const label = this.names[signal];
 		const got = await this.api.raw([
 			'-X',
@@ -202,8 +209,8 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		}
 	}
 
-	async comment(id: number, body: string): Promise<void> {
-		const n = String(id);
+	async comment(id: ItemId, body: string): Promise<void> {
+		const n = issue(id);
 		await this.api.call(`comment on #${n}`, [
 			'-X',
 			'POST',
@@ -213,23 +220,23 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		]);
 	}
 
-	reference(id: number): TicketReference {
-		return { id, text: `#${String(id)}` };
+	reference(id: ItemId): TicketReference {
+		return { id, text: `#${issue(id)}` };
 	}
 
-	async createFeature({ title, body }: ItemText): Promise<number> {
+	async createFeature({ title, body }: ItemText): Promise<ItemId> {
 		const made = await this.api.parse(
 			`open the issue ${title}`,
 			['-X', 'POST', `repos/${this.repo}/issues`, '-f', `title=${title}`, '-f', `body=${body}`],
 			IssueSchema
 		);
-		return made.number;
+		return String(made.number);
 	}
 
-	async createTicket(featureId: number, ticket: ItemText): Promise<number> {
+	async createTicket(featureId: ItemId, ticket: ItemText): Promise<ItemId> {
 		const id = await this.createFeature(ticket);
-		const n = String(featureId);
-		await this.api.call(`make #${String(id)} a sub-issue of #${n}`, [
+		const n = issue(featureId);
+		await this.api.call(`make #${id} a sub-issue of #${n}`, [
 			'-X',
 			'POST',
 			`repos/${this.repo}/issues/${n}/sub_issues`,
@@ -239,9 +246,9 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		return id;
 	}
 
-	async block(id: number, blocker: number): Promise<void> {
-		const n = String(id);
-		await this.api.call(`mark #${n} blocked by #${String(blocker)}`, [
+	async block(id: ItemId, blocker: ItemId): Promise<void> {
+		const n = issue(id);
+		await this.api.call(`mark #${n} blocked by #${issue(blocker)}`, [
 			'-X',
 			'POST',
 			`repos/${this.repo}/issues/${n}/dependencies/blocked_by`,
@@ -250,15 +257,15 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		]);
 	}
 
-	// GitHub's own id of issue `number`, which the sub-issue and dependency calls take.
-	private async databaseId(number: number): Promise<number> {
-		const n = String(number);
-		const issue = await this.api.parse(
+	// GitHub's own id of issue `id`, which the sub-issue and dependency calls take.
+	private async databaseId(id: ItemId): Promise<number> {
+		const n = issue(id);
+		const raw = await this.api.parse(
 			`read issue #${n}`,
 			[`repos/${this.repo}/issues/${n}`],
 			IssueSchema
 		);
-		if (issue.id === undefined) throw new GitHubFailure(`GitHub gave no id for #${n}.`);
-		return issue.id;
+		if (raw.id === undefined) throw new GitHubFailure(`GitHub gave no id for #${n}.`);
+		return raw.id;
 	}
 }

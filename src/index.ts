@@ -1,6 +1,7 @@
 export type {
 	Blocker,
 	Comment,
+	ItemId,
 	Feature,
 	FeatureWriter,
 	ItemText,

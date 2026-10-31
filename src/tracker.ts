@@ -2,14 +2,17 @@
 // that holds Features, Tickets, Signals and comments. The build loop calls nothing else there.
 import type { Signal } from './signals.js';
 
+// An item's id as its Tracker spells it (`42`, `PROJ-123`); Nightjar never reads meaning into it.
+export type ItemId = string;
+
 export interface Feature {
-	readonly id: number;
+	readonly id: ItemId;
 	readonly title: string;
 	readonly body: string;
 }
 
 export interface Ticket {
-	readonly id: number;
+	readonly id: ItemId;
 	readonly title: string;
 	readonly body: string;
 	readonly open: boolean;
@@ -19,7 +22,7 @@ export interface Ticket {
 }
 
 export interface Blocker {
-	readonly id: number;
+	readonly id: ItemId;
 	readonly open: boolean;
 }
 
@@ -33,7 +36,7 @@ export interface Comment {
 
 // How a Ticket is linked to a pull request: `text` goes where the Code host shows references.
 export interface TicketReference {
-	readonly id: number;
+	readonly id: ItemId;
 	readonly text: string;
 }
 
@@ -42,16 +45,16 @@ export interface Tracker {
 	me(): Promise<string>;
 	// the open Features assigned to `person` that carry the Go, oldest first
 	assignedFeatures(person: string): Promise<Feature[]>;
-	feature(id: number): Promise<Feature>;
+	feature(id: ItemId): Promise<Feature>;
 	// the Feature's Tickets in its own child order, each with its blockers
-	tickets(featureId: number): Promise<Ticket[]>;
+	tickets(featureId: ItemId): Promise<Ticket[]>;
 	// the comments on a Feature or Ticket, oldest first
-	comments(id: number): Promise<Comment[]>;
-	addSignal(id: number, signal: Signal): Promise<void>;
+	comments(id: ItemId): Promise<Comment[]>;
+	addSignal(id: ItemId, signal: Signal): Promise<void>;
 	// a Signal the item does not carry is no fault
-	removeSignal(id: number, signal: Signal): Promise<void>;
-	comment(id: number, body: string): Promise<void>;
-	reference(id: number): TicketReference;
+	removeSignal(id: ItemId, signal: Signal): Promise<void>;
+	comment(id: ItemId, body: string): Promise<void>;
+	reference(id: ItemId): TicketReference;
 }
 
 // The title and body of a Feature or Ticket to be made.
@@ -64,11 +67,11 @@ export interface ItemText {
 // `Tracker`, so a Tracker module written before it still loads; `nightjar create` needs it.
 export interface FeatureWriter {
 	// a Feature that carries no Signal and is assigned to no one; gives its id
-	createFeature(feature: ItemText): Promise<number>;
+	createFeature(feature: ItemText): Promise<ItemId>;
 	// a Ticket made the Feature's last child, carrying no Signal; gives its id
-	createTicket(featureId: number, ticket: ItemText): Promise<number>;
+	createTicket(featureId: ItemId, ticket: ItemText): Promise<ItemId>;
 	// links `id` as blocked by `blocker`, so `tickets` gives `blocker` among its blockers
-	block(id: number, blocker: number): Promise<void>;
+	block(id: ItemId, blocker: ItemId): Promise<void>;
 }
 
 // Typed as a record, so a method added to FeatureWriter fails to compile until it is listed here.

@@ -5,7 +5,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--u
 
   --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes
   --once         build the oldest Feature assigned to you with the Go, then exit
-  FEATURE        build that Feature, by its number, now
+  FEATURE        build that Feature, by its id (42, #42, PROJ-123), now
   doctor         check this machine and list the Features it would build, building nothing (--dry-run is the old name)
   --use-api-key  let the sessions bill ANTHROPIC_API_KEY instead of your Claude plan
   --model M      the model of every session, over a Ticket's own line and factory.json
@@ -17,7 +17,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--u
 
 export interface Args {
 	readonly mode: 'watch' | 'once' | 'feature' | 'doctor';
-	readonly feature?: number;
+	readonly feature?: string;
 	readonly useApiKey: boolean;
 	readonly model?: string;
 	readonly effort?: string;
@@ -26,7 +26,7 @@ export interface Args {
 // The arguments, or the line that says what is wrong with them.
 export function parseArgs(argv: readonly string[]): Args | string {
 	const chosen: { mode: Args['mode'] | null } = { mode: null };
-	let feature: number | undefined;
+	let feature: string | undefined;
 	let useApiKey = false;
 	let model: string | undefined;
 	let effort: string | undefined;
@@ -49,9 +49,9 @@ export function parseArgs(argv: readonly string[]): Args | string {
 			if (a === '--model') model = value;
 			else effort = value;
 			i += 1;
-		} else if (/^#?\d+$/.test(a)) {
+		} else if (/^#?[A-Za-z0-9][\w.-]*$/.test(a)) {
 			fault = pick('feature');
-			feature = Number(a.replace('#', ''));
+			feature = a.replace(/^#/, '');
 		} else return `unknown argument ${a}`;
 		if (fault) return fault;
 	}

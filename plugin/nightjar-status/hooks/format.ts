@@ -29,8 +29,7 @@ function what(status: Status, nowMs: number): string | undefined {
 		const until = d.until ? ` until ${clock(d.until)}` : '';
 		return `nightjar: paused${until}: ${d.why} · ${today}`;
 	}
-	const where =
-		d.ticket === null ? `#${String(d.feature)}` : `#${String(d.feature)} › #${String(d.ticket)}`;
+	const where = d.ticket === null ? `#${d.feature}` : `#${d.feature} › #${d.ticket}`;
 	const round =
 		d.round !== null && d.rounds !== null && (d.step === 'fix' || d.round > 1)
 			? ` ${String(d.round)}/${String(d.rounds)}`
@@ -39,11 +38,11 @@ function what(status: Status, nowMs: number): string | undefined {
 }
 
 export function toast(e: Event): string {
-	if (e.kind === 'built') return `nightjar: #${String(e.ticket)} built (#${String(e.feature)})`;
-	if (e.kind === 'pull') return `nightjar: #${String(e.feature)} draft pull request ${e.url}`;
-	if (e.kind === 'failed') return `nightjar: #${String(e.feature)} failed: ${e.why}`;
+	if (e.kind === 'built') return `nightjar: #${e.ticket} built (#${e.feature})`;
+	if (e.kind === 'pull') return `nightjar: #${e.feature} draft pull request ${e.url}`;
+	if (e.kind === 'failed') return `nightjar: #${e.feature} failed: ${e.why}`;
 	if (e.kind === 'stale') {
 		return `nightjar: main has new Nightjar code (${e.commit}); restart it from an updated main`;
 	}
-	return `nightjar: #${String(e.ticket ?? e.feature)} needs a person: ${e.why}`;
+	return `nightjar: #${e.ticket ?? e.feature} needs a person: ${e.why}`;
 }

@@ -21,8 +21,8 @@ describe('StatusBoard', () => {
 		record(join(dir, 'runs.jsonl'), {
 			at: new Date(2026, 9, 30, 8).toISOString(),
 			repo: 'o/r',
-			feature: 1,
-			ticket: 2,
+			feature: '1',
+			ticket: '2',
 			branch: 'factory/1-a',
 			step: 'build',
 			session: 's',
@@ -31,8 +31,8 @@ describe('StatusBoard', () => {
 		});
 		board(path).doing({
 			kind: 'building',
-			feature: 262,
-			ticket: 263,
+			feature: '262',
+			ticket: '263',
 			step: 'fix',
 			round: 2,
 			rounds: 3,
@@ -46,8 +46,8 @@ describe('StatusBoard', () => {
 			dailyUsd: 60,
 			doing: {
 				kind: 'building',
-				feature: 262,
-				ticket: 263,
+				feature: '262',
+				ticket: '263',
 				step: 'fix',
 				round: 2,
 				rounds: 3,
@@ -65,20 +65,21 @@ describe('StatusBoard', () => {
 		const path = join(dir, 'status.json');
 		const first = board(path);
 		first.doing({ kind: 'idle', nextPollAt: at.toISOString() });
-		for (let t = 1; t <= 11; t += 1) first.happened({ kind: 'built', feature: 1, ticket: t });
+		for (let t = 1; t <= 11; t += 1)
+			first.happened({ kind: 'built', feature: '1', ticket: String(t) });
 		const recent = readStatus(path)?.recent ?? [];
 		expect(recent).toHaveLength(10);
 		expect(recent[0]).toEqual({
 			kind: 'built',
-			feature: 1,
-			ticket: 2,
+			feature: '1',
+			ticket: '2',
 			seq: 2,
 			at: at.toISOString()
 		});
 		expect(recent.at(-1)?.seq).toBe(11);
 
 		const second = board(path);
-		second.happened({ kind: 'pull', feature: 1, url: 'https://pr/9' });
+		second.happened({ kind: 'pull', feature: '1', url: 'https://pr/9' });
 		const after = readStatus(path);
 		expect(after?.recent.at(-1)).toMatchObject({ kind: 'pull', seq: 12 });
 		// what Nightjar does is not carried over: a new process says it afresh

@@ -163,7 +163,7 @@ export async function runNightjar(
 		signal: stop.signal
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: number | null = null;
+	let building: string | null = null;
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.me,

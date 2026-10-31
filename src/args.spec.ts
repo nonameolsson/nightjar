@@ -12,12 +12,18 @@ describe('parseArgs', () => {
 		expect(parseArgs(['--dry-run'])).toEqual({ mode: 'doctor', useApiKey: false });
 		expect(parseArgs(['#42', '--model', 'opus', '--effort', 'high', '--use-api-key'])).toEqual({
 			mode: 'feature',
-			feature: 42,
+			feature: '42',
 			useApiKey: true,
 			model: 'opus',
 			effort: 'high'
 		});
-		expect(parseArgs(['7'])).toEqual({ mode: 'feature', feature: 7, useApiKey: false });
+		expect(parseArgs(['7'])).toEqual({ mode: 'feature', feature: '7', useApiKey: false });
+		// a Tracker module's own keys, as Jira or Linear spell them
+		expect(parseArgs(['PROJ-123'])).toEqual({
+			mode: 'feature',
+			feature: 'PROJ-123',
+			useApiKey: false
+		});
 	});
 
 	it('names what is wrong', () => {

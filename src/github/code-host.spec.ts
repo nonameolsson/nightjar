@@ -85,12 +85,12 @@ describe('GitHubCodeHost', () => {
 		const pull = onePull('First body');
 		const host = new GitHubCodeHost('o/r', fakeGh(...pull.routes).gh, noGit);
 		await host.placeReferences(PULL, [
-			{ id: 2, text: '#2' },
-			{ id: 3, text: '#3' }
+			{ id: '2', text: '#2' },
+			{ id: '3', text: '#3' }
 		]);
 		await host.placeReferences(PULL, [
-			{ id: 1, text: '#1' },
-			{ id: 3, text: '#3' }
+			{ id: '1', text: '#1' },
+			{ id: '3', text: '#3' }
 		]);
 		await host.editBody(PULL, 'Second body');
 		const body = pull.body();

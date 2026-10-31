@@ -5,9 +5,9 @@ export type Doing =
 	| { readonly kind: 'idle'; readonly nextPollAt: string }
 	| {
 			readonly kind: 'building';
-			readonly feature: number;
+			readonly feature: string;
 			// null while the Feature is set up and while it is reviewed
-			readonly ticket: number | null;
+			readonly ticket: string | null;
 			readonly step: 'setup' | 'build' | 'fix' | 'review';
 			// a build's question round or a fix round, of how many there may be
 			readonly round: number | null;
@@ -19,15 +19,15 @@ export type Doing =
 	| { readonly kind: 'off' };
 
 export type Happened =
-	| { readonly kind: 'built'; readonly feature: number; readonly ticket: number }
+	| { readonly kind: 'built'; readonly feature: string; readonly ticket: string }
 	| {
 			readonly kind: 'needs-info';
-			readonly feature: number;
-			readonly ticket: number | null;
+			readonly feature: string;
+			readonly ticket: string | null;
 			readonly why: string;
 	  }
-	| { readonly kind: 'failed'; readonly feature: number; readonly why: string }
-	| { readonly kind: 'pull'; readonly feature: number; readonly url: string }
+	| { readonly kind: 'failed'; readonly feature: string; readonly why: string }
+	| { readonly kind: 'pull'; readonly feature: string; readonly url: string }
 	| { readonly kind: 'stale'; readonly commit: string };
 
 export type Event = Happened & { readonly seq: number; readonly at: string };

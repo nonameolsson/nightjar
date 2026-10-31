@@ -25,7 +25,7 @@ import type { Session, SessionRequest } from './session.js';
 import { BUILD_TOOLS, REVIEW_TOOLS, buildSettings, reviewSettings } from './settings.js';
 import type { Signal } from './signals.js';
 import type { StatusReport } from './status.js';
-import type { Comment, Feature, Ticket, Tracker } from './tracker.js';
+import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import { branchFor, openWorktree, type Worktree } from './worktree.js';
 
 export interface Limits {
@@ -98,7 +98,7 @@ export type FeatureOutcome =
 	| {
 			readonly kind: 'pull';
 			readonly pull: Pull;
-			readonly built: number[];
+			readonly built: ItemId[];
 			readonly waiting: Waiting[];
 	  }
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
@@ -121,7 +121,7 @@ export function ticketLine(body: string, name: string): string | undefined {
 }
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
-const hash = (id: number) => `#${String(id)}`;
+const hash = (id: ItemId) => `#${id}`;
 
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
@@ -134,7 +134,7 @@ type Step =
 
 const NEXT: Step = { kind: 'next' };
 
-export async function buildFeature(deps: Deps, setup: Setup, id: number): Promise<FeatureOutcome> {
+export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promise<FeatureOutcome> {
 	const { tracker } = deps;
 	const feature = await tracker.feature(id);
 	const branch = branchFor(feature.id, feature.title);
@@ -169,7 +169,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: number): Promis
 // sets the worktree up again.
 async function setupFailed(
 	deps: Deps,
-	id: number,
+	id: ItemId,
 	command: string,
 	tail: string,
 	left: Waiting[]
@@ -195,7 +195,7 @@ class FeatureRun {
 		private readonly feature: Feature,
 		private readonly tree: Worktree,
 		private readonly tickets: Ticket[],
-		private readonly built: Set<number>
+		private readonly built: Set<ItemId>
 	) {}
 
 	private get aborted() {
@@ -221,7 +221,7 @@ class FeatureRun {
 		return this.finish(last);
 	}
 
-	private async trusted(id: number): Promise<Comment[]> {
+	private async trusted(id: ItemId): Promise<Comment[]> {
 		return (await this.deps.tracker.comments(id)).filter((c) => c.trusted);
 	}
 
@@ -425,7 +425,7 @@ class FeatureRun {
 	}
 
 	private building(
-		ticket: number,
+		ticket: ItemId,
 		step: 'build' | 'fix',
 		session: string,
 		rounds: { readonly round: number; readonly rounds: number }
@@ -474,7 +474,7 @@ class FeatureRun {
 		}
 
 		const red =
-			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? 0, tail: last.tail } : null;
+			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? '', tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
 		const review =
 			this.setup.review?.enabled === false
@@ -598,7 +598,7 @@ async function reviewFeature(
 }
 
 // `name` is how the place the list goes names a Ticket: #N on the Tracker, its reference on the Code host.
-function waitingList(left: readonly Waiting[], name: (id: number) => string = hash): string {
+function waitingList(left: readonly Waiting[], name: (id: ItemId) => string = hash): string {
 	if (left.length === 0) return 'No Ticket is waiting.';
 	const line = (w: Waiting) =>
 		`- ${name(w.id)} ${w.title}: ${w.why}${w.blocker === undefined ? '' : ` ${name(w.blocker)}`}`;
@@ -613,12 +613,12 @@ function pullBody(p: {
 	// in the order they were built, which is the order of the branch's commits
 	done: readonly Ticket[];
 	left: readonly Waiting[];
-	red: { ticket: number; tail: string } | null;
+	red: { ticket: ItemId; tail: string } | null;
 	review: Review | 'off' | null;
 	spent: number;
 	paused: string | null;
 }): string {
-	const ref = (id: number) => p.tracker.reference(id).text;
+	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
 		`Nightjar built ${p.complete ? 'all of' : 'part of'} ${ref(p.feature.id)} ${p.feature.title}.`,
 		`## Built\n\n${p.done.map((t) => `- ${ref(t.id)} ${t.title}`).join('\n')}`

@@ -2,7 +2,7 @@
 // to a Feature whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
 import type { StatusReport } from './status.js';
-import type { Tracker } from './tracker.js';
+import type { ItemId, Tracker } from './tracker.js';
 
 export const POLL_MS = 2 * 60_000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
@@ -12,7 +12,7 @@ export interface QueueDeps {
 	readonly tracker: Tracker;
 	// whose Features to build
 	readonly person: string;
-	readonly build: (id: number) => Promise<FeatureOutcome>;
+	readonly build: (id: ItemId) => Promise<FeatureOutcome>;
 	readonly status: StatusReport;
 	readonly now: () => Date;
 	readonly say: (line: string) => void;
@@ -23,10 +23,10 @@ export interface QueueDeps {
 export const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
-export async function handBack(deps: QueueDeps, id: number, fault: unknown): Promise<void> {
+export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Promise<void> {
 	const { tracker } = deps;
 	const reason = why(fault);
-	deps.say(`#${String(id)} failed: ${reason}`);
+	deps.say(`#${id} failed: ${reason}`);
 	deps.status.happened({ kind: 'failed', feature: id, why: reason });
 	try {
 		await tracker.removeSignal(id, 'working');
@@ -38,7 +38,7 @@ export async function handBack(deps: QueueDeps, id: number, fault: unknown): Pro
 }
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
-export async function buildOne(deps: QueueDeps, id: number): Promise<FeatureOutcome | null> {
+export async function buildOne(deps: QueueDeps, id: ItemId): Promise<FeatureOutcome | null> {
 	try {
 		return await deps.build(id);
 	} catch (fault) {
@@ -90,5 +90,5 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 export async function dryRun(deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
 	if (features.length === 0) deps.say(none(deps));
-	for (const f of features) deps.say(`would build #${String(f.id)} ${f.title}`);
+	for (const f of features) deps.say(`would build #${f.id} ${f.title}`);
 }

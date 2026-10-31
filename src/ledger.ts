@@ -7,8 +7,9 @@ import { z } from 'zod';
 const EntrySchema = z.looseObject({
 	at: z.string(),
 	repo: z.string(),
-	feature: z.int(),
-	ticket: z.int().nullable(),
+	// a number in a line written before ids were strings
+	feature: z.union([z.string(), z.int()]),
+	ticket: z.union([z.string(), z.int()]).nullable(),
 	branch: z.string(),
 	step: z.enum(['build', 'fix', 'review']),
 	session: z.string(),
@@ -19,8 +20,8 @@ const EntrySchema = z.looseObject({
 export interface Entry {
 	readonly at: string;
 	readonly repo: string;
-	readonly feature: number;
-	readonly ticket: number | null;
+	readonly feature: string;
+	readonly ticket: string | null;
 	readonly branch: string;
 	readonly step: 'build' | 'fix' | 'review';
 	readonly session: string;

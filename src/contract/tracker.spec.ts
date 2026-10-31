@@ -21,14 +21,14 @@ function caseNamed(start: string) {
 describe('the Tracker contract', () => {
 	it('fails a Tracker that lists Features without the Go', async () => {
 		const harness = broken((t) => ({
-			assignedFeatures: async () => [...(await t.assignedFeatures('ann')), await t.feature(3)]
+			assignedFeatures: async () => [...(await t.assignedFeatures('ann')), await t.feature('3')]
 		}));
 		await expect(caseNamed('lists the open Features').run(harness)).rejects.toThrow();
 	});
 
 	it('fails a Tracker that gives the Tickets in id order, not the child order', async () => {
 		const harness = broken((t) => ({
-			tickets: async (id) => (await t.tickets(id)).sort((a, b) => a.id - b.id)
+			tickets: async (id) => (await t.tickets(id)).sort((a, b) => a.id.localeCompare(b.id))
 		}));
 		await expect(caseNamed("reads a Feature's Tickets").run(harness)).rejects.toThrow();
 	});

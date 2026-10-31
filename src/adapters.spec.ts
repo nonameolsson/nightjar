@@ -39,12 +39,12 @@ const env = () => ({ ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` })
 describe('makeAdapters', () => {
 	it('trusts a writer by default', async () => {
 		const { tracker } = await makeAdapters(config({}), dir, env());
-		expect((await tracker.comments(1)).map((c) => c.trusted)).toEqual([true]);
+		expect((await tracker.comments('1')).map((c) => c.trusted)).toEqual([true]);
 	});
 
 	it("trusts only the config's trusted list when it has one", async () => {
 		const { tracker } = await makeAdapters(config({ trusted: ['ann'] }), dir, env());
-		expect((await tracker.comments(1)).map((c) => c.trusted)).toEqual([false]);
+		expect((await tracker.comments('1')).map((c) => c.trusted)).toEqual([false]);
 	});
 
 	it('builds Azure DevOps Boards as the Tracker, which says how to sign in when it cannot', async () => {
@@ -63,7 +63,7 @@ describe('makeAdapters', () => {
 			featureType: 'Feature'
 		};
 		const adapters = await makeAdapters(config({ tracker }), dir, noToken);
-		expect(adapters.tracker.reference(7).text).toBe('AB#7');
+		expect(adapters.tracker.reference('7').text).toBe('AB#7');
 		expect(adapters.checked('ann@contoso.com')).toBe(
 			'Azure DevOps as ann@contoso.com on contoso/Fabrikam'
 		);
@@ -287,9 +287,9 @@ async function placed(c: Config, ticket: (ado: FakeAzureDevOps) => number) {
 		base: 'main',
 		body: 'Built.'
 	});
-	await adapters.codeHost.placeReferences(pull, [adapters.tracker.reference(id)]);
+	await adapters.codeHost.placeReferences(pull, [adapters.tracker.reference(String(id))]);
 	return {
-		text: adapters.tracker.reference(id).text,
+		text: adapters.tracker.reference(String(id)).text,
 		linked: ado.linkedWorkItems(pull.id),
 		body: ado.pullRequestAt(pull.id).description,
 		adapters
@@ -350,9 +350,9 @@ describe('makeAdapters pairs each Tracker with Azure Repos as the Code host', ()
 	});
 
 	it('keeps the references GitHub as the Code host places: #N, and AB#N for a work item', async () => {
-		expect((await makeAdapters(config({}), dir, env())).tracker.reference(7).text).toBe('#7');
+		expect((await makeAdapters(config({}), dir, env())).tracker.reference('7').text).toBe('#7');
 		const adapters = await makeAdapters(config({ tracker: boards('contoso') }), dir, env());
-		expect(adapters.tracker.reference(7).text).toBe('AB#7');
+		expect(adapters.tracker.reference('7').text).toBe('AB#7');
 	});
 
 	it('stops before a build when the Azure Repos repo cannot be read', async () => {

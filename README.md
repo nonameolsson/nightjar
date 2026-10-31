@@ -242,12 +242,12 @@ npx nightjar doctor
 | `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
 | `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
-| `<number>`             | Builds that Feature now (`nightjar 42`; `#42` also works).                                             |
+| `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). |
 | `--use-api-key`        | Lets the sessions bill `ANTHROPIC_API_KEY` instead of your Claude plan.                                |
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `doctor`, `--once`, `--watch` or a Feature number. `--use-api-key`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module.
+Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module.
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 
@@ -255,7 +255,7 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 
 ## What you get
 
-- **One branch** per Feature, `factory/<number>-<title-slug>`, with one commit per Ticket, pushed to `origin` on GitHub, or to the repo `factory.json` names on Azure Repos.
+- **One branch** per Feature, `factory/<id>-<title-slug>`, with one commit per Ticket, pushed to `origin` on GitHub, or to the repo `factory.json` names on Azure Repos.
 - **One draft pull request** per Feature. On GitHub each built Ticket is referenced by `#N`, or `AB#N` for an Azure DevOps work item, which the [Azure Boards app](https://learn.microsoft.com/azure/devops/boards/github/) links once it is installed on the repo. On Azure Repos each built Ticket from Azure DevOps Boards in the same organization is attached as a linked work item and named `#N`; a Ticket from anywhere else is named in the description by a link to its page, because Azure Repos reads `#N` as one of its own work items. Azure Repos keeps 4000 characters of a description, so a longer one is cut, never its references. Nightjar never completes, abandons or publishes the pull request. When the review is on, its summary is the pull request's first comment.
 - **`.factory/status.json`**: what Nightjar is doing now and what it did last, rewritten at every change.
 - **`.factory/runs.jsonl`**: one line per session, with its outcome and cost. Each session's log is in `.factory/logs/`.

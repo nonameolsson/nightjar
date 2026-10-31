@@ -36,16 +36,18 @@ describe('AzureBoardsTracker', () => {
 		ado.precede(done, open);
 		ado.say(open, ANN, 'A question.');
 
-		expect((await tracker.assignedFeatures(ANN)).map((f) => f.id)).toEqual([feature]);
-		expect((await tracker.tickets(feature)).map((t) => [t.title, t.open, t.blockedBy])).toEqual([
+		expect((await tracker.assignedFeatures(ANN)).map((f) => f.id)).toEqual([String(feature)]);
+		expect(
+			(await tracker.tickets(String(feature))).map((t) => [t.title, t.open, t.blockedBy])
+		).toEqual([
 			['Done', false, []],
-			['Open', true, [{ id: done, open: false }]]
+			['Open', true, [{ id: String(done), open: false }]]
 		]);
-		await tracker.feature(feature);
-		await tracker.comments(open);
-		await tracker.addSignal(open, 'working');
-		await tracker.removeSignal(open, 'working');
-		await tracker.comment(open, 'An answer.');
+		await tracker.feature(String(feature));
+		await tracker.comments(String(open));
+		await tracker.addSignal(String(open), 'working');
+		await tracker.removeSignal(String(open), 'working');
+		await tracker.comment(String(open), 'An answer.');
 		expect(ado.asked.length).toBeGreaterThan(0);
 		for (const call of ado.asked) {
 			expect(`${call.url} ${JSON.stringify(call.body)}`).not.toMatch(/state/i);
@@ -54,7 +56,7 @@ describe('AzureBoardsTracker', () => {
 
 	it('references a Ticket as AB#<id>, which the Azure Boards app links from a pull request', () => {
 		const { tracker } = setUp();
-		expect(tracker.reference(42)).toEqual({ id: 42, text: 'AB#42' });
+		expect(tracker.reference('42')).toEqual({ id: '42', text: 'AB#42' });
 	});
 
 	it('trusts the sign-in names on the trusted list in any case, and no Contributor besides', async () => {
@@ -63,7 +65,7 @@ describe('AzureBoardsTracker', () => {
 		const id = ado.workItem({ type: 'Task', title: 'A Ticket' });
 		ado.say(id, 'bob@contoso.com', 'Do it this way.');
 		ado.say(id, ANN, 'No, that way.');
-		expect((await tracker.comments(id)).map((c) => [c.author, c.trusted])).toEqual([
+		expect((await tracker.comments(String(id))).map((c) => [c.author, c.trusted])).toEqual([
 			['bob@contoso.com', true],
 			[ANN, false]
 		]);
@@ -74,10 +76,10 @@ describe('AzureBoardsTracker', () => {
 		const id = ado.workItem({ type: 'Task', title: 'A Ticket' });
 		ado.say(id, ANN, 'Go on.');
 		ado.failNext(/identities\?searchFilter/, 503);
-		await expect(tracker.comments(id)).rejects.toThrow(/HTTP 503/);
+		await expect(tracker.comments(String(id))).rejects.toThrow(/HTTP 503/);
 		ado.failNext(/identities\?identityIds/, 503);
-		await expect(tracker.comments(id)).rejects.toThrow(/HTTP 503/);
-		expect((await tracker.comments(id)).map((c) => c.trusted)).toEqual([true]);
+		await expect(tracker.comments(String(id))).rejects.toThrow(/HTTP 503/);
+		expect((await tracker.comments(String(id))).map((c) => c.trusted)).toEqual([true]);
 	});
 
 	it("asks for the signed-in person's Features as @Me, so no spelling of their name can miss them", async () => {
@@ -103,7 +105,7 @@ describe('AzureBoardsTracker', () => {
 			tags: [DEFAULT_SIGNAL_NAMES.go]
 		});
 		ado.addChild(feature, ado.workItem({ type: 'Task', title: 'A Ticket' }));
-		expect((await tracker.assignedFeatures(person)).map((f) => f.id)).toEqual([feature]);
+		expect((await tracker.assignedFeatures(person)).map((f) => f.id)).toEqual([String(feature)]);
 	});
 
 	it('reads a description written in the HTML editor as plain text, so its Model line still reads', async () => {
@@ -116,7 +118,7 @@ describe('AzureBoardsTracker', () => {
 				'<div>Build the <b>thing</b>.</div><div><br></div><div><b>Model:</b> opus</div>' +
 				'<ul><li>one</li><li>two &amp; three &lt;four&gt;</li></ul>'
 		});
-		expect((await tracker.feature(id)).body).toBe(
+		expect((await tracker.feature(String(id))).body).toBe(
 			'Build the thing.\n\nModel: opus\n- one\n- two & three <four>'
 		);
 	});
@@ -127,7 +129,7 @@ describe('AzureBoardsTracker', () => {
 		ado.say(id, ANN, '<div>Use the <a href="https://example.com/api">old API</a>.</div>', {
 			html: true
 		});
-		expect((await tracker.comments(id)).map((c) => c.body)).toEqual([
+		expect((await tracker.comments(String(id))).map((c) => c.body)).toEqual([
 			'Use the [old API](https://example.com/api).'
 		]);
 	});
@@ -145,7 +147,7 @@ describe('AzureBoardsTracker', () => {
 			const first = ado.workItem({ type: 'Task', title: 'First', rank: { field, value: 1000 } });
 			const later = ado.workItem({ type: 'Task', title: 'Also not ordered' });
 			for (const child of [unranked, second, first, later]) ado.addChild(feature, child);
-			expect((await tracker.tickets(feature)).map((t) => t.title)).toEqual([
+			expect((await tracker.tickets(String(feature))).map((t) => t.title)).toEqual([
 				'First',
 				'Second',
 				'Not ordered yet',

@@ -7,18 +7,18 @@ import type { Doing, Happened } from './status.js';
 
 function world() {
 	const tracker = new FakeTracker('ann');
-	tracker.add({ id: 4, title: 'Later', assignees: ['ann'], signals: ['go'], children: [5] });
-	tracker.add({ id: 2, title: 'Older', assignees: ['ann'], signals: ['go'], children: [3] });
-	tracker.add({ id: 6, title: 'Not mine', assignees: ['bob'], signals: ['go'], children: [7] });
-	tracker.add({ id: 8, title: 'No Go', assignees: ['ann'], children: [9] });
-	for (const id of [3, 5, 7, 9]) tracker.add({ id, title: `Ticket ${String(id)}` });
-	const built: number[] = [];
+	tracker.add({ id: '4', title: 'Later', assignees: ['ann'], signals: ['go'], children: ['5'] });
+	tracker.add({ id: '2', title: 'Older', assignees: ['ann'], signals: ['go'], children: ['3'] });
+	tracker.add({ id: '6', title: 'Not mine', assignees: ['bob'], signals: ['go'], children: ['7'] });
+	tracker.add({ id: '8', title: 'No Go', assignees: ['ann'], children: ['9'] });
+	for (const id of ['3', '5', '7', '9']) tracker.add({ id, title: `Ticket ${id}` });
+	const built: string[] = [];
 	const lines: string[] = [];
 	const doing: Doing[] = [];
 	const happened: Happened[] = [];
 	const sleeps: number[] = [];
 	const stop = new AbortController();
-	let outcome = (id: number): Promise<FeatureOutcome> => {
+	let outcome = (id: string): Promise<FeatureOutcome> => {
 		built.push(id);
 		// as the build loop does, the Go comes off the Feature it takes
 		return tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: [] }));
@@ -52,13 +52,13 @@ describe('queue --once', () => {
 	it('builds the oldest Feature assigned to the person with the Go, then exits', async () => {
 		const w = world();
 		expect(await queue(w.deps, true)).toBe(0);
-		expect(w.built).toEqual([2]);
+		expect(w.built).toEqual(['2']);
 	});
 
 	it('says so and exits when no Feature with the Go is assigned to the person', async () => {
 		const w = world();
-		await w.tracker.removeSignal(2, 'go');
-		await w.tracker.removeSignal(4, 'go');
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
 		expect(await queue(w.deps, true)).toBe(0);
 		expect(w.built).toEqual([]);
 		expect(w.lines).toContain('no Feature with the Go is assigned to ann');
@@ -68,9 +68,9 @@ describe('queue --once', () => {
 		const w = world();
 		w.failWith(new Error('the network went away'));
 		expect(await queue(w.deps, true)).toBe(1);
-		expect(w.tracker.signalsOf(2)).toEqual(['needsInfo']);
-		expect(w.tracker.said(2)[0]).toMatch(/^Nightjar stopped on a fault: the network went away/);
-		expect(w.happened).toEqual([{ kind: 'failed', feature: 2, why: 'the network went away' }]);
+		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
+		expect(w.tracker.said('2')[0]).toMatch(/^Nightjar stopped on a fault: the network went away/);
+		expect(w.happened).toEqual([{ kind: 'failed', feature: '2', why: 'the network went away' }]);
 	});
 });
 
@@ -78,7 +78,7 @@ describe('queue --watch', () => {
 	it('builds each Feature in turn, then waits and looks again until stopped', async () => {
 		const w = world();
 		expect(await queue(w.deps, false)).toBe(130);
-		expect(w.built).toEqual([2, 4]);
+		expect(w.built).toEqual(['2', '4']);
 		expect(w.sleeps).toEqual([120_000, 120_000]);
 		expect(w.doing.at(-1)).toEqual({
 			kind: 'idle',

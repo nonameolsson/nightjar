@@ -161,8 +161,8 @@ describe('nightjar FEATURE', () => {
 		expect(status.doing).toEqual({ kind: 'off' });
 		expect(status.spentTodayUsd).toBe(1);
 		expect(status.recent).toMatchObject([
-			{ kind: 'built', feature: 1, ticket: 2, seq: 1 },
-			{ kind: 'pull', feature: 1, url: 'https://github.com/o/r/pull/9', seq: 2 }
+			{ kind: 'built', feature: '1', ticket: '2', seq: 1 },
+			{ kind: 'pull', feature: '1', url: 'https://github.com/o/r/pull/9', seq: 2 }
 		]);
 	}, 30_000);
 
@@ -191,7 +191,57 @@ describe('nightjar FEATURE', () => {
 		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
 			recent: unknown[];
 		};
-		expect(status.recent).toMatchObject([{ kind: 'failed', feature: 1 }]);
+		expect(status.recent).toMatchObject([{ kind: 'failed', feature: '1' }]);
+	}, 30_000);
+});
+
+// a Tracker module whose items are keyed as Jira or Linear keys them, held in the process
+const KEYED_TRACKER = `const items = {
+	'PROJ-1': { title: 'One escape', signals: ['go'], children: ['PROJ-2'] },
+	'PROJ-2': { title: 'Share the escape', signals: ['ready'], children: [] }
+};
+const said = [];
+export const createTracker = () => ({
+	me: async () => 'ann',
+	assignedFeatures: async () => [],
+	feature: async (id) => ({ id, title: items[id].title, body: '' }),
+	tickets: async (id) => items[id].children.map((c) => ({
+		id: c, title: items[c].title, body: '', open: true, signals: [...items[c].signals], blockedBy: []
+	})),
+	comments: async () => [],
+	addSignal: async (id, s) => { items[id].signals.push(s); },
+	removeSignal: async (id, s) => { items[id].signals = items[id].signals.filter((x) => x !== s); },
+	comment: async (id, body) => { said.push([id, body]); },
+	reference: (id) => ({ id, text: id })
+});`;
+
+describe('nightjar FEATURE on a Tracker module keyed by strings', () => {
+	it('builds PROJ-1 and names its Tickets by their own keys', () => {
+		const { root, git, origin, nightjar, calls } = world(true, {
+			tracker: { type: 'module', path: './tracker.mjs' }
+		});
+		writeFileSync(join(root, 'tracker.mjs'), KEYED_TRACKER);
+		git(root, 'add', '.');
+		git(root, 'commit', '-q', '-m', 'tracker');
+		const run = nightjar(['PROJ-1']);
+		expect(run.stderr).toBe('');
+		expect(run.stdout).toContain('nightjar: #PROJ-1: draft pull request');
+		expect(run.status).toBe(0);
+		const branch = 'factory/PROJ-1-one-escape';
+		expect(git(origin, 'log', '--format=%B', branch)).toContain('Factory-Ticket: #PROJ-2');
+		expect(calls()).toMatch(/-X PATCH repos\/o\/r\/pulls\/9 -f body=[\s\S]*PROJ-2/);
+		const ledger = readFileSync(join(root, '.factory', 'runs.jsonl'), 'utf8');
+		expect(JSON.parse(ledger.split('\n')[0] ?? '{}')).toMatchObject({
+			feature: 'PROJ-1',
+			ticket: 'PROJ-2'
+		});
+		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
+			recent: unknown[];
+		};
+		expect(status.recent).toMatchObject([
+			{ kind: 'built', feature: 'PROJ-1', ticket: 'PROJ-2' },
+			{ kind: 'pull', feature: 'PROJ-1' }
+		]);
 	}, 30_000);
 });
 

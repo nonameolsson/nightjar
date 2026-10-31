@@ -168,13 +168,13 @@ export async function makeAdapters(
 	// Azure Repos reads #N as a work item of its own organization, so any other Ticket is named by its page
 	let fit: ((r: TicketReference) => TicketReference) | null = null;
 	if (linked) {
-		fit = (r) => ({ ...r, text: `#${String(r.id)}` });
+		fit = (r) => ({ ...r, text: `#${r.id}` });
 	} else if (t.type === 'azure-devops') {
 		const page = `https://dev.azure.com/${encodeURIComponent(t.organization)}/${encodeURIComponent(t.project)}/_workitems/edit/`;
-		fit = (r) => ({ ...r, text: `[work item ${String(r.id)}](${page}${String(r.id)})` });
+		fit = (r) => ({ ...r, text: `[work item ${r.id}](${page}${r.id})` });
 	} else if (trackerRepo !== null) {
 		const page = `https://github.com/${trackerRepo}/issues/`;
-		fit = (r) => ({ ...r, text: `[issue ${String(r.id)}](${page}${String(r.id)})` });
+		fit = (r) => ({ ...r, text: `[issue ${r.id}](${page}${r.id})` });
 	}
 	return {
 		tracker: fit === null ? tracker : referencing(tracker, fit),

@@ -13,14 +13,17 @@ export const TICKET_TRAILER = 'Factory-Ticket';
 
 const BRANCH_PREFIX = 'factory/';
 
-export function branchFor(id: number, title: string): string {
+// An item id as a piece of a branch name: whatever a ref may not hold becomes a dash.
+const refPart = (id: string) => id.replace(/[^A-Za-z0-9_-]+/g, '-');
+
+export function branchFor(id: string, title: string): string {
 	const slug = title
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, '-')
 		.replace(/^-+|-+$/g, '')
 		.slice(0, 40)
 		.replace(/-+$/, '');
-	return `${BRANCH_PREFIX}${String(id)}${slug ? `-${slug}` : ''}`;
+	return `${BRANCH_PREFIX}${refPart(id)}${slug ? `-${slug}` : ''}`;
 }
 
 // Out of the checkout, so the one a person works in is never touched; the hash keeps two
@@ -67,34 +70,33 @@ export class Worktree {
 		Number((await this.git(['rev-list', '--count', `${this.at.base}..HEAD`])).trim());
 
 	// The Tickets the branch's own commits built, from their trailers, oldest first.
-	async built(): Promise<Set<number>> {
+	async built(): Promise<Set<string>> {
 		const out = await this.git([
 			'log',
 			'--reverse',
 			`--format=%(trailers:key=${TICKET_TRAILER},valueonly)`,
 			`${this.at.base}..HEAD`
 		]);
-		const ids = [...out.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
-		return new Set(ids);
+		return new Set([...out.matchAll(/^#(\S+)$/gm)].flatMap((m) => (m[1] ? [m[1]] : [])));
 	}
 
 	// One commit of everything the session left, or false when it left nothing.
 	async commitTicket(
-		id: number,
+		id: string,
 		title: string,
 		summary: string,
 		session: string
 	): Promise<boolean> {
 		await this.git(['add', '-A']);
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
-		const message = `${title} (#${String(id)})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${String(id)}\nFactory-Session: ${session}`;
+		const message = `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\nFactory-Session: ${session}`;
 		await this.git(['commit', '-q', '-m', message]);
 		return true;
 	}
 
 	// Puts the branch back to `before`, keeping what the session left on a side branch, which it
 	// names; null when it left nothing.
-	async discard(before: string, ticket: number): Promise<string | null> {
+	async discard(before: string, ticket: string): Promise<string | null> {
 		await this.git(['add', '-A']);
 		const moved = (await this.head()) !== before;
 		const staged = (await this.git(['diff', '--cached', '--name-only'])).trim() !== '';
@@ -107,11 +109,11 @@ export class Worktree {
 					'-p',
 					'HEAD',
 					'-m',
-					`nightjar: the failed attempt at #${String(ticket)}`,
+					`nightjar: the failed attempt at #${ticket}`,
 					tree
 				])
 			).trim();
-			side = `${this.at.branch}-attempt-${String(ticket)}`;
+			side = `${this.at.branch}-attempt-${refPart(ticket)}`;
 			await this.git(['branch', '-f', side, saved]);
 		}
 		await this.git(['reset', '-q', '--hard', before]);

@@ -76,7 +76,7 @@ To let `nightjar create` make Features on your Tracker ([ticket-contract.md](tic
 
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
-Ids are numbers. A Tracker whose items are keyed otherwise maps its keys to numbers inside the module.
+Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
 ## Test the module
 

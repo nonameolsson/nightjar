@@ -72,7 +72,7 @@ const azureBoardsTracker =
 			names,
 			list
 		);
-		return Promise.resolve({ tracker, id });
+		return Promise.resolve({ tracker, id: (key: string) => String(id(key)) });
 	};
 
 describe('AzureBoardsTracker meets the Tracker contract', () => {

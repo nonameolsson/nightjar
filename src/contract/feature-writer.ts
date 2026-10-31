@@ -54,7 +54,7 @@ export const featureWriterContract: readonly ContractCase<TrackerHarness>[] = [
 				title: 'Share the escape',
 				body: 'The spec.\n\n## Solution\n\nOne escape.'
 			});
-			const made: number[] = [];
+			const made: string[] = [];
 			for (const title of ['First', 'Second', 'Third']) {
 				made.push(await tracker.createTicket(feature, { title, body: `Build ${title}.` }));
 			}
@@ -109,7 +109,7 @@ export const featureWriterContract: readonly ContractCase<TrackerHarness>[] = [
 			await tracker.block(b, a);
 			await tracker.block(c, a);
 			await tracker.block(c, id('done'));
-			const byId = (x: { id: number }, y: { id: number }) => x.id - y.id;
+			const byId = (x: { id: string }, y: { id: string }) => x.id.localeCompare(y.id);
 			assert.deepEqual(
 				(await tracker.tickets(feature)).map((t) => ({
 					id: t.id,

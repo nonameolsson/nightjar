@@ -8,7 +8,7 @@ import { ticketLine } from './build.js';
 import { ConfigError, loadConfig } from './config.js';
 import { FeatureFileError, readFeatureFile, type FeaturePlan } from './feature-file.js';
 import { run, type Env } from './git.js';
-import type { FeatureWriter, Tracker } from './tracker.js';
+import type { FeatureWriter, ItemId, Tracker } from './tracker.js';
 
 export const CREATE_USAGE = `usage: nightjar create [--dry-run] FILE
 
@@ -16,9 +16,9 @@ export const CREATE_USAGE = `usage: nightjar create [--dry-run] FILE
   --dry-run  read the file and say what it would make, making nothing`;
 
 export interface Made {
-	readonly feature: number;
+	readonly feature: ItemId;
 	// in the file's order
-	readonly tickets: readonly number[];
+	readonly tickets: readonly ItemId[];
 }
 
 const said = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
@@ -32,18 +32,18 @@ export async function makeFeature(
 	plan: FeaturePlan,
 	say: (line: string) => void
 ): Promise<Made> {
-	const ref = (id: number) => tracker.reference(id).text;
-	const made: number[] = [];
+	const ref = (id: ItemId) => tracker.reference(id).text;
+	const made: ItemId[] = [];
 	try {
 		const feature = await tracker.createFeature(plan.feature);
 		made.push(feature);
 		say(`made the Feature ${ref(feature)} ${plan.feature.title}`);
-		const ids = new Map<number, number>();
+		const ids = new Map<number, ItemId>();
 		for (const ticket of plan.tickets) {
 			const id = await tracker.createTicket(feature, ticket);
 			made.push(id);
 			ids.set(ticket.number, id);
-			const blockers = ticket.blockedBy.map((n) => ids.get(n) ?? NaN);
+			const blockers = ticket.blockedBy.flatMap((n) => ids.get(n) ?? []);
 			for (const blocker of blockers) await tracker.block(id, blocker);
 			await tracker.addSignal(id, 'ready');
 			const blocked = blockers.length === 0 ? '' : `, blocked by ${listed(blockers.map(ref))}`;
