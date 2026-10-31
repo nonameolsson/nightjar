@@ -91,11 +91,12 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 					signals: ['go'],
 					children: ['d']
 				},
+				// one assignee each, as an Azure DevOps work item has
 				{
 					key: 'second',
 					title: 'Second',
 					body: 'The spec.',
-					assignees: [ANN, 'bob'],
+					assignees: [ANN],
 					signals: ['go'],
 					children: ['e']
 				},
@@ -109,7 +110,7 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 			]);
 			assert.deepEqual(
 				(await tracker.assignedFeatures('bob')).map((f) => f.id),
-				[id('theirs'), id('second')]
+				[id('theirs')]
 			);
 		}
 	),
