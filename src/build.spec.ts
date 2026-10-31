@@ -1,5 +1,4 @@
-// The build loop over a real git (a clone of a bare origin), the in-memory Tracker and Code host,
-// and a scripted session that edits the worktree the way an agent would.
+// The build loop over real git, the in-memory Tracker and Code host, and a scripted session.
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,8 +13,7 @@ import { QUESTIONS_MARK, REVIEW_SCHEMA } from './prompt.js';
 import type { SessionRequest, SessionResult } from './session.js';
 import type { Doing, Happened } from './status.js';
 
-// Each test runs a few dozen real git processes, which takes seconds when the suite runs in
-// parallel on a busy machine; 5s is for in-memory tests.
+// Each test runs a few dozen real git processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
@@ -29,7 +27,6 @@ interface World {
 	readonly sessions: SessionRequest[];
 	// each check command run, with the folder it ran in
 	readonly checks: { readonly command: string; readonly cwd: string }[];
-	// each setup command run, with the folder and the environment it ran with
 	// the environment each check ran with
 	readonly checkEnvs: Env[];
 	readonly setups: { readonly command: string; readonly cwd: string; readonly env: Env }[];
@@ -44,8 +41,7 @@ interface World {
 let base: string;
 let template: string;
 
-// No gc or maintenance: git starts them detached after a commit or fetch, and they can still be
-// writing into the folder when afterEach removes it.
+// git starts gc and maintenance detached, and they can still be writing when afterEach removes the folder.
 const GITCONFIG = '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n';
 
 const gitEnv = (config: string) => ({
@@ -58,8 +54,7 @@ const gitEnv = (config: string) => ({
 	GIT_COMMITTER_EMAIL: 'test@example.com'
 });
 
-// The bare origin and its clone with one commit are made once and copied per test: real git is
-// the slow part of this file, and every test starts from the same repo.
+// Made once and copied per test: real git is the slow part of this file.
 beforeAll(() => {
 	template = mkdtempSync(join(tmpdir(), 'nightjar-build-template-'));
 	const config = join(template, 'gitconfig');

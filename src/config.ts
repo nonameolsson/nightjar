@@ -1,5 +1,4 @@
-// factory.json: what a repo tells Nightjar about itself. It is validated here, and the published
-// JSON Schema (schema/factory.schema.json) is generated from the same definition.
+// factory.json; schema/factory.schema.json is generated from the same definition.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';

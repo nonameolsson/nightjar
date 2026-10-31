@@ -1,6 +1,4 @@
-// `nightjar init`: asks for the Tracker and Code host and what each needs, writes factory.json, makes
-// the Tracker show the Signals, and checks every login. A repo that has a factory.json is not asked
-// again: init only sets up and checks. The check command is always asked for, never guessed.
+// `nightjar init`: a repo with a factory.json is not asked again, and the check command is always asked for, never guessed.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';

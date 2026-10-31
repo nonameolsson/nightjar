@@ -1,5 +1,4 @@
-// GitHub Issues as a Tracker: a Feature is an issue with sub-issues, its Tickets; blocking links
-// are GitHub's issue dependencies; Signals are labels; a Ticket is referenced as #N.
+// GitHub Issues as a Tracker: a Feature is an issue with sub-issues; blocking links are issue dependencies.
 import { z } from 'zod';
 import { firstLine } from '../git.js';
 import { SIGNALS, type Signal, type SignalNames } from '../signals.js';
@@ -30,8 +29,7 @@ const CommentSchema = z.looseObject({
 	author_association: z.string().optional()
 });
 
-// The associations that stand in for write access when the permission call itself is refused.
-// A COLLABORATOR on an organization's repo may hold only read: the permission call is the sure answer.
+// Stand in for write access when the permission call is refused; a COLLABORATOR may hold only read.
 const TIED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
 
 const WRITE = ['admin', 'maintain', 'write'];
@@ -163,8 +161,7 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		return comments;
 	}
 
-	// Whether `login` is trusted: on the configured list, else may push to the repo. `association` is the comment's own author_association,
-	// which answers when a proxy refuses the permission call.
+	// On the configured list, else may push; the comment's own association answers when a proxy refuses the permission call.
 	private async isTrusted(login: string, association?: string): Promise<boolean> {
 		// GitHub logins are case-insensitive
 		if (this.trusted !== undefined) {
@@ -175,8 +172,7 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		const got = await this.api.raw([
 			`repos/${this.repo}/collaborators/${encodeURIComponent(login)}/permission`
 		]);
-		// 404 is GitHub's answer for a login that is no collaborator; any other refusal read as no
-		// access would drop the person's own answers without a word
+		// 404 means no collaborator; reading any other refusal as no access would drop the person's own answers unsaid
 		if (!got.ok && !/HTTP 404/.test(got.err)) {
 			if (association !== undefined) return TIED.includes(association);
 			throw new GitHubFailure(

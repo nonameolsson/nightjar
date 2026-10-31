@@ -1,6 +1,4 @@
-// A small Azure DevOps in memory behind the request seam, answering as its REST API does: one
-// organization and project, its people and their groups, work items with their links and tags, and
-// comments. It throws on a call it does not know, and on any call that names a work item's state.
+// Azure DevOps in memory behind the request seam; it throws on a call it does not know, and on any call that names a state.
 import type { AzureDevOpsCall, AzureDevOpsReply, AzureDevOpsRequest } from './api.js';
 import type { AzureDevOpsSignIn } from './sign-in.js';
 

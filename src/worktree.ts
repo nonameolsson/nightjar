@@ -1,5 +1,4 @@
-// The Feature's own branch and worktree, and every git command Nightjar runs in it. The agent
-// edits files there; only Nightjar commits or saves a failed attempt, and the Code host pushes.
+// Only Nightjar commits in the worktree or saves a failed attempt; the Code host pushes.
 import { createHash } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -26,8 +25,7 @@ export function branchFor(id: string, title: string): string {
 	return `${BRANCH_PREFIX}${refPart(id)}${slug ? `-${slug}` : ''}`;
 }
 
-// Out of the checkout, so the one a person works in is never touched; the hash keeps two
-// checkouts of the same name apart.
+// Out of the checkout, so the one a person works in is never touched; the hash keeps two checkouts of one name apart.
 export function worktreesFor(home: string, root: string): string {
 	const hash = createHash('sha256').update(root).digest('hex').slice(0, 8);
 	return join(home, '.nightjar', 'worktrees', `${basename(root)}-${hash}`);
@@ -53,8 +51,7 @@ export class Worktree {
 		return got.out;
 	}
 
-	// A marker in git's own folder for this worktree records that the setup command passed, so
-	// neither `git clean` nor a commit ever touches it.
+	// In git's own folder for the worktree, so neither `git clean` nor a commit touches it.
 	private async setupMarker(): Promise<string> {
 		const path = (await this.git(['rev-parse', '--git-path', 'nightjar-setup'])).trim();
 		return resolve(this.at.folder, path);
@@ -94,8 +91,7 @@ export class Worktree {
 		return true;
 	}
 
-	// Puts the branch back to `before`, keeping what the session left on a side branch, which it
-	// names; null when it left nothing.
+	// Keeps what the session left on a side branch, which it names; null when it left nothing.
 	async discard(before: string, ticket: string): Promise<string | null> {
 		await this.git(['add', '-A']);
 		const moved = (await this.head()) !== before;
@@ -129,8 +125,7 @@ function inRoot(root: string, args: readonly string[], env: Env) {
 const hasRef = async (root: string, ref: string, env: Env) =>
 	(await inRoot(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], env)).ok;
 
-// The Feature's worktree: the one a run before left, else one on the branch it pushed, else a new
-// branch from the base. A worktree left dirty by a stopped run is cleaned: Nightjar owns it.
+// Reuses the worktree a run before left, else the pushed branch; a worktree a stopped run left dirty is cleaned.
 export async function openWorktree(
 	root: string,
 	worktrees: string,

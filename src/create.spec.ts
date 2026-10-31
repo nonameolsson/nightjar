@@ -1,5 +1,4 @@
-// `nightjar create` makes what a Feature file holds on the Tracker, and a build reads it back as
-// written: each Tracker here is real over a fake system, or the in-memory fake.
+// Each Tracker here is real over a fake system, or the in-memory fake; a build reads back what create made.
 import { describe, expect, it } from 'vitest';
 import { AzureDevOpsApi } from './azure-devops/api.js';
 import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';

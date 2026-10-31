@@ -1,5 +1,4 @@
 // Packs the package, installs the tarball into an empty temp project and runs `nightjar --help` there.
-// Run: npx tsx scripts/pack-install.ts   (npm run pack:check)
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

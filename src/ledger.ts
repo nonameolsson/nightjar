@@ -1,5 +1,4 @@
-// .factory/runs.jsonl: one line per session Nightjar ran, with its cost. The day's spend that the
-// daily limit reads is added up from it.
+// .factory/runs.jsonl: one line per session with its cost, from which the day's spend is added up.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';

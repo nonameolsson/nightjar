@@ -1,5 +1,4 @@
-// The text of a rich text value as Azure DevOps stores it, a description or a comment: Markdown
-// or HTML, as Azure DevOps names its format. The agent and the Ticket lines read plain text.
+// A description or comment as Azure DevOps stores it, Markdown or HTML, made the plain text the agent and Ticket lines read.
 
 const ENTITIES: Readonly<Record<string, string>> = {
 	nbsp: ' ',
@@ -19,8 +18,7 @@ const decode = (text: string) =>
 		return ENTITIES[name.toLowerCase()] ?? whole;
 	});
 
-// HTML as the web editor writes it, made plain: blocks and breaks become lines, list items
-// dashes, a link [text](address), and every other tag goes.
+// HTML as the web editor writes it: blocks and breaks become lines, list items dashes, a link [text](address); other tags go.
 function fromHtml(html: string): string {
 	const text = html
 		.replace(/<br\s*\/?>/gi, '\n')

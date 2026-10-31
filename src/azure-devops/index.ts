@@ -1,5 +1,4 @@
-// Azure DevOps for its Adapters: one signed-in API per organization, which the Boards Tracker and
-// any other Azure DevOps Adapter share, so a person signs in once.
+// One signed-in API per organization, shared by every Azure DevOps Adapter, so a person signs in once.
 import type { Env } from '../git.js';
 import { AzureDevOpsApi, fetchRequest, type AzureDevOpsRequest } from './api.js';
 import { azRunner, azureDevOpsSignIn, type AzureDevOpsSignIn } from './sign-in.js';
@@ -31,7 +30,6 @@ export {
 	type ReferencesAs
 } from './code-host.js';
 
-// The organization's API over the network, signed in on first use with this machine's az or token.
 // A second organization's API passes the first one's `signIn`, so a person still signs in once.
 export function openAzureDevOps(
 	organization: string,

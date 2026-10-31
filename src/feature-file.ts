@@ -1,5 +1,4 @@
-// A Feature file: one Feature and its Tickets as Markdown, in the shape docs/ticket-contract.md sets,
-// for `nightjar create` to make on the Tracker.
+// A Feature file: one Feature and its Tickets as Markdown, in the shape docs/ticket-contract.md sets.
 import type { ItemText } from './tracker.js';
 
 export class FeatureFileError extends Error {}

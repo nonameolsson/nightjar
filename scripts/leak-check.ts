@@ -1,5 +1,4 @@
 // Fails when a file of the repo or of the packed package holds a guarded name (scripts/leak-names.ts).
-// Run: npx tsx scripts/leak-check.ts
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';

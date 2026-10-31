@@ -1,5 +1,4 @@
-// Two runs started a minute apart must never share a port, though a run listens on its ports only
-// while the repo's tests run. A run therefore holds its block of ports for its whole life.
+// A run holds its ports for its whole life: two runs a minute apart must never share one.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

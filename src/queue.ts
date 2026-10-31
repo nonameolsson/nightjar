@@ -1,5 +1,4 @@
-// --once, --watch and --dry-run: which Feature to build next, from the Tracker, and what happens
-// to a Feature whose build fails on a fault.
+// --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
 import type { StatusReport } from './status.js';
 import type { ItemId, Tracker } from './tracker.js';

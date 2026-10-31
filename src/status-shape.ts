@@ -1,5 +1,4 @@
-// The shape of .factory/status.json, defined once: src/status.ts writes it and the Claude Code
-// plugin in plugin/nightjar-status reads it. Types only, so the plugin can import it.
+// The shape of .factory/status.json, defined once for the writer and the plugin; types only, so the plugin can import it.
 
 export type Doing =
 	| { readonly kind: 'idle'; readonly nextPollAt: string }

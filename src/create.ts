@@ -1,6 +1,4 @@
-// `nightjar create FILE`: makes a Feature and its Tickets from a Feature file on the Tracker
-// factory.json names. The Tickets get the ready Signal; the Feature gets none, so nothing is built
-// until a person gives it the Go.
+// `nightjar create FILE`: the Feature gets no Signal, so nothing is built until a person gives it the Go.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { makeAdapters } from './adapters.js';

@@ -1,7 +1,4 @@
-// Azure Repos as a Code host: the branch is pushed to the repo factory.json names, signed in as the
-// Tracker is, and each Ticket is linked to the draft pull request as a work item when the Tracker is
-// Azure DevOps Boards in the same organization, else named in its body. Nightjar never completes,
-// abandons or publishes a pull request, and never sets a work item's state (docs/adr/0002).
+// Azure Repos as a Code host: never completes, abandons or publishes a pull request, nor sets a work item's state (docs/adr/0002).
 import { z } from 'zod';
 import type { CodeHost, DraftRequest, Pull } from '../code-host.js';
 import { firstLine, type Env, type Run } from '../git.js';

@@ -1,5 +1,4 @@
-// The creation contract (docs/ticket-contract.md): what a Tracker that also makes Features and Tickets
-// must do. What it makes is read back through the Tracker's own methods, as a build would read it.
+// The creation contract (docs/ticket-contract.md): what it makes is read back through the Tracker's own methods.
 import assert from 'node:assert/strict';
 import { canCreate, type FeatureWriter, type Tracker } from '../tracker.js';
 import type { ContractCase } from './case.js';

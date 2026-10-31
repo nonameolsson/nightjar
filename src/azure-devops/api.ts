@@ -1,5 +1,4 @@
-// The one way Nightjar reaches Azure DevOps: its REST API over HTTPS, signed in. Every Azure DevOps
-// Adapter calls through here; the request seam lets a spec answer from a fake Azure DevOps instead.
+// The one signed-in way to Azure DevOps; the request seam lets a spec answer from a fake Azure DevOps.
 import type { z } from 'zod';
 import type { AzureDevOpsSignIn } from './sign-in.js';
 import { why } from '../say.js';

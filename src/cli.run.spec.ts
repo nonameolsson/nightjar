@@ -1,6 +1,4 @@
-// `nightjar 1` end to end: the real command, build loop, GitHub adapters and session, with stand-ins
-// for gh and claude first on PATH, over a clone of a bare origin. The other specs cut this chain at
-// the seams; this one runs it whole, as a first real run would.
+// `nightjar 1` end to end, the whole chain the other specs cut at the seams, with stand-ins for gh and claude on PATH.
 import { spawnSync } from 'node:child_process';
 import {
 	chmodSync,

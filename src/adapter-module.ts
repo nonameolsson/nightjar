@@ -1,5 +1,4 @@
-// Adapters a repo brings itself: the module factory.json names exports a function that builds the
-// Tracker or the Code host (docs/custom-adapters.md). A module that falls short is refused at start.
+// A repo's own Adapter, from the module factory.json names (docs/custom-adapters.md); one that falls short is refused at start.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { CodeHost } from './code-host.js';

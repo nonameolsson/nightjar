@@ -1,5 +1,4 @@
-// A stand-in for `gh api`, for the GitHub adapters' specs: it answers each call from the routes
-// it is given and records every call, so no spec reaches the network.
+// A stand-in for `gh api` that answers from its routes and records every call, so no spec reaches the network.
 import type { Run } from '../git.js';
 
 export interface GhCall {

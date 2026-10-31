@@ -1,5 +1,4 @@
-// What Nightjar tells its sessions, and the shape of what they answer. The Feature and Ticket text
-// is the spec, but it reaches the agent as material inside these rules, never in their place.
+// The Feature and Ticket text reach the agent as material inside these rules, never in their place.
 import type { Comment, Feature, Ticket } from './tracker.js';
 
 // Marks Nightjar's own question comments, so a later run counts the rounds already asked.

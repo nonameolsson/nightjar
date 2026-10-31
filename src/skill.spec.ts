@@ -1,5 +1,4 @@
-// The shipped skill and the Ticket contract doc show Feature files `nightjar create` takes, and the
-// package carries the skill.
+// The shipped skill and the Ticket contract doc show Feature files `nightjar create` takes.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';

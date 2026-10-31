@@ -1,7 +1,4 @@
-// The build loop: one Feature, from the Go to a draft pull request. Its Tickets are built one at a
-// time in Build order, each by a fresh session, each checked and committed by Nightjar, then one
-// read-only review and one draft pull request. It talks to the Tracker and the Code host only
-// through their seams.
+// The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
 import { join } from 'node:path';
 import type { RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
@@ -166,8 +163,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 	return run.build();
 }
 
-// The setup command failed: the Feature goes back to a person with the output, and the next run
-// sets the worktree up again.
+// The next run sets the worktree up again.
 async function setupFailed(
 	deps: Deps,
 	id: ItemId,

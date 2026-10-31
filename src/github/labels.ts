@@ -1,5 +1,4 @@
-// The labels a GitHub Tracker shows the Signals as. `nightjar init` creates them once; a label that
-// exists is never touched, so a team's own colours and descriptions stay.
+// A label that exists is never touched, so a team's own colours and descriptions stay.
 import { firstLine } from '../git.js';
 import { SIGNALS, type SignalNames } from '../signals.js';
 import { GitHubApi, GitHubFailure, type GhRunner } from './api.js';

@@ -1,5 +1,4 @@
-// How Nightjar signs in to Azure DevOps: the Azure CLI's token first, else a personal access token
-// from the environment. Every Azure DevOps Adapter shares one sign-in, so a person signs in once.
+// Azure DevOps sign-in: the Azure CLI's token first, else a personal access token from the environment.
 import { z } from 'zod';
 import { firstLine, run, type Env, type Run } from '../git.js';
 import { AzureDevOpsFailure } from './api.js';

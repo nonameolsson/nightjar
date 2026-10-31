@@ -1,5 +1,4 @@
-// The Tracker seam (docs/adr/0001): everything the build loop reads from or writes to the system
-// that holds Features, Tickets, Signals and comments. The build loop calls nothing else there.
+// The Tracker seam (docs/adr/0001): the build loop calls nothing else there.
 import type { Signal } from './signals.js';
 
 // An item's id as its Tracker spells it (`42`, `PROJ-123`); Nightjar never reads meaning into it.
@@ -71,8 +70,7 @@ export interface ItemText {
 	readonly body: string;
 }
 
-// The optional half of a Tracker that makes Features and Tickets (docs/ticket-contract.md). Apart from
-// `Tracker`, so a Tracker module written before it still loads; `nightjar create` needs it.
+// The optional half that makes Features, for `nightjar create`; apart, so a Tracker module written before it still loads.
 export interface FeatureWriter {
 	// a Feature that carries no Signal and is assigned to no one; gives its id
 	createFeature(feature: ItemText): Promise<ItemId>;

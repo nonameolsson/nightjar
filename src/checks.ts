@@ -1,5 +1,4 @@
-// The checks made before anything is built: `doctor` and `init` run all of them and list each result,
-// a build stops at the first that fails. Every failure says how to fix it.
+// `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
 import { makeAdapters, type Adapters } from './adapters.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';

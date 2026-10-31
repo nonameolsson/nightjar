@@ -1,5 +1,4 @@
-// The Tracker and Code host factory.json names, built over this machine's gh, git and Azure DevOps
-// sign-in, and paired so each Ticket reference is one the Code host can place.
+// Builds the Tracker and Code host factory.json names, paired so each Ticket reference is one the Code host can place.
 import { codeHostFromModule, trackerFromModule, type AdapterContext } from './adapter-module.js';
 import {
 	AzureBoardsTracker,

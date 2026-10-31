@@ -1,6 +1,4 @@
-// Azure DevOps Boards as a Tracker: a Feature is a work item of the type factory.json names, its
-// child work items are its Tickets, Predecessor links block, Signals are tags, and a Ticket is
-// referenced as AB#N. A work item's state is never read or set (docs/adr/0002).
+// Azure DevOps Boards as a Tracker: a work item's state is never read or set (docs/adr/0002).
 import { z } from 'zod';
 import { SIGNALS, type Signal, type SignalNames } from '../signals.js';
 import type {

@@ -1,5 +1,4 @@
-// The Build order (GLOSSARY.md): which of a Feature's Tickets to build next, the first in the
-// Feature's own order whose blockers are all closed or already built on the Feature's branch.
+// The Build order (GLOSSARY.md): the first Ticket in the Feature's order whose blockers are closed or built on the branch.
 import type { ItemId, Ticket } from './tracker.js';
 
 const unblocked = (ticket: Ticket, built: ReadonlySet<ItemId>) =>

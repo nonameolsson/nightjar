@@ -1,6 +1,4 @@
-// What each session may do: the tools it has and the settings it runs on. A session runs
-// --restricted, so none of the person's own settings reach it, and anything not allowed here is
-// refused (dontAsk), because nobody is there to approve it.
+// --restricted keeps the person's own settings out, and dontAsk refuses what is not allowed here: nobody is there to approve it.
 
 export const BUILD_TOOLS = [
 	'Read',
@@ -17,8 +15,7 @@ export const BUILD_TOOLS = [
 // The reviewer only reads: no Edit, no Write, and Bash only for git's read commands.
 export const REVIEW_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 
-// Nightjar's own, and no config can loosen them: deny wins over any allow in Claude Code, so only
-// Nightjar commits, pushes, moves the branch and talks to the Tracker and Code host.
+// Deny wins over any allow in Claude Code, so no config can loosen these.
 const DENY = [
 	'Bash(git commit *)',
 	'Bash(git push *)',

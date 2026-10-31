@@ -1,5 +1,4 @@
-// The `nightjar` command: checks this machine and the repo's factory.json, then builds the Features
-// assigned to the person with the Go, with nobody at the keyboard.
+// The `nightjar` command.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
