@@ -9,6 +9,7 @@ import { ConfigError, loadConfig } from './config.js';
 import { FeatureFileError, readFeatureFile, type FeaturePlan } from './feature-file.js';
 import { run, type Env } from './git.js';
 import type { FeatureWriter, ItemId, Tracker } from './tracker.js';
+import { say, why } from './say.js';
 
 export const CREATE_USAGE = `usage: nightjar create [--dry-run] FILE
 
@@ -20,8 +21,6 @@ export interface Made {
 	// in the file's order
 	readonly tickets: readonly ItemId[];
 }
-
-const said = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 const listed = (texts: readonly string[]) =>
 	texts.length < 2 ? texts.join('') : `${texts.slice(0, -1).join(', ')} and ${texts.at(-1) ?? ''}`;
@@ -52,13 +51,11 @@ export async function makeFeature(
 		return { feature, tickets: made.slice(1) };
 	} catch (fault) {
 		const before = made.length === 0 ? 'nothing' : made.map(ref).join(', ');
-		throw new Error(`${said(fault)}; made before it: ${before}. Nothing was undone.`, {
+		throw new Error(`${why(fault)}; made before it: ${before}. Nothing was undone.`, {
 			cause: fault
 		});
 	}
 }
-
-const say = (line: string) => console.log(`nightjar: ${line}`);
 
 const refuse = (text: string) => {
 	console.error(`nightjar: ${text}`);
@@ -121,7 +118,7 @@ export async function runCreateCommand(argv: readonly string[]): Promise<number>
 		say(`${ref} carries no Signal: assign it to yourself and give it the Go (${go}) to build it.`);
 		return 0;
 	} catch (fault) {
-		console.error(`nightjar: ${said(fault)}`);
+		console.error(`nightjar: ${why(fault)}`);
 		return 1;
 	}
 }

@@ -7,6 +7,7 @@ import { loadConfig, loadRules, type Config } from './config.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
 import { defaultBranch, signing } from './worktree.js';
+import { why } from './say.js';
 
 // A reason Nightjar will not start on this machine, said as it is.
 export class Refusal extends Error {}
@@ -53,8 +54,6 @@ export interface CheckOptions {
 
 const GH_INSTALL = 'https://cli.github.com/';
 const CLAUDE_INSTALL = 'https://claude.com/claude-code';
-
-const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 const ghFix = (message: string) =>
 	message.includes('is not on the PATH')

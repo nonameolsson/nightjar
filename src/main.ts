@@ -16,12 +16,11 @@ import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildOne, cannotClaim, handBack, queue, why, type QueueDeps } from './queue.js';
+import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
 import { StatusBoard, statusPath } from './status.js';
 import { worktreesFor } from './worktree.js';
-
-const say = (line: string) => console.log(`nightjar: ${line}`);
+import { say, why } from './say.js';
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {

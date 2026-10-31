@@ -11,6 +11,7 @@ import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig } from './config.js'
 import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote } from './github/api.js';
+import { say, why } from './say.js';
 
 export interface InitOptions {
 	readonly root: string;
@@ -19,10 +20,6 @@ export interface InitOptions {
 	readonly ask: Ask;
 	readonly request?: AzureDevOpsRequest;
 }
-
-const say = (line: string) => console.log(`nightjar: ${line}`);
-
-const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 // the published schema, so a repo that is no npm project gets editor completion too
 const SCHEMA_URL = 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json';

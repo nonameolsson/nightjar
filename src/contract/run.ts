@@ -4,6 +4,7 @@ import { codeHostContract } from './code-host.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { why } from '../say.js';
 
 // A module exports the harnesses of the Adapters it wants checked.
 export class ContractRefusal extends Error {}
@@ -40,7 +41,7 @@ async function runSuite<Harness>(
 			results.push({
 				name: c.name,
 				ok: false,
-				error: fault instanceof Error ? fault.message : String(fault)
+				error: why(fault)
 			});
 		}
 	}

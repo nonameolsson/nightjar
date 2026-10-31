@@ -3,6 +3,7 @@
 import { FOOTER, type FeatureOutcome } from './build.js';
 import type { StatusReport } from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
+import { why } from './say.js';
 
 export const POLL_MS = 2 * 60_000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
@@ -19,8 +20,6 @@ export interface QueueDeps {
 	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly signal?: AbortSignal;
 }
-
-export const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
 export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Promise<void> {

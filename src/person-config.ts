@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { ConfigError, where } from './config.js';
 import type { Env } from './git.js';
+import { why } from './say.js';
 
 export const DEFAULT_DAILY_USD = 60;
 
@@ -38,9 +39,7 @@ export function loadPersonConfig(env: Env): PersonConfig {
 	try {
 		value = JSON.parse(text);
 	} catch (fault) {
-		throw new ConfigError(
-			`${path} is not JSON: ${fault instanceof Error ? fault.message : String(fault)}`
-		);
+		throw new ConfigError(`${path} is not JSON: ${why(fault)}`);
 	}
 	const parsed = PersonConfigSchema.safeParse(value);
 	if (!parsed.success) {

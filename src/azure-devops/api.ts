@@ -2,6 +2,7 @@
 // Adapter calls through here; the request seam lets a spec answer from a fake Azure DevOps instead.
 import type { z } from 'zod';
 import type { AzureDevOpsSignIn } from './sign-in.js';
+import { why } from '../say.js';
 
 // An Azure DevOps call Nightjar cannot do without; its message names the call and the reason.
 export class AzureDevOpsFailure extends Error {
@@ -125,7 +126,7 @@ export class AzureDevOpsApi {
 				...(sending.body === undefined ? {} : { body: JSON.stringify(sending.body) })
 			});
 		} catch (fault) {
-			const reason = fault instanceof Error ? fault.message : String(fault);
+			const reason = why(fault);
 			throw new AzureDevOpsFailure(`Azure DevOps could not ${what}: ${reason}`);
 		}
 	}
