@@ -17,7 +17,9 @@
 	"files": [
 		"dist",
 		"!dist/**/*.spec.*",
-		"schema"
+		"schema",
+		"skills",
+		"docs/ticket-contract.md"
 	],
 	"engines": {
 		"node": ">=24"
