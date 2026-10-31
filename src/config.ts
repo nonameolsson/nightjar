@@ -31,7 +31,9 @@ const adapterModule = (what: string) =>
 			path: z
 				.string({ error: missingOr('name the module') })
 				.regex(/\S/, 'name the module')
-				.meta({ description: `The module that builds the ${what}, as a path from the repo's root` }),
+				.meta({
+					description: `The module that builds the ${what}, as a path from the repo's root`
+				}),
 			options: z
 				.record(z.string(), z.unknown())
 				.optional()
@@ -76,10 +78,14 @@ export const ConfigSchema = z
 	.strictObject({
 		$schema: z.string().optional(),
 		tracker: z
-			.discriminatedUnion('type', [GitHubTracker, adapterModule('Tracker')], { error: missingOr('name the Tracker') })
+			.discriminatedUnion('type', [GitHubTracker, adapterModule('Tracker')], {
+				error: missingOr('name the Tracker')
+			})
 			.meta({ description: 'Where the Features and Tickets live' }),
 		codeHost: z
-			.discriminatedUnion('type', [GitHubCodeHost, adapterModule('Code host')], { error: missingOr('name the Code host') })
+			.discriminatedUnion('type', [GitHubCodeHost, adapterModule('Code host')], {
+				error: missingOr('name the Code host')
+			})
 			.meta({ description: 'Where the branch is pushed and the draft pull request opened' }),
 		check: z
 			.string({ error: missingOr('name the command that checks the work') })
