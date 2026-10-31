@@ -19,14 +19,17 @@
 		"!dist/**/*.spec.*",
 		"schema",
 		"skills",
-		"docs/ticket-contract.md"
+		"docs/ticket-contract.md",
+		"plugin/nightjar-status",
+		"!plugin/**/*.spec.ts",
+		"src/status-shape.ts"
 	],
 	"engines": {
 		"node": ">=24"
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && tsc --noEmit -p plugin",
 		"lint": "eslint .",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
