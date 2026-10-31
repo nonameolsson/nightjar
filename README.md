@@ -2,15 +2,15 @@
 
 Nightjar builds a repo's Features with nobody at the keyboard. It reads a Feature's Tickets from a Tracker, has a Coding agent (Claude Code) build each one on a single branch, and opens one draft pull request per Feature on a Code host.
 
-Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is GitHub. The words used here (Feature, Ticket, Signal, Go, …) are defined in [GLOSSARY.md](GLOSSARY.md).
+Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is GitHub or Azure Repos, chosen apart. The words used here (Feature, Ticket, Signal, Go, …) are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Requirements
 
 - macOS, Linux, or WSL2 on Windows. Native Windows is not supported.
 - Node 24 or later.
-- `git`, in a checkout whose `origin` is the GitHub repo.
-- [`gh`](https://cli.github.com/), signed in (`gh auth login`).
-- With Azure DevOps Boards as the Tracker: the [Azure CLI](https://learn.microsoft.com/cli/azure/) signed in (`az login`), else a personal access token in `AZURE_DEVOPS_EXT_PAT` with Work Items (Read & write) and, unless `factory.json` sets `trusted`, Identity (Read). Nightjar asks `az` first.
+- `git`, in a checkout whose `origin` is the Code host's repo, which `git fetch` can read with your own git login.
+- With GitHub as the Tracker or the Code host: [`gh`](https://cli.github.com/), signed in (`gh auth login`).
+- With Azure DevOps Boards as the Tracker or Azure Repos as the Code host: the [Azure CLI](https://learn.microsoft.com/cli/azure/) signed in (`az login`), else a personal access token in `AZURE_DEVOPS_EXT_PAT`. Nightjar asks `az` first, and signs in once for both. The token needs Work Items (Read & write) for either; for the Tracker, unless `factory.json` sets `trusted`, Identity (Read); for Azure Repos, Code (Read & write). Nightjar pushes to Azure Repos with this sign-in as a header for `dev.azure.com` alone; it never writes it into a remote or a git config.
 - [`claude`](https://claude.com/claude-code) (Claude Code), signed in. Nightjar bills your Claude plan. If `ANTHROPIC_API_KEY` is set it refuses to start, unless you pass `--use-api-key`.
 - If your git setup signs commits, the signing key must be unlocked: Nightjar stops when git cannot sign.
 
@@ -83,7 +83,7 @@ A full one:
 | Key               | Required | What it does                                                                                                                                                                                                       |
 | ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "azure-devops" }` with `organization` (as in `dev.azure.com/<organization>`), `project`, and `featureType`, the work item type that plays the Feature (`Feature`, `Epic`, `Product Backlog Item`, …): its child work items are its Tickets. `ticketType`, optional, is the work item type `nightjar create` makes each Ticket as (`User Story`, `Product Backlog Item`, `Issue`, …). Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
-| `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or a `module`, as for `tracker`.                                                                         |
+| `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or `{ "type": "azure-devops" }` with `organization`, `project` and `repo`, the Git repo on Azure Repos the branch is pushed to and the draft pull request opened on. Or a `module`, as for `tracker`. |
 | `check`           | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
 | `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list. The list may be empty. |
 | `signals`         | no       | The name each Signal has on the Tracker (a label on GitHub, a tag on Azure DevOps). Leave out the ones you do not rename. Defaults are shown above. `needs-triage` and `wontfix` are refused: Nightjar never reads or sets them.          |
@@ -108,6 +108,28 @@ With Azure DevOps Boards as the Tracker, and the code on GitHub:
 		"featureType": "Feature"
 	},
 	"codeHost": { "type": "github" },
+	"check": "make check",
+	"allowedCommands": ["make check", "make test"]
+}
+```
+
+Fully on Azure DevOps, with the code on Azure Repos:
+
+```json
+{
+	"$schema": "./node_modules/@nonameolsson/nightjar/schema/factory.schema.json",
+	"tracker": {
+		"type": "azure-devops",
+		"organization": "contoso",
+		"project": "Fabrikam",
+		"featureType": "Feature"
+	},
+	"codeHost": {
+		"type": "azure-devops",
+		"organization": "contoso",
+		"project": "Fabrikam",
+		"repo": "fabrikam-app"
+	},
 	"check": "make check",
 	"allowedCommands": ["make check", "make test"]
 }
@@ -199,14 +221,14 @@ npx nightjar --dry-run
 
 Pick exactly one of `--dry-run`, `--once`, `--watch` or a Feature number. `--use-api-key`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module.
 
-Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker login (`gh`, or the Azure DevOps sign-in), `claude`, and commit signing, and prints what it found. Exit code 2 means it refused to start; the message says why.
+Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker login (`gh`, or the Azure DevOps sign-in), the Azure Repos repo when it is the Code host, `claude`, and commit signing, and prints what it found. Exit code 2 means it refused to start; the message says why.
 
 Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again quits at once. On macOS, Nightjar keeps the machine awake while it runs.
 
 ## What you get
 
-- **One branch** per Feature, `factory/<number>-<title-slug>`, with one commit per Ticket, pushed to `origin`.
-- **One draft pull request** per Feature, with each built Ticket referenced by `#N`, or `AB#N` for an Azure DevOps work item, which the [Azure Boards app](https://learn.microsoft.com/azure/devops/boards/github/) links once it is installed on the repo. When the review is on, its summary is the pull request's first comment.
+- **One branch** per Feature, `factory/<number>-<title-slug>`, with one commit per Ticket, pushed to `origin` on GitHub, or to the repo `factory.json` names on Azure Repos.
+- **One draft pull request** per Feature. On GitHub each built Ticket is referenced by `#N`, or `AB#N` for an Azure DevOps work item, which the [Azure Boards app](https://learn.microsoft.com/azure/devops/boards/github/) links once it is installed on the repo. On Azure Repos each built Ticket from Azure DevOps Boards in the same organization is attached as a linked work item and named `#N`; a Ticket from anywhere else is named in the description by a link to its page, because Azure Repos reads `#N` as one of its own work items. Azure Repos keeps 4000 characters of a description, so a longer one is cut, never its references. Nightjar never completes, abandons or publishes the pull request. When the review is on, its summary is the pull request's first comment.
 - **`.factory/status.json`**: what Nightjar is doing now and what it did last, rewritten at every change.
 - **`.factory/runs.jsonl`**: one line per session, with its outcome and cost. Each session's log is in `.factory/logs/`.
 - **Worktrees** under `~/.nightjar/worktrees/`, outside your checkout, which is never touched. Add `.factory/` to the repo's `.gitignore`.
@@ -230,7 +252,7 @@ A Ticket still unclear after its question rounds goes to a person.
 Also:
 
 - Claude Code is the only Coding agent.
-- GitHub Issues and Azure DevOps Boards are the Trackers built in, and GitHub the only Code host; others are [custom Adapter modules](#another-tracker-or-code-host).
+- GitHub Issues and Azure DevOps Boards are the Trackers built in, and GitHub and Azure Repos the Code hosts; others are [custom Adapter modules](#another-tracker-or-code-host).
 - The agent never commits, pushes, switches branches, reaches the network, or runs `gh`. Nightjar does that, and `factory.json` cannot loosen it.
 - One run builds one Feature at a time.
 
@@ -240,7 +262,6 @@ Planned, not built yet:
 
 - `nightjar init`: asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins.
 - `nightjar doctor`: re-runs those checks at any time (today's `--dry-run`).
-- Azure Repos as a Code host.
 - Publishing to npm.
 
 ## Develop

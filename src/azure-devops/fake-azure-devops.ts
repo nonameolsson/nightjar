@@ -47,6 +47,25 @@ interface StoredComment {
 	readonly createdDate: string;
 }
 
+// A pull request on Azure Repos, as the fake keeps it.
+export interface FakePullRequest {
+	readonly pullRequestId: number;
+	readonly repository: string;
+	readonly sourceRefName: string;
+	readonly targetRefName: string;
+	readonly title: string;
+	readonly description: string;
+	readonly isDraft: boolean;
+	readonly status: 'active';
+	// the first comment of each thread, oldest first
+	readonly comments: readonly string[];
+}
+
+interface Repository {
+	readonly id: string;
+	readonly name: string;
+}
+
 export interface Asked {
 	readonly method: AzureDevOpsCall['method'];
 	readonly url: string;
@@ -85,6 +104,10 @@ export class FakeAzureDevOps {
 	// every call it answered, in order
 	readonly asked: Asked[] = [];
 	private readonly faults: { match: RegExp; status: number }[] = [];
+	private readonly repositories = new Map<string, Repository>();
+	private readonly pulls: FakePullRequest[] = [];
+	// the artifact links on each work item, such as one to a pull request
+	private readonly artifacts = new Map<number, string[]>();
 
 	constructor(
 		readonly organization: string,
@@ -155,6 +178,28 @@ export class FakeAzureDevOps {
 	// The tags on a work item, as Azure DevOps lists them.
 	tagsOf(id: number): string[] {
 		return tagList(this.get(id).fields['System.Tags']);
+	}
+
+	// Makes a Git repo in the project, on Azure Repos.
+	repository(name: string): void {
+		const id = guid(5000 + this.repositories.size + 1);
+		this.repositories.set(name.toLowerCase(), { id, name });
+	}
+
+	// A pull request as the fake keeps it.
+	pullRequestAt(id: number): FakePullRequest {
+		const found = this.pulls.find((p) => p.pullRequestId === id);
+		if (found === undefined) throw fault(`no pull request ${String(id)}`);
+		return found;
+	}
+
+	// The work items linked to a pull request, by id.
+	linkedWorkItems(pullId: number): number[] {
+		const link = this.artifactOf(this.pullRequestAt(pullId));
+		return [...this.artifacts.entries()]
+			.filter(([, links]) => links.some((l) => l.toLowerCase() === link.toLowerCase()))
+			.map(([id]) => id)
+			.sort((a, b) => a - b);
 	}
 
 	// The next call whose address `match` finds answers `status` and changes nothing.
@@ -236,7 +281,223 @@ export class FakeAzureDevOps {
 			if (call.method === 'GET') return this.comments(id, url.searchParams);
 			if (call.method === 'POST') return this.addComment(id, url.searchParams, body);
 		}
+		const repos = this.reposAnswer(url, call, body, project);
+		if (repos !== null) return repos;
+		const linking = new RegExp(`^${org}/_apis/wit/workitems/(\\d+)$`, 'i').exec(path);
+		if (call.method === 'PATCH' && linking) {
+			this.query(url, { 'api-version': API });
+			if (call.headers['Content-Type'] !== 'application/json-patch+json') {
+				throw fault('a work item is patched with application/json-patch+json');
+			}
+			return this.linkArtifact(Number(linking[1]), body);
+		}
 		throw fault(`no route answers ${call.method} ${url.href}`);
+	}
+
+	// Azure Repos: a repo, its pull requests, their threads and linked work items. Null for another route.
+	private reposAnswer(
+		url: URL,
+		call: AzureDevOpsCall,
+		body: unknown,
+		project: string
+	): AzureDevOpsReply | null {
+		const shape = new RegExp(
+			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads))?)?)?$`,
+			'i'
+		).exec(url.pathname);
+		if (!shape) return null;
+		this.query(url, { 'api-version': API }, [
+			'searchCriteria.sourceRefName',
+			'searchCriteria.status'
+		]);
+		const repo = this.repositories.get(decodeURIComponent(shape[1] ?? '').toLowerCase());
+		if (repo === undefined) {
+			return refusal(
+				404,
+				`TF401019: The Git repository with name or identifier ${shape[1] ?? ''} does not exist.`
+			);
+		}
+		const [, , pulls, idText, part] = shape;
+		if (pulls === undefined) {
+			if (call.method !== 'GET') throw fault(`${call.method} on a repo`);
+			return json(200, this.renderRepository(repo));
+		}
+		if (idText === undefined) {
+			if (call.method === 'GET') return this.listPulls(repo, url.searchParams);
+			if (call.method === 'POST') return this.createPull(repo, body);
+			throw fault(`${call.method} on the pull requests`);
+		}
+		const pull = this.pulls.find(
+			(p) => p.pullRequestId === Number(idText) && p.repository === repo.id
+		);
+		if (pull === undefined) {
+			return refusal(404, `TF401180: The requested pull request was not found.`);
+		}
+		if (part === undefined) {
+			if (call.method === 'GET') return json(200, this.renderPull(pull));
+			if (call.method === 'PATCH') return this.updatePull(pull, body);
+		} else if (part.toLowerCase() === 'workitems' && call.method === 'GET') {
+			const value = this.linkedWorkItems(pull.pullRequestId).map((id) => ({
+				id: String(id),
+				url: this.itemUrl(id)
+			}));
+			return json(200, { count: value.length, value });
+		} else if (part.toLowerCase() === 'threads' && call.method === 'POST') {
+			const content = (body as { comments?: { content?: unknown }[] } | null)?.comments?.[0]
+				?.content;
+			if (typeof content !== 'string') throw fault('a thread carries { comments: [{ content }] }');
+			this.replacePull({ ...pull, comments: [...pull.comments, content] });
+			return json(200, { id: pull.comments.length + 1, comments: [{ id: 1, content }] });
+		}
+		throw fault(`no route answers ${call.method} ${url.href}`);
+	}
+
+	private listPulls(repo: Repository, search: URLSearchParams): AzureDevOpsReply {
+		const source = search.get('searchCriteria.sourceRefName');
+		const status = search.get('searchCriteria.status') ?? 'active';
+		if (status !== 'active') throw fault(`searchCriteria.status=${status}`);
+		const value = this.pulls
+			.filter((p) => p.repository === repo.id && (source === null || p.sourceRefName === source))
+			.map((p) => this.renderPull(p));
+		return json(200, { count: value.length, value });
+	}
+
+	private createPull(repo: Repository, body: unknown): AzureDevOpsReply {
+		const got = (body ?? {}) as Record<string, unknown>;
+		const { sourceRefName, targetRefName, title, description, isDraft } = got;
+		for (const name of Object.keys(got)) {
+			if (!['sourceRefName', 'targetRefName', 'title', 'description', 'isDraft'].includes(name))
+				throw fault(`a new pull request Nightjar may not send with ${name}`);
+		}
+		if (typeof sourceRefName !== 'string' || typeof targetRefName !== 'string')
+			throw fault('a pull request names its sourceRefName and targetRefName');
+		if (typeof title !== 'string' || typeof description !== 'string')
+			throw fault('a pull request carries a title and a description');
+		if (description.length > DESCRIPTION_LIMIT) {
+			return refusal(
+				400,
+				'The pull request description is too long; it must be 4000 characters or less.'
+			);
+		}
+		if (
+			this.pulls.some(
+				(p) =>
+					p.repository === repo.id &&
+					p.sourceRefName === sourceRefName &&
+					p.targetRefName === targetRefName
+			)
+		) {
+			return refusal(
+				409,
+				'TF401179: An active pull request for the source and target branch already exists.'
+			);
+		}
+		const made: FakePullRequest = {
+			pullRequestId: 100 + this.pulls.length + 1,
+			repository: repo.id,
+			sourceRefName,
+			targetRefName,
+			title,
+			description,
+			isDraft: isDraft === true,
+			status: 'active',
+			comments: []
+		};
+		this.pulls.push(made);
+		return json(201, this.renderPull(made));
+	}
+
+	// Only the title and description are Nightjar's to change: a pull request is never completed, abandoned or published.
+	private updatePull(pull: FakePullRequest, body: unknown): AzureDevOpsReply {
+		const got = (body ?? {}) as Record<string, unknown>;
+		for (const name of Object.keys(got)) {
+			if (!['title', 'description'].includes(name))
+				throw fault(`a pull request update Nightjar may not send: ${name}`);
+		}
+		const { description, title } = got;
+		if (typeof description === 'string' && description.length > DESCRIPTION_LIMIT) {
+			return refusal(
+				400,
+				'The pull request description is too long; it must be 4000 characters or less.'
+			);
+		}
+		const changed = {
+			...pull,
+			...(typeof description === 'string' ? { description } : {}),
+			...(typeof title === 'string' ? { title } : {})
+		};
+		this.replacePull(changed);
+		return json(200, this.renderPull(changed));
+	}
+
+	// Only a link to a pull request is Nightjar's to add this way: any other patch is a fault.
+	private linkArtifact(id: number, body: unknown): AzureDevOpsReply {
+		const item = this.items.get(id);
+		if (item === undefined)
+			return refusal(404, `TF401232: Work item ${String(id)} does not exist.`);
+		if (!Array.isArray(body)) throw fault('a patch is a list of operations');
+		const links = [...(this.artifacts.get(id) ?? [])];
+		for (const op of body as { op?: unknown; path?: unknown; value?: unknown }[]) {
+			const value = op.value as { rel?: unknown; url?: unknown } | undefined;
+			const url = value?.url;
+			if (
+				op.op !== 'add' ||
+				op.path !== '/relations/-' ||
+				value?.rel !== 'ArtifactLink' ||
+				typeof url !== 'string' ||
+				!url.startsWith('vstfs:///Git/PullRequestId/')
+			) {
+				throw fault(`a patch Nightjar may not send: ${JSON.stringify(op)}`);
+			}
+			if (links.some((l) => l.toLowerCase() === url.toLowerCase())) {
+				return refusal(
+					400,
+					`TF201036: You cannot add a link of this type: the link already exists.`
+				);
+			}
+			links.push(url);
+		}
+		this.artifacts.set(id, links);
+		const changed = { ...item, rev: item.rev + 1 };
+		this.items.set(id, changed);
+		return json(200, this.render(changed, undefined, false));
+	}
+
+	private replacePull(pull: FakePullRequest): void {
+		const at = this.pulls.findIndex((p) => p.pullRequestId === pull.pullRequestId);
+		this.pulls[at] = pull;
+	}
+
+	private artifactOf(pull: FakePullRequest): string {
+		return `vstfs:///Git/PullRequestId/${PROJECT_ID}%2F${pull.repository}%2F${String(pull.pullRequestId)}`;
+	}
+
+	private renderRepository(repo: Repository) {
+		const web = `https://dev.azure.com/${encodeURIComponent(this.organization)}/${encodeURIComponent(this.project)}/_git/${encodeURIComponent(repo.name)}`;
+		return {
+			id: repo.id,
+			name: repo.name,
+			project: { id: PROJECT_ID, name: this.project },
+			remoteUrl: web,
+			webUrl: web
+		};
+	}
+
+	private renderPull(pull: FakePullRequest) {
+		const repo = [...this.repositories.values()].find((r) => r.id === pull.repository);
+		if (repo === undefined) throw fault('a pull request without its repo');
+		return {
+			pullRequestId: pull.pullRequestId,
+			repository: this.renderRepository(repo),
+			status: pull.status,
+			title: pull.title,
+			description: pull.description,
+			sourceRefName: pull.sourceRefName,
+			targetRefName: pull.targetRefName,
+			isDraft: pull.isDraft,
+			artifactId: this.artifactOf(pull),
+			url: `https://dev.azure.com/${encodeURIComponent(this.organization)}/_apis/git/repositories/${repo.id}/pullRequests/${String(pull.pullRequestId)}`
+		};
 	}
 
 	// The query a call carries must be exactly `wanted`, besides the `optional` names.
@@ -556,6 +817,9 @@ export class FakeAzureDevOps {
 const CONTRIBUTORS = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-1-contributors';
 const TEAM = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-2-team';
 const READERS = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-3-readers';
+const PROJECT_ID = guid(4000);
+// the most characters Azure Repos keeps in a pull request's description
+const DESCRIPTION_LIMIT = 4000;
 
 function tagList(value: unknown): string[] {
 	if (typeof value !== 'string') return [];

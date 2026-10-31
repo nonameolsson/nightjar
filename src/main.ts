@@ -63,6 +63,7 @@ async function preflight(args: Args, env: Env): Promise<Ready> {
 	const rules = loadRules(root, config);
 	const adapters = await makeAdapters(config, root, env);
 	const me = await adapters.tracker.me();
+	await adapters.reachCodeHost();
 	const claude = await need('claude', ['--version'], root, env, 'claude does not start');
 	const signs = await signing(root, env);
 	if (signs === 'fails') {
