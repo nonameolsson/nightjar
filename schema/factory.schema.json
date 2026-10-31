@@ -147,6 +147,37 @@
 				"type": "string",
 				"pattern": "\\S"
 			}
+		},
+		"setup": {
+			"description": "The shell command run once in each new worktree, before the first session, such as one that installs dependencies. When it fails, the Feature stops with a comment saying why. Left out, nothing is run.",
+			"type": "string",
+			"pattern": "\\S"
+		},
+		"ports": {
+			"description": "Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.",
+			"type": "object",
+			"properties": {
+				"count": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100,
+					"description": "How many ports to reserve"
+				},
+				"env": {
+					"minItems": 1,
+					"type": "array",
+					"items": {
+						"type": "string",
+						"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+					},
+					"description": "The environment variables that carry the ports to every session, the check and the setup command: the first name gets the first reserved port, the next name the next port, and so on"
+				}
+			},
+			"required": [
+				"count",
+				"env"
+			],
+			"additionalProperties": false
 		}
 	},
 	"required": [

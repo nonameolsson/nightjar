@@ -8,7 +8,8 @@ export interface CheckResult {
 	readonly tail: string;
 }
 
-export type RunCheck = (command: string, cwd: string) => Promise<CheckResult>;
+// Also runs the worktree setup command, with the environment the run hands every command.
+export type RunCheck = (command: string, cwd: string, env: Env) => Promise<CheckResult>;
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 
