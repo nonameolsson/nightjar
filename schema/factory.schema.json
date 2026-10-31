@@ -1,0 +1,78 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"tracker": {
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "github"
+						},
+						"repo": {
+							"description": "owner/name on GitHub; when left out, read from the origin remote",
+							"type": "string",
+							"pattern": "^[^/\\s]+\\/[^/\\s]+$"
+						}
+					},
+					"required": [
+						"type"
+					],
+					"additionalProperties": false,
+					"description": "GitHub Issues: a Feature is an issue with sub-issues, its Tickets"
+				}
+			],
+			"description": "Where the Features and Tickets live"
+		},
+		"codeHost": {
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "github"
+						},
+						"repo": {
+							"description": "owner/name on GitHub; when left out, read from the origin remote",
+							"type": "string",
+							"pattern": "^[^/\\s]+\\/[^/\\s]+$"
+						}
+					},
+					"required": [
+						"type"
+					],
+					"additionalProperties": false,
+					"description": "GitHub: the branch is pushed to origin and a draft pull request opened"
+				}
+			],
+			"description": "Where the branch is pushed and the draft pull request opened"
+		},
+		"check": {
+			"type": "string",
+			"pattern": "\\S",
+			"description": "The shell command that checks the work in the worktree, run after each Ticket; it fails with a non-zero exit"
+		},
+		"allowedCommands": {
+			"type": "array",
+			"items": {
+				"type": "string",
+				"pattern": "\\S"
+			},
+			"description": "The commands the agent may run, as Claude Code Bash permission patterns without Bash( ), such as \"make test\" or \"make lint *\". Committing, pushing, switching branches, the network and gh stay denied."
+		}
+	},
+	"required": [
+		"tracker",
+		"codeHost",
+		"check",
+		"allowedCommands"
+	],
+	"additionalProperties": false,
+	"title": "Nightjar factory.json"
+}
