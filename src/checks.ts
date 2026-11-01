@@ -1,5 +1,6 @@
 // `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
 import { makeAdapters, type Adapters } from './adapters.js';
+import { accountLine, parseAccount, profileEnv } from './account.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { loadConfig, loadRules, type Config } from './config.js';
@@ -21,6 +22,10 @@ export interface Ready {
 	readonly baseBranch: string;
 	readonly rules: string | null;
 	readonly person: PersonConfig;
+	// the environment of every session: the machine's, under the profile if one is chosen
+	readonly env: Env;
+	// the Claude login the sessions bill, said as the check found it; null on the API key
+	readonly login: string | null;
 	// whose Features to build: the config's assignee, else the signed-in person
 	readonly assignee: string;
 	// the Workflows that cannot run here, by name, with the reason; the others still can
@@ -50,6 +55,8 @@ export interface Checked {
 
 export interface CheckOptions {
 	readonly useApiKey: boolean;
+	// the --profile of this run, over the person's own
+	readonly profile?: string;
 	readonly env: Env;
 	readonly cwd: string;
 	readonly request?: AzureDevOpsRequest;
@@ -85,14 +92,21 @@ async function claudeVersion(root: string, env: Env, useApiKey: boolean) {
 		throw new Refusal(`claude does not start: ${firstLine(got.err) || firstLine(got.out)}`);
 	const version = got.out.trim();
 	// a session on the API key needs no login of its own
-	if (useApiKey) return { version, detail: `${version}, billing ANTHROPIC_API_KEY` };
-	const status = await run('claude', ['auth', 'status'], root, env);
-	if (!status.ok) {
+	if (useApiKey) return { version, detail: `${version}, billing ANTHROPIC_API_KEY`, login: null };
+	const status = await run('claude', ['auth', 'status', '--json'], root, env);
+	const account = parseAccount(status.out);
+	if (account?.loggedIn === false || (!status.ok && account === null)) {
+		const folder = account?.folder ?? env.CLAUDE_CONFIG_DIR ?? '~/.claude';
+		const old =
+			account === null
+				? ' (It is also unsigned if this claude is too old for `claude auth status --json`.)'
+				: '';
 		throw new Refusal(
-			'claude is not signed in: run `claude auth login`. (It is also unsigned if this claude is too old for `claude auth status`.)'
+			`claude is not signed in to ${folder}: start claude with that folder and type /login, or pass another --profile.${old}`
 		);
 	}
-	return { version, detail: `${version}, signed in` };
+	const login = account === null ? 'signed in' : accountLine(account) || 'signed in';
+	return { version, detail: `${version}, ${login}`, login };
 }
 
 export async function checkMachine(o: CheckOptions): Promise<Checked> {
@@ -170,6 +184,9 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 		})
 	);
 
+	// the environment of every session, under the profile --profile or config.json names
+	const sessionEnv = profileEnv(o.profile ?? person?.profile, o.env);
+
 	let adapters: Adapters | null = null;
 	let faulty = false;
 	if (loaded !== null && root !== null) {
@@ -224,7 +241,7 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 			? null
 			: await step(
 					'claude',
-					() => claudeVersion(root, o.env, o.useApiKey),
+					() => claudeVersion(root, sessionEnv, o.useApiKey),
 					({ version, detail }) => ({ detail, summary: `claude ${version}` })
 				);
 	const signs =
@@ -312,6 +329,8 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 	) {
 		const baseBranch = (await defaultBranch(root, o.env)) ?? 'main';
 		ready = {
+			env: sessionEnv,
+			login: claude.login,
 			root,
 			config: loaded.config,
 			adapters,

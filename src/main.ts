@@ -39,6 +39,7 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 async function preflight(args: Args, host: Host): Promise<Ready> {
 	const checked = await checkMachine({
 		useApiKey: args.useApiKey,
+		...(args.profile === undefined ? {} : { profile: args.profile }),
 		env: host.env,
 		cwd: host.cwd,
 		failFast: true,
@@ -48,9 +49,7 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 	if (failed !== undefined) throw new Refusal(failed.detail);
 	if (checked.ready === null) throw new Refusal('the checks did not finish');
 	const { adapters, me } = checked.ready;
-	say(
-		`${adapters.repo}, as ${me}, on ${args.useApiKey ? 'ANTHROPIC_API_KEY' : 'your Claude login'}`
-	);
+	say(`${adapters.repo}, as ${me}, on ${checked.ready.login ?? 'ANTHROPIC_API_KEY'}`);
 	for (const l of checked.lines) {
 		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
 	}
@@ -103,7 +102,13 @@ export async function runNightjar(
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	if (args.mode === 'doctor') {
 		const { cwd, request } = host;
-		return runDoctor({ useApiKey: args.useApiKey, env, cwd, ...(request ? { request } : {}) });
+		return runDoctor({
+			useApiKey: args.useApiKey,
+			...(args.profile === undefined ? {} : { profile: args.profile }),
+			env,
+			cwd,
+			...(request ? { request } : {})
+		});
 	}
 	let ready: Ready;
 	try {
@@ -165,7 +170,7 @@ export async function runNightjar(
 			? {}
 			: { portEnv: portEnv(claim.port, config.ports.env) }),
 		allowApiKey: args.useApiKey,
-		env,
+		env: ready.env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
 		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },

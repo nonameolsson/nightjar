@@ -26,6 +26,15 @@ describe('parseArgs', () => {
 		});
 	});
 
+	it('reads --profile with its name', () => {
+		expect(parseArgs(['--once', '--profile', 'work'])).toEqual({
+			mode: 'once',
+			useApiKey: false,
+			profile: 'work'
+		});
+		expect(parseArgs(['--once', '--profile'])).toBe('--profile needs a value');
+	});
+
 	it('names what is wrong', () => {
 		expect(parseArgs([])).toBe('say what to build');
 		expect(parseArgs(['--watch', '--once'])).toBe(
