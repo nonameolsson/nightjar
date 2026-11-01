@@ -31,6 +31,8 @@ type Act = 'build' | 'ask' | 'fail';
 
 interface World {
 	readonly root: string;
+	// where its worktrees are made
+	readonly worktrees: string;
 	readonly env: Record<string, string | undefined>;
 	readonly tracker: FakeTracker;
 	readonly host: FakeCodeHost;
@@ -97,12 +99,17 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 
-function makeWorld(): World {
-	const home = join(base, 'gitconfig');
+// A second world in one test needs a folder of its own: git's object files are read-only, so they cannot be copied over the first's.
+function makeWorld(dir = base): World {
+	if (existsSync(join(dir, 'origin.git'))) {
+		throw new Error(`makeWorld: ${dir} holds a world already; pass another folder`);
+	}
+	mkdirSync(dir, { recursive: true });
+	const home = join(dir, 'gitconfig');
 	writeFileSync(home, GITCONFIG);
 	const env = gitEnv(home);
-	const origin = join(base, 'origin.git');
-	const root = join(base, 'app');
+	const origin = join(dir, 'origin.git');
+	const root = join(dir, 'app');
 	cpSync(join(template, 'origin.git'), origin, { recursive: true });
 	cpSync(join(template, 'app'), root, { recursive: true });
 	execFileSync('git', ['-C', root, 'remote', 'set-url', 'origin', origin], { env, stdio: 'pipe' });
@@ -120,6 +127,7 @@ function makeWorld(): World {
 	tracker.add({ id: '3', title: 'Use it in marks', signals: ['ready'], blockedBy: ['2'] });
 	return {
 		root,
+		worktrees: join(dir, 'worktrees'),
 		env,
 		tracker,
 		host: new FakeCodeHost(),
@@ -238,7 +246,7 @@ function deps(world: World): Deps {
 const setup = (world: World, over: Partial<Setup> = {}): Setup => ({
 	root: world.root,
 	repo: 'o/r',
-	worktrees: join(base, 'worktrees'),
+	worktrees: world.worktrees,
 	baseBranch: 'main',
 	check: 'make check',
 	allowedCommands: ['make test', 'make lint *'],
@@ -258,6 +266,20 @@ const refs = (world: World) => world.host.pulls[0]?.references.map((r) => r.text
 const PORTS = { WEB_PORT: '4500', DB_PORT: '4501' };
 
 describe('the test repo', () => {
+	it('makes a second world in a folder of its own', async () => {
+		const one = makeWorld();
+		const two = makeWorld(join(base, 'second'));
+		await buildFeature(deps(one), setup(one), '1');
+		await buildFeature(deps(two), setup(two), '1');
+		expect(one.host.pulls).toHaveLength(1);
+		expect(two.host.pulls).toHaveLength(1);
+	});
+
+	it("says so when a second world would share the first one's folder", () => {
+		makeWorld();
+		expect(() => makeWorld()).toThrow('pass another folder');
+	});
+
 	it('leaves no detached git maintenance behind to write into the folder after the test', async () => {
 		const world = makeWorld();
 		const trace = join(base, 'trace.jsonl');
