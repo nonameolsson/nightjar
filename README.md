@@ -16,7 +16,6 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Install
 
-> Not published to npm yet; until it is, install from a tarball (below). Check an install with `nightjar --help`.
 
 Nightjar needs Node, but the repo it builds need not be a Node project. Install it once for your user, so the repo gets no `package.json` or `node_modules`:
 
