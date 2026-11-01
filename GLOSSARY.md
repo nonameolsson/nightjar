@@ -22,6 +22,16 @@ _Avoid_: ticket format, template
 The order a Feature's Tickets are built in: their blocking links, then the Feature's own child order.
 _Avoid_: dependency graph, queue
 
+### Workflows
+
+**Workflow**:
+A named list of Steps that a repo adds to Nightjar's fixed build loop, chosen per Feature.
+_Avoid_: Flow, pipeline, process
+
+**Step**:
+One instruction in a Workflow, given to the Coding agent at a fixed point in a build: after each Ticket, or after all Tickets.
+_Avoid_: Stage, phase, hook, task
+
 ### Steering
 
 **Signal**:
