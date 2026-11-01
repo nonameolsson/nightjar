@@ -264,7 +264,8 @@ confirm "Does the file list look right?" || exit 1
 
 stage "Bump the version"
 say "npm version edits package.json, commits, and tags vX.Y.Z."
-ask VERSION "Version to release (first release: 0.1.0):"
+ask VERSION "Version to release (Enter for 0.1.0):"
+VERSION="${VERSION:-0.1.0}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { warn "not a plain X.Y.Z version: $VERSION"; exit 1; }
 confirm "Bump to $VERSION, commit and tag v$VERSION?" || exit 1
 npm version "$VERSION"
