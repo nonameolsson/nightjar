@@ -16,6 +16,8 @@ export type Serve = (
 
 const TAIL = 2000;
 const READY_MS = 60_000;
+// how long a stopped command gets to end before it is killed
+const STOP_MS = 5000;
 
 const listening = (port: number) =>
 	new Promise<boolean>((done) => {
@@ -51,16 +53,34 @@ export const startServe: Serve = async (command, cwd, env, port) => {
 	child.once('error', (fault) => {
 		failed = `sh could not start: ${fault.message}`;
 	});
-	const stop = () =>
-		new Promise<void>((done) => {
-			if (exited !== undefined || child.pid === undefined) return done();
-			child.once('exit', () => done());
+	// The shell can exit before what it started does, so stop waits for the whole group to be gone.
+	const stop = async () => {
+		const pid = child.pid;
+		if (pid === undefined) return;
+		const gone = () => {
 			try {
-				process.kill(-child.pid, 'SIGTERM');
+				process.kill(-pid, 0);
+				return false;
 			} catch {
-				done();
+				return true;
 			}
-		});
+		};
+		try {
+			process.kill(-pid, 'SIGTERM');
+		} catch {
+			return;
+		}
+		for (let waited = 0; !gone(); waited += 50) {
+			if (waited === STOP_MS) {
+				try {
+					process.kill(-pid, 'SIGKILL');
+				} catch {
+					// it ended just now
+				}
+			}
+			await pause(50);
+		}
+	};
 	const deadline = Date.now() + READY_MS;
 	while (port !== null && !(await listening(port))) {
 		if (failed !== '' || exited !== undefined || Date.now() > deadline) {
