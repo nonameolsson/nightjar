@@ -1,11 +1,12 @@
-// The checks made before anything is built: `doctor` and `init` run all of them and list each result,
-// a build stops at the first that fails. Every failure says how to fix it.
+// `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
 import { makeAdapters, type Adapters } from './adapters.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
 import { defaultBranch, signing } from './worktree.js';
+import { why } from './say.js';
 
 // A reason Nightjar will not start on this machine, said as it is.
 export class Refusal extends Error {}
@@ -17,6 +18,9 @@ export interface Ready {
 	readonly me: string;
 	readonly baseBranch: string;
 	readonly rules: string | null;
+	readonly person: PersonConfig;
+	// whose Features to build: the config's assignee, else the signed-in person
+	readonly assignee: string;
 }
 
 export interface Line {
@@ -49,8 +53,6 @@ export interface CheckOptions {
 
 const GH_INSTALL = 'https://cli.github.com/';
 const CLAUDE_INSTALL = 'https://claude.com/claude-code';
-
-const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 const ghFix = (message: string) =>
 	message.includes('is not on the PATH')
@@ -151,6 +153,14 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 					() => ({ detail: 'read', summary: 'factory.json' })
 				);
 	if (root === null) skip('factory.json', 'needs a git checkout');
+	const person = await step(
+		'config.json',
+		() => loadPersonConfig(o.env),
+		(p) => ({
+			detail: `$${String(p.dailyUsd)} a day, building for ${p.assignee ?? 'the signed-in person'}`,
+			summary: null
+		})
+	);
 
 	let adapters: Adapters | null = null;
 	let faulty = false;
@@ -237,10 +247,20 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 		me !== null &&
 		claude !== null &&
 		signs !== null &&
+		person !== null &&
 		lines.every((l) => l.status === 'ok')
 	) {
 		const baseBranch = (await defaultBranch(root, o.env)) ?? 'main';
-		ready = { root, config: loaded.config, adapters, me, baseBranch, rules: loaded.rules };
+		ready = {
+			root,
+			config: loaded.config,
+			adapters,
+			me,
+			baseBranch,
+			rules: loaded.rules,
+			person,
+			assignee: person.assignee ?? me
+		};
 	}
 	return { lines, ready, adapters, config: loaded?.config ?? null, trackerOk };
 }

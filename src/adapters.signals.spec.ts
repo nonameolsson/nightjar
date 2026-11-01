@@ -59,6 +59,7 @@ describe('Adapters.prepareSignals', () => {
 			'me',
 			'assignedFeatures',
 			'feature',
+			'standing',
 			'tickets',
 			'comments',
 			'addSignal',

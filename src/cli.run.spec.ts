@@ -1,6 +1,4 @@
-// `nightjar 1` end to end: the real command, build loop, GitHub adapters and session, with stand-ins
-// for gh and claude first on PATH, over a clone of a bare origin. The other specs cut this chain at
-// the seams; this one runs it whole, as a first real run would.
+// `nightjar 1` end to end, the whole chain the other specs cut at the seams, with stand-ins for gh and claude on PATH.
 import { spawnSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -37,10 +35,11 @@ function script(dir: string, name: string, body: string) {
 const GH = String.raw`
 echo "$*" >> "$FAKE_GH_CALLS"
 issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
+feature() { printf '{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"%s"}],"assignees":[{"login":"%s"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}' "${'$'}{FAKE_GH_FEATURE_LABEL:-factory-go}" "${'$'}{FAKE_GH_FEATURE_ASSIGNEE:-ann}"; }
 for a in "$@"; do case "$a" in
   user) echo '{"login":"ann"}'; exit 0 ;;
-  repos/o/r/issues\?*) echo "[$(issue 1 'One escape' ',"sub_issues_summary":{"total":1}')]"; exit 0 ;;
-  repos/o/r/issues/1) issue 1 "One escape" ',"sub_issues_summary":{"total":1}'; exit 0 ;;
+  repos/o/r/issues\?*) echo "[$(feature)]"; exit 0 ;;
+  repos/o/r/issues/1) feature; exit 0 ;;
   repos/o/r/issues/1/sub_issues*)
     [ -n "$FAKE_GH_FAIL_TICKETS" ] && { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
     echo "[$(issue 2 'Share the escape' '')]"; exit 0 ;;
@@ -93,6 +92,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 		FAKE_CLAUDE_CALLS: join(base, 'claude-calls.txt')
 	};
 	delete env.ANTHROPIC_API_KEY;
+	// the person's own config.json is read under HOME alone
+	delete env.XDG_CONFIG_HOME;
 	const git = (cwd: string, ...args: string[]) =>
 		spawnSync('git', args, { cwd, env, encoding: 'utf8' }).stdout.trim();
 	const origin = join(base, 'origin.git');
@@ -161,8 +162,8 @@ describe('nightjar FEATURE', () => {
 		expect(status.doing).toEqual({ kind: 'off' });
 		expect(status.spentTodayUsd).toBe(1);
 		expect(status.recent).toMatchObject([
-			{ kind: 'built', feature: 1, ticket: 2, seq: 1 },
-			{ kind: 'pull', feature: 1, url: 'https://github.com/o/r/pull/9', seq: 2 }
+			{ kind: 'built', feature: '1', ticket: '2', seq: 1 },
+			{ kind: 'pull', feature: '1', url: 'https://github.com/o/r/pull/9', seq: 2 }
 		]);
 	}, 30_000);
 
@@ -191,7 +192,114 @@ describe('nightjar FEATURE', () => {
 		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
 			recent: unknown[];
 		};
-		expect(status.recent).toMatchObject([{ kind: 'failed', feature: 1 }]);
+		expect(status.recent).toMatchObject([{ kind: 'failed', feature: '1' }]);
+	}, 30_000);
+});
+
+// a Tracker module whose items are keyed as Jira or Linear keys them, held in the process
+const KEYED_TRACKER = `const items = {
+	'PROJ-1': { title: 'One escape', signals: ['go'], children: ['PROJ-2'] },
+	'PROJ-2': { title: 'Share the escape', signals: ['ready'], children: [] }
+};
+const said = [];
+export const createTracker = () => ({
+	me: async () => 'ann',
+	assignedFeatures: async () => [],
+	feature: async (id) => ({ id, title: items[id].title, body: '' }),
+	standing: async (id) => ({ assignees: ['ann'], signals: [...items[id].signals] }),
+	tickets: async (id) => items[id].children.map((c) => ({
+		id: c, title: items[c].title, body: '', open: true, signals: [...items[c].signals], blockedBy: []
+	})),
+	comments: async () => [],
+	addSignal: async (id, s) => { items[id].signals.push(s); },
+	removeSignal: async (id, s) => { items[id].signals = items[id].signals.filter((x) => x !== s); },
+	comment: async (id, body) => { said.push([id, body]); },
+	reference: (id) => ({ id, text: id })
+});`;
+
+describe('nightjar FEATURE that may not be claimed', () => {
+	it.each([
+		['assigned to someone else', { FAKE_GH_FEATURE_ASSIGNEE: 'bob' }, /#1 is not assigned to ann/],
+		['without the Go', { FAKE_GH_FEATURE_LABEL: 'ready-for-agent' }, /#1 does not carry the Go/],
+		['already being worked on', { FAKE_GH_FEATURE_LABEL: 'agent-working' }, /#1 already carries/]
+	])(
+		'refuses one %s, and touches nothing',
+		(_name, extra, said) => {
+			const { nightjar, calls, sessions } = world();
+			const run = nightjar(['1'], extra);
+			expect(run.stderr).toMatch(said);
+			expect(run.status).toBe(2);
+			expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);
+			expect(sessions()).not.toContain('--session-id');
+		},
+		30_000
+	);
+
+	it('says so when the Feature cannot be read', () => {
+		const { nightjar, calls } = world();
+		const run = nightjar(['99']);
+		expect(run.stderr).toContain('nightjar: gh could not read issue #99');
+		expect(run.status).toBe(2);
+		expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);
+	}, 30_000);
+});
+
+describe('nightjar FEATURE on a Tracker module keyed by strings', () => {
+	it('builds PROJ-1 and names its Tickets by their own keys', () => {
+		const { root, git, origin, nightjar, calls } = world(true, {
+			tracker: { type: 'module', path: './tracker.mjs' }
+		});
+		writeFileSync(join(root, 'tracker.mjs'), KEYED_TRACKER);
+		git(root, 'add', '.');
+		git(root, 'commit', '-q', '-m', 'tracker');
+		const run = nightjar(['PROJ-1']);
+		expect(run.stderr).toBe('');
+		expect(run.stdout).toContain('nightjar: #PROJ-1: draft pull request');
+		expect(run.status).toBe(0);
+		const branch = 'factory/PROJ-1-one-escape';
+		expect(git(origin, 'log', '--format=%B', branch)).toContain('Factory-Ticket: #PROJ-2');
+		expect(calls()).toMatch(/-X PATCH repos\/o\/r\/pulls\/9 -f body=[\s\S]*PROJ-2/);
+		const ledger = readFileSync(join(root, '.factory', 'runs.jsonl'), 'utf8');
+		expect(JSON.parse(ledger.split('\n')[0] ?? '{}')).toMatchObject({
+			feature: 'PROJ-1',
+			ticket: 'PROJ-2'
+		});
+		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
+			recent: unknown[];
+		};
+		expect(status.recent).toMatchObject([
+			{ kind: 'built', feature: 'PROJ-1', ticket: 'PROJ-2' },
+			{ kind: 'pull', feature: 'PROJ-1' }
+		]);
+	}, 30_000);
+});
+
+describe("the person's own config.json", () => {
+	const own = (env: Record<string, string>, value: unknown) => {
+		const folder = join(env.HOME ?? '', '.config', 'nightjar');
+		mkdirSync(folder, { recursive: true });
+		writeFileSync(join(folder, 'config.json'), JSON.stringify(value));
+	};
+
+	it('caps the day at its dailyUsd and builds the Features of its assignee', () => {
+		const { root, env, nightjar, calls } = world();
+		own(env, { dailyUsd: 25, assignee: 'zed' });
+		expect(nightjar(['doctor']).status).toBe(0);
+		expect(calls()).toMatch(/repos\/o\/r\/issues\?[^\n]*assignee=zed/);
+		const run = nightjar(['--once']);
+		expect(run.stdout).toContain('building the Features assigned to zed');
+		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
+			dailyUsd: number;
+		};
+		expect(status.dailyUsd).toBe(25);
+	}, 30_000);
+
+	it('refuses to start when a field is wrong, naming it', () => {
+		const { env, nightjar } = world();
+		own(env, { dailyUsd: 'lots' });
+		const run = nightjar(['doctor']);
+		expect(run.status).toBe(2);
+		expect(run.stderr).toContain('config.json: dailyUsd: ');
 	}, 30_000);
 });
 
@@ -323,6 +431,7 @@ describe('nightjar doctor', () => {
 	me: async () => options.who,
 	assignedFeatures: async (person) => [{ id: 7, title: 'Seen by ' + person, body: '' }],
 	feature: async () => { throw new Error('unused'); },
+	standing: async () => { throw new Error('unused'); },
 	tickets: async () => [],
 	comments: async () => [],
 	addSignal: async () => {},

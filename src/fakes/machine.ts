@@ -1,6 +1,4 @@
-// A whole machine for the init and doctor specs: a git checkout and stand-ins for gh, az and
-// claude on a PATH that holds nothing else, so no spec ever reaches the real ones. What a stand-in
-// does is steered by the variables in `env`, and what it was asked is kept in its calls file.
+// Stand-ins for gh, az and claude on a PATH that holds nothing else, so no spec reaches the real ones.
 import { spawnSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -15,8 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// gh: signed in as ann, one Feature (#1, with a Ticket) on o/r; labels in FAKE_GH_EXISTING (comma
-// separated) already exist; FAKE_GH_SIGNED_OUT makes every call fail as a signed-out gh does
+// gh as ann with Feature #1 on o/r; FAKE_GH_EXISTING (comma separated) labels exist; FAKE_GH_SIGNED_OUT fails every call
 const GH = String.raw`#!/bin/bash
 echo "$*" >> "$FAKE_GH_CALLS"
 if [ -n "$FAKE_GH_SIGNED_OUT" ]; then

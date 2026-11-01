@@ -15,7 +15,7 @@ A Ticket is one child of a Feature, built as one commit. It holds:
   - [ ] a comment with <b> shows it as text
   ```
 
-- **Blocking links**, on the Tracker: the Tickets that must be closed, or already built on the Feature's branch, before this one is built. On GitHub these are **blocked by** links; on Azure DevOps Boards, **Predecessor** links. Tickets are built in that order, then in the Feature's own child order (the Build order).
+- **Blocking links**, on the Tracker: the Tickets that must be closed, or already built on the Feature's branch, before this one is built. On GitHub these are **blocked by** links; on Azure DevOps Boards, **Predecessor** links. Tickets are built in that order, then in the Feature's own child order (the Build order). On Azure DevOps Boards the child order is the backlog rank (Stack Rank or Backlog Priority), and for children nobody has ranked, the order they were linked; so the Build order there is Predecessor links, then backlog rank, then child-link order.
 - Optionally, a **`**Model:**`** and an **`**Effort:**`** line, anywhere in its body, each on a line of its own:
 
   ```markdown
@@ -81,5 +81,5 @@ The package ships a Claude Code skill, `nightjar-feature`, that writes a Feature
 
 ```bash
 mkdir -p .claude/skills
-cp -R node_modules/@nonameolsson/nightjar/skills/nightjar-feature .claude/skills/
+cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-feature" .claude/skills/
 ```

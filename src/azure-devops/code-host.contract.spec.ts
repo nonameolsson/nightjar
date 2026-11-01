@@ -1,5 +1,4 @@
-// Azure Repos as a Code host against the contract suite, over a fake Azure DevOps and real git
-// pushing to a bare origin: no spec here reaches the network.
+// Azure Repos against the Code host contract, over a fake Azure DevOps and real git pushing to a bare origin.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

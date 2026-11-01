@@ -1,7 +1,7 @@
 // The Tracker contract (docs/adr/0001): what every Tracker Adapter must do, fake, built in or a repo's own.
 import assert from 'node:assert/strict';
 import { SIGNALS, type Signal } from '../signals.js';
-import type { Tracker } from '../tracker.js';
+import type { ItemId, Tracker } from '../tracker.js';
 import type { ContractCase } from './case.js';
 
 export interface WorldComment {
@@ -39,7 +39,7 @@ export interface TrackerWorld {
 export interface TrackerSubject {
 	readonly tracker: Tracker;
 	// the id the Tracker gave the world's item `key`
-	readonly id: (key: string) => number;
+	readonly id: (key: string) => ItemId;
 	// called after the case, pass or fail
 	readonly close?: () => Promise<void>;
 }
@@ -139,6 +139,29 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 	),
 
 	trackerCase(
+		'says who a Feature is assigned to and which Signals it carries',
+		given({
+			items: [
+				{ key: 'mine', title: 'Mine', assignees: [ANN], signals: ['go'], children: ['a'] },
+				{ key: 'theirs', title: 'Theirs', assignees: ['bob'], children: ['a'] },
+				{ key: 'nobody', title: 'Nobody', signals: ['working'], children: ['a'] },
+				{ key: 'a', title: 'Ticket a' }
+			]
+		}),
+		async ({ tracker, id }) => {
+			assert.deepEqual(await tracker.standing(id('mine')), {
+				assignees: [ANN],
+				signals: ['go']
+			});
+			assert.deepEqual(await tracker.standing(id('theirs')), { assignees: ['bob'], signals: [] });
+			assert.deepEqual(await tracker.standing(id('nobody')), {
+				assignees: [],
+				signals: ['working']
+			});
+		}
+	),
+
+	trackerCase(
 		"reads a Feature's Tickets in its own child order, open or closed, with their Signals",
 		given({
 			items: [
@@ -188,7 +211,10 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 		async ({ tracker, id }) => {
 			const tickets = await tracker.tickets(id('feature'));
 			assert.deepEqual(
-				tickets.map((t) => ({ id: t.id, blockedBy: [...t.blockedBy].sort((x, y) => x.id - y.id) })),
+				tickets.map((t) => ({
+					id: t.id,
+					blockedBy: [...t.blockedBy].sort((x, y) => x.id.localeCompare(y.id))
+				})),
 				[
 					{ id: id('a'), blockedBy: [] },
 					{ id: id('b'), blockedBy: [{ id: id('a'), open: true }] },
@@ -197,7 +223,7 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 						blockedBy: [
 							{ id: id('a'), open: true },
 							{ id: id('elsewhere'), open: false }
-						].sort((x, y) => x.id - y.id)
+						].sort((x, y) => x.id.localeCompare(y.id))
 					}
 				]
 			);
@@ -345,7 +371,7 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 			const b = tracker.reference(id('b'));
 			assert.equal(a.id, id('a'));
 			assert.equal(b.id, id('b'));
-			assert.ok(a.text.includes(String(id('a'))), `${a.text} names ${String(id('a'))}`);
+			assert.ok(a.text.includes(id('a')), `${a.text} names ${id('a')}`);
 			assert.notEqual(a.text, b.text);
 			assert.deepEqual(tracker.reference(id('a')), a);
 			return Promise.resolve();

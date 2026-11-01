@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Status } from '../../../src/status-shape.js';
-import { StatusBoard } from '../../../src/status.js';
+import { StatusFile } from '../../../src/status.js';
 import { line, toast } from './format';
 
 const NOW = new Date(2026, 9, 31, 10, 30).getTime();
@@ -23,8 +23,8 @@ describe('the status line', () => {
 	it('says a fix round, the minutes and the day spent', () => {
 		const fix = status({
 			kind: 'building',
-			feature: 262,
-			ticket: 263,
+			feature: '262',
+			ticket: '263',
 			step: 'fix',
 			round: 2,
 			rounds: 3,
@@ -37,8 +37,8 @@ describe('the status line', () => {
 	it('says no round for a first build and no Ticket for a review', () => {
 		const build = {
 			kind: 'building',
-			feature: 262,
-			ticket: 263,
+			feature: '262',
+			ticket: '263',
 			step: 'build',
 			round: 1,
 			rounds: 3,
@@ -79,16 +79,16 @@ describe('the status line', () => {
 describe('the toasts', () => {
 	const e = { seq: 1, at: at(10, 0) };
 	it('name the issue and why', () => {
-		expect(toast({ ...e, kind: 'built', feature: 262, ticket: 263 })).toBe(
+		expect(toast({ ...e, kind: 'built', feature: '262', ticket: '263' })).toBe(
 			'nightjar: #263 built (#262)'
 		);
 		expect(
-			toast({ ...e, kind: 'needs-info', feature: 262, ticket: null, why: 'it built nothing' })
+			toast({ ...e, kind: 'needs-info', feature: '262', ticket: null, why: 'it built nothing' })
 		).toBe('nightjar: #262 needs a person: it built nothing');
-		expect(toast({ ...e, kind: 'failed', feature: 262, why: 'check failed' })).toBe(
+		expect(toast({ ...e, kind: 'failed', feature: '262', why: 'check failed' })).toBe(
 			'nightjar: #262 failed: check failed'
 		);
-		expect(toast({ ...e, kind: 'pull', feature: 262, url: 'https://pr/9' })).toBe(
+		expect(toast({ ...e, kind: 'pull', feature: '262', url: 'https://pr/9' })).toBe(
 			'nightjar: #262 draft pull request https://pr/9'
 		);
 		expect(toast({ ...e, kind: 'stale', commit: 'abc1234' })).toBe(
@@ -107,18 +107,18 @@ describe('the file the writer makes', () => {
 	it('is read by the plugin into its line and toasts', () => {
 		const path = join(dir, '.factory', 'status.json');
 		const now = new Date(NOW);
-		const board = new StatusBoard({
+		const file = new StatusFile({
 			path,
 			ledger: join(dir, 'runs.jsonl'),
 			now: () => now,
 			pid: 7,
 			dailyUsd: 60
 		});
-		board.happened({ kind: 'built', feature: 5, ticket: 6 });
-		board.doing({
+		file.happened({ kind: 'built', feature: '5', ticket: '6' });
+		file.doing({
 			kind: 'building',
-			feature: 5,
-			ticket: 7,
+			feature: '5',
+			ticket: '7',
 			step: 'build',
 			round: 1,
 			rounds: 2,

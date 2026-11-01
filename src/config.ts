@@ -1,9 +1,9 @@
-// factory.json: what a repo tells Nightjar about itself. It is validated here, and the published
-// JSON Schema (schema/factory.schema.json) is generated from the same definition.
+// factory.json; schema/factory.schema.json is generated from the same definition.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_SIGNAL_NAMES, RESERVED_NAMES, type SignalNames } from './signals.js';
+import { why } from './say.js';
 
 export class ConfigError extends Error {}
 
@@ -231,7 +231,7 @@ export function loadRules(root: string, config: Config): string | null {
 	}
 }
 
-const where = (path: readonly PropertyKey[]) =>
+export const where = (path: readonly PropertyKey[]) =>
 	path.length === 0 ? '' : `${path.map(String).join('.')}: `;
 
 // The repo's factory.json, or a ConfigError naming each field that is wrong.
@@ -246,9 +246,7 @@ export function loadConfig(root: string): Config {
 	try {
 		value = JSON.parse(text);
 	} catch (fault) {
-		throw new ConfigError(
-			`${CONFIG_FILE} is not JSON: ${fault instanceof Error ? fault.message : String(fault)}`
-		);
+		throw new ConfigError(`${CONFIG_FILE} is not JSON: ${why(fault)}`);
 	}
 	const parsed = ConfigSchema.safeParse(value);
 	if (!parsed.success) {

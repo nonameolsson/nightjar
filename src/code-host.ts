@@ -1,5 +1,4 @@
-// The Code host seam (docs/adr/0001): where the Feature's branch is pushed and its one draft pull
-// request lives. The build loop calls nothing else there.
+// The Code host seam (docs/adr/0001): the build loop calls nothing else there.
 import type { TicketReference } from './tracker.js';
 
 export interface Pull {

@@ -1,5 +1,4 @@
-// `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude: it runs every
-// check, says how to fix each one that fails, and lists what it would build.
+// `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { machine, type Machine, type Tool } from './fakes/machine.js';
 import { runNightjar } from './main.js';

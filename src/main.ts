@@ -1,5 +1,4 @@
-// The `nightjar` command: checks this machine and the repo's factory.json, then builds the Features
-// assigned to the person with the Go, with nobody at the keyboard.
+// The `nightjar` command.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -16,12 +15,11 @@ import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildOne, handBack, queue, type QueueDeps } from './queue.js';
+import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
-import { StatusBoard, statusPath } from './status.js';
+import { StatusFile, statusPath } from './status.js';
 import { worktreesFor } from './worktree.js';
-
-const say = (line: string) => console.log(`nightjar: ${line}`);
+import { say, why } from './say.js';
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -54,6 +52,9 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 	);
 	const found = checked.lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
+	const { assignee, person } = checked.ready;
+	if (assignee !== me) say(`building the Features assigned to ${assignee}`);
+	if (person.dailyUsd !== LIMITS.dailyUsd) say(`daily limit $${String(person.dailyUsd)}`);
 	return checked.ready;
 }
 
@@ -110,12 +111,12 @@ export async function runNightjar(
 	}
 	const { root, config, adapters } = ready;
 
-	const status = new StatusBoard({
+	const status = new StatusFile({
 		path: statusPath(root),
 		ledger: ledgerPath(root),
 		now: () => new Date(),
 		pid: process.pid,
-		dailyUsd: LIMITS.dailyUsd
+		dailyUsd: ready.person.dailyUsd
 	});
 	// the reserved ports are held until the process ends, whatever ends it
 	const claim = config.ports === undefined ? null : await claimPorts({ count: config.ports.count });
@@ -159,14 +160,14 @@ export async function runNightjar(
 		env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
-		limits: LIMITS,
+		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
 		signal: stop.signal
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: number | null = null;
+	let building: string | null = null;
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
-		person: ready.me,
+		person: ready.assignee,
 		build: async (id) => {
 			building = id;
 			try {
@@ -204,6 +205,16 @@ export async function runNightjar(
 	});
 
 	if (args.mode === 'feature' && args.feature !== undefined) {
+		let refusal: string | null;
+		try {
+			refusal = await cannotClaim(queueDeps, args.feature);
+		} catch (fault) {
+			refusal = why(fault);
+		}
+		if (refusal !== null) {
+			console.error(`nightjar: ${refusal}`);
+			return 2;
+		}
 		const outcome = await buildOne(queueDeps, args.feature);
 		return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
 	}

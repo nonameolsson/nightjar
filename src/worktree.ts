@@ -1,5 +1,4 @@
-// The Feature's own branch and worktree, and every git command Nightjar runs in it. The agent
-// edits files there; only Nightjar commits or saves a failed attempt, and the Code host pushes.
+// Only Nightjar commits in the worktree or saves a failed attempt; the Code host pushes.
 import { createHash } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -13,18 +12,20 @@ export const TICKET_TRAILER = 'Factory-Ticket';
 
 const BRANCH_PREFIX = 'factory/';
 
-export function branchFor(id: number, title: string): string {
+// An item id as a piece of a branch name: whatever a ref may not hold becomes a dash.
+const refPart = (id: string) => id.replace(/[^A-Za-z0-9_-]+/g, '-');
+
+export function branchFor(id: string, title: string): string {
 	const slug = title
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, '-')
 		.replace(/^-+|-+$/g, '')
 		.slice(0, 40)
 		.replace(/-+$/, '');
-	return `${BRANCH_PREFIX}${String(id)}${slug ? `-${slug}` : ''}`;
+	return `${BRANCH_PREFIX}${refPart(id)}${slug ? `-${slug}` : ''}`;
 }
 
-// Out of the checkout, so the one a person works in is never touched; the hash keeps two
-// checkouts of the same name apart.
+// Out of the checkout, so the one a person works in is never touched; the hash keeps two checkouts of one name apart.
 export function worktreesFor(home: string, root: string): string {
 	const hash = createHash('sha256').update(root).digest('hex').slice(0, 8);
 	return join(home, '.nightjar', 'worktrees', `${basename(root)}-${hash}`);
@@ -50,8 +51,7 @@ export class Worktree {
 		return got.out;
 	}
 
-	// A marker in git's own folder for this worktree records that the setup command passed, so
-	// neither `git clean` nor a commit ever touches it.
+	// In git's own folder for the worktree, so neither `git clean` nor a commit touches it.
 	private async setupMarker(): Promise<string> {
 		const path = (await this.git(['rev-parse', '--git-path', 'nightjar-setup'])).trim();
 		return resolve(this.at.folder, path);
@@ -67,34 +67,32 @@ export class Worktree {
 		Number((await this.git(['rev-list', '--count', `${this.at.base}..HEAD`])).trim());
 
 	// The Tickets the branch's own commits built, from their trailers, oldest first.
-	async built(): Promise<Set<number>> {
+	async built(): Promise<Set<string>> {
 		const out = await this.git([
 			'log',
 			'--reverse',
 			`--format=%(trailers:key=${TICKET_TRAILER},valueonly)`,
 			`${this.at.base}..HEAD`
 		]);
-		const ids = [...out.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
-		return new Set(ids);
+		return new Set([...out.matchAll(/^#(\S+)$/gm)].flatMap((m) => (m[1] ? [m[1]] : [])));
 	}
 
 	// One commit of everything the session left, or false when it left nothing.
 	async commitTicket(
-		id: number,
+		id: string,
 		title: string,
 		summary: string,
 		session: string
 	): Promise<boolean> {
 		await this.git(['add', '-A']);
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
-		const message = `${title} (#${String(id)})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${String(id)}\nFactory-Session: ${session}`;
+		const message = `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\nFactory-Session: ${session}`;
 		await this.git(['commit', '-q', '-m', message]);
 		return true;
 	}
 
-	// Puts the branch back to `before`, keeping what the session left on a side branch, which it
-	// names; null when it left nothing.
-	async discard(before: string, ticket: number): Promise<string | null> {
+	// Keeps what the session left on a side branch, which it names; null when it left nothing.
+	async discard(before: string, ticket: string): Promise<string | null> {
 		await this.git(['add', '-A']);
 		const moved = (await this.head()) !== before;
 		const staged = (await this.git(['diff', '--cached', '--name-only'])).trim() !== '';
@@ -107,11 +105,11 @@ export class Worktree {
 					'-p',
 					'HEAD',
 					'-m',
-					`nightjar: the failed attempt at #${String(ticket)}`,
+					`nightjar: the failed attempt at #${ticket}`,
 					tree
 				])
 			).trim();
-			side = `${this.at.branch}-attempt-${String(ticket)}`;
+			side = `${this.at.branch}-attempt-${refPart(ticket)}`;
 			await this.git(['branch', '-f', side, saved]);
 		}
 		await this.git(['reset', '-q', '--hard', before]);
@@ -127,8 +125,7 @@ function inRoot(root: string, args: readonly string[], env: Env) {
 const hasRef = async (root: string, ref: string, env: Env) =>
 	(await inRoot(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], env)).ok;
 
-// The Feature's worktree: the one a run before left, else one on the branch it pushed, else a new
-// branch from the base. A worktree left dirty by a stopped run is cleaned: Nightjar owns it.
+// Reuses the worktree a run before left, else the pushed branch; a worktree a stopped run left dirty is cleaned.
 export async function openWorktree(
 	root: string,
 	worktrees: string,

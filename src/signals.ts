@@ -1,5 +1,4 @@
-// The Signals (GLOSSARY.md): the marks that steer a build. The build loop speaks only of these;
-// each Tracker adapter shows them under names, never as tracker states (docs/adr/0002).
+// The Signals (GLOSSARY.md): shown under names a Tracker configures, never as tracker states (docs/adr/0002).
 export const SIGNALS = ['go', 'ready', 'working', 'needsInfo', 'human'] as const;
 
 export type Signal = (typeof SIGNALS)[number];

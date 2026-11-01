@@ -1,16 +1,15 @@
-// `nightjar init`: asks for the Tracker and Code host and what each needs, writes factory.json, makes
-// the Tracker show the Signals, and checks every login. A repo that has a factory.json is not asked
-// again: init only sets up and checks. The check command is always asked for, never guessed.
+// `nightjar init`: a repo with a factory.json is not asked again, and the check command is always asked for, never guessed.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
 import { askOnStdin, type Ask } from './ask.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checkMachine, Refusal } from './checks.js';
-import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig } from './config.js';
+import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote } from './github/api.js';
+import { say, why } from './say.js';
 
 export interface InitOptions {
 	readonly root: string;
@@ -20,14 +19,12 @@ export interface InitOptions {
 	readonly request?: AzureDevOpsRequest;
 }
 
-const say = (line: string) => console.log(`nightjar: ${line}`);
+// the published schema, so a repo that is no npm project gets editor completion too
+const SCHEMA_URL = 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json';
 
-const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
-
-const SCHEMA_URL = './node_modules/@nonameolsson/nightjar/schema/factory.schema.json';
-
-const KINDS = ['github', 'azure-devops', 'module'] as const;
-type Kind = (typeof KINDS)[number];
+type Kind = Config['tracker']['type'];
+// the Tracker kinds the schema takes, which the Code host takes too
+const KINDS: readonly Kind[] = ConfigSchema.shape.tracker.options.map((o) => o.shape.type.value);
 
 // The problem the real schema finds with `key` of a candidate that is otherwise valid, if any.
 function problemWith(schema: z.ZodType, candidate: Record<string, unknown>, key: string) {

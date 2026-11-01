@@ -1,6 +1,4 @@
-// Azure DevOps Boards as a Tracker: a Feature is a work item of the type factory.json names, its
-// child work items are its Tickets, Predecessor links block, Signals are tags, and a Ticket is
-// referenced as AB#N. A work item's state is never read or set (docs/adr/0002).
+// Azure DevOps Boards as a Tracker: a work item's state is never read or set (docs/adr/0002).
 import { z } from 'zod';
 import { SIGNALS, type Signal, type SignalNames } from '../signals.js';
 import type {
@@ -8,7 +6,9 @@ import type {
 	Comment,
 	Feature,
 	FeatureWriter,
+	ItemId,
 	ItemText,
+	Standing,
 	Ticket,
 	TicketReference,
 	Tracker
@@ -85,6 +85,12 @@ const IdentitiesSchema = z.looseObject({
 			.nullable()
 	)
 });
+
+// The work item number an id names; Azure DevOps has no other kind of id.
+export function workItem(id: ItemId): number {
+	if (!/^\d+$/.test(id)) throw new AzureDevOpsFailure(`${id} is no Azure DevOps work item number.`);
+	return Number(id);
+}
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 
@@ -170,7 +176,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	}
 
 	private toFeature(item: Item): Feature {
-		return { id: item.id, title: text(item.fields['System.Title']), body: this.body(item) };
+		return { id: String(item.id), title: text(item.fields['System.Title']), body: this.body(item) };
 	}
 
 	async me(): Promise<string> {
@@ -239,12 +245,24 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			.map((i) => this.toFeature(i));
 	}
 
-	async feature(id: number): Promise<Feature> {
-		return this.toFeature(await this.item(id));
+	async feature(id: ItemId): Promise<Feature> {
+		return this.toFeature(await this.item(workItem(id)));
 	}
 
-	async tickets(featureId: number): Promise<Ticket[]> {
-		const order = linked(await this.item(featureId), CHILD);
+	async standing(id: ItemId): Promise<Standing> {
+		const item = await this.item(workItem(id));
+		const assigned = IdentityRefSchema.safeParse(item.fields['System.AssignedTo']);
+		const me = await this.signedIn('');
+		const name = !assigned.success
+			? null
+			: assigned.data.id === me.id
+				? me.name
+				: (assigned.data.uniqueName ?? assigned.data.displayName ?? null);
+		return { assignees: name === null ? [] : [name], signals: this.signalsOf(item) };
+	}
+
+	async tickets(featureId: ItemId): Promise<Ticket[]> {
+		const order = linked(await this.item(workItem(featureId)), CHILD);
 		const children = await this.items(order, true);
 		const byId = new Map(children.map((c) => [c.id, c]));
 		const outside = [
@@ -254,7 +272,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		const blockers = (child: Item): Blocker[] =>
 			linked(child, PREDECESSOR).flatMap((id) => {
 				const found = byId.get(id) ?? others.get(id);
-				return found ? [{ id, open: found.fields[CLOSED_DATE] === undefined }] : [];
+				return found ? [{ id: String(id), open: found.fields[CLOSED_DATE] === undefined }] : [];
 			});
 		// the backlog's order, and the order of the links where the backlog has none
 		const ranked = children
@@ -262,7 +280,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			.sort((a, b) => a.rank - b.rank || a.at - b.at)
 			.map((r) => r.child);
 		return ranked.map((child) => ({
-			id: child.id,
+			id: String(child.id),
 			title: text(child.fields['System.Title']),
 			body: this.body(child),
 			open: child.fields[CLOSED_DATE] === undefined,
@@ -271,8 +289,8 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		}));
 	}
 
-	async comments(id: number): Promise<Comment[]> {
-		const n = String(id);
+	async comments(id: ItemId): Promise<Comment[]> {
+		const n = String(workItem(id));
 		const got = await this.api.parse(
 			`read the comments on work item ${n}`,
 			{
@@ -342,9 +360,9 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	}
 
 	// Tags are one field, so a change writes the whole list back.
-	private async setTags(id: number, change: (tags: string[]) => string[] | null): Promise<void> {
-		const n = String(id);
-		const tags = change(tagsOf(await this.item(id)));
+	private async setTags(id: ItemId, change: (tags: string[]) => string[] | null): Promise<void> {
+		const n = String(workItem(id));
+		const tags = change(tagsOf(await this.item(workItem(id))));
 		if (tags === null) return;
 		await this.api.call(`tag work item ${n}`, {
 			method: 'PATCH',
@@ -354,20 +372,20 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		});
 	}
 
-	addSignal(id: number, signal: Signal): Promise<void> {
+	addSignal(id: ItemId, signal: Signal): Promise<void> {
 		const tag = this.names[signal];
 		return this.setTags(id, (tags) => (tags.some((t) => same(t, tag)) ? null : [...tags, tag]));
 	}
 
-	removeSignal(id: number, signal: Signal): Promise<void> {
+	removeSignal(id: ItemId, signal: Signal): Promise<void> {
 		const tag = this.names[signal];
 		return this.setTags(id, (tags) =>
 			tags.some((t) => same(t, tag)) ? tags.filter((t) => !same(t, tag)) : null
 		);
 	}
 
-	async comment(id: number, body: string): Promise<void> {
-		const n = String(id);
+	async comment(id: ItemId, body: string): Promise<void> {
+		const n = String(workItem(id));
 		await this.api.call(`comment on work item ${n}`, {
 			method: 'POST',
 			url: this.api.at(
@@ -377,12 +395,12 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		});
 	}
 
-	reference(id: number): TicketReference {
-		return { id, text: `AB#${String(id)}` };
+	reference(id: ItemId): TicketReference {
+		return { id, text: `AB#${String(workItem(id))}` };
 	}
 
 	// A work item of `type` whose Description is Markdown, so a Ticket's lines read back as written.
-	private async create(type: string, item: ItemText, links: readonly unknown[]): Promise<number> {
+	private async create(type: string, item: ItemText, links: readonly unknown[]): Promise<ItemId> {
 		const made = await this.api.parse(
 			`make the ${type} ${item.title}`,
 			{
@@ -398,18 +416,18 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			},
 			ItemSchema
 		);
-		return made.id;
+		return String(made.id);
 	}
 
-	private link(rel: string, id: number) {
-		return { rel, url: this.api.at(`_apis/wit/workItems/${String(id)}`) };
+	private link(rel: string, id: ItemId) {
+		return { rel, url: this.api.at(`_apis/wit/workItems/${String(workItem(id))}`) };
 	}
 
-	createFeature(feature: ItemText): Promise<number> {
+	createFeature(feature: ItemText): Promise<ItemId> {
 		return this.create(this.settings.featureType, feature, []);
 	}
 
-	createTicket(featureId: number, ticket: ItemText): Promise<number> {
+	createTicket(featureId: ItemId, ticket: ItemText): Promise<ItemId> {
 		const type = this.settings.ticketType;
 		if (type === undefined) {
 			return Promise.reject(
@@ -419,9 +437,9 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		return this.create(type, ticket, [this.link(PARENT, featureId)]);
 	}
 
-	async block(id: number, blocker: number): Promise<void> {
-		const n = String(id);
-		await this.api.call(`link work item ${n} after ${String(blocker)}`, {
+	async block(id: ItemId, blocker: ItemId): Promise<void> {
+		const n = String(workItem(id));
+		await this.api.call(`link work item ${n} after ${blocker}`, {
 			method: 'PATCH',
 			url: this.api.at(`${this.project}/_apis/wit/workitems/${n}?${API}`),
 			body: [{ op: 'add', path: '/relations/-', value: this.link(PREDECESSOR, blocker) }],

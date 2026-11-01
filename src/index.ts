@@ -1,9 +1,11 @@
 export type {
 	Blocker,
 	Comment,
+	ItemId,
 	Feature,
 	FeatureWriter,
 	ItemText,
+	Standing,
 	Ticket,
 	TicketReference,
 	Tracker

@@ -1,7 +1,4 @@
-// The ports a run reserves (factory.json `ports`), held for the run's whole life. A repo's tests
-// listen on them only while they run, so a free port alone would let two runs that started a
-// minute apart take the same ones; each port therefore has a lock file, named by the port and
-// holding the pid of the run that owns it. Every worktree on the machine shares one lock folder.
+// Tests listen on a run's ports only while they run, so a free port is not enough: each port has a lock file holding the owner's pid.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';

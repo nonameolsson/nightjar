@@ -1,7 +1,7 @@
-// The one way Nightjar reaches Azure DevOps: its REST API over HTTPS, signed in. Every Azure DevOps
-// Adapter calls through here; the request seam lets a spec answer from a fake Azure DevOps instead.
+// The one signed-in way to Azure DevOps; the request seam lets a spec answer from a fake Azure DevOps.
 import type { z } from 'zod';
 import type { AzureDevOpsSignIn } from './sign-in.js';
+import { why } from '../say.js';
 
 // An Azure DevOps call Nightjar cannot do without; its message names the call and the reason.
 export class AzureDevOpsFailure extends Error {
@@ -125,7 +125,7 @@ export class AzureDevOpsApi {
 				...(sending.body === undefined ? {} : { body: JSON.stringify(sending.body) })
 			});
 		} catch (fault) {
-			const reason = fault instanceof Error ? fault.message : String(fault);
+			const reason = why(fault);
 			throw new AzureDevOpsFailure(`Azure DevOps could not ${what}: ${reason}`);
 		}
 	}

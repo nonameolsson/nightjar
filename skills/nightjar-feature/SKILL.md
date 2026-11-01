@@ -5,7 +5,7 @@ description: Write an agreed idea onto the repo's Tracker as a Nightjar Feature 
 
 # Write a Feature and its Tickets
 
-Turn the idea agreed in this conversation into one Feature file and make it on the Tracker with `npx nightjar create`. Nightjar builds each Ticket as one commit, in Build order, on one branch.
+Turn the idea agreed in this conversation into one Feature file and make it on the Tracker with `nightjar create`. Nightjar builds each Ticket as one commit, in Build order, on one branch.
 
 ## 1. Read the repo's setup
 
@@ -60,13 +60,13 @@ Number the Tickets 1, 2, 3 in build order. `**Blocked by:**` names Tickets above
 
 ## 4. Check it
 
-Run `npx nightjar create --dry-run .factory/plans/<short-name>.md`. It names every fault with its line; fix them and run it again until it exits 0. Show the person what it says it would make.
+Run `nightjar create --dry-run .factory/plans/<short-name>.md`. It names every fault with its line; fix them and run it again until it exits 0. Show the person what it says it would make.
 
 Done when the dry run exits 0 and the person says to make it.
 
 ## 5. Make it
 
-Run `npx nightjar create .factory/plans/<short-name>.md`. It makes the Feature with no Signal and each Ticket ready, linked to its blockers, and prints each reference.
+Run `nightjar create .factory/plans/<short-name>.md`. It makes the Feature with no Signal and each Ticket ready, linked to its blockers, and prints each reference.
 
 If it exits 1, it names what it made before the fault: tell the person, and leave those items for them to keep or remove.
 

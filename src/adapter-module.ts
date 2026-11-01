@@ -1,11 +1,11 @@
-// Adapters a repo brings itself: the module factory.json names exports a function that builds the
-// Tracker or the Code host (docs/custom-adapters.md). A module that falls short is refused at start.
+// A repo's own Adapter, from the module factory.json names (docs/custom-adapters.md); one that falls short is refused at start.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { CodeHost } from './code-host.js';
 import { CONFIG_FILE, ConfigError } from './config.js';
 import type { SignalNames } from './signals.js';
 import { FEATURE_WRITER_METHODS, type Tracker } from './tracker.js';
+import { why } from './say.js';
 
 // What Nightjar hands the function that builds an adapter.
 export interface AdapterContext {
@@ -27,6 +27,7 @@ const TRACKER_METHODS: Record<keyof Tracker, true> = {
 	me: true,
 	assignedFeatures: true,
 	feature: true,
+	standing: true,
 	tickets: true,
 	comments: true,
 	addSignal: true,
@@ -74,8 +75,6 @@ const CODE_HOST: Kind = {
 	methods: Object.keys(CODE_HOST_METHODS)
 };
 
-const said = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
-
 export async function importModule(path: string, base: string): Promise<Record<string, unknown>> {
 	return (await import(/* @vite-ignore */ pathToFileURL(resolve(base, path)).href)) as Record<
 		string,
@@ -89,7 +88,7 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 	try {
 		exports = await importModule(spec.path, context.root);
 	} catch (fault) {
-		throw new ConfigError(`${where} cannot load ${spec.path}: ${said(fault)}`);
+		throw new ConfigError(`${where} cannot load ${spec.path}: ${why(fault)}`);
 	}
 	const factory = exports[kind.factory];
 	if (typeof factory !== 'function') {
@@ -101,7 +100,7 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 	try {
 		built = await (factory as (context: AdapterContext) => unknown)(context);
 	} catch (fault) {
-		throw new ConfigError(`${where} ${kind.factory} in ${spec.path} failed: ${said(fault)}`);
+		throw new ConfigError(`${where} ${kind.factory} in ${spec.path} failed: ${why(fault)}`);
 	}
 	const have = (built ?? {}) as Record<string, unknown>;
 	const missing = kind.methods.filter((name) => typeof have[name] !== 'function');

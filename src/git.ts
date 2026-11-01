@@ -1,5 +1,4 @@
-// Running one command, never through a shell, so no title or branch name is ever parsed as shell
-// text. git and gh both go through here.
+// Never through a shell, so no title or branch name is ever parsed as shell text.
 import { execFile } from 'node:child_process';
 
 export type Env = Readonly<Record<string, string | undefined>>;

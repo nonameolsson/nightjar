@@ -1,5 +1,4 @@
-// `nightjar init` as a process, with its answers piped in on standard input and no terminal, over
-// stand-ins for gh and claude that are all the PATH holds.
+// `nightjar init` as a process, answers piped in with no terminal, over stand-ins that are all the PATH holds.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';

@@ -4,6 +4,7 @@ import { codeHostContract } from './code-host.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { why } from '../say.js';
 
 // A module exports the harnesses of the Adapters it wants checked.
 export class ContractRefusal extends Error {}
@@ -40,7 +41,7 @@ async function runSuite<Harness>(
 			results.push({
 				name: c.name,
 				ok: false,
-				error: fault instanceof Error ? fault.message : String(fault)
+				error: why(fault)
 			});
 		}
 	}
@@ -55,8 +56,7 @@ function harnessOf(exports: Record<string, unknown>, name: string): unknown {
 	return found;
 }
 
-// Whether the harness's Tracker makes Features, asked of one over an empty world; a harness that
-// cannot build one has already failed every Tracker case, so it is asked nothing more.
+// A harness that cannot build a Tracker over an empty world has failed every case already, so it is asked nothing more.
 async function makesFeatures(harness: TrackerHarness): Promise<boolean> {
 	let subject: TrackerSubject;
 	try {
@@ -71,8 +71,7 @@ async function makesFeatures(harness: TrackerHarness): Promise<boolean> {
 	}
 }
 
-// The suites over the `trackerHarness` and `codeHostHarness` a module exports; the creation suite
-// too when the Tracker makes Features.
+// The creation suite runs too when the Tracker makes Features.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');

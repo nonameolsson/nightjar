@@ -128,13 +128,13 @@ export const codeHostContract: readonly ContractCase<CodeHostHarness>[] = [
 			});
 			const sorted = async () => [...(await pull(opened)).references].sort();
 			await codeHost.placeReferences(opened, [
-				{ id: 2, text: '#2' },
-				{ id: 3, text: '#3' }
+				{ id: '2', text: '#2' },
+				{ id: '3', text: '#3' }
 			]);
 			assert.deepEqual(await sorted(), ['#2', '#3']);
 			await codeHost.placeReferences(opened, [
-				{ id: 1, text: '#1' },
-				{ id: 3, text: '#3' }
+				{ id: '1', text: '#1' },
+				{ id: '3', text: '#3' }
 			]);
 			assert.deepEqual(await sorted(), ['#1', '#2', '#3']);
 			await codeHost.editBody(opened, 'Second body');

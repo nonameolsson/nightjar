@@ -129,8 +129,7 @@ describe('runSession', () => {
 		expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(2);
 	});
 
-	// The first real run died here: .factory/logs/ did not exist yet, and the log's open error
-	// was thrown out of the process, past every catch, leaving the feature labelled agent-working.
+	// The first real run died here: its log's open error escaped every catch and left the Feature agent-working.
 	it('makes the folder of its log', async () => {
 		const command = fake([init(), result()]);
 		const log = join(dir, '.factory', 'logs', 'run.jsonl');

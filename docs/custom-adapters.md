@@ -48,6 +48,8 @@ export function createTracker({ options, signals, trusted }) {
 		// the open Features assigned to a person that carry the Go, oldest first
 		assignedFeatures: todo('assignedFeatures'),
 		feature: todo('feature'),
+		// { assignees, signals } of a Feature, which `nightjar <id>` reads before it claims one
+		standing: todo('standing'),
 		// the Feature's Tickets in its own child order, each with its blockers
 		tickets: todo('tickets'),
 		// oldest first; `trusted` says whether the Coding agent may read the comment
@@ -76,7 +78,7 @@ To let `nightjar create` make Features on your Tracker ([ticket-contract.md](tic
 
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
-Ids are numbers. A Tracker whose items are keyed otherwise maps its keys to numbers inside the module.
+Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
 ## Test the module
 
@@ -113,7 +115,7 @@ export async function trackerHarness(world) {
 Then run, from the repo:
 
 ```bash
-npx nightjar contract ./tools/my-tracker.contract.js
+nightjar contract ./tools/my-tracker.contract.js
 ```
 
 The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
@@ -126,7 +128,7 @@ Tracker contract
         my-tracker: assignedFeatures is not written yet
   ...
 
-11 of 11 behaviours fail.
+12 of 12 behaviours fail.
 ```
 
 Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.

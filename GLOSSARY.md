@@ -46,6 +46,10 @@ _Avoid_: board, backlog, issue system
 The system the Feature's branch is pushed to and its draft pull request opened on, such as GitHub or Azure Repos. Set independently of the Tracker.
 _Avoid_: repo host, forge, remote
 
+**Coding agent**:
+The program that builds one Ticket in the Feature's worktree, in a session Nightjar starts and ends; today only Claude Code. It edits files and runs the commands it is allowed, and never commits, pushes or touches the Tracker: Nightjar does that.
+_Avoid_: bot, AI, model, worker
+
 **Adapter**:
 The piece that connects Nightjar to one Tracker or one Code host, either built in or a module the repo's config names.
 _Avoid_: plugin, provider, driver, integration

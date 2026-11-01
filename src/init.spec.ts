@@ -1,5 +1,4 @@
-// `nightjar init` by its output and the files it writes, over a machine of stand-ins for gh, az and
-// claude and scripted answers, so it needs no terminal.
+// `nightjar init` over a machine of stand-ins and scripted answers, so it needs no terminal.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,7 +47,7 @@ describe('nightjar init on GitHub', () => {
 	it('writes a factory.json that passes the schema, from the answers', async () => {
 		expect(await init(['github', '', 'github', '', 'make check', 'make check, make test'])).toBe(0);
 		expect(m.readConfig()).toEqual({
-			$schema: './node_modules/@nonameolsson/nightjar/schema/factory.schema.json',
+			$schema: 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json',
 			tracker: { type: 'github' },
 			codeHost: { type: 'github' },
 			check: 'make check',
@@ -217,6 +216,7 @@ describe('nightjar init with a module', () => {
 			'me',
 			'assignedFeatures',
 			'feature',
+			'standing',
 			'tickets',
 			'comments',
 			'addSignal',

@@ -166,7 +166,7 @@ describe('AzureReposCodeHost', () => {
 		expect(ado.pullRequestAt(pull.id).description.length).toBeLessThanOrEqual(DESCRIPTION_LIMIT);
 		expect(ado.pullRequestAt(pull.id).description).toMatch(/^Nightjar built it\./);
 		await host.placeReferences(pull, [
-			{ id: 7, text: '[issue 7](https://github.com/o/r/issues/7)' }
+			{ id: '7', text: '[issue 7](https://github.com/o/r/issues/7)' }
 		]);
 		await host.editBody(pull, long);
 		const body = ado.pullRequestAt(pull.id).description;
@@ -195,7 +195,7 @@ describe('AzureReposCodeHost', () => {
 		expect(pull.url).toBe(
 			`https://dev.azure.com/contoso/Fabrikam/_git/app/pullrequest/${String(pull.id)}`
 		);
-		await host.placeReferences(pull, [{ id: ticket, text: `#${String(ticket)}` }]);
+		await host.placeReferences(pull, [{ id: String(ticket), text: `#${String(ticket)}` }]);
 		expect(ado.linkedWorkItems(pull.id)).toEqual([ticket]);
 		expect(ado.pullRequestAt(pull.id).description).toBe('b');
 	});

@@ -1,5 +1,4 @@
-// `nightjar create` makes what a Feature file holds on the Tracker, and a build reads it back as
-// written: each Tracker here is real over a fake system, or the in-memory fake.
+// Each Tracker here is real over a fake system, or the in-memory fake; a build reads back what create made.
 import { describe, expect, it } from 'vitest';
 import { AzureDevOpsApi } from './azure-devops/api.js';
 import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';
@@ -49,7 +48,7 @@ Move it.
 interface Subject {
 	readonly tracker: Tracker & FeatureWriter;
 	// the Signals an item carries, read from the system itself
-	readonly signalsOf: (id: number) => Promise<Signal[]>;
+	readonly signalsOf: (id: string) => Promise<Signal[]>;
 }
 
 const fromNames = (names: readonly string[]) =>
@@ -70,7 +69,7 @@ const TRACKERS: [string, () => Subject][] = [
 			return {
 				tracker: new GitHubTracker('o/r', github.gh, DEFAULT_SIGNAL_NAMES),
 				signalsOf: async (id) => {
-					const got = await github.gh(['api', `repos/o/r/issues/${String(id)}`]);
+					const got = await github.gh(['api', `repos/o/r/issues/${id}`]);
 					const issue = JSON.parse(got.out) as { labels: { name: string }[] };
 					return fromNames(issue.labels.map((l) => l.name));
 				}
@@ -85,7 +84,7 @@ const TRACKERS: [string, () => Subject][] = [
 			const settings = { project: 'Fabrikam', featureType: 'Epic', ticketType: 'Issue' };
 			return {
 				tracker: new AzureBoardsTracker(api, settings, DEFAULT_SIGNAL_NAMES),
-				signalsOf: (id) => Promise.resolve(fromNames(ado.tagsOf(id)))
+				signalsOf: (id) => Promise.resolve(fromNames(ado.tagsOf(Number(id))))
 			};
 		}
 	]
@@ -115,7 +114,7 @@ describe.each(TRACKERS)('makeFeature on %s', (_name, subject) => {
 		expect(tickets.map((t) => t.signals)).toEqual([['ready'], ['ready'], ['ready']]);
 		for (const id of made.tickets) expect(await signalsOf(id)).toEqual(['ready']);
 
-		const [a = 0, b = 0, c = 0] = made.tickets;
+		const [a = '', b = '', c = ''] = made.tickets;
 		expect(tickets.map((t) => t.blockedBy.map((x) => x.id).sort())).toEqual([
 			[],
 			[a],
@@ -126,8 +125,8 @@ describe.each(TRACKERS)('makeFeature on %s', (_name, subject) => {
 			ticketLine(tickets[0]?.body ?? '', 'Effort')
 		]).toEqual(['opus', 'high']);
 		// built in the order the file gives, each after what blocks it
-		const built = new Set<number>();
-		const order: number[] = [];
+		const built = new Set<string>();
+		const order: string[] = [];
 		for (let next = nextTicket(tickets, built); next; next = nextTicket(tickets, built)) {
 			order.push(next.id);
 			built.add(next.id);

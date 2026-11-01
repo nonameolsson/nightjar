@@ -1,12 +1,10 @@
-// Azure Repos as a Code host: the branch is pushed to the repo factory.json names, signed in as the
-// Tracker is, and each Ticket is linked to the draft pull request as a work item when the Tracker is
-// Azure DevOps Boards in the same organization, else named in its body. Nightjar never completes,
-// abandons or publishes a pull request, and never sets a work item's state (docs/adr/0002).
+// Azure Repos as a Code host: never completes, abandons or publishes a pull request, nor sets a work item's state (docs/adr/0002).
 import { z } from 'zod';
 import type { CodeHost, DraftRequest, Pull } from '../code-host.js';
 import { firstLine, type Env, type Run } from '../git.js';
 import type { TicketReference } from '../tracker.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
+import { workItem } from './tracker.js';
 
 // Runs git with `extra` added to its environment, which is how the sign-in reaches it.
 export type AzureGitRunner = (args: readonly string[], cwd: string, extra: Env) => Promise<Run>;
@@ -42,7 +40,7 @@ const PullSchema = z.looseObject({
 
 const PullsSchema = z.looseObject({ value: z.array(PullSchema) });
 
-const LinkedSchema = z.looseObject({ value: z.array(z.looseObject({ id: z.coerce.number() })) });
+const LinkedSchema = z.looseObject({ value: z.array(z.looseObject({ id: z.coerce.string() })) });
 
 function split(body: string): { text: string; lines: string[] } {
 	const at = body.indexOf(REFERENCES_MARK);
@@ -211,9 +209,9 @@ export class AzureReposCodeHost implements CodeHost {
 		for (const { id } of references) {
 			if (done.has(id)) continue;
 			done.add(id);
-			await this.api.call(`link work item ${String(id)} to pull request ${String(pull.id)}`, {
+			await this.api.call(`link work item ${id} to pull request ${String(pull.id)}`, {
 				method: 'PATCH',
-				url: this.api.at(`_apis/wit/workitems/${String(id)}?${API}`),
+				url: this.api.at(`_apis/wit/workitems/${String(workItem(id))}?${API}`),
 				contentType: 'application/json-patch+json',
 				body: [
 					{

@@ -1,6 +1,7 @@
 // `nightjar contract MODULE`: checks a module's Adapters against the contract suites.
 import { importModule } from '../adapter-module.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
+import { why } from '../say.js';
 
 export const CONTRACT_USAGE = `usage: nightjar contract MODULE
 
@@ -20,9 +21,7 @@ export async function runContractCommand(argv: readonly string[]): Promise<numbe
 	try {
 		exports = await importModule(path, process.cwd());
 	} catch (fault) {
-		console.error(
-			`nightjar: contract: cannot load ${path}: ${fault instanceof Error ? fault.message : String(fault)}`
-		);
+		console.error(`nightjar: contract: cannot load ${path}: ${why(fault)}`);
 		return 2;
 	}
 	try {

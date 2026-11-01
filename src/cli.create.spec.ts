@@ -1,5 +1,4 @@
-// `nightjar create FILE` end to end: the real command and GitHub Tracker, with a stand-in for gh first
-// on PATH, in a git checkout with a factory.json.
+// `nightjar create FILE` end to end, with a stand-in for gh first on PATH.
 import { spawnSync } from 'node:child_process';
 import {
 	chmodSync,

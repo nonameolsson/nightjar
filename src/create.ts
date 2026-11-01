@@ -1,6 +1,4 @@
-// `nightjar create FILE`: makes a Feature and its Tickets from a Feature file on the Tracker
-// factory.json names. The Tickets get the ready Signal; the Feature gets none, so nothing is built
-// until a person gives it the Go.
+// `nightjar create FILE`: the Feature gets no Signal, so nothing is built until a person gives it the Go.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { makeAdapters } from './adapters.js';
@@ -8,7 +6,8 @@ import { ticketLine } from './build.js';
 import { ConfigError, loadConfig } from './config.js';
 import { FeatureFileError, readFeatureFile, type FeaturePlan } from './feature-file.js';
 import { run, type Env } from './git.js';
-import type { FeatureWriter, Tracker } from './tracker.js';
+import type { FeatureWriter, ItemId, Tracker } from './tracker.js';
+import { say, why } from './say.js';
 
 export const CREATE_USAGE = `usage: nightjar create [--dry-run] FILE
 
@@ -16,12 +15,10 @@ export const CREATE_USAGE = `usage: nightjar create [--dry-run] FILE
   --dry-run  read the file and say what it would make, making nothing`;
 
 export interface Made {
-	readonly feature: number;
+	readonly feature: ItemId;
 	// in the file's order
-	readonly tickets: readonly number[];
+	readonly tickets: readonly ItemId[];
 }
-
-const said = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
 
 const listed = (texts: readonly string[]) =>
 	texts.length < 2 ? texts.join('') : `${texts.slice(0, -1).join(', ')} and ${texts.at(-1) ?? ''}`;
@@ -32,18 +29,18 @@ export async function makeFeature(
 	plan: FeaturePlan,
 	say: (line: string) => void
 ): Promise<Made> {
-	const ref = (id: number) => tracker.reference(id).text;
-	const made: number[] = [];
+	const ref = (id: ItemId) => tracker.reference(id).text;
+	const made: ItemId[] = [];
 	try {
 		const feature = await tracker.createFeature(plan.feature);
 		made.push(feature);
 		say(`made the Feature ${ref(feature)} ${plan.feature.title}`);
-		const ids = new Map<number, number>();
+		const ids = new Map<number, ItemId>();
 		for (const ticket of plan.tickets) {
 			const id = await tracker.createTicket(feature, ticket);
 			made.push(id);
 			ids.set(ticket.number, id);
-			const blockers = ticket.blockedBy.map((n) => ids.get(n) ?? NaN);
+			const blockers = ticket.blockedBy.flatMap((n) => ids.get(n) ?? []);
 			for (const blocker of blockers) await tracker.block(id, blocker);
 			await tracker.addSignal(id, 'ready');
 			const blocked = blockers.length === 0 ? '' : `, blocked by ${listed(blockers.map(ref))}`;
@@ -52,13 +49,11 @@ export async function makeFeature(
 		return { feature, tickets: made.slice(1) };
 	} catch (fault) {
 		const before = made.length === 0 ? 'nothing' : made.map(ref).join(', ');
-		throw new Error(`${said(fault)}; made before it: ${before}. Nothing was undone.`, {
+		throw new Error(`${why(fault)}; made before it: ${before}. Nothing was undone.`, {
 			cause: fault
 		});
 	}
 }
-
-const say = (line: string) => console.log(`nightjar: ${line}`);
 
 const refuse = (text: string) => {
 	console.error(`nightjar: ${text}`);
@@ -121,7 +116,7 @@ export async function runCreateCommand(argv: readonly string[]): Promise<number>
 		say(`${ref} carries no Signal: assign it to yourself and give it the Go (${go}) to build it.`);
 		return 0;
 	} catch (fault) {
-		console.error(`nightjar: ${said(fault)}`);
+		console.error(`nightjar: ${why(fault)}`);
 		return 1;
 	}
 }

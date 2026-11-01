@@ -1,5 +1,4 @@
-// .factory/status.json: what Nightjar does right now and what it did last, rewritten at every
-// change, for a status line or toasts to read.
+// .factory/status.json, rewritten at every change, for a status line or toasts to read.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -31,7 +30,7 @@ export function readStatus(path: string): Status | null {
 	}
 }
 
-export class StatusBoard implements StatusReport {
+export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
 	private recent: Event[];
 

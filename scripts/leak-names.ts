@@ -1,6 +1,4 @@
-// SHA-256 of each lowercase word the package must never name (the port's source project, its company,
-// team and Azure DevOps organisation). Hashes only, so the names are not written here either; this file is
-// not in the package.
+// SHA-256 of each lowercase word the package must never name; hashes, so the names are not written here either.
 export const GUARDED: ReadonlySet<string> = new Set([
 	'07f15cde5b181425db8524becd96263d600c9652c7de5b89fe1a644f8fd0724b',
 	'f782a31869dcd68a90dd318488dffb4baf4652639f7bdbbf1bada2e64a09a43f',
