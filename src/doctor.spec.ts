@@ -1,6 +1,7 @@
 // `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { machine, type Machine, type Tool } from './fakes/machine.js';
+import { checkMachine } from './checks.js';
 import { runNightjar } from './main.js';
 
 let out: string[];
@@ -128,5 +129,64 @@ describe('nightjar doctor', () => {
 		});
 		expect(await start({ env: { FAKE_AZ_SIGNED_OUT: '1' } })).toBe(2);
 		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*az login.*AZURE_DEVOPS_EXT_PAT/);
+	});
+});
+
+describe('nightjar doctor over Workflows', () => {
+	const step = (name: string, prompt: string) => ({ name, prompt, point: 'afterAllTickets' });
+	const WORKFLOWS = {
+		'design-review': { steps: [step('critique', '/design-critic critique the screens')] },
+		quick: { steps: [step('tidy', 'tidy up the code, see /tmp/notes')] }
+	};
+
+	function withWorkflows(skills: string) {
+		m = machine();
+		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
+		return { ...m.env, FAKE_CLAUDE_SKILLS: skills };
+	}
+
+	it('finds the skill a Step names among those a headless session loads', async () => {
+		const env = withWorkflows('design-critic,tdd');
+		expect(await start({ env })).toBe(0);
+		expect(out).toContain('  ok    Workflow design-review: 1 Step, skills found: /design-critic');
+		expect(out.join('\n')).toContain('Workflow quick:');
+	});
+
+	it('finds a skill under its plugin prefix', async () => {
+		const env = withWorkflows('design-critic:design-critic');
+		const code = await start({ env });
+		expect(err).toEqual([]);
+		expect(code).toBe(0);
+	});
+
+	it('fails the Workflow that names a missing skill, and no other', async () => {
+		const env = withWorkflows('tdd');
+		expect(await start({ env })).toBe(2);
+		expect(err.join('\n')).toMatch(
+			/FAIL {2}Workflow design-review: step critique names \/design-critic, which a headless claude session does not load/
+		);
+		expect(err.join('\n')).not.toContain('Workflow quick');
+		expect(out.join('\n')).toContain('  ok    Workflow quick:');
+		// the rest of doctor still ran
+		expect(out).toContain('  ok    factory.json: read');
+	});
+
+	it('does not stop a build: only a Feature that picks the broken Workflow is refused', async () => {
+		const env = withWorkflows('tdd');
+		const checked = await checkMachine({ useApiKey: false, env, cwd: m.root, failFast: true });
+		expect(checked.ready?.workflowProblems).toEqual({
+			'design-review': expect.stringContaining('/design-critic') as string
+		});
+		expect(
+			checked.lines.filter((l) => l.status === 'fail').every((l) => l.only !== undefined)
+		).toBe(true);
+	});
+
+	it('does not start a claude session when no Step names a skill', async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, workflows: { quick: WORKFLOWS.quick } });
+		expect(await start()).toBe(0);
+		// a path such as /tmp/notes is no skill
+		expect(m.calls('claude')).not.toMatch(/^-p /m);
 	});
 });

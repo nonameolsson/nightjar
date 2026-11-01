@@ -5,6 +5,8 @@ import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { loadConfig, loadRules, type Config } from './config.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
+import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
+import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
 
@@ -21,6 +23,8 @@ export interface Ready {
 	readonly person: PersonConfig;
 	// whose Features to build: the config's assignee, else the signed-in person
 	readonly assignee: string;
+	// the Workflows that cannot run here, by name, with the reason; the others still can
+	readonly workflowProblems: Readonly<Record<string, string>>;
 }
 
 export interface Line {
@@ -30,6 +34,8 @@ export interface Line {
 	readonly detail: string;
 	// the check as the one-line `checked:` of a build names it; none when it is left out
 	readonly summary: string | null;
+	// the one Workflow this line is an error for; it stops no other Workflow and no build of its own
+	readonly only?: string;
 }
 
 export interface Checked {
@@ -49,6 +55,8 @@ export interface CheckOptions {
 	readonly request?: AzureDevOpsRequest;
 	// stop at the first check that fails, as a build does
 	readonly failFast: boolean;
+	// the skills a headless claude session loads; a spec passes its own
+	readonly skills?: LoadedSkills;
 }
 
 const GH_INSTALL = 'https://cli.github.com/';
@@ -237,6 +245,58 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 					}
 				);
 
+	// a Workflow's missing skill is an error for that Workflow only
+	const workflowProblems: Record<string, string> = {};
+	const workflows = Object.entries(loaded?.config.workflows ?? {});
+	const named = workflows.map(([name, w]) => ({
+		name,
+		steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
+	}));
+	if (root !== null && claude !== null && named.length > 0) {
+		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
+		const skills = wanted ? await (o.skills ?? loadedSkills)(root, o.env) : [];
+		for (const w of named) {
+			const missing = w.steps.flatMap((s) =>
+				s.skills
+					.filter((k) => skills !== null && !isLoaded(skills, k))
+					.map((k) => `step ${s.step} names /${k}`)
+			);
+			const used = [...new Set(w.steps.flatMap((s) => s.skills))];
+			if (skills === null && used.length > 0) {
+				const detail =
+					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked';
+				workflowProblems[w.name] = detail;
+				lines.push({
+					name: `Workflow ${w.name}`,
+					status: 'fail',
+					detail,
+					summary: null,
+					only: w.name
+				});
+			} else if (missing.length > 0) {
+				const detail = `${missing.join(' and ')}, which a headless claude session does not load. Install the skill in this repo or your plugins, then run \`nightjar doctor\` again.`;
+				workflowProblems[w.name] = detail;
+				lines.push({
+					name: `Workflow ${w.name}`,
+					status: 'fail',
+					detail,
+					summary: null,
+					only: w.name
+				});
+			} else {
+				const count = `${String(w.steps.length)} Step${w.steps.length === 1 ? '' : 's'}`;
+				const detail = `${count}${used.length > 0 ? `, skills found: ${used.map((k) => `/${k}`).join(', ')}` : ''}`;
+				lines.push({
+					name: `Workflow ${w.name}`,
+					status: 'ok',
+					detail,
+					summary: null,
+					only: w.name
+				});
+			}
+		}
+	}
+
 	const trackerOk = me !== null;
 	let ready: Ready | null = null;
 	if (
@@ -248,7 +308,7 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 		claude !== null &&
 		signs !== null &&
 		person !== null &&
-		lines.every((l) => l.status === 'ok')
+		lines.every((l) => l.status === 'ok' || l.only !== undefined)
 	) {
 		const baseBranch = (await defaultBranch(root, o.env)) ?? 'main';
 		ready = {
@@ -259,7 +319,8 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 			baseBranch,
 			rules: loaded.rules,
 			person,
-			assignee: person.assignee ?? me
+			assignee: person.assignee ?? me,
+			workflowProblems
 		};
 	}
 	return { lines, ready, adapters, config: loaded?.config ?? null, trackerOk };

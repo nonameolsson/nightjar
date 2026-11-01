@@ -5,9 +5,9 @@ export type Doing =
 	| {
 			readonly kind: 'building';
 			readonly feature: string;
-			// null while the Feature is set up and while it is reviewed
+			// null while the Feature is set up and reviewed, and during a Step that runs after all Tickets
 			readonly ticket: string | null;
-			readonly step: 'setup' | 'build' | 'fix' | 'review';
+			readonly step: 'setup' | 'build' | 'fix' | 'review' | 'step';
 			// a build's question round or a fix round, of how many there may be
 			readonly round: number | null;
 			readonly rounds: number | null;

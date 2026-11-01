@@ -279,6 +279,113 @@
 			},
 			"additionalProperties": false
 		},
+		"workflows": {
+			"description": "Work a repo adds to the build loop, by name. A Feature picks one with a **Workflow:** line; Nightjar still keeps the branch, the commits, the Signals and the pull request.",
+			"type": "object",
+			"propertyNames": {
+				"type": "string",
+				"pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+			},
+			"additionalProperties": {
+				"type": "object",
+				"properties": {
+					"steps": {
+						"minItems": 1,
+						"type": "array",
+						"items": {
+							"type": "object",
+							"properties": {
+								"name": {
+									"type": "string",
+									"pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$",
+									"description": "The name of the Step; its commit and the pull request body name it"
+								},
+								"prompt": {
+									"type": "string",
+									"pattern": "\\S",
+									"description": "What the agent is told to do, such as \"/some-skill critique\"; it may name any skill. Nightjar adds the rule that nobody is at the keyboard."
+								},
+								"point": {
+									"type": "string",
+									"enum": [
+										"afterEachTicket",
+										"afterAllTickets"
+									],
+									"description": "afterEachTicket runs after each Ticket is built; afterAllTickets runs once, after every Ticket, before the review"
+								},
+								"model": {
+									"description": "The Step's own model; else the default model",
+									"type": "string",
+									"pattern": "\\S"
+								},
+								"effort": {
+									"description": "The Step's own effort; else the default effort",
+									"type": "string",
+									"pattern": "\\S"
+								},
+								"budgetUsd": {
+									"description": "The most one run of the Step may cost in dollars; else a Ticket's budget",
+									"type": "number",
+									"exclusiveMinimum": 0
+								},
+								"until": {
+									"description": "A condition in plain words. After each round the agent reports whether it holds, and Nightjar runs the Step again until it does or maxRounds is reached",
+									"type": "string",
+									"pattern": "\\S"
+								},
+								"maxRounds": {
+									"description": "The most rounds of a Step with an until; 3 when left out",
+									"type": "integer",
+									"minimum": 1,
+									"maximum": 10
+								}
+							},
+							"required": [
+								"name",
+								"prompt",
+								"point"
+							],
+							"additionalProperties": false
+						}
+					},
+					"serve": {
+						"description": "A command started in the background in the worktree before the Workflow's Steps and stopped after them, such as a dev server. It reads its port from the variables of ports.env, so it needs ports.",
+						"type": "string",
+						"pattern": "\\S"
+					},
+					"allowedCommands": {
+						"description": "Commands the Workflow's Steps may run besides the top-level allowedCommands, as Bash permission patterns without Bash( )",
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "\\S"
+						}
+					},
+					"allowedTools": {
+						"description": "Tools the Workflow's Steps may use besides the usual ones, as Claude Code permission rules. Committing, pushing, switching branches, the outside network and gh stay denied.",
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "\\S"
+						}
+					},
+					"localNetwork": {
+						"description": "true lets the Workflow's Steps reach localhost, and nothing else on the network",
+						"type": "boolean"
+					}
+				},
+				"required": [
+					"steps"
+				],
+				"additionalProperties": false,
+				"description": "A named list of Steps that a Feature picks with a **Workflow:** line"
+			}
+		},
+		"defaultWorkflow": {
+			"description": "The Workflow of a Feature without a **Workflow:** line; none when left out",
+			"type": "string",
+			"pattern": "\\S"
+		},
 		"trusted": {
 			"description": "The logins whose comments reach the agent (on Azure DevOps, sign-in names such as ann@contoso.com). When set, it replaces the Tracker default (GitHub: write access; Azure DevOps: the project's Contributors group); leave it out to keep the default.",
 			"type": "array",

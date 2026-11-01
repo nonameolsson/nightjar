@@ -10,7 +10,7 @@ const EntrySchema = z.looseObject({
 	feature: z.union([z.string(), z.int()]),
 	ticket: z.union([z.string(), z.int()]).nullable(),
 	branch: z.string(),
-	step: z.enum(['build', 'fix', 'review']),
+	step: z.enum(['build', 'fix', 'review', 'step']),
 	session: z.string(),
 	costUsd: z.number(),
 	outcome: z.string()
@@ -22,7 +22,7 @@ export interface Entry {
 	readonly feature: string;
 	readonly ticket: string | null;
 	readonly branch: string;
-	readonly step: 'build' | 'fix' | 'review';
+	readonly step: 'build' | 'fix' | 'review' | 'step';
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;

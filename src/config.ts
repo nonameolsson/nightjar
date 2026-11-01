@@ -88,6 +88,84 @@ const adapterModule = (what: string) =>
 const modelField = z.string().regex(/\S/, 'a model is empty').optional();
 const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
 
+const oneLine = (what: string) => z.string().regex(/^[^\r\n]*\S[^\r\n]*$/, `${what} is one line`);
+
+// How many rounds a Step with an `until` runs when it names no maxRounds.
+export const DEFAULT_ROUNDS = 3;
+
+const Step = z
+	.strictObject({
+		name: oneLine('a Step name').meta({
+			description: 'The name of the Step; its commit and the pull request body name it'
+		}),
+		prompt: z
+			.string({ error: missingOr('give the Step a prompt') })
+			.regex(/\S/, 'give the Step a prompt')
+			.meta({
+				description:
+					'What the agent is told to do, such as "/some-skill critique"; it may name any skill. Nightjar adds the rule that nobody is at the keyboard.'
+			}),
+		point: z
+			.enum(['afterEachTicket', 'afterAllTickets'], {
+				error: missingOr('say when the Step runs: afterEachTicket or afterAllTickets')
+			})
+			.meta({
+				description:
+					'afterEachTicket runs after each Ticket is built; afterAllTickets runs once, after every Ticket, before the review'
+			}),
+		model: modelField.meta({ description: "The Step's own model; else the default model" }),
+		effort: effortField.meta({ description: "The Step's own effort; else the default effort" }),
+		budgetUsd: z.number().positive().optional().meta({
+			description: "The most one run of the Step may cost in dollars; else a Ticket's budget"
+		}),
+		until: z.string().regex(/\S/, 'until is empty').optional().meta({
+			description:
+				'A condition in plain words. After each round the agent reports whether it holds, and Nightjar runs the Step again until it does or maxRounds is reached'
+		}),
+		maxRounds: z
+			.number()
+			.int()
+			.min(1)
+			.max(10)
+			.optional()
+			.meta({
+				description: `The most rounds of a Step with an until; ${String(DEFAULT_ROUNDS)} when left out`
+			})
+	})
+	.refine((step) => step.maxRounds === undefined || step.until !== undefined, {
+		path: ['maxRounds'],
+		error: 'maxRounds needs an until'
+	});
+
+const Workflow = z
+	.strictObject({
+		steps: z
+			.array(Step, { error: missingOr('list the Steps') })
+			.min(1, 'a Workflow needs at least one Step')
+			.refine((steps) => new Set(steps.map((s) => s.name)).size === steps.length, {
+				error: 'a Step name is used twice'
+			}),
+		serve: z.string().regex(/\S/, 'serve is empty').optional().meta({
+			description:
+				"A command started in the background in the worktree before the Workflow's Steps and stopped after them, such as a dev server. It reads its port from the variables of ports.env, so it needs ports."
+		}),
+		allowedCommands: z
+			.array(z.string().regex(/\S/, 'an allowed command is empty'))
+			.optional()
+			.meta({
+				description:
+					"Commands the Workflow's Steps may run besides the top-level allowedCommands, as Bash permission patterns without Bash( )"
+			}),
+		allowedTools: z.array(z.string().regex(/\S/, 'an allowed tool is empty')).optional().meta({
+			description:
+				"Tools the Workflow's Steps may use besides the usual ones, as Claude Code permission rules. Committing, pushing, switching branches, the outside network and gh stay denied."
+		}),
+		localNetwork: z.boolean().optional().meta({
+			description: "true lets the Workflow's Steps reach localhost, and nothing else on the network"
+		})
+	})
+	.meta({ description: 'A named list of Steps that a Feature picks with a **Workflow:** line' });
+
 const signalName = (fallback: string, what: string) =>
 	z
 		.string()
@@ -178,6 +256,13 @@ export const ConfigSchema = z
 					'The read-only review of the whole diff, run before the draft pull request opens'
 			}),
 		signals: Signals,
+		workflows: z.record(oneLine('a Workflow name'), Workflow).optional().meta({
+			description:
+				'Work a repo adds to the build loop, by name. A Feature picks one with a **Workflow:** line; Nightjar still keeps the branch, the commits, the Signals and the pull request.'
+		}),
+		defaultWorkflow: z.string().regex(/\S/, 'defaultWorkflow is empty').optional().meta({
+			description: 'The Workflow of a Feature without a **Workflow:** line; none when left out'
+		}),
 		trusted: z.array(z.string().regex(/\S/, 'a trusted login is empty')).optional().meta({
 			description:
 				"The logins whose comments reach the agent (on Azure DevOps, sign-in names such as ann@contoso.com). When set, it replaces the Tracker default (GitHub: write access; Azure DevOps: the project's Contributors group); leave it out to keep the default."
@@ -211,6 +296,18 @@ export const ConfigSchema = z
 					'Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.'
 			})
 	})
+	.refine(
+		(c) => c.defaultWorkflow === undefined || c.workflows?.[c.defaultWorkflow] !== undefined,
+		{
+			path: ['defaultWorkflow'],
+			error: 'names no Workflow of workflows'
+		}
+	)
+	.refine(
+		(c) =>
+			c.ports !== undefined || Object.values(c.workflows ?? {}).every((w) => w.serve === undefined),
+		{ path: ['workflows'], error: 'a Workflow with serve needs ports, to reserve its port' }
+	)
 	.meta({ title: 'Nightjar factory.json' });
 
 export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'> & {

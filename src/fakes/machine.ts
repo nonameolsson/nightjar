@@ -45,7 +45,8 @@ if [ -n "$FAKE_AZ_SIGNED_OUT" ]; then
 fi
 echo '{"accessToken":"fake-azure-devops"}'`;
 
-// claude: FAKE_CLAUDE_SIGNED_OUT makes `claude auth status` exit 1 as a signed-out claude does
+// claude: FAKE_CLAUDE_SIGNED_OUT makes `claude auth status` exit 1 as a signed-out claude does;
+// a headless session prints its init line with the skills of FAKE_CLAUDE_SKILLS (comma separated)
 const CLAUDE = String.raw`#!/bin/bash
 echo "$*" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
@@ -53,6 +54,10 @@ case "$*" in
   "auth status")
     if [ -n "$FAKE_CLAUDE_SIGNED_OUT" ]; then echo '{"loggedIn": false}'; exit 1; fi
     echo '{"loggedIn": true}' ;;
+  "-p "*)
+    skills=""
+    if [ -n "$FAKE_CLAUDE_SKILLS" ]; then skills="\"@{FAKE_CLAUDE_SKILLS//,/\",\"}\""; fi
+    echo "{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"none\",\"skills\":[$skills]}" ;;
 esac`;
 
 export type Tool = 'gh' | 'az' | 'claude';

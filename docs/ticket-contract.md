@@ -27,6 +27,16 @@ A Ticket is one child of a Feature, built as one commit. It holds:
 
 A Ticket is built only while it carries the ready Signal (`ready-for-agent` by default). Its Feature carries no Signal until a person assigns it to themselves and gives it the Go (`factory-go` by default).
 
+## A Feature's Workflow
+
+A Feature may carry a **`**Workflow:**`** line anywhere in its body, on a line of its own, to add the Steps of a Workflow from `factory.json` to its build:
+
+```markdown
+**Workflow:** design-review
+```
+
+The rest of the line is the Workflow's name. Without the line the Feature gets the repo's `defaultWorkflow`, if it has one; a name no Workflow has marks the Feature as needing info. See the README's Workflows section.
+
 ## The Feature file
 
 `nightjar create FILE` makes a Feature and its Tickets on the Tracker `factory.json` names, from one Markdown file:

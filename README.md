@@ -128,6 +128,7 @@ A full one:
 | `rules`           | no       | A text file, relative to the repo root, added to the agent's prompt. Conventions normally live in `CLAUDE.md` or `AGENTS.md`.                                                                                       |
 | `model`, `effort` | no       | The default model and effort of every session.                                                                                                                                                                      |
 | `review`          | no       | The read-only review of the whole diff, run before the draft pull request opens. `enabled: false` switches it off (on by default); `model` and `effort` are the review's own, else the defaults above.            |
+| `workflows`, `defaultWorkflow` | no | Work the repo adds to the build loop: see [Workflows](#workflows). A Feature picks a Workflow with a `**Workflow:**` line; `defaultWorkflow` is the one a Feature without the line gets. Left out, a build runs no Step. |
 
 Model and effort are chosen, strongest first: the `--model` / `--effort` option, the Ticket's own `**Model:**` / `**Effort:**` line, then `factory.json`.
 
@@ -206,6 +207,68 @@ nightjar contract ./tools/my-tracker.contract.js
 ```
 
 `nightjar contract` runs the same contract suite the built-in Adapters meet over the harnesses a module exports, prints every behaviour, names each one that fails, and exits 1 if any does. Nightjar refuses to start when a named module cannot be loaded or lacks a method of the interface. [docs/custom-adapters.md](docs/custom-adapters.md) has a minimal module and a test harness.
+
+## Workflows
+
+A repo can add its own work to a build without Nightjar knowing what that work is. A **Workflow** is a named list of **Steps** in `factory.json`. A Step is a prompt given to the agent, and the prompt may name any skill. Nightjar's loop stays fixed: it keeps the branch, the commits, the Signals and the pull request, and a Workflow can only add Steps to it.
+
+A Feature picks a Workflow with a line anywhere in its body, in the same shape as a Ticket's Model line:
+
+```markdown
+**Workflow:** design-review
+```
+
+With no such line, the Feature gets `defaultWorkflow` if `factory.json` sets one, else no Step runs and the build is as it was. A name no Workflow has marks the Feature as needing info, with a comment naming the Workflows that exist.
+
+A design review built on a skill, in this case [Impeccable](https://github.com/pbakaus/impeccable) (any skill the agent can load works the same way):
+
+```json
+{
+	"ports": { "count": 1, "env": ["APP_PORT"] },
+	"workflows": {
+		"design-review": {
+			"serve": "npm run dev -- --port $APP_PORT",
+			"localNetwork": true,
+			"allowedCommands": ["npx playwright test *"],
+			"steps": [
+				{
+					"name": "critique",
+					"prompt": "/impeccable critique the screens this Feature changed. Write what is wrong, worst first, to the notes folder.",
+					"point": "afterAllTickets",
+					"model": "opus"
+				},
+				{
+					"name": "polish",
+					"prompt": "/impeccable polish the screens, fixing what the critique in the notes folder found.",
+					"point": "afterAllTickets",
+					"until": "the critique's list is empty or only things a person must decide remain",
+					"maxRounds": 3,
+					"budgetUsd": 8
+				}
+			]
+		}
+	},
+	"defaultWorkflow": "design-review"
+}
+```
+
+A Step has:
+
+| Key                | What it does                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`, `prompt`   | The Step's name, which its commit and the pull request body use, and what the agent is told. Nightjar adds the rule that nobody is at the keyboard: the agent decides, never asks in chat, and a question that truly blocks it goes into its structured answer, which makes the Step "blocked". |
+| `point`            | `afterEachTicket` runs after each Ticket is built and checked. `afterAllTickets` runs once, after every Ticket, before the review; it runs only when every Ticket of the Feature is built, and gets the Feature's diff against the base branch, so the agent picks its own targets. |
+| `model`, `effort`  | The Step's own; else the defaults. `--model` and `--effort` win over both.                                                                                                                                                           |
+| `budgetUsd`        | The most one run of the Step may cost; a Ticket's budget when left out.                                                                                                                                                              |
+| `until`, `maxRounds` | A condition in plain words. After each round the agent reports whether it holds, and Nightjar runs the Step again, in the same session, until it does or `maxRounds` (3 by default) is reached. What is left goes into the pull request body. |
+
+A Workflow can also have `serve`, a command started in the background in the worktree before its Steps and stopped after them (it reads its port from the variables of `ports.env`, so `ports` is required); `allowedCommands` and `allowedTools`, which its Steps may use besides the usual ones; and `localNetwork`, which lets its Steps reach localhost and nothing else. The fixed deny rules (committing, pushing, switching branches, the outside network, `gh`) cannot be loosened by any of these.
+
+Steps share one notes folder, `.factory/notes/` in the worktree, which is never committed. Nightjar passes nothing else from one Step to the next, so a Step that needs what an earlier one found reads it there.
+
+What a Step changes goes through the check command and its fix rounds, then is committed on its own, with a message naming the Workflow and the Step. Steps count against the daily spend limit and show in the cost of the pull request. A Step that hits its budget or time limit, cannot get the check green, answers in a shape not known, or reports itself blocked has its changes thrown away; the later Steps still run, and the pull request opens with that Step listed as not done. A Step the branch already holds is not run again when a later run goes on.
+
+`nightjar doctor` looks up each `/skill` a Step's prompt names among the skills a headless Claude session loads. A skill that is missing is an error for that Workflow only: a Feature that picks it stops with a comment, and the others build as usual. (A word like `/tmp/notes` is a path, not a skill; a bare `/word` in a prompt is read as one.)
 
 ## Write a Feature
 

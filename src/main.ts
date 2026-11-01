@@ -17,6 +17,7 @@ import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
 import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
+import { startServe } from './serve.js';
 import { StatusFile, statusPath } from './status.js';
 import { worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
@@ -43,13 +44,16 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 		failFast: true,
 		...(host.request === undefined ? {} : { request: host.request })
 	});
-	const failed = checked.lines.find((l) => l.status === 'fail');
+	const failed = checked.lines.find((l) => l.status === 'fail' && l.only === undefined);
 	if (failed !== undefined) throw new Refusal(failed.detail);
 	if (checked.ready === null) throw new Refusal('the checks did not finish');
 	const { adapters, me } = checked.ready;
 	say(
 		`${adapters.repo}, as ${me}, on ${args.useApiKey ? 'ANTHROPIC_API_KEY' : 'your Claude login'}`
 	);
+	for (const l of checked.lines) {
+		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
+	}
 	const found = checked.lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
 	const { assignee, person } = checked.ready;
@@ -137,6 +141,7 @@ export async function runNightjar(
 		session: (req) => runSession(req),
 		runCheck,
 		runSetup: runCheck,
+		serve: startServe,
 		now: () => new Date(),
 		newId: () => randomUUID(),
 		say,
@@ -153,6 +158,9 @@ export async function runNightjar(
 		defaults: { model: config.model, effort: config.effort },
 		review: config.review,
 		...(config.setup === undefined ? {} : { setupCommand: config.setup }),
+		...(config.workflows === undefined ? {} : { workflows: config.workflows }),
+		...(config.defaultWorkflow === undefined ? {} : { defaultWorkflow: config.defaultWorkflow }),
+		brokenWorkflows: ready.workflowProblems,
 		...(config.ports === undefined || claim === null
 			? {}
 			: { portEnv: portEnv(claim.port, config.ports.env) }),
