@@ -54,10 +54,11 @@ echo "gh: Not Found (HTTP 404)" >&2; exit 1`;
 // claude: a build writes a file in the worktree and answers built; a review approves
 const CLAUDE = String.raw`
 [ "$1" = --version ] && { echo "2.1.314 (Claude Code)"; exit 0; }
+[ "$1 $2 $3" = "auth status --json" ] && { echo "{\"loggedIn\":true,\"email\":\"ann@x.io\",\"authMethod\":\"claude.ai\",\"configDirectory\":\"${'$'}{CLAUDE_CONFIG_DIR:-$HOME/.claude}\"}"; exit 0; }
 echo "$*" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
   *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
-  *) echo work > built.txt; echo "${'$'}{WEB_PORT:-none}" > port.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
+  *) echo work > built.txt; echo "${'$'}{WEB_PORT:-none}" > port.txt; echo "${'$'}{CLAUDE_CONFIG_DIR:-none} ${'$'}{CLAUDE_CODE_OAUTH_TOKEN:-notoken}" > login.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
 esac
 echo '{"type":"system","subtype":"init","apiKeySource":"none"}'
 echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.5,\"structured_output\":$out}"`;
@@ -114,6 +115,7 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 	git(root, 'add', '.');
 	git(root, 'commit', '-q', '-m', 'first');
 	git(root, 'push', '-q', 'origin', 'main');
+	writeFileSync(env.FAKE_CLAUDE_CALLS ?? '', '');
 	const nightjar = (args: string[], extra: Record<string, string> = {}) =>
 		spawnSync(TSX, [CLI, ...args], {
 			cwd: root,
@@ -125,6 +127,13 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 	const sessions = () => readFileSync(env.FAKE_CLAUDE_CALLS ?? '', 'utf8');
 	return { root, env, git, origin, nightjar, calls, sessions };
 }
+
+// the folder of the one worktree a run made
+const tree = (env: Record<string, string>) => {
+	const trees = join(env.HOME ?? '', '.nightjar', 'worktrees');
+	const [folder] = readdirSync(trees);
+	return join(trees, folder ?? '', '1-one-escape');
+};
 
 describe('nightjar FEATURE', () => {
 	it('takes a Feature from the Go to a draft pull request', () => {
@@ -334,12 +343,6 @@ describe('nightjar FEATURE with factory.json settings', () => {
 });
 
 describe('nightjar FEATURE with a setup command and reserved ports', () => {
-	const tree = (env: Record<string, string>) => {
-		const trees = join(env.HOME ?? '', '.nightjar', 'worktrees');
-		const [folder] = readdirSync(trees);
-		return join(trees, folder ?? '', '1-one-escape');
-	};
-
 	it('runs the setup in the new worktree and gives the session the reserved ports, held until it ends', () => {
 		const config = { setup: 'echo ready > setup.txt', ports: { count: 3, env: ['WEB_PORT'] } };
 		const { env, nightjar } = world(true, config);
@@ -372,13 +375,34 @@ describe('nightjar FEATURE with a setup command and reserved ports', () => {
 
 describe('nightjar --once', () => {
 	it('builds the oldest Feature assigned to the person with the Go, then exits', () => {
-		const { nightjar } = world();
+		const { env, nightjar } = world();
 		const run = nightjar(['--once']);
 		expect(run.stdout).toContain(
 			`nightjar: checked: no ANTHROPIC_API_KEY, Node ${process.versions.node}, factory.json, gh as ann on o/r, claude 2.1.314 (Claude Code), commits unsigned`
 		);
+		expect(run.stdout).toContain(
+			`nightjar: o/r, as ann, on ann@x.io, claude.ai login, config ${join(env.HOME ?? '', '.claude')}`
+		);
 		expect(run.stdout).toContain('nightjar: #1: draft pull request https://github.com/o/r/pull/9');
 		expect(run.status).toBe(0);
+	}, 30_000);
+});
+
+describe('nightjar --profile', () => {
+	it("gives the sessions that profile's config folder, and no token", () => {
+		const { env, nightjar } = world();
+		const run = nightjar(['1', '--profile', 'work'], { CLAUDE_CODE_OAUTH_TOKEN: 'tok' });
+		expect(run.stdout).toContain('draft pull request');
+		expect(run.stdout).toContain(`config ${join(env.HOME ?? '', '.claude-work')}`);
+		expect(readFileSync(join(tree(env), 'login.txt'), 'utf8')).toBe(
+			`${join(env.HOME ?? '', '.claude-work')} notoken\n`
+		);
+	}, 30_000);
+
+	it("leaves the terminal's login alone when no profile is named", () => {
+		const { env, nightjar } = world();
+		nightjar(['1'], { CLAUDE_CONFIG_DIR: '/from/terminal', CLAUDE_CODE_OAUTH_TOKEN: 'tok' });
+		expect(readFileSync(join(tree(env), 'login.txt'), 'utf8')).toBe('/from/terminal tok\n');
 	}, 30_000);
 });
 
@@ -387,7 +411,9 @@ describe('nightjar doctor', () => {
 		const { nightjar, calls } = world();
 		const run = nightjar(['doctor']);
 		expect(run.stdout).toContain('  ok    Tracker: gh as ann on o/r');
-		expect(run.stdout).toContain('  ok    claude: 2.1.314 (Claude Code), signed in');
+		expect(run.stdout).toContain(
+			'  ok    claude: 2.1.314 (Claude Code), ann@x.io, claude.ai login, config'
+		);
 		expect(run.stdout).toContain('nightjar: would build #1 One escape');
 		expect(run.status).toBe(0);
 		expect(calls()).not.toMatch(/-X (POST|PATCH|DELETE)/);

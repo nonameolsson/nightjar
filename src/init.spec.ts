@@ -91,7 +91,9 @@ describe('nightjar init on GitHub', () => {
 	it('checks every login, listing what it found', async () => {
 		await init(['github', '', 'github', '', 'make check', '']);
 		expect(out).toContain('  ok    Tracker: gh as ann on o/r');
-		expect(out).toContain('  ok    claude: 2.1.314 (Claude Code), signed in');
+		expect(out).toContain(
+			`  ok    claude: 2.1.314 (Claude Code), ann@x.io, Acme, max plan, claude.ai login, config ${m.env.HOME}/.claude`
+		);
 	});
 
 	it('says how to fix a login that is missing, and creates no label with it', async () => {
@@ -101,7 +103,9 @@ describe('nightjar init on GitHub', () => {
 		});
 		expect(code).toBe(2);
 		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*run `gh auth login`/);
-		expect(err.join('\n')).toMatch(/FAIL {2}claude: .*run `claude auth login`/);
+		expect(err.join('\n')).toMatch(
+			/FAIL {2}claude: .*not signed in.*type \/login, or pass another --profile/
+		);
 		expect(out.join('\n')).toContain('Signal labels not created');
 		expect(m.calls('gh')).not.toContain('POST');
 		// the file is written all the same, and init can be run again

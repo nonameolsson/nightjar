@@ -11,7 +11,8 @@ export const DEFAULT_DAILY_USD = 60;
 
 const PersonConfigSchema = z.strictObject({
 	dailyUsd: z.number().positive('a dollar amount above 0').optional(),
-	assignee: z.string().regex(/\S/, 'a login on the Tracker').optional()
+	assignee: z.string().regex(/\S/, 'a login on the Tracker').optional(),
+	profile: z.string().regex(/\S/, 'a Claude profile: a name, a path, or default').optional()
 });
 
 export interface PersonConfig {
@@ -19,6 +20,8 @@ export interface PersonConfig {
 	readonly dailyUsd: number;
 	// whose Features to build; left out, the person signed in to the Tracker
 	readonly assignee?: string;
+	// the Claude login of the sessions: a name, a path, or `default`; left out, the terminal's own
+	readonly profile?: string;
 }
 
 export function personConfigPath(env: Env): string {
@@ -47,6 +50,10 @@ export function loadPersonConfig(env: Env): PersonConfig {
 			parsed.error.issues.map((i) => `${path}: ${where(i.path)}${i.message}`).join('\n')
 		);
 	}
-	const { dailyUsd = DEFAULT_DAILY_USD, assignee } = parsed.data;
-	return { dailyUsd, ...(assignee === undefined ? {} : { assignee }) };
+	const { dailyUsd = DEFAULT_DAILY_USD, assignee, profile } = parsed.data;
+	return {
+		dailyUsd,
+		...(assignee === undefined ? {} : { assignee }),
+		...(profile === undefined ? {} : { profile })
+	};
 }

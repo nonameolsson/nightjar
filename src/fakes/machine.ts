@@ -45,15 +45,16 @@ if [ -n "$FAKE_AZ_SIGNED_OUT" ]; then
 fi
 echo '{"accessToken":"fake-azure-devops"}'`;
 
-// claude: FAKE_CLAUDE_SIGNED_OUT makes `claude auth status` exit 1 as a signed-out claude does;
+// claude: FAKE_CLAUDE_SIGNED_OUT makes `claude auth status --json` exit 1 as a signed-out claude does, and each
+// call notes the CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN it ran with;
 // a headless session prints its init line with the skills of FAKE_CLAUDE_SKILLS (comma separated)
 const CLAUDE = String.raw`#!/bin/bash
-echo "$*" >> "$FAKE_CLAUDE_CALLS"
+echo "$* [dir=$CLAUDE_CONFIG_DIR token=$CLAUDE_CODE_OAUTH_TOKEN]" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
   "--version") echo "2.1.314 (Claude Code)" ;;
-  "auth status")
+  "auth status --json")
     if [ -n "$FAKE_CLAUDE_SIGNED_OUT" ]; then echo '{"loggedIn": false}'; exit 1; fi
-    echo '{"loggedIn": true}' ;;
+    echo "{\"loggedIn\":true,\"email\":\"ann@x.io\",\"orgName\":\"Acme\",\"subscriptionType\":\"max\",\"authMethod\":\"claude.ai\",\"configDirectory\":\"@{CLAUDE_CONFIG_DIR:-$HOME/.claude}\"}" ;;
   "-p "*)
     skills=""
     if [ -n "$FAKE_CLAUDE_SKILLS" ]; then skills="\"@{FAKE_CLAUDE_SKILLS//,/\",\"}\""; fi

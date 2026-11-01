@@ -15,6 +15,7 @@ export interface InitOptions {
 	readonly root: string;
 	readonly env: Env;
 	readonly useApiKey: boolean;
+	readonly profile?: string;
 	readonly ask: Ask;
 	readonly request?: AzureDevOpsRequest;
 }
@@ -219,6 +220,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 
 	const checked = await checkMachine({
 		useApiKey: o.useApiKey,
+		...(o.profile === undefined ? {} : { profile: o.profile }),
 		env: o.env,
 		cwd: o.root,
 		failFast: false,
@@ -256,9 +258,19 @@ export interface InitHost {
 
 // The `init` command: its arguments, the checkout it is run in, and a refusal said as it is.
 export async function runInitCommand(argv: readonly string[], host: InitHost): Promise<number> {
-	const unknown = argv.find((a) => a !== '--use-api-key');
+	const profileAt = argv.indexOf('--profile');
+	const profile = profileAt < 0 ? undefined : argv[profileAt + 1];
+	if (profileAt >= 0 && (profile === undefined || profile.startsWith('--'))) {
+		console.error('nightjar: --profile needs a value');
+		return 2;
+	}
+	const unknown = argv.find(
+		(a, i) => a !== '--use-api-key' && a !== '--profile' && (profileAt < 0 || i !== profileAt + 1)
+	);
 	if (unknown !== undefined) {
-		console.error(`nightjar: unknown argument ${unknown}\n\nusage: nightjar init [--use-api-key]`);
+		console.error(
+			`nightjar: unknown argument ${unknown}\n\nusage: nightjar init [--use-api-key] [--profile NAME]`
+		);
 		return 2;
 	}
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
@@ -273,6 +285,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			root: top.out.trim(),
 			env,
 			useApiKey: argv.includes('--use-api-key'),
+			...(profile === undefined ? {} : { profile }),
 			ask: host.ask ?? asker?.ask ?? (() => Promise.resolve(null)),
 			...(host.request === undefined ? {} : { request: host.request })
 		});

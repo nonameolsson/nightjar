@@ -1,4 +1,6 @@
 // `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { machine, type Machine, type Tool } from './fakes/machine.js';
 import { checkMachine } from './checks.js';
@@ -53,7 +55,7 @@ describe('nightjar doctor', () => {
 				'  ok    factory.json: read',
 				'  ok    Tracker: gh as ann on o/r',
 				'  ok    Code host: o/r',
-				'  ok    claude: 2.1.314 (Claude Code), signed in',
+				`  ok    claude: 2.1.314 (Claude Code), ann@x.io, Acme, max plan, claude.ai login, config ${m.env.HOME}/.claude`,
 				'  ok    git signing: commits unsigned',
 				'nightjar: would build #1 One escape'
 			])
@@ -74,7 +76,9 @@ describe('nightjar doctor', () => {
 		const said = err.join('\n');
 		expect(said).toMatch(/FAIL {2}Tracker: .*run `gh auth login`/);
 		expect(said).toMatch(/FAIL {2}Code host: .*run `gh auth login`/);
-		expect(said).toMatch(/FAIL {2}claude: .*run `claude auth login`/);
+		expect(said).toMatch(
+			/FAIL {2}claude: .*not signed in.*type \/login, or pass another --profile/
+		);
 		// the checks that passed are still listed
 		expect(out).toContain('  ok    factory.json: read');
 		expect(out.join('\n')).not.toContain('would build');
@@ -96,6 +100,35 @@ describe('nightjar doctor', () => {
 		expect(code).toBe(0);
 		expect(out).toContain('  ok    API key: ANTHROPIC_API_KEY chosen');
 		expect(m.calls('claude')).not.toContain('auth status');
+	});
+
+	it("runs the sessions' own environment through --profile, naming the login it finds", async () => {
+		const code = await doctor({
+			argv: ['doctor', '--profile', 'work'],
+			env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok', CLAUDE_CONFIG_DIR: '/elsewhere' }
+		});
+		expect(code).toBe(0);
+		expect(m.calls('claude')).toContain(
+			`auth status --json [dir=${m.env.HOME}/.claude-work token=]`
+		);
+		expect(out).toContain(
+			`  ok    claude: 2.1.314 (Claude Code), ann@x.io, Acme, max plan, claude.ai login, config ${m.env.HOME}/.claude-work`
+		);
+	});
+
+	it("takes the profile from the person's config.json when --profile is not given", async () => {
+		m = machine();
+		m.writeConfig(GITHUB);
+		mkdirSync(join(m.env.HOME ?? '', '.config', 'nightjar'), { recursive: true });
+		writeFileSync(
+			join(m.env.HOME ?? '', '.config', 'nightjar', 'config.json'),
+			JSON.stringify({ profile: 'work' })
+		);
+		expect(await start()).toBe(0);
+		expect(m.calls('claude')).toContain(`dir=${m.env.HOME}/.claude-work`);
+		// and --profile beats it
+		expect(await start({ argv: ['doctor', '--profile', 'default'] })).toBe(0);
+		expect(m.calls('claude')).toMatch(/auth status --json \[dir= token=\]/);
 	});
 
 	it('refuses a repo with no check command, reaching no Tracker', async () => {

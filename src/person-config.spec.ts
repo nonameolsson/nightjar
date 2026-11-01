@@ -35,6 +35,11 @@ describe('loadPersonConfig', () => {
 		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 25, assignee: 'zed' });
 	});
 
+	it('reads the Claude profile', () => {
+		write(join(dir, '.config'), { profile: 'work' });
+		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 60, profile: 'work' });
+	});
+
 	it('reads it from XDG_CONFIG_HOME when that is set', () => {
 		write(join(dir, 'xdg'), { dailyUsd: 10 });
 		expect(loadPersonConfig({ HOME: dir, XDG_CONFIG_HOME: join(dir, 'xdg') })).toEqual({

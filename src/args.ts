@@ -1,13 +1,14 @@
 // The `nightjar` command's arguments.
 import type { Env } from './git.js';
 
-export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--use-api-key] [--model M] [--effort LEVEL]
+export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL]
 
   --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes
   --once         build the oldest Feature assigned to you with the Go, then exit
   FEATURE        build that Feature, by its id (42, #42, PROJ-123), now
   doctor         check this machine and list the Features it would build, building nothing (--dry-run is the old name)
   --use-api-key  let the sessions bill ANTHROPIC_API_KEY instead of your Claude plan
+  --profile NAME run the sessions as the Claude login in ~/.claude-NAME (a path is the folder itself, default is ~/.claude); over config.json's profile
   --model M      the model of every session, over a Ticket's own line and factory.json
   --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
 
@@ -19,6 +20,7 @@ export interface Args {
 	readonly mode: 'watch' | 'once' | 'feature' | 'doctor';
 	readonly feature?: string;
 	readonly useApiKey: boolean;
+	readonly profile?: string;
 	readonly model?: string;
 	readonly effort?: string;
 }
@@ -28,6 +30,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 	const chosen: { mode: Args['mode'] | null } = { mode: null };
 	let feature: string | undefined;
 	let useApiKey = false;
+	let profile: string | undefined;
 	let model: string | undefined;
 	let effort: string | undefined;
 	const pick = (m: Args['mode']) => {
@@ -43,10 +46,11 @@ export function parseArgs(argv: readonly string[]): Args | string {
 		else if (a === '--once') fault = pick('once');
 		else if (a === 'doctor' || a === '--dry-run') fault = pick('doctor');
 		else if (a === '--use-api-key') useApiKey = true;
-		else if (a === '--model' || a === '--effort') {
+		else if (a === '--model' || a === '--effort' || a === '--profile') {
 			const value = argv[i + 1];
 			if (value === undefined || value.startsWith('--')) return `${a} needs a value`;
 			if (a === '--model') model = value;
+			else if (a === '--profile') profile = value;
 			else effort = value;
 			i += 1;
 		} else if (/^#?[A-Za-z0-9][\w.-]*$/.test(a)) {
@@ -61,6 +65,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 		mode,
 		useApiKey,
 		...(feature === undefined ? {} : { feature }),
+		...(profile === undefined ? {} : { profile }),
 		...(model === undefined ? {} : { model }),
 		...(effort === undefined ? {} : { effort })
 	};
