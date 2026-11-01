@@ -25,6 +25,78 @@
 					],
 					"additionalProperties": false,
 					"description": "GitHub Issues: a Feature is an issue with sub-issues, its Tickets"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "azure-devops"
+						},
+						"organization": {
+							"type": "string",
+							"allOf": [
+								{
+									"pattern": "\\S"
+								},
+								{
+									"pattern": "^[^/\\s:]+$"
+								}
+							],
+							"description": "The organization, as in dev.azure.com/<organization>"
+						},
+						"project": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The project that holds the Features"
+						},
+						"featureType": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The work item type that plays the Feature, such as Feature, Epic or Product Backlog Item"
+						},
+						"ticketType": {
+							"description": "The work item type nightjar create makes each Ticket as, such as User Story, Product Backlog Item or Issue. Left out, nightjar create makes no Tickets.",
+							"type": "string",
+							"pattern": "\\S"
+						}
+					},
+					"required": [
+						"type",
+						"organization",
+						"project",
+						"featureType"
+					],
+					"additionalProperties": false,
+					"description": "Azure DevOps Boards: a Feature is a work item of featureType, its child work items its Tickets"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "module"
+						},
+						"path": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The module that builds the Tracker, as a path from the repo's root"
+						},
+						"options": {
+							"description": "Handed to the module as it is, for its own settings",
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {}
+						}
+					},
+					"required": [
+						"type",
+						"path"
+					],
+					"additionalProperties": false,
+					"description": "A Tracker of the repo's own, built by a module"
 				}
 			],
 			"description": "Where the Features and Tickets live"
@@ -49,6 +121,73 @@
 					],
 					"additionalProperties": false,
 					"description": "GitHub: the branch is pushed to origin and a draft pull request opened"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "azure-devops"
+						},
+						"organization": {
+							"type": "string",
+							"allOf": [
+								{
+									"pattern": "\\S"
+								},
+								{
+									"pattern": "^[^/\\s:]+$"
+								}
+							],
+							"description": "The organization, as in dev.azure.com/<organization>"
+						},
+						"project": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The project that holds the repo"
+						},
+						"repo": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The Git repo on Azure Repos, by name"
+						}
+					},
+					"required": [
+						"type",
+						"organization",
+						"project",
+						"repo"
+					],
+					"additionalProperties": false,
+					"description": "Azure Repos: the branch is pushed to the repo and a draft pull request opened, signed in as for Azure DevOps Boards"
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "module"
+						},
+						"path": {
+							"type": "string",
+							"pattern": "\\S",
+							"description": "The module that builds the Code host, as a path from the repo's root"
+						},
+						"options": {
+							"description": "Handed to the module as it is, for its own settings",
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {}
+						}
+					},
+					"required": [
+						"type",
+						"path"
+					],
+					"additionalProperties": false,
+					"description": "A Code host of the repo's own, built by a module"
 				}
 			],
 			"description": "Where the branch is pushed and the draft pull request opened"
@@ -103,7 +242,7 @@
 			"additionalProperties": false
 		},
 		"signals": {
-			"description": "The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.",
+			"description": "The name each Signal has on a Tracker: a label on GitHub, a tag on Azure DevOps. Leave out the ones you do not rename. needs-triage and wontfix are refused.",
 			"default": {},
 			"type": "object",
 			"properties": {
@@ -141,7 +280,7 @@
 			"additionalProperties": false
 		},
 		"trusted": {
-			"description": "The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.",
+			"description": "The logins whose comments reach the agent (on Azure DevOps, sign-in names such as ann@contoso.com). When set, it replaces the Tracker default (GitHub: write access; Azure DevOps: the project's Contributors group); leave it out to keep the default.",
 			"type": "array",
 			"items": {
 				"type": "string",

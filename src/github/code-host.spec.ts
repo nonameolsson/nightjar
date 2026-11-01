@@ -85,18 +85,30 @@ describe('GitHubCodeHost', () => {
 		const pull = onePull('First body');
 		const host = new GitHubCodeHost('o/r', fakeGh(...pull.routes).gh, noGit);
 		await host.placeReferences(PULL, [
-			{ id: 2, text: '#2' },
-			{ id: 3, text: '#3' }
+			{ id: '2', text: '#2' },
+			{ id: '3', text: '#3' }
 		]);
 		await host.placeReferences(PULL, [
-			{ id: 1, text: '#1' },
-			{ id: 3, text: '#3' }
+			{ id: '1', text: '#1' },
+			{ id: '3', text: '#3' }
 		]);
 		await host.editBody(PULL, 'Second body');
 		const body = pull.body();
 		expect(body.startsWith('Second body\n\n')).toBe(true);
 		expect(body).not.toContain('First body');
 		expect(body.match(/^Closes .*$/gm)).toEqual(['Closes #2', 'Closes #3', 'Closes #1']);
+	});
+
+	it('places a reference from another Tracker as it is, AB#N or PROJ-123, with no Closes', async () => {
+		const pull = onePull('Body');
+		const host = new GitHubCodeHost('o/r', fakeGh(...pull.routes).gh, noGit);
+		await host.placeReferences(PULL, [
+			{ id: '7', text: 'AB#7' },
+			{ id: 'PROJ-123', text: 'PROJ-123' },
+			{ id: '2', text: '#2' }
+		]);
+		const lines = pull.body().split('<!-- nightjar:references -->\n')[1]?.split('\n');
+		expect(lines).toEqual(['AB#7', 'PROJ-123', 'Closes #2']);
 	});
 
 	it('comments on the pull request', async () => {

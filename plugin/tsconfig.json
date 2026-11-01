@@ -1,0 +1,9 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"rootDir": ".."
+	},
+	"include": ["./**/*.ts", "../src/status-shape.ts", "../src/status.ts"]
+}

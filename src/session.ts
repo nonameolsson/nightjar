@@ -1,6 +1,4 @@
-// One headless `claude -p` session: a Ticket's build, a fix round, or the review. It runs
-// restricted, on Nightjar's own settings and tools, and answers with the structured output whole,
-// or with why it stopped. Every line it prints is kept in its log.
+// One headless `claude -p` session, run restricted on Nightjar's own settings; every line it prints is kept in its log.
 import { spawn } from 'node:child_process';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -155,8 +153,7 @@ export function runSession(req: SessionRequest, command = 'claude'): Promise<Ses
 			if (now.kind === 'done' || now.kind === 'stopped') settled = now;
 			else end(now);
 		});
-		// a log that cannot be written stops the session, not Nightjar: thrown, it would escape
-		// every catch and leave the Feature marked as being worked on
+		// a log that cannot be written stops the session; thrown, it would leave the Feature marked as worked on
 		log.on('error', (fault) =>
 			end({ kind: 'stopped', costUsd: 0, why: `its log could not be written: ${fault.message}` })
 		);

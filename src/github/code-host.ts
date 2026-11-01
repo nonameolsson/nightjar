@@ -1,5 +1,4 @@
-// GitHub as a Code host: the branch is pushed to origin, and the draft pull request carries each
-// Ticket's reference as a `Closes` line, so GitHub's own rules close it on merge.
+// GitHub as a Code host: the branch goes to origin and each Ticket reference into the draft pull request.
 import { z } from 'zod';
 import type { CodeHost, DraftRequest, Pull } from '../code-host.js';
 import { firstLine, type Run } from '../git.js';
@@ -16,6 +15,9 @@ const PullSchema = z.looseObject({
 
 // Everything after it in a body is the references Nightjar placed.
 const REFERENCES_MARK = '<!-- nightjar:references -->';
+
+// A GitHub issue, #N, gets `Closes` so GitHub closes it on merge; any other Tracker's reference, such as AB#N, stays as written.
+const placed = (r: TicketReference) => (/^#\d+$/.test(r.text) ? `Closes ${r.text}` : r.text);
 
 const toPull = (raw: z.infer<typeof PullSchema>): Pull => ({ id: raw.number, url: raw.html_url });
 
@@ -113,7 +115,7 @@ export class GitHubCodeHost implements CodeHost {
 
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {
 		const { text, lines } = split(await this.body(pull));
-		const added = references.map((r) => `Closes ${r.text}`).filter((l) => !lines.includes(l));
+		const added = references.map(placed).filter((l) => !lines.includes(l));
 		if (added.length === 0) return;
 		await this.setBody(pull, join(text, [...lines, ...added]));
 	}

@@ -1,5 +1,4 @@
-// The repo's check command, run in the Feature's worktree after each Ticket and each fix round. Its
-// output's end, without colour codes, goes to the fix round and, when it stays red, the pull request.
+// The repo's check command; the end of its output, without colour codes, goes to the fix round and a red pull request.
 import { spawn } from 'node:child_process';
 import type { Env } from './git.js';
 

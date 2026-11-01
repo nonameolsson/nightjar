@@ -1,31 +1,25 @@
-// The `nightjar` command: checks this machine and the repo's factory.json, then builds the Features
-// assigned to the person with the Go, with nobody at the keyboard.
+// The `nightjar` command.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { makeAdapters, type Adapters } from './adapters.js';
-import { apiKeyProblem, parseArgs, USAGE, type Args } from './args.js';
+import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
-import { ConfigError, loadConfig, loadRules, type Config } from './config.js';
-import { firstLine, run, type Env } from './git.js';
+import { checkMachine, Refusal, type Ready } from './checks.js';
+import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import type { Ask } from './ask.js';
+import { runDoctor } from './doctor.js';
+import { runInitCommand } from './init.js';
+import { runContractCommand } from './contract/command.js';
+import { runCreateCommand } from './create.js';
+import { ConfigError } from './config.js';
+import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildOne, dryRun, handBack, queue, type QueueDeps } from './queue.js';
+import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
-import { StatusBoard, statusPath } from './status.js';
-import { defaultBranch, signing, worktreesFor } from './worktree.js';
-
-const say = (line: string) => console.log(`nightjar: ${line}`);
-
-// A reason Nightjar will not start on this machine, said as it is.
-class Refusal extends Error {}
-
-async function need(command: string, args: readonly string[], cwd: string, env: Env, what: string) {
-	const got = await run(command, args, cwd, env);
-	if (got.missing) throw new Refusal(`${command} is not on the PATH.`);
-	if (!got.ok) throw new Refusal(`${what}: ${firstLine(got.err) || firstLine(got.out)}`);
-	return got.out.trim();
-}
+import { StatusFile, statusPath } from './status.js';
+import { worktreesFor } from './worktree.js';
+import { say, why } from './say.js';
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -40,54 +34,76 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 		);
 	});
 
-interface Ready {
-	readonly root: string;
-	readonly config: Config;
-	readonly adapters: Adapters;
-	readonly me: string;
-	readonly baseBranch: string;
-	readonly rules: string | null;
-}
-
-async function preflight(args: Args, env: Env): Promise<Ready> {
-	const keyProblem = apiKeyProblem(env, args.useApiKey);
-	if (keyProblem) throw new Refusal(keyProblem);
-	if (Number(process.versions.node.split('.')[0]) < 24) {
-		throw new Refusal(`Node 24 or later is needed, and this is ${process.versions.node}.`);
-	}
-	const top = ['rev-parse', '--show-toplevel'];
-	const root = await need('git', top, process.cwd(), env, 'not inside a git checkout');
-	const config = loadConfig(root);
-	const rules = loadRules(root, config);
-	const adapters = await makeAdapters(config, root, env);
-	const me = await adapters.tracker.me();
-	const claude = await need('claude', ['--version'], root, env, 'claude does not start');
-	const signs = await signing(root, env);
-	if (signs === 'fails') {
-		throw new Refusal('git cannot sign a commit; unlock your signing key and run again.');
-	}
-	const baseBranch = (await defaultBranch(root, env)) ?? 'main';
+// The checks of a build stop at the first that fails, and the machine's findings are said in one line.
+async function preflight(args: Args, host: Host): Promise<Ready> {
+	const checked = await checkMachine({
+		useApiKey: args.useApiKey,
+		env: host.env,
+		cwd: host.cwd,
+		failFast: true,
+		...(host.request === undefined ? {} : { request: host.request })
+	});
+	const failed = checked.lines.find((l) => l.status === 'fail');
+	if (failed !== undefined) throw new Refusal(failed.detail);
+	if (checked.ready === null) throw new Refusal('the checks did not finish');
+	const { adapters, me } = checked.ready;
 	say(
 		`${adapters.repo}, as ${me}, on ${args.useApiKey ? 'ANTHROPIC_API_KEY' : 'your Claude login'}`
 	);
-	const key = args.useApiKey ? 'ANTHROPIC_API_KEY chosen' : 'no ANTHROPIC_API_KEY';
-	const sign = signs === 'signs' ? 'git signs commits' : 'commits unsigned';
-	say(
-		`checked: ${key}, Node ${process.versions.node}, factory.json, ${adapters.checked(me)}, claude ${claude}, ${sign}`
-	);
-	return { root, config, adapters, me, baseBranch, rules };
+	const found = checked.lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
+	say(`checked: ${found.join(', ')}`);
+	const { assignee, person } = checked.ready;
+	if (assignee !== me) say(`building the Features assigned to ${assignee}`);
+	if (person.dailyUsd !== LIMITS.dailyUsd) say(`daily limit $${String(person.dailyUsd)}`);
+	return checked.ready;
 }
 
-export async function runNightjar(argv: readonly string[]): Promise<number> {
+// What the command reads of the machine it runs on; a spec passes its own.
+export interface Host {
+	readonly platform: NodeJS.Platform;
+	readonly env: Env;
+	readonly cwd: string;
+	// answers every Azure DevOps call; a spec passes a fake Azure DevOps
+	readonly request?: AzureDevOpsRequest;
+	// where init's questions are put; standard input unless a spec passes its own
+	readonly ask?: Ask;
+}
+
+export async function runNightjar(
+	argv: readonly string[],
+	given: Partial<Host> = {}
+): Promise<number> {
+	const host: Host = {
+		platform: process.platform,
+		env: process.env,
+		cwd: process.cwd(),
+		...given
+	};
+	const unsupported = platformProblem(host.platform);
+	if (unsupported !== null) {
+		console.error(`nightjar: ${unsupported}`);
+		return 2;
+	}
+	if (argv.length === 1 && ['--help', '-h', 'help'].includes(argv[0] ?? '')) {
+		console.log(USAGE);
+		return 0;
+	}
+	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);
+	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
+	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);
 		return 2;
 	}
-	const env: Env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
+	if (args.mode === 'doctor') {
+		const { cwd, request } = host;
+		return runDoctor({ useApiKey: args.useApiKey, env, cwd, ...(request ? { request } : {}) });
+	}
 	let ready: Ready;
 	try {
-		ready = await preflight(args, env);
+		ready = await preflight(args, { ...host, env });
 	} catch (fault) {
 		if (!(fault instanceof Refusal) && !(fault instanceof ConfigError)) throw fault;
 		console.error(`nightjar: ${fault.message}`);
@@ -95,19 +111,16 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 	}
 	const { root, config, adapters } = ready;
 
-	const status = new StatusBoard({
+	const status = new StatusFile({
 		path: statusPath(root),
 		ledger: ledgerPath(root),
 		now: () => new Date(),
 		pid: process.pid,
-		dailyUsd: LIMITS.dailyUsd
+		dailyUsd: ready.person.dailyUsd
 	});
 	// the reserved ports are held until the process ends, whatever ends it
-	const claim =
-		args.mode === 'dry-run' || config.ports === undefined
-			? null
-			: await claimPorts({ count: config.ports.count });
-	if (config.ports !== undefined && args.mode !== 'dry-run') {
+	const claim = config.ports === undefined ? null : await claimPorts({ count: config.ports.count });
+	if (config.ports !== undefined) {
 		if (claim === null) {
 			console.error(
 				`nightjar: no ${String(config.ports.count)} free, unclaimed ports to reserve; stop another run or lower ports.count in factory.json.`
@@ -147,14 +160,14 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 		env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
-		limits: LIMITS,
+		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
 		signal: stop.signal
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: number | null = null;
+	let building: string | null = null;
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
-		person: ready.me,
+		person: ready.assignee,
 		build: async (id) => {
 			building = id;
 			try {
@@ -169,11 +182,6 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 		sleep,
 		signal: stop.signal
 	};
-
-	if (args.mode === 'dry-run') {
-		await dryRun(queueDeps);
-		return 0;
-	}
 
 	process.once('exit', () => status.doing({ kind: 'off' }));
 	// keep a Mac awake, so a long run is not put to sleep and a signing agent stays unlocked
@@ -197,6 +205,16 @@ export async function runNightjar(argv: readonly string[]): Promise<number> {
 	});
 
 	if (args.mode === 'feature' && args.feature !== undefined) {
+		let refusal: string | null;
+		try {
+			refusal = await cannotClaim(queueDeps, args.feature);
+		} catch (fault) {
+			refusal = why(fault);
+		}
+		if (refusal !== null) {
+			console.error(`nightjar: ${refusal}`);
+			return 2;
+		}
 		const outcome = await buildOne(queueDeps, args.feature);
 		return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
 	}

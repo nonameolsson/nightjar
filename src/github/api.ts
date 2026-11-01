@@ -1,6 +1,4 @@
-// The REST calls the GitHub adapters make through the person's own `gh api`, and the schemas of
-// what they answer. `gh` holds the login, so no token passes through here. Only the GitHub
-// adapters call `gh`.
+// Calls through the person's own `gh api`, which holds the login, so no token passes through here.
 import { z } from 'zod';
 import { firstLine, run, type Env, type Run } from '../git.js';
 
@@ -15,6 +13,8 @@ export const ghRunner =
 		run('gh', args, cwd, env);
 
 export const IssueSchema = z.looseObject({
+	// GitHub's own id, which the sub-issue and dependency calls take
+	id: z.int().optional(),
 	number: z.int(),
 	title: z.string(),
 	body: z.string().nullable(),
@@ -32,8 +32,7 @@ export const IssueSchema = z.looseObject({
 
 export type RawIssue = z.infer<typeof IssueSchema>;
 
-// One page of 100 is all Nightjar reads: a Feature with more Tickets or comments is no Feature for
-// one run.
+// A Feature with more than 100 Tickets or comments is no Feature for one run.
 export const PAGE = 'per_page=100';
 
 export class GitHubApi {

@@ -77,6 +77,24 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/off/);
 	});
 
+	it('loads a Tracker and a Code host named as a module path, with their options', () => {
+		const modules = {
+			tracker: { type: 'module', path: './adapters/tracker.js', options: { project: 'x' } },
+			codeHost: { type: 'module', path: './adapters/host.js' }
+		};
+		write({ ...VALID, ...modules });
+		expect(loadConfig(root)).toMatchObject(modules);
+	});
+
+	it.each([
+		['no path', { type: 'module' }, 'tracker.path'],
+		['an empty path', { type: 'module', path: ' ' }, 'tracker.path'],
+		['a field it does not know', { type: 'module', path: './t.js', repo: 'o/r' }, 'tracker']
+	])('refuses a module Tracker with %s, naming the field', (_what, tracker, field) => {
+		write({ ...VALID, tracker });
+		expect(refusal()).toContain(`factory.json: ${field}`);
+	});
+
 	it('refuses a file with no check command, and never supplies one', () => {
 		write(without('check'));
 		expect(refusal()).toMatch(/^factory\.json: check: missing/m);
@@ -121,6 +139,96 @@ describe('loadConfig', () => {
 	it('refuses a tracker it does not know, naming the field', () => {
 		write({ ...VALID, tracker: { type: 'paper' } });
 		expect(refusal()).toMatch(/^factory\.json: tracker\.type: /m);
+	});
+
+	it('loads Azure DevOps Boards as the Tracker, with its organization, project and Feature type', () => {
+		const tracker = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam Fiber',
+			featureType: 'Product Backlog Item'
+		};
+		write({ ...VALID, tracker });
+		expect(loadConfig(root).tracker).toEqual(tracker);
+	});
+
+	it.each([
+		['organization', 'tracker.organization'],
+		['project', 'tracker.project'],
+		['featureType', 'tracker.featureType']
+	])('refuses an Azure DevOps Tracker with no %s, naming the field', (key, field) => {
+		const whole = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		const tracker = Object.fromEntries(Object.entries(whole).filter(([k]) => k !== key));
+		write({ ...VALID, tracker });
+		expect(refusal()).toMatch(new RegExp(`^factory\\.json: ${field}: missing: `, 'm'));
+	});
+
+	it('loads the work item type a Ticket is made as, for nightjar create', () => {
+		const tracker = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature',
+			ticketType: 'User Story'
+		};
+		write({ ...VALID, tracker });
+		expect(loadConfig(root).tracker).toEqual(tracker);
+		write({ ...VALID, tracker: { ...tracker, ticketType: ' ' } });
+		expect(refusal()).toMatch(/^factory\.json: tracker\.ticketType: /m);
+	});
+
+	it('refuses an Azure DevOps organization given as an address, not a name', () => {
+		const tracker = {
+			type: 'azure-devops',
+			organization: 'https://dev.azure.com/contoso',
+			project: 'Fabrikam',
+			featureType: 'Feature'
+		};
+		write({ ...VALID, tracker });
+		expect(refusal()).toMatch(/^factory\.json: tracker\.organization: /m);
+	});
+
+	it('loads Azure Repos as the Code host, with its organization, project and repo', () => {
+		const codeHost = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam Fiber',
+			repo: 'Fiber App'
+		};
+		write({ ...VALID, codeHost });
+		expect(loadConfig(root).codeHost).toEqual(codeHost);
+	});
+
+	it.each([
+		['organization', 'codeHost.organization'],
+		['project', 'codeHost.project'],
+		['repo', 'codeHost.repo']
+	])('refuses an Azure Repos Code host with no %s, naming the field', (key, field) => {
+		const whole = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			repo: 'app'
+		};
+		const codeHost = Object.fromEntries(Object.entries(whole).filter(([k]) => k !== key));
+		write({ ...VALID, codeHost });
+		expect(refusal()).toMatch(new RegExp(`^factory\\.json: ${field}: missing: `, 'm'));
+	});
+
+	it('refuses an Azure Repos organization given as an address, not a name', () => {
+		const codeHost = {
+			type: 'azure-devops',
+			organization: 'dev.azure.com/contoso',
+			project: 'Fabrikam',
+			repo: 'app'
+		};
+		write({ ...VALID, codeHost });
+		expect(refusal()).toMatch(/^factory\.json: codeHost\.organization: /m);
 	});
 
 	it('refuses a code host repo that is not owner/name', () => {

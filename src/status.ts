@@ -1,54 +1,13 @@
-// .factory/status.json: what Nightjar does right now and what it did last, rewritten at every
-// change, for a status line or toasts to read.
+// .factory/status.json, rewritten at every change, for a status line or toasts to read.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { spentOn } from './ledger.js';
+import type { Doing, Event, Happened, Status } from './status-shape.js';
+
+export type { Doing, Event, Happened, Status } from './status-shape.js';
 
 export const statusPath = (root: string) => join(root, '.factory', 'status.json');
-
-export type Doing =
-	| { readonly kind: 'idle'; readonly nextPollAt: string }
-	| {
-			readonly kind: 'building';
-			readonly feature: number;
-			// null while the Feature is set up and while it is reviewed
-			readonly ticket: number | null;
-			readonly step: 'setup' | 'build' | 'fix' | 'review';
-			// a build's question round or a fix round, of how many there may be
-			readonly round: number | null;
-			readonly rounds: number | null;
-			readonly session: string | null;
-			readonly startedAt: string;
-	  }
-	| { readonly kind: 'paused'; readonly why: string; readonly until: string | null }
-	| { readonly kind: 'off' };
-
-export type Happened =
-	| { readonly kind: 'built'; readonly feature: number; readonly ticket: number }
-	| {
-			readonly kind: 'needs-info';
-			readonly feature: number;
-			readonly ticket: number | null;
-			readonly why: string;
-	  }
-	| { readonly kind: 'failed'; readonly feature: number; readonly why: string }
-	| { readonly kind: 'pull'; readonly feature: number; readonly url: string }
-	| { readonly kind: 'stale'; readonly commit: string };
-
-export type Event = Happened & { readonly seq: number; readonly at: string };
-
-export interface Status {
-	readonly at: string;
-	readonly pid: number;
-	readonly spentTodayUsd: number;
-	readonly dailyUsd: number;
-	readonly doing: Doing;
-	// the last ten, oldest first; a reader toasts each seq it has not seen
-	readonly recent: Event[];
-	// kept for the file's shape; nothing sets it yet
-	readonly codeMoved: string | null;
-}
 
 // What the build loop tells the status file; a spec records it instead.
 export interface StatusReport {
@@ -71,7 +30,7 @@ export function readStatus(path: string): Status | null {
 	}
 }
 
-export class StatusBoard implements StatusReport {
+export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
 	private recent: Event[];
 

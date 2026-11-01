@@ -1,9 +1,9 @@
-// factory.json: what a repo tells Nightjar about itself. It is validated here, and the published
-// JSON Schema (schema/factory.schema.json) is generated from the same definition.
+// factory.json; schema/factory.schema.json is generated from the same definition.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_SIGNAL_NAMES, RESERVED_NAMES, type SignalNames } from './signals.js';
+import { why } from './say.js';
 
 export class ConfigError extends Error {}
 
@@ -19,15 +19,74 @@ const GitHubTracker = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub Issues: a Feature is an issue with sub-issues, its Tickets' });
 
+const missingOr = (what: string) => (issue: { input: unknown }) =>
+	issue.input === undefined ? `missing: ${what}` : undefined;
+
+const named = (what: string) => z.string({ error: missingOr(what) }).regex(/\S/, what);
+
+const organization = named('name the organization')
+	.regex(/^[^/\s:]+$/, 'the organization name alone, as in dev.azure.com/<organization>')
+	.meta({ description: 'The organization, as in dev.azure.com/<organization>' });
+
+const AzureDevOpsTracker = z
+	.strictObject({
+		type: z.literal('azure-devops'),
+		organization,
+		project: named('name the project').meta({ description: 'The project that holds the Features' }),
+		featureType: named('name the work item type that plays the Feature').meta({
+			description:
+				'The work item type that plays the Feature, such as Feature, Epic or Product Backlog Item'
+		}),
+		ticketType: z
+			.string()
+			.regex(/\S/, 'name the work item type of a Ticket, or leave ticketType out')
+			.optional()
+			.meta({
+				description:
+					'The work item type nightjar create makes each Ticket as, such as User Story, Product Backlog Item or Issue. Left out, nightjar create makes no Tickets.'
+			})
+	})
+	.meta({
+		description:
+			'Azure DevOps Boards: a Feature is a work item of featureType, its child work items its Tickets'
+	});
+
 const GitHubCodeHost = z
 	.strictObject({ type: z.literal('github'), repo })
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
 
+const AzureReposCodeHost = z
+	.strictObject({
+		type: z.literal('azure-devops'),
+		organization,
+		project: named('name the project').meta({ description: 'The project that holds the repo' }),
+		repo: named('name the repo').meta({ description: 'The Git repo on Azure Repos, by name' })
+	})
+	.meta({
+		description:
+			'Azure Repos: the branch is pushed to the repo and a draft pull request opened, signed in as for Azure DevOps Boards'
+	});
+
+// An Adapter the repo brings itself: a module (docs/custom-adapters.md) that builds the Tracker or Code host.
+const adapterModule = (what: string) =>
+	z
+		.strictObject({
+			type: z.literal('module'),
+			path: z
+				.string({ error: missingOr('name the module') })
+				.regex(/\S/, 'name the module')
+				.meta({
+					description: `The module that builds the ${what}, as a path from the repo's root`
+				}),
+			options: z
+				.record(z.string(), z.unknown())
+				.optional()
+				.meta({ description: 'Handed to the module as it is, for its own settings' })
+		})
+		.meta({ description: `A ${what} of the repo's own, built by a module` });
+
 const modelField = z.string().regex(/\S/, 'a model is empty').optional();
 const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
-
-const missingOr = (what: string) => (issue: { input: unknown }) =>
-	issue.input === undefined ? `missing: ${what}` : undefined;
 
 const signalName = (fallback: string, what: string) =>
 	z
@@ -53,17 +112,25 @@ const Signals = z
 	.prefault({})
 	.meta({
 		description:
-			'The name each Signal has on a Tracker: a label on GitHub. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
+			'The name each Signal has on a Tracker: a label on GitHub, a tag on Azure DevOps. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
 	});
 
 export const ConfigSchema = z
 	.strictObject({
 		$schema: z.string().optional(),
 		tracker: z
-			.discriminatedUnion('type', [GitHubTracker], { error: missingOr('name the Tracker') })
+			.discriminatedUnion('type', [GitHubTracker, AzureDevOpsTracker, adapterModule('Tracker')], {
+				error: missingOr('name the Tracker')
+			})
 			.meta({ description: 'Where the Features and Tickets live' }),
 		codeHost: z
-			.discriminatedUnion('type', [GitHubCodeHost], { error: missingOr('name the Code host') })
+			.discriminatedUnion(
+				'type',
+				[GitHubCodeHost, AzureReposCodeHost, adapterModule('Code host')],
+				{
+					error: missingOr('name the Code host')
+				}
+			)
 			.meta({ description: 'Where the branch is pushed and the draft pull request opened' }),
 		check: z
 			.string({ error: missingOr('name the command that checks the work') })
@@ -113,7 +180,7 @@ export const ConfigSchema = z
 		signals: Signals,
 		trusted: z.array(z.string().regex(/\S/, 'a trusted login is empty')).optional().meta({
 			description:
-				'The logins whose comments reach the agent. When set, it replaces the Tracker default (GitHub: write access); leave it out to keep the default.'
+				"The logins whose comments reach the agent (on Azure DevOps, sign-in names such as ann@contoso.com). When set, it replaces the Tracker default (GitHub: write access; Azure DevOps: the project's Contributors group); leave it out to keep the default."
 		}),
 		// worktree setup and reserved ports (N5)
 		setup: z.string().regex(/\S/, 'name the setup command, or leave setup out').optional().meta({
@@ -164,7 +231,7 @@ export function loadRules(root: string, config: Config): string | null {
 	}
 }
 
-const where = (path: readonly PropertyKey[]) =>
+export const where = (path: readonly PropertyKey[]) =>
 	path.length === 0 ? '' : `${path.map(String).join('.')}: `;
 
 // The repo's factory.json, or a ConfigError naming each field that is wrong.
@@ -173,15 +240,13 @@ export function loadConfig(root: string): Config {
 	try {
 		text = readFileSync(join(root, CONFIG_FILE), 'utf8');
 	} catch {
-		throw new ConfigError(`no ${CONFIG_FILE} in ${root}; write one that names the check command`);
+		throw new ConfigError(`no ${CONFIG_FILE} in ${root}; run \`nightjar init\` to write one`);
 	}
 	let value: unknown;
 	try {
 		value = JSON.parse(text);
 	} catch (fault) {
-		throw new ConfigError(
-			`${CONFIG_FILE} is not JSON: ${fault instanceof Error ? fault.message : String(fault)}`
-		);
+		throw new ConfigError(`${CONFIG_FILE} is not JSON: ${why(fault)}`);
 	}
 	const parsed = ConfigSchema.safeParse(value);
 	if (!parsed.success) {

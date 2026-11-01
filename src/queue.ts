@@ -1,8 +1,8 @@
-// --once, --watch and --dry-run: which Feature to build next, from the Tracker, and what happens
-// to a Feature whose build fails on a fault.
+// --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
 import type { StatusReport } from './status.js';
-import type { Tracker } from './tracker.js';
+import type { ItemId, Tracker } from './tracker.js';
+import { why } from './say.js';
 
 export const POLL_MS = 2 * 60_000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
@@ -12,7 +12,7 @@ export interface QueueDeps {
 	readonly tracker: Tracker;
 	// whose Features to build
 	readonly person: string;
-	readonly build: (id: number) => Promise<FeatureOutcome>;
+	readonly build: (id: ItemId) => Promise<FeatureOutcome>;
 	readonly status: StatusReport;
 	readonly now: () => Date;
 	readonly say: (line: string) => void;
@@ -20,13 +20,11 @@ export interface QueueDeps {
 	readonly signal?: AbortSignal;
 }
 
-export const why = (fault: unknown) => (fault instanceof Error ? fault.message : String(fault));
-
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
-export async function handBack(deps: QueueDeps, id: number, fault: unknown): Promise<void> {
+export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Promise<void> {
 	const { tracker } = deps;
 	const reason = why(fault);
-	deps.say(`#${String(id)} failed: ${reason}`);
+	deps.say(`#${id} failed: ${reason}`);
 	deps.status.happened({ kind: 'failed', feature: id, why: reason });
 	try {
 		await tracker.removeSignal(id, 'working');
@@ -38,7 +36,7 @@ export async function handBack(deps: QueueDeps, id: number, fault: unknown): Pro
 }
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
-export async function buildOne(deps: QueueDeps, id: number): Promise<FeatureOutcome | null> {
+export async function buildOne(deps: QueueDeps, id: ItemId): Promise<FeatureOutcome | null> {
 	try {
 		return await deps.build(id);
 	} catch (fault) {
@@ -47,7 +45,28 @@ export async function buildOne(deps: QueueDeps, id: number): Promise<FeatureOutc
 	}
 }
 
-const none = (deps: QueueDeps) => `no Feature with the Go is assigned to ${deps.person}`;
+const samePerson = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+// Why `nightjar <id>` may not claim this Feature, or null when it may. Working comes first: a claim takes the Go off.
+export async function cannotClaim(
+	deps: Pick<QueueDeps, 'tracker' | 'person'>,
+	id: ItemId
+): Promise<string | null> {
+	const { assignees, signals } = await deps.tracker.standing(id);
+	if (signals.includes('working')) {
+		return `#${id} already carries the working Signal: another run is building it, or one stopped without clearing it. If none is running, take the Signal off and run again.`;
+	}
+	if (!assignees.some((a) => samePerson(a, deps.person))) {
+		return `#${id} is not assigned to ${deps.person}, so Nightjar leaves it alone. Assign it to ${deps.person} first.`;
+	}
+	if (!signals.includes('go')) {
+		return `#${id} does not carry the Go, so Nightjar leaves it alone. Give it the Go first.`;
+	}
+	return null;
+}
+
+const none = (deps: Pick<QueueDeps, 'person'>) =>
+	`no Feature with the Go is assigned to ${deps.person}`;
 
 // The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
@@ -86,8 +105,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	return 130;
 }
 
-export async function dryRun(deps: QueueDeps): Promise<void> {
+export async function dryRun(deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
 	if (features.length === 0) deps.say(none(deps));
-	for (const f of features) deps.say(`would build #${String(f.id)} ${f.title}`);
+	for (const f of features) deps.say(`would build #${f.id} ${f.title}`);
 }
