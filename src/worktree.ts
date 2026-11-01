@@ -1,7 +1,7 @@
 // Only Nightjar commits in the worktree or saves a failed attempt; the Code host pushes.
 import { createHash } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { firstLine, run, type Env } from './git.js';
 
 // A git command Nightjar cannot go on without.
@@ -9,6 +9,12 @@ export class GitFailure extends Error {}
 
 // Names the Ticket a commit built, so a later run on the branch knows what is done.
 export const TICKET_TRAILER = 'Factory-Ticket';
+
+// Names the Workflow Step a commit holds, so a later run knows it is done.
+export const STEP_TRAILER = 'Factory-Step';
+
+// The notes the Steps of a run share, in the worktree and never committed.
+const NOTES = '.factory/notes';
 
 const BRANCH_PREFIX = 'factory/';
 
@@ -89,6 +95,62 @@ export class Worktree {
 		const message = `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\nFactory-Session: ${session}`;
 		await this.git(['commit', '-q', '-m', message]);
 		return true;
+	}
+
+	// The folder the Steps share, made, and kept out of every `git add` and `git clean` by the checkout's exclude file.
+	async notes(): Promise<string> {
+		const folder = join(this.at.folder, NOTES);
+		mkdirSync(folder, { recursive: true });
+		const path = (await this.git(['rev-parse', '--git-path', 'info/exclude'])).trim();
+		const exclude = resolve(this.at.folder, path);
+		const line = `/${NOTES}/`;
+		const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+		if (!text.split('\n').includes(line)) {
+			mkdirSync(dirname(exclude), { recursive: true });
+			appendFileSync(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}${line}\n`);
+		}
+		return folder;
+	}
+
+	// The Steps the branch's own commits hold, as their trailers name them.
+	async stepsDone(): Promise<Set<string>> {
+		const out = await this.git([
+			'log',
+			`--format=%(trailers:key=${STEP_TRAILER},valueonly)`,
+			`${this.at.base}..HEAD`
+		]);
+		return new Set(out.split('\n').flatMap((l) => (l.trim() === '' ? [] : [l.trim()])));
+	}
+
+	// The Feature's diff against its base, cut at `limit` characters.
+	async diff(limit: number): Promise<{ text: string; truncated: boolean }> {
+		const text = await this.git(['diff', `${this.at.base}...HEAD`]);
+		return text.length > limit
+			? { text: text.slice(0, limit), truncated: true }
+			: { text, truncated: false };
+	}
+
+	// One commit of what a Step left, naming the Workflow and the Step; false when it changed no file.
+	async commitStep(o: {
+		workflow: string;
+		step: string;
+		key: string;
+		after: string | null;
+		summary: string;
+		session: string;
+	}): Promise<boolean> {
+		await this.git(['add', '-A']);
+		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
+		const subject = `${o.workflow}: ${o.step}${o.after === null ? '' : ` (after #${o.after})`}`;
+		const message = `${subject}\n\n${o.summary.trim()}\n\n${STEP_TRAILER}: ${o.key}\nFactory-Session: ${o.session}`;
+		await this.git(['commit', '-q', '-m', message]);
+		return true;
+	}
+
+	// Throws away what a Step left, keeping nothing: the Step is listed as not done.
+	async revert(before: string): Promise<void> {
+		await this.git(['reset', '-q', '--hard', before]);
+		await this.git(['clean', '-q', '-fd']);
 	}
 
 	// Keeps what the session left on a side branch, which it names; null when it left nothing.

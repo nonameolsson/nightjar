@@ -1,6 +1,6 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
-import { join } from 'node:path';
-import type { RunCheck } from './check.js';
+import { join, relative } from 'node:path';
+import type { CheckResult, RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
 import type { Env } from './git.js';
 import { record, spentOn, type Entry } from './ledger.js';
@@ -9,22 +9,38 @@ import { nextTicket, waiting, type Waiting } from './plan.js';
 import {
 	BUILD_SCHEMA,
 	REVIEW_SCHEMA,
+	STEP_SCHEMA,
 	buildPrompt,
 	fixPrompt,
 	questionRounds,
 	questionsComment,
 	readBuildAnswer,
 	readReview,
+	readStepAnswer,
 	reviewPrompt,
+	stepPrompt,
+	stepRoundPrompt,
 	type Question,
 	type Review
 } from './prompt.js';
+import type { Serve, Served } from './serve.js';
 import type { Session, SessionRequest } from './session.js';
-import { BUILD_TOOLS, REVIEW_TOOLS, buildSettings, reviewSettings } from './settings.js';
+import { BUILD_TOOLS, REVIEW_TOOLS, buildSettings, reviewSettings, stepTools } from './settings.js';
 import type { Signal } from './signals.js';
 import type { StatusReport } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import { branchFor, openWorktree, type Worktree } from './worktree.js';
+import { DEFAULT_ROUNDS } from './config.js';
+import {
+	chooseWorkflow,
+	stepKey,
+	workflowSection,
+	type StepConfig,
+	type StepPoint,
+	type StepReport,
+	type WorkflowConfig,
+	type WorkflowSettings
+} from './workflow.js';
 
 export interface Limits {
 	readonly ticketUsd: number;
@@ -53,13 +69,15 @@ export interface Deps {
 	readonly runCheck: RunCheck;
 	// the worktree setup command, run through the same shell as the check
 	readonly runSetup: RunCheck;
+	// starts a Workflow's serve command
+	readonly serve: Serve;
 	readonly now: () => Date;
 	readonly newId: () => string;
 	readonly say: (line: string) => void;
 	readonly status: StatusReport;
 }
 
-export interface Setup {
+export interface Setup extends WorkflowSettings {
 	// the main checkout, which holds .factory/
 	readonly root: string;
 	// what the ledger names the repo by
@@ -150,41 +168,71 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 		startedAt: deps.now().toISOString()
 	});
 	const tickets = await tracker.tickets(id);
+	const chosen = chooseWorkflow(setup, feature.body);
+	if (chosen.kind === 'refused') {
+		const why = `its Workflow cannot be used: ${chosen.why}`;
+		return needsInfoStop(
+			deps,
+			id,
+			why,
+			`Nightjar built nothing: ${chosen.why}`,
+			waiting(tickets, new Set())
+		);
+	}
 	const tree = await openWorktree(setup.root, setup.worktrees, branch, setup.baseBranch, setup.env);
 	const built = await tree.built();
 	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
 		const command = setup.setupCommand;
 		deps.say(`${hash(id)}: setup: ${command}`);
 		const got = await deps.runSetup(command, tree.at.folder, envOf(setup));
-		if (!got.ok) return setupFailed(deps, id, command, got.tail, waiting(tickets, built));
+		if (!got.ok) {
+			const why = `the setup command \`${command}\` failed`;
+			return needsInfoStop(
+				deps,
+				id,
+				why,
+				`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${got.tail}\n\`\`\``,
+				waiting(tickets, built)
+			);
+		}
 		await tree.markSetUp();
 	}
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, built);
+	const workflow = chosen.kind === 'workflow' ? chosen : null;
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow);
 	return run.build();
 }
 
-// The next run sets the worktree up again.
-async function setupFailed(
+// A Feature stopped before it built anything, with the reason on it; a later Go builds it again.
+async function needsInfoStop(
 	deps: Deps,
 	id: ItemId,
-	command: string,
-	tail: string,
+	why: string,
+	comment: string,
 	left: Waiting[]
 ): Promise<FeatureOutcome> {
-	const why = `the setup command \`${command}\` failed`;
 	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
 	await deps.tracker.removeSignal(id, 'working');
 	await deps.tracker.addSignal(id, 'needsInfo');
-	await deps.tracker.comment(
-		id,
-		`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${tail}\n\`\`\`${FOOTER}`
-	);
+	await deps.tracker.comment(id, `${comment}${FOOTER}`);
 	return { kind: 'nothing', waiting: left };
 }
+
+// How one Step of a Workflow ended.
+type StepEnd =
+	| { readonly kind: 'done' }
+	| { readonly kind: 'undone'; readonly why: string }
+	| { readonly kind: 'paused'; readonly why: string }
+	| { readonly kind: 'aborted' };
+
+// The most of a Feature's diff a Step's prompt carries; the rest is in git.
+const DIFF_CHARS = 60_000;
 
 class FeatureRun {
 	private spent = 0;
 	private featureComments: Comment[] = [];
+	// the Steps the branch holds already, by their trailers
+	private stepsDone = new Set<string>();
+	private readonly reports: StepReport[] = [];
 
 	constructor(
 		private readonly deps: Deps,
@@ -192,30 +240,46 @@ class FeatureRun {
 		private readonly feature: Feature,
 		private readonly tree: Worktree,
 		private readonly tickets: Ticket[],
-		private readonly built: Set<ItemId>
+		private readonly built: Set<ItemId>,
+		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null
 	) {}
 
 	private get aborted() {
 		return this.setup.signal?.aborted === true;
 	}
 
+	// `aborted` again after an await, which TypeScript does not know may have changed
+	private stopped() {
+		return this.aborted;
+	}
+
 	async build(): Promise<FeatureOutcome> {
 		this.featureComments = await this.trusted(this.feature.id);
+		if (this.workflow !== null) this.stepsDone = await this.tree.stepsDone();
 		let last: Step = NEXT;
 		while (last.kind === 'next' && !this.aborted) {
-			const today = spentOn(ledgerPath(this.setup.root), this.deps.now());
-			if (today >= this.setup.limits.dailyUsd) {
-				last = {
-					kind: 'paused',
-					why: `today's estimated spend, ${dollars(today)}, reached the daily limit of ${dollars(this.setup.limits.dailyUsd)}`
-				};
+			const paused = this.dailyPause();
+			if (paused !== null) {
+				last = { kind: 'paused', why: paused };
 				break;
 			}
 			const ticket = nextTicket(this.tickets, this.built);
 			if (ticket === null) break;
 			last = await this.buildTicket(ticket);
 		}
+		// the Steps of "all Tickets" run on a Feature whose Tickets are all built
+		const whole = this.built.size > 0 && waiting(this.tickets, this.built).length === 0;
+		if (last.kind === 'next' && !this.aborted && whole) {
+			last = await this.runSteps('afterAllTickets', null);
+		}
 		return this.finish(last);
+	}
+
+	private dailyPause(): string | null {
+		const today = spentOn(ledgerPath(this.setup.root), this.deps.now());
+		return today >= this.setup.limits.dailyUsd
+			? `today's estimated spend, ${dollars(today)}, reached the daily limit of ${dollars(this.setup.limits.dailyUsd)}`
+			: null;
 	}
 
 	private async trusted(id: ItemId): Promise<Comment[]> {
@@ -370,37 +434,22 @@ class FeatureRun {
 		cost: number
 	): Promise<Step> {
 		const { limits, check: command } = this.setup;
-		let summary = built;
-		let ticketSpent = cost;
-		let check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
-		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
-			const budget = limits.ticketUsd - ticketSpent;
-			if (budget < 1) break;
-			this.deps.say(`${hash(ticket.id)}: the check fails, fix round ${String(round)}`);
-			this.building(ticket.id, 'fix', sessionId, { round, rounds: limits.fixRounds });
-			const fix = await this.deps.session(
-				this.request({
-					prompt: fixPrompt(round, limits.fixRounds, command, check.tail),
-					sessionId,
-					resume: sessionId,
-					budgetUsd: budget
-				})
-			);
-			const fixed = fix.kind === 'done' ? readBuildAnswer(fix.output) : null;
-			const fixCost = 'costUsd' in fix ? fix.costUsd : 0;
-			ticketSpent += fixCost;
-			const done = fixed?.outcome === 'built';
-			this.log({
-				ticket: ticket.id,
-				step: 'fix',
-				session: sessionId,
-				costUsd: fixCost,
-				outcome: `round ${String(round)}${done ? '' : ' gave up'}`
-			});
-			if (!done || this.aborted) break;
-			summary = `${summary}\n\n${fixed.summary}`;
-			check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
-		}
+		const first = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
+		const fixed = await this.fixUntilGreen({
+			ticket: ticket.id,
+			name: hash(ticket.id),
+			sessionId,
+			cap: limits.ticketUsd,
+			spent: cost,
+			check: first,
+			request: {},
+			finished: (output) => {
+				const answer = readBuildAnswer(output);
+				return answer?.outcome === 'built' ? answer.summary : null;
+			}
+		});
+		const { check } = fixed;
+		const summary = [built, ...fixed.summaries].join('\n\n');
 		if (this.aborted) {
 			await this.tree.discard(before, ticket.id);
 			return { kind: 'aborted' };
@@ -418,12 +467,61 @@ class FeatureRun {
 		this.built.add(ticket.id);
 		this.deps.status.happened({ kind: 'built', feature: this.feature.id, ticket: ticket.id });
 		// later Tickets would build on red, so the run stops here and a person looks
-		return check.ok ? NEXT : { kind: 'red', tail: check.tail };
+		if (!check.ok) return { kind: 'red', tail: check.tail };
+		return this.runSteps('afterEachTicket', ticket);
+	}
+
+	// Fix rounds while the check fails, each in the session that built the work; `cap` is the most the whole piece of work may cost.
+	private async fixUntilGreen(o: {
+		ticket: ItemId | null;
+		// what the run says it is fixing
+		name: string;
+		sessionId: string;
+		cap: number;
+		spent: number;
+		check: CheckResult;
+		// what a fix round's request changes from the Ticket defaults
+		request: Partial<SessionRequest>;
+		// the summary of a fix that finished, or null when it gave up
+		finished: (output: unknown) => string | null;
+	}): Promise<{ check: CheckResult; spent: number; summaries: string[] }> {
+		const { limits, check: command } = this.setup;
+		const summaries: string[] = [];
+		let { check, spent } = o;
+		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
+			const budget = o.cap - spent;
+			if (budget < 1) break;
+			this.deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
+			this.building(o.ticket, 'fix', o.sessionId, { round, rounds: limits.fixRounds });
+			const fix = await this.deps.session(
+				this.request({
+					prompt: fixPrompt(round, limits.fixRounds, command, check.tail),
+					sessionId: o.sessionId,
+					resume: o.sessionId,
+					budgetUsd: budget,
+					...o.request
+				})
+			);
+			const summary = fix.kind === 'done' ? o.finished(fix.output) : null;
+			const fixCost = 'costUsd' in fix ? fix.costUsd : 0;
+			spent += fixCost;
+			this.log({
+				ticket: o.ticket,
+				step: 'fix',
+				session: o.sessionId,
+				costUsd: fixCost,
+				outcome: `round ${String(round)}${summary === null ? ' gave up' : ''}`
+			});
+			if (summary === null || this.aborted) break;
+			summaries.push(summary);
+			check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
+		}
+		return { check, spent, summaries };
 	}
 
 	private building(
-		ticket: ItemId,
-		step: 'build' | 'fix',
+		ticket: ItemId | null,
+		step: 'build' | 'fix' | 'step',
 		session: string,
 		rounds: { readonly round: number; readonly rounds: number }
 	) {
@@ -436,6 +534,193 @@ class FeatureRun {
 			session,
 			startedAt: this.deps.now().toISOString()
 		});
+	}
+
+	// The Workflow's Steps at one point, in order; a Step that fails is thrown away and the next still runs.
+	private async runSteps(point: StepPoint, ticket: Ticket | null): Promise<Step> {
+		const { workflow } = this;
+		if (workflow === null) return NEXT;
+		const todo = workflow.workflow.steps.filter(
+			(s) =>
+				s.point === point && !this.stepsDone.has(stepKey(workflow.name, s.name, ticket?.id ?? null))
+		);
+		if (todo.length === 0) return NEXT;
+		const served = await this.serveFor(workflow.workflow);
+		try {
+			for (const step of todo) {
+				if (this.aborted) return { kind: 'aborted' };
+				const paused = this.dailyPause();
+				if (paused !== null) return { kind: 'paused', why: paused };
+				const end: StepEnd = served.ok
+					? await this.runStep(workflow.name, workflow.workflow, step, ticket)
+					: { kind: 'undone', why: `its serve command failed: ${served.tail}` };
+				if (end.kind === 'paused' || end.kind === 'aborted') return end;
+				if (end.kind === 'undone') {
+					this.reports.push({
+						step,
+						ticket: ticket?.id ?? null,
+						state: 'undone',
+						why: end.why,
+						left: []
+					});
+					this.deps.say(`${workflow.name}/${step.name}: not done, ${end.why}`);
+				}
+			}
+			return NEXT;
+		} finally {
+			if (served.ok) await served.stop();
+		}
+	}
+
+	private async serveFor(workflow: WorkflowConfig): Promise<Served> {
+		if (workflow.serve === undefined) return { ok: true, stop: () => Promise.resolve() };
+		const first = Number(Object.values(this.setup.portEnv ?? {})[0]);
+		this.deps.say(`${hash(this.feature.id)}: serving ${workflow.serve}`);
+		return this.deps.serve(
+			workflow.serve,
+			this.tree.at.folder,
+			envOf(this.setup),
+			Number.isInteger(first) ? first : null
+		);
+	}
+
+	// One Step: its rounds, the check and fix rounds after each, and its own commit.
+	private async runStep(
+		name: string,
+		workflow: WorkflowConfig,
+		step: StepConfig,
+		ticket: Ticket | null
+	): Promise<StepEnd> {
+		const { setup } = this;
+		const after = ticket?.id ?? null;
+		const key = stepKey(name, step.name, after);
+		const label = `${name}/${step.name}`;
+		const before = await this.tree.head();
+		const sessionId = this.deps.newId();
+		const rounds = step.until === undefined ? 1 : (step.maxRounds ?? DEFAULT_ROUNDS);
+		const cap = step.budgetUsd ?? setup.limits.ticketUsd;
+		const notes = await this.tree.notes();
+		const diff = step.point === 'afterAllTickets' ? await this.tree.diff(DIFF_CHARS) : undefined;
+		const extras = {
+			allowedCommands: workflow.allowedCommands,
+			allowedTools: workflow.allowedTools,
+			localNetwork: workflow.localNetwork
+		};
+		const over: Partial<SessionRequest> = {
+			schema: STEP_SCHEMA,
+			tools: stepTools(extras),
+			settings: buildSettings(setup.allowedCommands, extras),
+			model: setup.model ?? step.model ?? setup.defaults?.model,
+			effort: setup.effort ?? step.effort ?? setup.defaults?.effort
+		};
+		const first = stepPrompt({
+			workflow: name,
+			step,
+			rounds,
+			feature: this.feature,
+			...(ticket === null ? {} : { ticket }),
+			allowed: [...setup.allowedCommands, ...(workflow.allowedCommands ?? [])],
+			check: setup.check,
+			...(setup.rules === undefined ? {} : { rules: setup.rules }),
+			notes: relative(this.tree.at.folder, notes),
+			base: this.tree.at.base,
+			...(diff === undefined ? {} : { diff })
+		});
+		const giveUp = async (why: string): Promise<StepEnd> => {
+			await this.tree.revert(before);
+			return { kind: 'undone', why };
+		};
+		this.deps.say(`${label}: session ${sessionId}`);
+
+		const summaries: string[] = [];
+		let spent = 0;
+		let left: string[] = [];
+		let holds = step.until === undefined;
+		let ran = 0;
+		for (let round = 1; round <= rounds && !(round > 1 && holds); round += 1) {
+			const budget = cap - spent;
+			if (round > 1 && budget < 1) break;
+			this.building(after, 'step', sessionId, { round, rounds });
+			const result = await this.deps.session(
+				this.request({
+					...over,
+					prompt:
+						round === 1 || step.until === undefined
+							? first
+							: stepRoundPrompt(round, rounds, step.until, left),
+					sessionId,
+					...(round > 1 ? { resume: sessionId } : {}),
+					budgetUsd: budget
+				})
+			);
+			ran = round;
+			const cost = 'costUsd' in result ? result.costUsd : 0;
+			spent += cost;
+			const entry = { ticket: after, step: 'step' as const, session: sessionId, costUsd: cost };
+			if (this.aborted) {
+				this.log({ ...entry, outcome: `${label}: stopped by a person` });
+				await this.tree.revert(before);
+				return { kind: 'aborted' };
+			}
+			if (result.kind === 'api-key' || result.kind === 'rate-limited') {
+				await this.tree.revert(before);
+				const why = result.kind === 'api-key' ? API_KEY_PAUSE : limitPause(result.resetsAt);
+				this.log({ ...entry, outcome: `${label}: paused: ${why}` });
+				return { kind: 'paused', why };
+			}
+			const answer = result.kind === 'done' ? readStepAnswer(result.output) : null;
+			if (answer === null) {
+				const why = result.kind === 'stopped' ? result.why : 'it answered in a shape not known';
+				this.log({ ...entry, outcome: `${label}: failed: ${why}` });
+				return giveUp(why);
+			}
+			if (answer.outcome === 'blocked') {
+				const why = `it reported itself blocked${answer.blocker ? `: ${answer.blocker}` : ''}`;
+				this.log({ ...entry, outcome: `${label}: blocked` });
+				return giveUp(why);
+			}
+			this.log({ ...entry, outcome: `${label}: round ${String(round)}` });
+			summaries.push(answer.summary);
+			const checked = await this.fixUntilGreen({
+				ticket: after,
+				name: label,
+				sessionId,
+				cap,
+				spent,
+				check: await this.deps.runCheck(setup.check, this.tree.at.folder, envOf(setup)),
+				request: over,
+				finished: (output) => {
+					const fixed = readStepAnswer(output);
+					return fixed?.outcome === 'done' ? fixed.summary : null;
+				}
+			});
+			spent = checked.spent;
+			summaries.push(...checked.summaries);
+			if (this.stopped()) {
+				await this.tree.revert(before);
+				return { kind: 'aborted' };
+			}
+			if (!checked.check.ok) return giveUp('its changes leave the check failing');
+			left = answer.left;
+			holds = step.until === undefined || answer.untilHolds;
+		}
+		await this.tree.commitStep({
+			workflow: name,
+			step: step.name,
+			key,
+			after,
+			summary: summaries.join('\n\n'),
+			session: sessionId
+		});
+		this.stepsDone.add(key);
+		this.reports.push({
+			step,
+			ticket: after,
+			state: holds ? 'done' : 'unmet',
+			rounds: ran,
+			left: holds ? [] : left
+		});
+		return { kind: 'done' };
 	}
 
 	private async finish(last: Step): Promise<FeatureOutcome> {
@@ -481,6 +766,7 @@ class FeatureRun {
 					);
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
+		const workflow = this.workflowSection(done);
 		const body = pullBody({
 			tracker,
 			feature: this.feature,
@@ -491,7 +777,8 @@ class FeatureRun {
 			red,
 			review,
 			spent: this.spent,
-			paused
+			paused,
+			workflow
 		});
 		const pull = await this.openDraft(body);
 		const linked = [...(complete ? [id] : []), ...done.map((t) => t.id)];
@@ -518,6 +805,30 @@ class FeatureRun {
 			);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	// What the Workflow's Steps did, from this run and from the branch's commits; a Step that did not run is listed too.
+	private workflowSection(done: readonly Ticket[]): string | null {
+		const { workflow } = this;
+		if (workflow === null) return null;
+		const reports = [...this.reports];
+		const seen = (step: StepConfig, ticket: ItemId | null) =>
+			reports.some((r) => r.step === step && r.ticket === ticket);
+		const pairs = workflow.workflow.steps.flatMap((step): [StepConfig, ItemId | null][] =>
+			step.point === 'afterEachTicket' ? done.map((t) => [step, t.id]) : [[step, null]]
+		);
+		for (const [step, ticket] of pairs) {
+			if (seen(step, ticket)) continue;
+			if (this.stepsDone.has(stepKey(workflow.name, step.name, ticket))) {
+				reports.push({ step, ticket, state: 'done', left: [] });
+			} else if (step.point === 'afterAllTickets') {
+				const why = 'it did not run, as the Feature is not complete';
+				reports.push({ step, ticket, state: 'undone', why, left: [] });
+			}
+		}
+		const order = (r: StepReport) => workflow.workflow.steps.indexOf(r.step);
+		reports.sort((a, b) => order(a) - order(b));
+		return workflowSection(workflow.name, reports, (id) => this.deps.tracker.reference(id).text);
 	}
 
 	// The branch's open pull request with a new body, else a new draft.
@@ -614,6 +925,8 @@ function pullBody(p: {
 	review: Review | 'off' | null;
 	spent: number;
 	paused: string | null;
+	// the Workflow's section, when it ran or left a Step
+	workflow: string | null;
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
@@ -630,6 +943,7 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
+	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.review !== 'off')
 		parts.push(
 			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`

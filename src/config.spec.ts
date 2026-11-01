@@ -324,3 +324,70 @@ describe('the published JSON Schema', () => {
 		expect(committed).toEqual(configJsonSchema());
 	});
 });
+
+describe('workflows', () => {
+	const step = { name: 'critique', prompt: '/some-skill critique', point: 'afterAllTickets' };
+	const WORKFLOWS = { 'design-review': { steps: [step] } };
+
+	it('loads named Workflows with their Steps, and a default', () => {
+		write({
+			...VALID,
+			ports: { count: 2, env: ['WEB_PORT'] },
+			workflows: {
+				'design-review': {
+					steps: [
+						step,
+						{
+							name: 'polish',
+							prompt: '/some-skill polish',
+							point: 'afterEachTicket',
+							model: 'opus',
+							effort: 'high',
+							budgetUsd: 5,
+							until: 'nothing is left to polish',
+							maxRounds: 4
+						}
+					],
+					serve: 'npm run dev',
+					allowedCommands: ['npm run e2e'],
+					allowedTools: ['mcp__browser__*'],
+					localNetwork: true
+				}
+			},
+			defaultWorkflow: 'design-review'
+		});
+		const config = loadConfig(root);
+		expect(config.defaultWorkflow).toBe('design-review');
+		expect(config.workflows?.['design-review']?.steps.map((s) => s.name)).toEqual([
+			'critique',
+			'polish'
+		]);
+		expect(config.workflows?.['design-review']?.steps[1]).toMatchObject({ maxRounds: 4 });
+	});
+
+	it('has none by default, so a build adds nothing', () => {
+		const config = loadValid();
+		expect(config.workflows).toBeUndefined();
+		expect(config.defaultWorkflow).toBeUndefined();
+	});
+
+	it.each([
+		[{ steps: [] }, 'steps: a Workflow needs at least one Step'],
+		[{ steps: [{ ...step, point: 'sometimes' }] }, 'point'],
+		[{ steps: [{ ...step, prompt: ' ' }] }, 'give the Step a prompt'],
+		[{ steps: [{ ...step, maxRounds: 3 }] }, 'maxRounds needs an until'],
+		[{ steps: [step, step] }, 'a Step name is used twice'],
+		[{ steps: [step], serve: 'npm run dev' }, 'a Workflow with serve needs ports'],
+		[{ steps: [{ ...step, extra: 1 }] }, 'extra']
+	])('refuses the Workflow %j', (workflow, said) => {
+		write({ ...VALID, workflows: { w: workflow } });
+		expect(refusal()).toContain(said);
+	});
+
+	it('refuses a default that names no Workflow', () => {
+		write({ ...VALID, workflows: WORKFLOWS, defaultWorkflow: 'nope' });
+		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
+		write({ ...VALID, defaultWorkflow: 'design-review' });
+		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
+	});
+});

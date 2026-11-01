@@ -55,8 +55,24 @@ const READ_GIT = [
 	'Bash(git show *)'
 ];
 
+// What a Workflow adds for its Steps; the deny rules stay as they are.
+export interface StepExtras {
+	readonly allowedCommands?: readonly string[];
+	readonly allowedTools?: readonly string[];
+	readonly localNetwork?: boolean;
+}
+
+// The sandbox keeps a Step's commands to localhost; it auto-allows nothing, so the allow list still decides.
+const LOCAL_ONLY = {
+	enabled: true,
+	autoAllowBashIfSandboxed: false,
+	network: { allowedDomains: ['localhost', '127.0.0.1'], allowLocalBinding: true }
+};
+
+export const stepTools = (extras: StepExtras) => [...BUILD_TOOLS, ...(extras.allowedTools ?? [])];
+
 // `allowed` are factory.json's allowedCommands, as Bash permission patterns.
-export function buildSettings(allowed: readonly string[]): object {
+export function buildSettings(allowed: readonly string[], extras: StepExtras = {}): object {
 	return {
 		permissions: {
 			defaultMode: 'dontAsk',
@@ -69,11 +85,13 @@ export function buildSettings(allowed: readonly string[]): object {
 				'Skill',
 				'Agent',
 				'TodoWrite',
-				...allowed.map((command) => `Bash(${command})`),
+				...(extras.allowedTools ?? []),
+				...[...allowed, ...(extras.allowedCommands ?? [])].map((command) => `Bash(${command})`),
 				...READ_GIT
 			],
 			deny: DENY
-		}
+		},
+		...(extras.localNetwork === true ? { sandbox: LOCAL_ONLY } : {})
 	};
 }
 

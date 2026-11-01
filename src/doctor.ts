@@ -33,5 +33,10 @@ export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promis
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;
 	}
+	// a broken Workflow stops no build, but doctor says so in its code
+	if (failed > 0) {
+		console.error('nightjar: a Workflow cannot run; fix it, then run `nightjar doctor` again.');
+		return 2;
+	}
 	return 0;
 }

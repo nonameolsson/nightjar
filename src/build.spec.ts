@@ -1,6 +1,14 @@
 // The build loop over real git, the in-memory Tracker and Code host, and a scripted session.
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +17,9 @@ import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { record } from './ledger.js';
-import { QUESTIONS_MARK, REVIEW_SCHEMA } from './prompt.js';
+import { QUESTIONS_MARK, REVIEW_SCHEMA, STEP_SCHEMA } from './prompt.js';
+import type { WorkflowConfig } from './workflow.js';
+import type { Served } from './serve.js';
 import type { SessionRequest, SessionResult } from './session.js';
 import type { Doing, Happened } from './status.js';
 
@@ -30,6 +40,16 @@ interface World {
 	// the environment each check ran with
 	readonly checkEnvs: Env[];
 	readonly setups: { readonly command: string; readonly cwd: string; readonly env: Env }[];
+	// each serve command started, and how many have been stopped
+	readonly serves: {
+		readonly command: string;
+		readonly cwd: string;
+		readonly port: number | null;
+	}[];
+	stopped: number;
+	serveOk: boolean;
+	// what the scripted agent does in a Workflow Step; the default builds nothing and holds
+	stepAgent: (req: SessionRequest, sessionId: string) => SessionResult;
 	acts: Record<string, Act>;
 	checkOk: boolean;
 	setupOk: boolean;
@@ -107,6 +127,15 @@ function makeWorld(): World {
 		checks: [],
 		checkEnvs: [],
 		setups: [],
+		serves: [],
+		stopped: 0,
+		serveOk: true,
+		stepAgent: (_req, sessionId) => ({
+			kind: 'done',
+			sessionId,
+			costUsd: 1,
+			output: { outcome: 'done', summary: 'did it', untilHolds: true, left: [], blocker: '' }
+		}),
 		acts: {},
 		checkOk: true,
 		setupOk: true,
@@ -125,6 +154,7 @@ function deps(world: World): Deps {
 		session: (req): Promise<SessionResult> => {
 			world.sessions.push(req);
 			const sessionId = req.resume ?? req.sessionId;
+			if (req.schema === STEP_SCHEMA) return Promise.resolve(world.stepAgent(req, sessionId));
 			if (req.schema === REVIEW_SCHEMA) {
 				return Promise.resolve({
 					kind: 'done',
@@ -183,6 +213,17 @@ function deps(world: World): Deps {
 		runSetup: (command, cwd, env) => {
 			world.setups.push({ command, cwd, env });
 			return Promise.resolve({ ok: world.setupOk, tail: 'deps: registry unreachable' });
+		},
+		serve: (command, cwd, _env, port): Promise<Served> => {
+			world.serves.push({ command, cwd, port });
+			if (!world.serveOk) return Promise.resolve({ ok: false, tail: 'port already in use' });
+			return Promise.resolve({
+				ok: true,
+				stop: () => {
+					world.stopped += 1;
+					return Promise.resolve();
+				}
+			});
 		},
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
@@ -656,5 +697,366 @@ describe('buildFeature', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.sessions[0]?.prompt).toContain('Keep it small.');
 		expect(world.sessions[0]?.prompt).not.toContain('delete the tests');
+	});
+});
+
+describe('Workflows', () => {
+	const stepName = (prompt: string) => /Step `([^`]+)`/.exec(prompt)?.[1] ?? '';
+	const kindOf = (r: SessionRequest) =>
+		r.schema === STEP_SCHEMA ? 'step' : r.schema === REVIEW_SCHEMA ? 'review' : 'build';
+	const done = (sessionId: string, over: Record<string, unknown> = {}): SessionResult => ({
+		kind: 'done',
+		sessionId,
+		costUsd: 1,
+		output: { outcome: 'done', summary: 'did it', untilHolds: true, left: [], blocker: '', ...over }
+	});
+	const critique = {
+		name: 'critique',
+		prompt: '/design critique the changed screens',
+		point: 'afterAllTickets'
+	} as const;
+	const polish = {
+		name: 'polish',
+		prompt: '/design polish what the critique found',
+		point: 'afterAllTickets'
+	} as const;
+	const flow = (over: Partial<WorkflowConfig> = {}): WorkflowConfig => ({
+		steps: [critique, polish],
+		...over
+	});
+	const onFeature = (world: World, body: string) => {
+		const feature = world.tracker.items.get('1');
+		if (feature) world.tracker.items.set('1', { ...feature, body });
+	};
+	const WORKFLOW_LINE = '**Workflow:** design-review';
+	const withFlow = (world: World, over: Partial<WorkflowConfig> = {}) => {
+		onFeature(world, WORKFLOW_LINE);
+		return setup(world, { workflows: { 'design-review': flow(over) } });
+	};
+	const subjects = (world: World) =>
+		git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD').split('\n');
+	const body = (world: World) => world.host.pulls[0]?.body ?? '';
+	const kinds = (world: World) => world.sessions.map(kindOf);
+
+	it('runs a two-Step Workflow before the review: the commits, the notes passed on, the pull request', async () => {
+		const world = makeWorld();
+		let heard = '';
+		world.stepAgent = (req, sessionId) => {
+			const notes = join(req.cwd, '.factory', 'notes');
+			if (stepName(req.prompt) === 'critique') {
+				mkdirSync(notes, { recursive: true });
+				writeFileSync(join(notes, 'critique.md'), 'tighten the header\n');
+			} else {
+				heard = readFileSync(join(notes, 'critique.md'), 'utf8');
+				writeFileSync(join(req.cwd, 'polish.txt'), heard);
+			}
+			return done(sessionId);
+		};
+		const got = await buildFeature(deps(world), withFlow(world), '1');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['2', '3'] });
+		expect(kinds(world)).toEqual(['build', 'build', 'step', 'step', 'review']);
+		// critique left notes only, so polish has the one Step commit
+		expect(subjects(world)).toEqual([
+			'design-review: polish',
+			'Use it in marks (#3)',
+			'Share the function (#2)'
+		]);
+		expect(heard).toBe('tighten the header\n');
+		expect(git(world, tree(), 'show', 'HEAD:polish.txt')).toBe('tighten the header');
+		expect(git(world, tree(), 'log', '-1', '--format=%B')).toContain(
+			'Factory-Step: design-review/polish'
+		);
+		// the notes stay in the worktree and out of git
+		expect(readFileSync(join(tree(), '.factory', 'notes', 'critique.md'), 'utf8')).toBe(
+			'tighten the header\n'
+		);
+		expect(git(world, tree(), 'status', '--porcelain')).toBe('');
+		expect(git(world, tree(), 'ls-files', '.factory')).toBe('');
+
+		const first = world.sessions[2];
+		expect(first?.prompt).toContain('Nobody is at the keyboard');
+		expect(first?.prompt).toContain('never ask a question in chat');
+		expect(first?.prompt).toContain('/design critique the changed screens');
+		expect(first?.prompt).toContain('.factory/notes');
+		// the Feature's diff, so the agent picks its own targets
+		expect(first?.prompt).toContain('+++ b/ticket-3.txt');
+		expect(first?.prompt).toContain('git diff origin/main...HEAD');
+
+		expect(body(world)).toContain('## Workflow `design-review`');
+		expect(body(world)).toContain('- `critique`: done\n- `polish`: done');
+		expect(body(world).indexOf('## Workflow')).toBeLessThan(body(world).indexOf('## Review'));
+
+		const ledger = readFileSync(ledgerPath(world.root), 'utf8').trim().split('\n');
+		expect(ledger.map((l) => (JSON.parse(l) as { step: string }).step)).toEqual([
+			'build',
+			'build',
+			'step',
+			'step',
+			'review'
+		]);
+	});
+
+	it.each([
+		['blocked', 'it reported itself blocked: which palette?'],
+		['limit', 'it reached its budget'],
+		['red', 'its changes leave the check failing']
+	] as const)(
+		'throws a Step away that is %s, runs the next one, and lists it as not done',
+		async (act, why) => {
+			const world = makeWorld();
+			world.stepAgent = (req, sessionId) => {
+				const name = stepName(req.prompt);
+				if (name === 'critique') {
+					writeFileSync(join(req.cwd, 'critique.txt'), 'half done\n');
+					world.checkOk = act !== 'red';
+					if (act === 'blocked')
+						return done(sessionId, { outcome: 'blocked', blocker: 'which palette?' });
+					if (act === 'limit') return { kind: 'stopped', sessionId, costUsd: 15.2, why };
+				}
+				if (name === 'polish') {
+					world.checkOk = true;
+					writeFileSync(join(req.cwd, 'polish.txt'), 'ok\n');
+				}
+				return done(sessionId);
+			};
+			await buildFeature(deps(world), withFlow(world), '1');
+
+			expect(subjects(world)[0]).toBe('design-review: polish');
+			expect(subjects(world)).not.toContain('design-review: critique');
+			expect(existsSync(join(tree(), 'critique.txt'))).toBe(false);
+			expect(existsSync(join(tree(), 'polish.txt'))).toBe(true);
+			expect(kinds(world).filter((k) => k === 'step').length).toBeGreaterThanOrEqual(2);
+			expect(body(world)).toContain(`- \`critique\`: **not done**, ${why}`);
+			expect(body(world)).toContain('- `polish`: done');
+			expect(world.host.pulls).toHaveLength(1);
+		}
+	);
+
+	it('marks a Feature needing info when its Workflow line names no Workflow, and builds nothing', async () => {
+		const world = makeWorld();
+		onFeature(world, '**Workflow:** nope');
+		const got = await buildFeature(
+			deps(world),
+			setup(world, { workflows: { 'design-review': flow(), quick: flow() } }),
+			'1'
+		);
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.sessions).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+		expect(world.tracker.said('1')[0]).toContain('`nope`');
+		expect(world.tracker.said('1')[0]).toContain('`design-review`, `quick`');
+		expect(world.host.pulls).toEqual([]);
+	});
+
+	it('refuses a Workflow that cannot run on this machine, for its Features only', async () => {
+		const world = makeWorld();
+		const config = setup(world, {
+			...withFlow(world),
+			brokenWorkflows: { 'design-review': 'step critique names /gone, which claude does not load' }
+		});
+		const got = await buildFeature(deps(world), config, '1');
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.sessions).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+		expect(world.tracker.said('1')[0]).toContain('names /gone');
+	});
+
+	it('finds a Workflow whatever the case of its name', async () => {
+		const world = makeWorld();
+		onFeature(world, '**Workflow:** Design-Review');
+		await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow() } }), '1');
+		expect(kinds(world)).toEqual(['build', 'build', 'step', 'step', 'review']);
+	});
+
+	it('runs no Step when a Feature picks none and there is no default, and builds as before', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow() } }), '1');
+		expect(kinds(world)).toEqual(['build', 'build', 'review']);
+		expect(body(world)).not.toContain('Workflow');
+	});
+
+	it('runs the default Workflow of a Feature without a Workflow line', async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			setup(world, { workflows: { 'design-review': flow() }, defaultWorkflow: 'design-review' }),
+			'1'
+		);
+		expect(kinds(world)).toEqual(['build', 'build', 'step', 'step', 'review']);
+	});
+
+	it('runs a Step again until its condition holds, resuming its session, and lists what is left', async () => {
+		const world = makeWorld();
+		const tidy = {
+			name: 'tidy',
+			prompt: 'tidy the code',
+			point: 'afterAllTickets',
+			until: 'no lint warnings remain',
+			maxRounds: 2
+		} as const;
+		world.stepAgent = (_req, sessionId) =>
+			done(sessionId, { untilHolds: false, left: ['a.ts: unused import'] });
+		await buildFeature(deps(world), withFlow(world, { steps: [tidy] }), '1');
+
+		const steps = world.sessions.filter((r) => kindOf(r) === 'step');
+		expect(steps).toHaveLength(2);
+		expect(steps[0]?.prompt).toContain('no lint warnings remain');
+		expect(steps[1]?.resume).toBe(steps[0]?.sessionId);
+		expect(steps[1]?.prompt).toContain('Round 2 of 2');
+		expect(body(world)).toContain('did not hold after 2 rounds. Left:\n  - a.ts: unused import');
+	});
+
+	it('stops a Step when its condition holds, before maxRounds', async () => {
+		const world = makeWorld();
+		const tidy = {
+			name: 'tidy',
+			prompt: 'tidy the code',
+			point: 'afterAllTickets',
+			until: 'no lint warnings remain',
+			maxRounds: 3
+		} as const;
+		world.stepAgent = (req, sessionId) => {
+			writeFileSync(join(req.cwd, `tidy-${req.resume ? '2' : '1'}.txt`), 'x\n');
+			return done(sessionId, { untilHolds: req.resume !== undefined });
+		};
+		await buildFeature(deps(world), withFlow(world, { steps: [tidy] }), '1');
+		expect(kinds(world).filter((k) => k === 'step')).toHaveLength(2);
+		expect(body(world)).toContain('- `tidy`: done');
+		expect(subjects(world)[0]).toBe('design-review: tidy');
+	});
+
+	it('runs an afterEachTicket Step after each Ticket, committed on its own', async () => {
+		const world = makeWorld();
+		const lint = { name: 'lint', prompt: 'lint it', point: 'afterEachTicket' } as const;
+		world.stepAgent = (req, sessionId) => {
+			const n = /after Ticket #(\S+)/.exec(req.prompt)?.[1] ?? '';
+			writeFileSync(join(req.cwd, `lint-${n}.txt`), 'x\n');
+			return done(sessionId);
+		};
+		await buildFeature(deps(world), withFlow(world, { steps: [lint] }), '1');
+
+		expect(subjects(world)).toEqual([
+			'design-review: lint (after #3)',
+			'Use it in marks (#3)',
+			'design-review: lint (after #2)',
+			'Share the function (#2)'
+		]);
+		expect(kinds(world)).toEqual(['build', 'step', 'build', 'step', 'review']);
+		expect(body(world)).toContain('- `lint` (after #2): done\n- `lint` (after #3): done');
+	});
+
+	it('leaves the afterAllTickets Steps unrun while a Ticket waits, and says so', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), withFlow(world), '1');
+		expect(kinds(world)).not.toContain('step');
+		expect(body(world)).toContain(
+			'- `critique`: **not done**, it did not run, as the Feature is not complete'
+		);
+	});
+
+	it('does not run a Step the branch already holds when a later run goes on', async () => {
+		const world = makeWorld();
+		world.stepAgent = (req, sessionId) => {
+			writeFileSync(join(req.cwd, `${stepName(req.prompt)}.txt`), 'x\n');
+			return done(sessionId);
+		};
+		const config = withFlow(world);
+		await buildFeature(deps(world), config, '1');
+		const first = kinds(world).length;
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), config, '1');
+
+		expect(kinds(world).slice(first)).toEqual(['review']);
+		expect(body(world)).toContain('- `critique`: done\n- `polish`: done');
+	});
+
+	it('serves on the first reserved port while its Steps run, and stops it after', async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			{ ...withFlow(world, { serve: 'npm run dev' }), portEnv: PORTS },
+			'1'
+		);
+		expect(world.serves).toEqual([{ command: 'npm run dev', cwd: tree(), port: 4500 }]);
+		expect(world.stopped).toBe(1);
+	});
+
+	it('lists every Step as not done when the serve command fails to start', async () => {
+		const world = makeWorld();
+		world.serveOk = false;
+		await buildFeature(
+			deps(world),
+			{ ...withFlow(world, { serve: 'npm run dev' }), portEnv: PORTS },
+			'1'
+		);
+		expect(kinds(world)).not.toContain('step');
+		expect(body(world)).toContain('**not done**, its serve command failed: port already in use');
+		expect(world.stopped).toBe(0);
+	});
+
+	it("adds a Workflow's commands, tools and localhost network to its Steps only, and never loosens the deny rules", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			withFlow(world, {
+				allowedCommands: ['npm run e2e'],
+				allowedTools: ['mcp__browser__*'],
+				localNetwork: true
+			}),
+			'1'
+		);
+		const settings = (r: SessionRequest | undefined) =>
+			r?.settings as { permissions: Record<string, string[]>; sandbox?: unknown };
+		const step = settings(world.sessions.find((r) => kindOf(r) === 'step'));
+		expect(step.permissions.allow).toEqual(
+			expect.arrayContaining(['Bash(npm run e2e)', 'Bash(make test)', 'mcp__browser__*'])
+		);
+		expect(step.permissions.deny).toEqual(
+			expect.arrayContaining([
+				'Bash(git commit *)',
+				'Bash(git push *)',
+				'Bash(git switch *)',
+				'Bash(gh *)',
+				'Bash(curl *)',
+				'WebFetch'
+			])
+		);
+		expect(step.sandbox).toMatchObject({
+			enabled: true,
+			network: { allowedDomains: ['localhost', '127.0.0.1'] }
+		});
+		const build = settings(world.sessions[0]);
+		expect(build.permissions.allow).not.toContain('Bash(npm run e2e)');
+		expect(build.sandbox).toBeUndefined();
+	});
+
+	const looks = {
+		name: 'look',
+		prompt: 'look',
+		point: 'afterAllTickets',
+		model: 'opus',
+		effort: 'max',
+		budgetUsd: 4
+	} as const;
+	const stepRequest = (world: World) => world.sessions.find((r) => kindOf(r) === 'step');
+
+	it('runs a Step on its own model, effort and budget', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), withFlow(world, { steps: [looks] }), '1');
+		const step = stepRequest(world);
+		expect([step?.model, step?.effort, step?.budgetUsd]).toEqual(['opus', 'max', 4]);
+	});
+
+	it("lets the person's --model win over a Step's", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			{ ...withFlow(world, { steps: [looks] }), model: 'haiku' },
+			'1'
+		);
+		expect(stepRequest(world)?.model).toBe('haiku');
 	});
 });
