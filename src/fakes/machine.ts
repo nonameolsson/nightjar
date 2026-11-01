@@ -1,4 +1,5 @@
 // Stand-ins for gh, az and claude on a PATH that holds nothing else, so no spec reaches the real ones.
+// A stand-in may use shell builtins only: sed, grep, awk and the rest are not on that PATH.
 import { spawnSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -63,6 +64,8 @@ esac`;
 
 export type Tool = 'gh' | 'az' | 'claude';
 
+export const STAND_INS: Record<Tool, string> = { gh: GH, az: AZ, claude: CLAUDE };
+
 export interface Machine {
 	// the checkout, with origin at git@github.com:o/r.git
 	readonly root: string;
@@ -88,9 +91,8 @@ export function machine(without: readonly Tool[] = []): Machine {
 	mkdirSync(bin);
 	const git = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
 	symlinkSync(realpathSync(git), join(bin, 'git'));
-	const tools: Record<Tool, string> = { gh: GH, az: AZ, claude: CLAUDE };
-	for (const tool of Object.keys(tools) as Tool[]) {
-		if (!without.includes(tool)) script(bin, tool, tools[tool]);
+	for (const tool of Object.keys(STAND_INS) as Tool[]) {
+		if (!without.includes(tool)) script(bin, tool, STAND_INS[tool]);
 	}
 	const gitconfig = join(base, 'gitconfig');
 	writeFileSync(gitconfig, '');
