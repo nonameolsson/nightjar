@@ -160,6 +160,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 	const settingUp = (tickets?: TicketProgress[]): Doing => ({
 		kind: 'building',
 		feature: id,
+		title: feature.title,
 		ticket: null,
 		step: 'setup',
 		round: null,
@@ -544,6 +545,7 @@ class FeatureRun {
 		this.shown = {
 			kind: 'building',
 			feature: this.feature.id,
+			title: this.feature.title,
 			ticket,
 			step,
 			...rounds,
@@ -812,7 +814,12 @@ class FeatureRun {
 		);
 		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
-		this.deps.status.happened({ kind: 'pull', feature: id, url: pull.url });
+		this.deps.status.happened({
+			kind: 'pull',
+			feature: id,
+			title: this.feature.title,
+			url: pull.url
+		});
 		if (!paused && (left.length > 0 || red)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
 			this.deps.status.happened({
@@ -892,6 +899,7 @@ async function reviewFeature(
 	deps.status.doing({
 		kind: 'building',
 		feature: feature.id,
+		title: feature.title,
 		ticket: null,
 		step: 'review',
 		round: null,

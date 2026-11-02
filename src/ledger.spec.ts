@@ -2,7 +2,7 @@ import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { record, spentOn, type Entry } from './ledger.js';
+import { builtOn, record, spentOn, type Entry } from './ledger.js';
 
 let dir: string;
 beforeEach(() => {
@@ -43,5 +43,19 @@ describe('spentOn', () => {
 
 	it('reads no file as nothing spent', () => {
 		expect(spentOn(join(dir, 'none.jsonl'), new Date())).toBe(0);
+	});
+});
+
+describe('builtOn', () => {
+	it('counts the Tickets built on the local day, not fix rounds, other outcomes or other days', () => {
+		const path = join(dir, 'runs.jsonl');
+		const now = new Date(2026, 9, 30, 8, 0);
+		record(path, entry(now, 1));
+		record(path, entry(new Date(2026, 9, 30, 9, 0), 1));
+		record(path, { ...entry(now, 1), outcome: 'questions, round 1' });
+		record(path, { ...entry(now, 1), step: 'fix', outcome: 'built' });
+		record(path, entry(new Date(2026, 9, 29, 9, 0), 1));
+		expect(builtOn(path, now)).toBe(2);
+		expect(builtOn(join(dir, 'none.jsonl'), now)).toBe(0);
 	});
 });

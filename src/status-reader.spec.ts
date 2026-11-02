@@ -65,8 +65,33 @@ describe('readFactory', () => {
 			status: null,
 			stopped: false,
 			tail: [],
-			completed: []
+			completed: [],
+			featureCostUsd: 0,
+			builtToday: 0
 		});
+	});
+
+	it("adds up the current Feature's cost and the Tickets built today, from the ledger", () => {
+		ledger('1', 1.5);
+		ledger('1', 0.25);
+		ledger('2', 9);
+		status().doing(building(null));
+		const view = readFactory(root, { alive: live, now: () => at });
+		expect(view.featureCostUsd).toBe(1.75);
+		expect(view.builtToday).toBe(3);
+		status().doing({ kind: 'off' });
+		expect(readFactory(root, { alive: live, now: () => at }).featureCostUsd).toBe(0);
+	});
+
+	it('carries the title of a pull or failed event to Completed', () => {
+		const file = status();
+		file.happened({ kind: 'pull', feature: '1', title: 'Dark mode', url: 'https://pr/1' });
+		file.happened({ kind: 'failed', feature: '2', why: 'check red' });
+		const { completed } = readFactory(root, { alive: live });
+		expect(completed.map((c) => (c.event.kind === 'pull' ? c.event.title : 'none'))).toEqual([
+			'Dark mode',
+			'none'
+		]);
 	});
 
 	it('gives the status as written and says stopped only when its pid is not alive', () => {

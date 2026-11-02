@@ -2,7 +2,7 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { costByFeature } from './ledger.js';
+import { builtOn, costByFeature } from './ledger.js';
 import { readStatus, statusPath, type Event, type Status } from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;
@@ -21,12 +21,17 @@ export interface FactoryView {
 	readonly tail: readonly string[];
 	// the pull and failed events in `recent`, oldest first
 	readonly completed: readonly Completed[];
+	// what the current Feature's sessions cost; 0 when nothing is building
+	readonly featureCostUsd: number;
+	// Tickets built on the local day
+	readonly builtToday: number;
 }
 
 export interface ReadOptions {
 	readonly alive?: (pid: number) => boolean;
 	// how many lines of the session to keep
 	readonly tail?: number;
+	readonly now?: () => Date;
 }
 
 const TAIL_LINES = 20;
@@ -114,8 +119,14 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 	const status = readStatus(statusPath(root));
 	const alive = options.alive ?? pidAlive;
 	const costs = costByFeature(join(root, '.factory', 'runs.jsonl'));
+	const doing = status?.doing;
 	return {
 		status,
+		featureCostUsd: doing?.kind === 'building' ? (costs.get(doing.feature) ?? 0) : 0,
+		builtToday: builtOn(
+			join(root, '.factory', 'runs.jsonl'),
+			(options.now ?? (() => new Date()))()
+		),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
 		completed: (status?.recent ?? [])

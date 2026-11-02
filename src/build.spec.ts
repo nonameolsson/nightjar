@@ -468,6 +468,7 @@ describe('buildFeature', () => {
 		]);
 		expect(world.doing[2]).toMatchObject({
 			feature: '1',
+			title: 'One escape',
 			round: 1,
 			rounds: 3,
 			startedAt: new Date(2026, 9, 30, 9).toISOString()
@@ -475,7 +476,7 @@ describe('buildFeature', () => {
 		expect(world.happened).toEqual([
 			{ kind: 'built', feature: '1', ticket: '2' },
 			{ kind: 'built', feature: '1', ticket: '3' },
-			{ kind: 'pull', feature: '1', url: 'https://code.example/pull/100' }
+			{ kind: 'pull', feature: '1', title: 'One escape', url: 'https://code.example/pull/100' }
 		]);
 	});
 

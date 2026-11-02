@@ -22,11 +22,21 @@ export interface QueueDeps {
 }
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
-export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Promise<void> {
+export async function handBack(
+	deps: QueueDeps,
+	id: ItemId,
+	fault: unknown,
+	title?: string
+): Promise<void> {
 	const { tracker } = deps;
 	const reason = why(fault);
 	deps.say(`#${id} failed: ${reason}`);
-	deps.status.happened({ kind: 'failed', feature: id, why: reason });
+	deps.status.happened({
+		kind: 'failed',
+		feature: id,
+		...(title === undefined ? {} : { title }),
+		why: reason
+	});
 	try {
 		await tracker.removeSignal(id, 'working');
 		await tracker.addSignal(id, 'needsInfo');
@@ -37,11 +47,15 @@ export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Pro
 }
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
-export async function buildOne(deps: QueueDeps, id: ItemId): Promise<FeatureOutcome | null> {
+export async function buildOne(
+	deps: QueueDeps,
+	id: ItemId,
+	title?: string
+): Promise<FeatureOutcome | null> {
 	try {
 		return await deps.build(id);
 	} catch (fault) {
-		await handBack(deps, id, fault);
+		await handBack(deps, id, fault, title);
 		return null;
 	}
 }
@@ -103,7 +117,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			await idle();
 			continue;
 		}
-		const outcome = await buildOne(deps, next.id);
+		const outcome = await buildOne(deps, next.id, next.title);
 		if (outcome?.kind === 'pull' || outcome?.kind === 'nothing') {
 			waitingOnYou = outcome.waiting.filter(needsAPerson).map((w) => ({
 				kind: 'ticket',

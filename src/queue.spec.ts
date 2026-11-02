@@ -101,7 +101,9 @@ describe('queue --once', () => {
 		expect(await queue(w.deps, true)).toBe(1);
 		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
 		expect(w.tracker.said('2')[0]).toMatch(/^Nightjar stopped on a fault: the network went away/);
-		expect(w.happened).toEqual([{ kind: 'failed', feature: '2', why: 'the network went away' }]);
+		expect(w.happened).toEqual([
+			{ kind: 'failed', feature: '2', title: 'Older', why: 'the network went away' }
+		]);
 	});
 });
 

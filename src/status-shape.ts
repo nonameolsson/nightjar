@@ -34,6 +34,8 @@ export type Doing =
 	| {
 			readonly kind: 'building';
 			readonly feature: string;
+			// the Feature's title; older files lack it
+			readonly title?: string;
 			// null while the Feature is set up and reviewed, and during a Step that runs after all Tickets
 			readonly ticket: string | null;
 			readonly step: 'setup' | 'build' | 'fix' | 'review' | 'step';
@@ -56,8 +58,19 @@ export type Happened =
 			readonly ticket: string | null;
 			readonly why: string;
 	  }
-	| { readonly kind: 'failed'; readonly feature: string; readonly why: string }
-	| { readonly kind: 'pull'; readonly feature: string; readonly url: string }
+	| {
+			readonly kind: 'failed';
+			readonly feature: string;
+			// the Feature's title, for a view's list of outcomes; older files and a run by id lack it
+			readonly title?: string;
+			readonly why: string;
+	  }
+	| {
+			readonly kind: 'pull';
+			readonly feature: string;
+			readonly title?: string;
+			readonly url: string;
+	  }
 	| { readonly kind: 'stale'; readonly commit: string };
 
 export type Event = Happened & { readonly seq: number; readonly at: string };
