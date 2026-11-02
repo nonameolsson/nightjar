@@ -62,6 +62,8 @@ export interface Tracker {
 	removeSignal(id: ItemId, signal: Signal): Promise<void>;
 	comment(id: ItemId, body: string): Promise<void>;
 	reference(id: ItemId): TicketReference;
+	// optional, so a Tracker module written before it still loads: the open Features assigned to `person` that carry needs info or needs a person, oldest first
+	waitingOn?(person: string): Promise<Feature[]>;
 }
 
 // The title and body of a Feature or Ticket to be made.
