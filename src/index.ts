@@ -12,6 +12,7 @@ export type {
 } from './tracker.js';
 export { canCreate } from './tracker.js';
 export { featureWriterContract } from './contract/feature-writer.js';
+export { waitingOnContract } from './contract/waiting-on.js';
 export type { CodeHost, DraftRequest, Pull } from './code-host.js';
 export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';
 export { DEFAULT_SIGNAL_NAMES, SIGNALS, type Signal, type SignalNames } from './signals.js';

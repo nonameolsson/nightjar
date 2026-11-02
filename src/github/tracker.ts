@@ -75,9 +75,23 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 	}
 
 	async assignedFeatures(person: string): Promise<Feature[]> {
+		return this.featuresWith(person, this.names.go);
+	}
+
+	async waitingOn(person: string): Promise<Feature[]> {
+		// labels in one query must all be there, so each Signal is asked for alone
+		const found = new Map<string, Feature>();
+		for (const signal of [this.names.needsInfo, this.names.human]) {
+			for (const f of await this.featuresWith(person, signal)) found.set(f.id, f);
+		}
+		return [...found.values()].sort((a, b) => Number(a.id) - Number(b.id));
+	}
+
+	// the open Features assigned to `person` that carry the label, oldest first
+	private async featuresWith(person: string, label: string): Promise<Feature[]> {
 		const query = new URLSearchParams({
 			state: 'open',
-			labels: this.names.go,
+			labels: label,
 			assignee: person,
 			sort: 'created',
 			direction: 'asc',

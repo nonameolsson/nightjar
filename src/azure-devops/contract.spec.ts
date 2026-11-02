@@ -4,6 +4,7 @@ import {
 	DEFAULT_SIGNAL_NAMES,
 	featureWriterContract,
 	trackerContract,
+	waitingOnContract,
 	type SignalNames,
 	type TrackerWorld
 } from '../index.js';
@@ -90,4 +91,16 @@ describe('AzureBoardsTracker meets the Tracker contract', () => {
 describe('AzureBoardsTracker meets the creation contract', () => {
 	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
 	for (const c of featureWriterContract) it(c.name, () => c.run(harness));
+});
+
+describe('AzureBoardsTracker meets the waitingOn contract', () => {
+	for (const [label, names, trust] of [
+		['default', DEFAULT_SIGNAL_NAMES, 'Contributors'],
+		['configured', CONFIGURED, 'trusted list']
+	] as const) {
+		describe(`with the ${label} Signal names`, () => {
+			const harness = azureBoardsTracker(names, trust);
+			for (const c of waitingOnContract) it(c.name, () => c.run(harness));
+		});
+	}
 });
