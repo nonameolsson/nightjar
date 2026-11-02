@@ -378,3 +378,34 @@ describe('makeAdapters pairs each Tracker with Azure Repos as the Code host', ()
 		expect((await adapters.tracker.feature(feature)).title).toBe('A');
 	});
 });
+
+describe('makeAdapters and waitingOn', () => {
+	it('keeps it on a Tracker whose references it rewrites for Azure Repos', async () => {
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		const adapters = await makeAdapters(
+			config({ tracker: boards('contoso'), codeHost: { ...repos, organization: 'other' } }),
+			dir,
+			env(),
+			ado.request
+		);
+		signedInAz();
+		expect(await adapters.tracker.waitingOn?.('ann@contoso.com')).toEqual([]);
+	});
+
+	it('leaves it off a module Tracker that lacks it', async () => {
+		moduleFile('reads.mjs', `export const createTracker = () => (${trackerBody()});`);
+		const adapters = await makeAdapters(
+			config({ tracker: { type: 'module', path: './reads.mjs' }, codeHost: repos }),
+			dir,
+			env()
+		);
+		expect('waitingOn' in adapters.tracker).toBe(false);
+	});
+
+	it('refuses a module whose waitingOn is not a function', async () => {
+		moduleFile('bad.mjs', `export const createTracker = () => (${trackerBody('waitingOn: 1,')});`);
+		expect(await refusal(config({ tracker: { type: 'module', path: './bad.mjs' } }))).toBe(
+			'factory.json: tracker: createTracker in ./bad.mjs returned a Tracker whose waitingOn is not a function'
+		);
+	});
+});

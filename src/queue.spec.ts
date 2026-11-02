@@ -150,6 +150,8 @@ describe('the Queue in the status file', () => {
 
 	it('puts in Waiting on you the Tickets the last Feature left that need info or a person, and says the Tracker cannot list Features', async () => {
 		const w = world();
+		// a Tracker module written before waitingOn
+		Object.assign(w.tracker, { waitingOn: undefined });
 		w.buildWaiting([
 			{ id: '3', title: 'Ticket 3', why: 'needs info' },
 			{ id: '5', title: 'Ticket 5', why: 'not reached' },
@@ -165,6 +167,69 @@ describe('the Queue in the status file', () => {
 			],
 			trackerCannotList: true
 		});
+	});
+});
+
+describe('Waiting on you from a Tracker that has waitingOn', () => {
+	function withWaiting() {
+		const w = world();
+		w.tracker.add({
+			id: '10',
+			title: 'Asks',
+			assignees: ['ann'],
+			signals: ['needsInfo'],
+			children: ['11']
+		});
+		w.tracker.add({
+			id: '12',
+			title: 'Stuck',
+			assignees: ['ann'],
+			signals: ['human'],
+			children: ['13']
+		});
+		w.tracker.add({
+			id: '14',
+			title: 'Theirs',
+			assignees: ['bob'],
+			signals: ['needsInfo'],
+			children: ['15']
+		});
+		for (const id of ['11', '13', '15']) w.tracker.add({ id, title: `Ticket ${id}` });
+		return w;
+	}
+
+	it('lists the Features assigned to the person that carry needs info or needs a person, and no longer says the Tracker cannot list', async () => {
+		const w = withWaiting();
+		await queue(w.deps, true);
+		expect(w.refreshes[0]?.waitingOnYou).toEqual({
+			items: [
+				{ kind: 'feature', id: '10', title: 'Asks', why: 'needs info' },
+				{ kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' }
+			],
+			trackerCannotList: false
+		});
+	});
+
+	it("puts the last Feature's waiting Tickets after the Features", async () => {
+		const w = withWaiting();
+		w.buildWaiting([{ id: '3', title: 'Ticket 3', why: 'needs info' }]);
+		await queue(w.deps, false);
+		expect(w.refreshes[1]?.waitingOnYou).toEqual({
+			items: [
+				{ kind: 'feature', id: '10', title: 'Asks', why: 'needs info' },
+				{ kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' },
+				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' }
+			],
+			trackerCannotList: false
+		});
+	});
+
+	it('says what went wrong when it fails, and still builds', async () => {
+		const w = withWaiting();
+		w.tracker.waitingOn = () => Promise.reject(new Error('the network went away'));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.lines).toContain('could not read what waits on ann: the network went away');
+		expect(w.built).toEqual(['2']);
 	});
 });
 

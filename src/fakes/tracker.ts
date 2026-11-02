@@ -92,6 +92,20 @@ export class FakeTracker implements Tracker, FeatureWriter {
 				.map(({ id, title, body }) => ({ id, title, body }))
 		);
 
+	waitingOn = (person: string): Promise<Feature[]> =>
+		Promise.resolve(
+			[...this.items.values()]
+				.filter(
+					(i) =>
+						i.open &&
+						i.children.length > 0 &&
+						i.assignees.includes(person) &&
+						(i.signals.includes('needsInfo') || i.signals.includes('human'))
+				)
+				.sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))
+				.map(({ id, title, body }) => ({ id, title, body }))
+		);
+
 	feature = (id: ItemId): Promise<Feature> => {
 		const { title, body } = this.get(id);
 		return Promise.resolve({ id, title, body });

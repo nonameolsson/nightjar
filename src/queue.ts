@@ -80,14 +80,39 @@ export async function cannotClaim(
 	return null;
 }
 
+// The Features waiting on the person, each with the Signal it carries; the last answer when the Tracker fails, so a bad poll does not empty the panel.
+async function readWaitingFeatures(
+	deps: QueueDeps,
+	previous: WaitingItem[]
+): Promise<WaitingItem[]> {
+	try {
+		const items: WaitingItem[] = [];
+		for (const f of (await deps.tracker.waitingOn?.(deps.person)) ?? []) {
+			const { signals } = await deps.tracker.standing(f.id);
+			items.push({
+				kind: 'feature',
+				id: f.id,
+				title: f.title,
+				why: signals.includes('needsInfo') ? 'needs info' : 'needs a person'
+			});
+		}
+		return items;
+	} catch (fault) {
+		deps.say(`could not read what waits on ${deps.person}: ${why(fault)}`);
+		return previous;
+	}
+}
+
 const none = (deps: Pick<QueueDeps, 'person'>) =>
 	`no Feature with the Go is assigned to ${deps.person}`;
 
 // The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const stop = deps.signal;
-	// the last Feature's Tickets that wait for a person, until the Tracker can list Features
+	// the last Feature's Tickets that wait for a person
 	let waitingOnYou: WaitingItem[] = [];
+	// the Features that wait for a person, when the Tracker can list them
+	let waitingFeatures: WaitingItem[] = [];
 	const idle = async () => {
 		const nextPollAt = new Date(deps.now().getTime() + POLL_MS).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
@@ -104,10 +129,12 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const next = features[0];
+		const canList = deps.tracker.waitingOn !== undefined;
+		if (canList) waitingFeatures = await readWaitingFeatures(deps, waitingFeatures);
 		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
 		deps.status.refreshed(
 			features.slice(1).map((f) => ({ id: f.id, title: f.title })),
-			{ items: waitingOnYou, trackerCannotList: true }
+			{ items: [...waitingFeatures, ...waitingOnYou], trackerCannotList: !canList }
 		);
 		if (next === undefined && once) {
 			deps.say(none(deps));

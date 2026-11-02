@@ -46,6 +46,7 @@ const WRITER_LIST = `${FEATURE_WRITER_METHODS.slice(0, -1).join(', ')} and ${FEA
 
 // The Tracker with its references rewritten for the Code host; every other call goes to it as it is.
 function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketReference): Tracker {
+	const waitingOn = tracker.waitingOn?.bind(tracker);
 	return {
 		me: () => tracker.me(),
 		assignedFeatures: (person) => tracker.assignedFeatures(person),
@@ -56,7 +57,9 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 		addSignal: (id, signal) => tracker.addSignal(id, signal),
 		removeSignal: (id, signal) => tracker.removeSignal(id, signal),
 		comment: (id, body) => tracker.comment(id, body),
-		reference: (id) => fit(tracker.reference(id))
+		reference: (id) => fit(tracker.reference(id)),
+		// optional, so only a Tracker that has it passes it on
+		...(waitingOn === undefined ? {} : { waitingOn })
 	};
 }
 

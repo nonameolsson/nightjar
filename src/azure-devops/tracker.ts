@@ -213,16 +213,30 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	}
 
 	async assignedFeatures(person: string): Promise<Feature[]> {
+		return this.featuresWith(person, 'go');
+	}
+
+	// The WIQL here joins its clauses by AND only, so each Signal is asked for alone.
+	async waitingOn(person: string): Promise<Feature[]> {
+		const found = new Map<string, Feature>();
+		for (const signal of ['needsInfo', 'human'] as const) {
+			for (const f of await this.featuresWith(person, signal)) found.set(f.id, f);
+		}
+		return [...found.values()].sort((a, b) => Number(a.id) - Number(b.id));
+	}
+
+	// The open Features assigned to `person` that carry the Signal, oldest first.
+	private async featuresWith(person: string, signal: Signal): Promise<Feature[]> {
 		// @Me matches the signed-in person however the directory spells their name
 		const assignee = same(person, await this.me()) ? '@Me' : quoted(person);
 		const query =
 			'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project' +
 			` AND [System.WorkItemType] = ${quoted(this.settings.featureType)}` +
 			` AND [System.AssignedTo] = ${assignee}` +
-			` AND [System.Tags] CONTAINS ${quoted(this.names.go)}` +
+			` AND [System.Tags] CONTAINS ${quoted(this.names[signal])}` +
 			' ORDER BY [System.Id]';
 		const found = await this.api.parse(
-			'find the Features assigned with the Go',
+			`find the Features assigned with ${this.names[signal]}`,
 			{
 				method: 'POST',
 				url: this.api.at(`${this.project}/_apis/wit/wiql?${API}`),
@@ -239,7 +253,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 				(i) =>
 					i.fields[CLOSED_DATE] === undefined &&
 					linked(i, CHILD).length > 0 &&
-					this.signalsOf(i).includes('go')
+					this.signalsOf(i).includes(signal)
 			)
 			.sort((a, b) => a.id - b.id)
 			.map((i) => this.toFeature(i));

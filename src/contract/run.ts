@@ -4,6 +4,7 @@ import { codeHostContract } from './code-host.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { waitingOnContract } from './waiting-on.js';
 import { why } from '../say.js';
 
 // A module exports the harnesses of the Adapters it wants checked.
@@ -56,22 +57,27 @@ function harnessOf(exports: Record<string, unknown>, name: string): unknown {
 	return found;
 }
 
-// A harness that cannot build a Tracker over an empty world has failed every case already, so it is asked nothing more.
-async function makesFeatures(harness: TrackerHarness): Promise<boolean> {
+// What the Tracker can do beyond the interface's required methods. A harness that cannot build a Tracker over an empty world has failed every case already, so it is asked nothing more.
+async function optionalSuites(
+	harness: TrackerHarness
+): Promise<{ creates: boolean; waitsOn: boolean }> {
 	let subject: TrackerSubject;
 	try {
 		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
 	} catch {
-		return false;
+		return { creates: false, waitsOn: false };
 	}
 	try {
-		return canCreate(subject.tracker);
+		return {
+			creates: canCreate(subject.tracker),
+			waitsOn: typeof subject.tracker.waitingOn === 'function'
+		};
 	} finally {
 		await subject.close?.();
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features.
+// The creation suite runs too when the Tracker makes Features, and the waitingOn suite when it has waitingOn.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -81,8 +87,12 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 	const suites: SuiteResult[] = [];
 	if (tracker !== undefined) {
 		suites.push(await runSuite('Tracker', trackerContract, tracker as never));
-		if (await makesFeatures(tracker as TrackerHarness)) {
+		const has = await optionalSuites(tracker as TrackerHarness);
+		if (has.creates) {
 			suites.push(await runSuite('Tracker creation', featureWriterContract, tracker as never));
+		}
+		if (has.waitsOn) {
+			suites.push(await runSuite('Tracker waiting on', waitingOnContract, tracker as never));
 		}
 	}
 	if (codeHost !== undefined) {
