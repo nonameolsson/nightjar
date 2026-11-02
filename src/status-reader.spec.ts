@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -104,7 +105,12 @@ describe('readFactory', () => {
 	});
 
 	it('asks the machine whether the pid is alive when not told', () => {
-		status().doing({ kind: 'off' });
+		// a pid that has just exited, so no machine has it alive
+		const exited = spawnSync(process.execPath, ['-e', '']).pid;
+		writeFileSync(
+			join(root, '.factory', 'status.json'),
+			JSON.stringify({ pid: exited, recent: [], doing: { kind: 'off' } })
+		);
 		expect(readFactory(root).stopped).toBe(true);
 		writeFileSync(
 			join(root, '.factory', 'status.json'),
