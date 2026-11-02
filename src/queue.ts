@@ -1,6 +1,7 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
-import type { StatusReport } from './status.js';
+import { needsAPerson } from './plan.js';
+import type { StatusReport, WaitingItem } from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 
@@ -71,21 +72,29 @@ const none = (deps: Pick<QueueDeps, 'person'>) =>
 // The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const stop = deps.signal;
+	// the last Feature's Tickets that wait for a person, until the Tracker can list Features
+	let waitingOnYou: WaitingItem[] = [];
 	const idle = async () => {
 		const nextPollAt = new Date(deps.now().getTime() + POLL_MS).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(POLL_MS, stop);
 	};
 	while (stop?.aborted !== true) {
-		let next;
+		let features;
 		try {
-			next = (await deps.tracker.assignedFeatures(deps.person))[0];
+			features = await deps.tracker.assignedFeatures(deps.person);
 		} catch (fault) {
 			if (once) throw fault;
 			deps.say(why(fault));
 			await idle();
 			continue;
 		}
+		const next = features[0];
+		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
+		deps.status.refreshed(
+			features.slice(1).map((f) => ({ id: f.id, title: f.title })),
+			{ items: waitingOnYou, trackerCannotList: true }
+		);
 		if (next === undefined && once) {
 			deps.say(none(deps));
 			return 0;
@@ -95,6 +104,14 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const outcome = await buildOne(deps, next.id);
+		if (outcome?.kind === 'pull' || outcome?.kind === 'nothing') {
+			waitingOnYou = outcome.waiting.filter(needsAPerson).map((w) => ({
+				kind: 'ticket',
+				id: w.id,
+				title: w.title,
+				why: w.why
+			}));
+		}
 		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
 		if (outcome?.kind === 'paused') {
 			const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();

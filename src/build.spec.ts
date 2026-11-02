@@ -238,7 +238,8 @@ function deps(world: World): Deps {
 		say: () => undefined,
 		status: {
 			doing: (d) => world.doing.push(d),
-			happened: (h) => world.happened.push(h)
+			happened: (h) => world.happened.push(h),
+			refreshed: () => undefined
 		}
 	};
 }
@@ -455,13 +456,17 @@ describe('buildFeature', () => {
 		const steps = world.doing.map((d) =>
 			d.kind === 'building' ? `${d.step} ${String(d.ticket)} ${String(d.session)}` : d.kind
 		);
+		// setup again once the Tickets are planned, and each Ticket again when it is built
 		expect(steps).toEqual([
 			'setup null null',
+			'setup null null',
 			'build 2 session-1',
+			'build 2 session-1',
+			'build 3 session-2',
 			'build 3 session-2',
 			'review null session-3'
 		]);
-		expect(world.doing[1]).toMatchObject({
+		expect(world.doing[2]).toMatchObject({
 			feature: '1',
 			round: 1,
 			rounds: 3,
@@ -472,6 +477,55 @@ describe('buildFeature', () => {
 			{ kind: 'built', feature: '1', ticket: '3' },
 			{ kind: 'pull', feature: '1', url: 'https://code.example/pull/100' }
 		]);
+	});
+
+	it('tells the status file each Ticket as built, building or waiting, and why it waits', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		const shown = world.doing.map((d) =>
+			d.kind === 'building' && d.tickets
+				? d.tickets.map((t) => `${t.id} ${t.state}${t.why ? ` (${t.why})` : ''}`).join(', ')
+				: '-'
+		);
+		expect(shown).toEqual([
+			'-',
+			'3 waiting (blocked by #2), 2 waiting (not reached)',
+			'3 waiting (blocked by #2), 2 building',
+			'3 waiting (not reached), 2 built',
+			'3 building, 2 built',
+			'3 built, 2 built',
+			'3 built, 2 built'
+		]);
+		expect(world.doing[1]).toMatchObject({
+			tickets: [
+				{ id: '3', title: 'Use it in marks' },
+				{ id: '2', title: 'Share the function' }
+			]
+		});
+	});
+
+	it('shows a Ticket built on the branch earlier as built, and leaves out one that is closed', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'fail';
+		await buildFeature(deps(world), setup(world), '1');
+		world.doing.length = 0;
+		await world.tracker.addSignal('1', 'go');
+		world.tracker.add({ id: '9', title: 'Long closed', open: false });
+		world.tracker.add({
+			id: '1',
+			title: 'One escape',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['9', '3', '2']
+		});
+		await buildFeature(deps(world), setup(world), '1');
+		const planned = world.doing.find((d) => d.kind === 'building' && d.tickets);
+		expect(planned).toMatchObject({
+			tickets: [
+				{ id: '3', state: 'waiting' },
+				{ id: '2', state: 'built' }
+			]
+		});
 	});
 
 	it('hands a Ticket with questions back, skips what it blocks, and builds nothing more', async () => {

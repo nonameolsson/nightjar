@@ -1,4 +1,5 @@
 // The Build order (GLOSSARY.md): the first Ticket in the Feature's order whose blockers are closed or built on the branch.
+import type { TicketProgress } from './status-shape.js';
 import type { ItemId, Ticket } from './tracker.js';
 
 const unblocked = (ticket: Ticket, built: ReadonlySet<ItemId>) =>
@@ -36,4 +37,32 @@ function whyWaiting(ticket: Ticket, built: ReadonlySet<ItemId>): Pick<Waiting, '
 	if (blocker) return { why: 'blocked by', blocker: blocker.id };
 	if (!ticket.signals.includes('ready')) return { why: 'not marked ready' };
 	return { why: 'not reached' };
+}
+
+// Whether a Ticket is left for a person, who is what Waiting on you lists.
+export const needsAPerson = (w: Waiting) => w.why === 'needs a person' || w.why === 'needs info';
+
+// The Feature's Tickets for a view: the open ones plus those built on the branch, each built, building or waiting with its reason.
+export function progress(
+	tickets: readonly Ticket[],
+	built: ReadonlySet<ItemId>,
+	current: ItemId | null
+): TicketProgress[] {
+	const left = new Map(waiting(tickets, built).map((w) => [w.id, w]));
+	return tickets
+		.filter((t) => t.open || built.has(t.id))
+		.map((t): TicketProgress => {
+			const { id, title } = t;
+			if (built.has(id)) return { id, title, state: 'built' };
+			if (id === current) return { id, title, state: 'building' };
+			const w = left.get(id);
+			return {
+				id,
+				title,
+				state: 'waiting',
+				...(w === undefined
+					? {}
+					: { why: w.blocker === undefined ? w.why : `${w.why} #${w.blocker}` })
+			};
+		});
 }

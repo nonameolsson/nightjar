@@ -2,8 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import type { FeatureOutcome } from './build.js';
 import { FakeTracker } from './fakes/tracker.js';
+import type { Waiting } from './plan.js';
 import { cannotClaim, dryRun, queue, type QueueDeps } from './queue.js';
-import type { Doing, Happened } from './status.js';
+import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
 
 function world() {
 	const tracker = new FakeTracker('ann');
@@ -16,10 +17,14 @@ function world() {
 	const lines: string[] = [];
 	const doing: Doing[] = [];
 	const happened: Happened[] = [];
+	const refreshes: { queue: Queued[]; waitingOnYou: WaitingOnYou }[] = [];
+	// refreshes and builds in the order they happened
+	const trail: string[] = [];
 	const sleeps: number[] = [];
 	const stop = new AbortController();
 	let outcome = (id: string): Promise<FeatureOutcome> => {
 		built.push(id);
+		trail.push(`build ${id}`);
 		// as the build loop does, the Go comes off the Feature it takes
 		return tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: [] }));
 	};
@@ -27,7 +32,14 @@ function world() {
 		tracker,
 		person: 'ann',
 		build: (id) => outcome(id),
-		status: { doing: (d) => doing.push(d), happened: (h) => happened.push(h) },
+		status: {
+			doing: (d) => doing.push(d),
+			happened: (h) => happened.push(h),
+			refreshed: (queue, waitingOnYou) => {
+				refreshes.push({ queue, waitingOnYou });
+				trail.push(`refresh ${queue.map((q) => q.id).join(',')}`);
+			}
+		},
 		now: () => new Date(2026, 9, 30, 9),
 		say: (line) => lines.push(line),
 		sleep: (ms) => {
@@ -37,6 +49,13 @@ function world() {
 		},
 		signal: stop.signal
 	};
+	const buildWaiting = (left: Waiting[]) => {
+		outcome = (id) => {
+			built.push(id);
+			trail.push(`build ${id}`);
+			return tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: left }));
+		};
+	};
 	const failWith = (fault: Error) => {
 		outcome = async (id) => {
 			built.push(id);
@@ -45,7 +64,19 @@ function world() {
 			throw fault;
 		};
 	};
-	return { tracker, deps, built, lines, doing, happened, sleeps, failWith };
+	return {
+		tracker,
+		deps,
+		built,
+		lines,
+		doing,
+		happened,
+		sleeps,
+		failWith,
+		refreshes,
+		trail,
+		buildWaiting
+	};
 }
 
 describe('queue --once', () => {
@@ -83,6 +114,54 @@ describe('queue --watch', () => {
 		expect(w.doing.at(-1)).toEqual({
 			kind: 'idle',
 			nextPollAt: new Date(2026, 9, 30, 9, 2).toISOString()
+		});
+	});
+});
+
+describe('the Queue in the status file', () => {
+	it('is the Features after the one taken, written before it builds', async () => {
+		const w = world();
+		await queue(w.deps, true);
+		expect(w.refreshes.map((r) => r.queue)).toEqual([[{ id: '4', title: 'Later' }]]);
+		expect(w.trail).toEqual(['refresh 4', 'build 2']);
+	});
+
+	it('is refreshed between Features and on each idle poll, never mid-build', async () => {
+		const w = world();
+		await queue(w.deps, false);
+		expect(w.trail).toEqual([
+			'refresh 4',
+			'build 2',
+			'refresh ',
+			'build 4',
+			'refresh ',
+			'refresh '
+		]);
+	});
+
+	it('leaves it as it was when the Tracker cannot be asked', async () => {
+		const w = world();
+		w.tracker.assignedFeatures = () => Promise.reject(new Error('the network went away'));
+		await queue(w.deps, false);
+		expect(w.refreshes).toEqual([]);
+	});
+
+	it('puts in Waiting on you the Tickets the last Feature left that need info or a person, and says the Tracker cannot list Features', async () => {
+		const w = world();
+		w.buildWaiting([
+			{ id: '3', title: 'Ticket 3', why: 'needs info' },
+			{ id: '5', title: 'Ticket 5', why: 'not reached' },
+			{ id: '9', title: 'Ticket 9', why: 'needs a person' },
+			{ id: '7', title: 'Ticket 7', why: 'blocked by', blocker: '3' }
+		]);
+		await queue(w.deps, false);
+		expect(w.refreshes[0]?.waitingOnYou).toEqual({ items: [], trackerCannotList: true });
+		expect(w.refreshes[1]?.waitingOnYou).toEqual({
+			items: [
+				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' },
+				{ kind: 'ticket', id: '9', title: 'Ticket 9', why: 'needs a person' }
+			],
+			trackerCannotList: true
 		});
 	});
 });

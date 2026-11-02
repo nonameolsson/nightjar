@@ -36,16 +36,15 @@ export function record(path: string, entry: Entry): void {
 const localDay = (d: Date) =>
 	`${String(d.getFullYear())}-${String(d.getMonth() + 1)}-${String(d.getDate())}`;
 
-// The estimated dollars spent on the local day of `now`. A line that does not parse counts nothing.
-export function spentOn(path: string, now: Date): number {
+// The lines of the ledger that parse; a line that does not, or the missing file, gives none.
+function readEntries(path: string) {
 	let text: string;
 	try {
 		text = readFileSync(path, 'utf8');
 	} catch {
-		return 0;
+		return [];
 	}
-	const day = localDay(now);
-	let sum = 0;
+	const entries: z.infer<typeof EntrySchema>[] = [];
 	for (const line of text.split('\n')) {
 		if (line.trim() === '') continue;
 		let value: unknown;
@@ -55,7 +54,27 @@ export function spentOn(path: string, now: Date): number {
 			continue;
 		}
 		const entry = EntrySchema.safeParse(value);
-		if (entry.success && localDay(new Date(entry.data.at)) === day) sum += entry.data.costUsd;
+		if (entry.success) entries.push(entry.data);
+	}
+	return entries;
+}
+
+// The estimated dollars spent on the local day of `now`. A line that does not parse counts nothing.
+export function spentOn(path: string, now: Date): number {
+	const day = localDay(now);
+	let sum = 0;
+	for (const entry of readEntries(path)) {
+		if (localDay(new Date(entry.at)) === day) sum += entry.costUsd;
 	}
 	return sum;
+}
+
+// The estimated dollars spent on each Feature over the whole ledger, by Feature id.
+export function costByFeature(path: string): Map<string, number> {
+	const costs = new Map<string, number>();
+	for (const entry of readEntries(path)) {
+		const feature = String(entry.feature);
+		costs.set(feature, (costs.get(feature) ?? 0) + entry.costUsd);
+	}
+	return costs;
 }

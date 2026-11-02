@@ -3,9 +3,18 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { spentOn } from './ledger.js';
-import type { Doing, Event, Happened, Status } from './status-shape.js';
+import type { Doing, Event, Happened, Queued, Status, WaitingOnYou } from './status-shape.js';
 
-export type { Doing, Event, Happened, Status } from './status-shape.js';
+export type {
+	Doing,
+	Event,
+	Happened,
+	Queued,
+	Status,
+	TicketProgress,
+	WaitingItem,
+	WaitingOnYou
+} from './status-shape.js';
 
 export const statusPath = (root: string) => join(root, '.factory', 'status.json');
 
@@ -13,6 +22,8 @@ export const statusPath = (root: string) => join(root, '.factory', 'status.json'
 export interface StatusReport {
 	readonly doing: (doing: Doing) => void;
 	readonly happened: (event: Happened) => void;
+	// the Queue and Waiting on you, which the loop refreshes between Features and on each idle poll
+	readonly refreshed: (queue: Queued[], waitingOnYou: WaitingOnYou) => void;
 }
 
 const KEEP = 10;
@@ -33,6 +44,7 @@ export function readStatus(path: string): Status | null {
 export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
 	private recent: Event[];
+	private refresh: { queue: Queued[]; waitingOnYou: WaitingOnYou; at: string } | null = null;
 
 	constructor(
 		private readonly o: {
@@ -49,6 +61,8 @@ export class StatusFile implements StatusReport {
 
 	readonly doing = (doing: Doing) => {
 		this.now = doing;
+		// with no run going there is no Queue
+		if (doing.kind === 'off') this.refresh = null;
 		this.write();
 	};
 
@@ -56,6 +70,11 @@ export class StatusFile implements StatusReport {
 		const seq = (this.recent.at(-1)?.seq ?? 0) + 1;
 		const at = this.o.now().toISOString();
 		this.recent = [...this.recent, { ...event, seq, at }].slice(-KEEP);
+		this.write();
+	};
+
+	readonly refreshed = (queue: Queued[], waitingOnYou: WaitingOnYou) => {
+		this.refresh = { queue, waitingOnYou, at: this.o.now().toISOString() };
 		this.write();
 	};
 
@@ -68,7 +87,14 @@ export class StatusFile implements StatusReport {
 			dailyUsd: this.o.dailyUsd,
 			doing: this.now,
 			recent: this.recent,
-			codeMoved: null
+			codeMoved: null,
+			...(this.refresh === null
+				? {}
+				: {
+						queue: this.refresh.queue,
+						waitingOnYou: this.refresh.waitingOnYou,
+						refreshedAt: this.refresh.at
+					})
 		};
 		mkdirSync(dirname(this.o.path), { recursive: true });
 		const temp = `${this.o.path}.${String(this.o.pid)}.tmp`;

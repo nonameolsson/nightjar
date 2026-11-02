@@ -86,6 +86,41 @@ describe('StatusFile', () => {
 		expect(after?.doing).toEqual({ kind: 'off' });
 	});
 
+	it('writes the Queue and Waiting on you with when they were refreshed, and drops them when the run is off', () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		expect(readStatus(path)?.queue).toBeUndefined();
+		const waitingOnYou = {
+			items: [{ kind: 'ticket' as const, id: '4', title: 'Retries', why: 'needs info' }],
+			trackerCannotList: true
+		};
+		status.refreshed([{ id: '7', title: 'Saved filters' }], waitingOnYou);
+		expect(readStatus(path)).toMatchObject({
+			queue: [{ id: '7', title: 'Saved filters' }],
+			waitingOnYou,
+			refreshedAt: at.toISOString()
+		});
+		// a later write keeps them
+		status.happened({ kind: 'stale', commit: 'abc' });
+		expect(readStatus(path)?.queue).toHaveLength(1);
+		status.doing({ kind: 'off' });
+		const off = readStatus(path);
+		expect(off?.queue).toBeUndefined();
+		expect(off?.waitingOnYou).toBeUndefined();
+		expect(off?.refreshedAt).toBeUndefined();
+	});
+
+	it("starts a new run without the last run's Queue", () => {
+		const path = join(dir, 'status.json');
+		file(path).refreshed([{ id: '7', title: 'Saved filters' }], {
+			items: [],
+			trackerCannotList: true
+		});
+		file(path).doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		expect(readStatus(path)?.queue).toBeUndefined();
+	});
+
 	it('reads no file, or a broken one, as no status', () => {
 		expect(readStatus(join(dir, 'none.json'))).toBeNull();
 		const broken = join(dir, 'broken.json');
