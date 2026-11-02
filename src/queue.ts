@@ -132,10 +132,12 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		const canList = deps.tracker.waitingOn !== undefined;
 		if (canList) waitingFeatures = await readWaitingFeatures(deps, waitingFeatures);
 		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
-		deps.status.refreshed(
-			features.slice(1).map((f) => ({ id: f.id, title: f.title })),
-			{ items: [...waitingFeatures, ...waitingOnYou], trackerCannotList: !canList }
-		);
+		const waiting = () => ({
+			items: [...waitingFeatures, ...waitingOnYou],
+			trackerCannotList: !canList
+		});
+		const rest = features.slice(1).map((f) => ({ id: f.id, title: f.title }));
+		deps.status.refreshed(rest, waiting());
 		if (next === undefined && once) {
 			deps.say(none(deps));
 			return 0;
@@ -145,14 +147,17 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const outcome = await buildOne(deps, next.id, next.title);
-		if (outcome?.kind === 'pull' || outcome?.kind === 'nothing') {
-			waitingOnYou = outcome.waiting.filter(needsAPerson).map((w) => ({
-				kind: 'ticket',
-				id: w.id,
-				title: w.title,
-				why: w.why
-			}));
-		}
+		// only a Feature that ended well says what its Tickets wait for; after a fault or a pause the old answer is stale
+		waitingOnYou =
+			outcome?.kind === 'pull' || outcome?.kind === 'nothing'
+				? outcome.waiting.filter(needsAPerson).map((w) => ({
+						kind: 'ticket',
+						id: w.id,
+						title: w.title,
+						why: w.why
+					}))
+				: [];
+		deps.status.refreshed(rest, waiting());
 		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
 		if (outcome?.kind === 'paused') {
 			const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();

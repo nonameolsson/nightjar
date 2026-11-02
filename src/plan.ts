@@ -40,7 +40,8 @@ function whyWaiting(ticket: Ticket, built: ReadonlySet<ItemId>): Pick<Waiting, '
 }
 
 // Whether a Ticket is left for a person, who is what Waiting on you lists.
-export const needsAPerson = (w: Waiting) => w.why === 'needs a person' || w.why === 'needs info';
+export const needsAPerson = (w: { readonly why?: string }) =>
+	w.why === 'needs a person' || w.why === 'needs info';
 
 // The Feature's Tickets for a view: the open ones plus those built on the branch, each built, building or waiting with its reason.
 export function progress(

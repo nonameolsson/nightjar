@@ -3,7 +3,16 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { spentOn } from './ledger.js';
-import type { Doing, Event, Happened, Queued, Status, WaitingOnYou } from './status-shape.js';
+import { needsAPerson } from './plan.js';
+import type {
+	Doing,
+	Event,
+	Happened,
+	Queued,
+	Status,
+	WaitingItem,
+	WaitingOnYou
+} from './status-shape.js';
 
 export type {
 	Doing,
@@ -78,6 +87,18 @@ export class StatusFile implements StatusReport {
 		this.write();
 	};
 
+	// While a Feature builds, its own Tickets that need info or a person stand in place of the last Feature's
+	private waitingOnYou(found: WaitingOnYou): WaitingOnYou {
+		if (this.now.kind !== 'building') return found;
+		const tickets = (this.now.tickets ?? []).filter(needsAPerson).map((t): WaitingItem => ({
+			kind: 'ticket',
+			id: t.id,
+			title: t.title,
+			why: t.why ?? ''
+		}));
+		return { ...found, items: [...found.items.filter((i) => i.kind === 'feature'), ...tickets] };
+	}
+
 	private write() {
 		const now = this.o.now();
 		const status: Status = {
@@ -92,7 +113,7 @@ export class StatusFile implements StatusReport {
 				? {}
 				: {
 						queue: this.refresh.queue,
-						waitingOnYou: this.refresh.waitingOnYou,
+						waitingOnYou: this.waitingOnYou(this.refresh.waitingOnYou),
 						refreshedAt: this.refresh.at
 					})
 		};

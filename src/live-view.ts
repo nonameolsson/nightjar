@@ -144,7 +144,9 @@ export function renderBlock(view: FactoryView, o: BlockOptions): string[] {
 	if (status !== null) {
 		const running = !view.stopped && status.doing.kind === 'building' ? status.doing : null;
 		if (running !== null) out.push('', ...current(o, view, running));
-		out.push('', today(status, view.builtToday), '', ...listed(status));
+		out.push('', today(status, view.builtToday));
+		// a stopped or off run has no Queue to show, only history
+		if (!view.stopped && status.doing.kind !== 'off') out.push('', ...listed(status));
 		const done = recent(view);
 		if (done.length > 0) out.push('', ...done);
 	}

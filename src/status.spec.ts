@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { record } from './ledger.js';
-import { readStatus, StatusFile } from './status.js';
+import { readStatus, StatusFile, type Doing, type TicketProgress } from './status.js';
 
 let dir: string;
 beforeEach(() => {
@@ -109,6 +109,55 @@ describe('StatusFile', () => {
 		expect(off?.queue).toBeUndefined();
 		expect(off?.waitingOnYou).toBeUndefined();
 		expect(off?.refreshedAt).toBeUndefined();
+	});
+
+	it("lists the building Feature's Tickets that need info or a person in Waiting on you as the build runs, and drops them with the Feature", () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		const feature = { kind: 'feature' as const, id: '10', title: 'Asks', why: 'needs info' };
+		// the last Feature's Ticket, which must not show while another Feature builds
+		const old = { kind: 'ticket' as const, id: '3', title: 'Old', why: 'needs a person' };
+		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		status.refreshed([], { items: [feature, old], trackerCannotList: false });
+		const building = (tickets: TicketProgress[]): Doing => ({
+			kind: 'building',
+			feature: '20',
+			ticket: '21',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets
+		});
+		status.doing(
+			building([
+				{ id: '21', title: 'Now', state: 'building' },
+				{ id: '22', title: 'Asks', state: 'waiting', why: 'needs info' },
+				{ id: '23', title: 'Stuck', state: 'waiting', why: 'needs a person' },
+				{ id: '24', title: 'After', state: 'waiting', why: 'blocked by #21' }
+			])
+		);
+		expect(readStatus(path)?.waitingOnYou?.items).toEqual([
+			feature,
+			{ kind: 'ticket', id: '22', title: 'Asks', why: 'needs info' },
+			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person' }
+		]);
+		// updated as the build runs
+		status.doing(
+			building([
+				{ id: '21', title: 'Now', state: 'built' },
+				{ id: '22', title: 'Asks', state: 'building' },
+				{ id: '23', title: 'Stuck', state: 'waiting', why: 'needs a person' }
+			])
+		);
+		expect(readStatus(path)?.waitingOnYou?.items).toEqual([
+			feature,
+			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person' }
+		]);
+		// the Feature is over: what the loop last said shows again
+		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		expect(readStatus(path)?.waitingOnYou?.items).toEqual([feature, old]);
 	});
 
 	it("starts a new run without the last run's Queue", () => {

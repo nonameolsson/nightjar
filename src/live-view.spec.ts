@@ -128,6 +128,24 @@ describe('renderBlock', () => {
 		expect(render(view(null))[0]).toBe('nightjar  o/app  ·  no run yet');
 	});
 
+	it('hides the Queue and Waiting on you of a stopped or off run, as the web UI does', () => {
+		const stale = {
+			queue: [{ id: '275', title: 'Saved filters' }],
+			waitingOnYou: {
+				trackerCannotList: false,
+				items: [{ kind: 'feature' as const, id: '268', title: 'Retries', why: 'needs info' }]
+			}
+		};
+		const idle: Doing = { kind: 'idle', nextPollAt: iso(9, 31) };
+		const dead = render(view(status(idle, stale), { stopped: true }));
+		const off = render(view(status({ kind: 'off' }, stale)));
+		for (const lines of [dead, off]) {
+			expect(lines.some((l) => l.startsWith('Queue'))).toBe(false);
+			expect(lines.some((l) => l.startsWith('Waiting on you'))).toBe(false);
+			expect(lines.some((l) => l.startsWith('Today'))).toBe(true);
+		}
+	});
+
 	it('says what an older status.json or a Tracker without waitingOn cannot show', () => {
 		const old = render(view(status({ kind: 'idle', nextPollAt: iso(9, 31) })));
 		expect(old).toContain('Queue           not read yet');

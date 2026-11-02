@@ -77,7 +77,7 @@ describe('nightjar ui page', () => {
 		await open();
 		const page = (await get('/')).text;
 		expect(page).toContain('o/falcon');
-		expect(page).toContain('watching');
+		expect(page).toContain('<span class="state">idle</span>');
 		expect(page).toContain('data-until="2026-10-30T07:02:00.000Z"');
 		expect(page).toContain('$3.50');
 		expect(page).toContain('$8.00');
@@ -143,7 +143,7 @@ describe('nightjar ui page', () => {
 		});
 		await open();
 		const page = (await get('/')).text;
-		expect(page).toContain('building');
+		expect(page).toContain('<span class="state">watching</span>');
 		expect(page).toContain('#272');
 		expect(page).toContain('data-since="2026-10-30T06:48:00.000Z"');
 		expect(page).toContain('Ticket 2 of 3');
@@ -233,7 +233,7 @@ describe('nightjar ui events', () => {
 		const events = await fetch(`http://127.0.0.1:${String(ui?.port)}/events`);
 		expect(events.headers.get('content-type')).toBe('text/event-stream');
 		const reader = (events.body as ReadableStream<Uint8Array>).getReader();
-		expect(await nextPanels(reader)).toContain('watching');
+		expect(await nextPanels(reader)).toContain('idle');
 		file.happened({ kind: 'failed', feature: '12', why: 'check red' });
 		expect(await nextPanels(reader)).toContain('failed: check red');
 		await reader.cancel();
@@ -252,7 +252,7 @@ describe('nightjar ui page, more', () => {
 		status().doing({ kind: 'paused', why: 'daily limit reached', until: null });
 		await open();
 		const page = (await get('/')).text;
-		expect(page).toContain('paused');
+		expect(page).toContain('<span class="state">paused</span>');
 		expect(page).toContain('daily limit reached');
 	});
 });

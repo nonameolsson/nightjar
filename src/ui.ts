@@ -4,7 +4,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { basename, join } from 'node:path';
 import { ledgerPath } from './build.js';
-import { builtOn, costByFeature, lastRepo } from './ledger.js';
+import { lastRepo } from './ledger.js';
 import { readFactory, type FactoryView } from './status-reader.js';
 
 export const UI_PORT = 4545;
@@ -40,9 +40,9 @@ function runState(view: FactoryView): string {
 		case 'off':
 			return 'off';
 		case 'idle':
-			return 'watching';
+			return 'idle';
 		case 'building':
-			return 'building';
+			return 'watching';
 		case 'paused':
 			return 'paused';
 	}
@@ -62,14 +62,14 @@ function header(repo: string, view: FactoryView): string {
 	return `<header><h1>nightjar</h1> <span class="repo">${escape(repo)}</span> <span class="state">${runState(view)}</span>${poll}</header>`;
 }
 
-function cards(view: FactoryView, built: number): string {
+function cards(view: FactoryView): string {
 	const status = view.status;
 	const spent =
 		status === null
 			? 'no spend recorded'
 			: `${money(status.spentTodayUsd)} of ${money(status.dailyUsd)}`;
 	const waiting = status?.waitingOnYou?.items.length;
-	return `<section id="cards"><div class="card"><span>spent today</span> ${spent}</div><div class="card"><span>built today</span> <b>${String(built)}</b></div><div class="card"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
+	return `<section id="cards"><div class="card"><span>spent today</span> ${spent}</div><div class="card"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="card"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
 function queue(view: FactoryView): string {
@@ -87,7 +87,7 @@ function queue(view: FactoryView): string {
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
 }
 
-function current(view: FactoryView, cost: number): string {
+function current(view: FactoryView): string {
 	const doing = view.status?.doing;
 	let body = '<p class="empty">nothing is being built</p>';
 	if (doing?.kind === 'building' && running(view)) {
@@ -106,7 +106,7 @@ function current(view: FactoryView, cost: number): string {
 			.join('');
 		const tail = view.tail.map(escape).join('\n');
 		body =
-			`<p>${idText(doing.feature)} <time data-since="${escape(doing.startedAt)}"></time> ${money(cost)}</p>` +
+			`<p>${idText(doing.feature)} <time data-since="${escape(doing.startedAt)}"></time> ${money(view.featureCostUsd)}</p>` +
 			`<p>${where}${doing.step}${round}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
 			(tail === '' ? '' : `<pre>${tail}</pre>`);
@@ -133,11 +133,6 @@ function waiting(view: FactoryView): string {
 	return `<section id="waiting"><h2>Waiting on you</h2>${body}</section>`;
 }
 
-// #36 will add a title to these events; until then there is only the id
-function titleOf(event: object): string {
-	return 'title' in event && typeof event.title === 'string' ? ` ${event.title}` : '';
-}
-
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
@@ -150,25 +145,19 @@ function completed(view: FactoryView): string {
 						? `<a href="${escape(event.url)}">draft pull request</a>`
 						: escape(event.url)
 					: `failed: ${escape(event.why)}`;
-			return `<li>${idText(event.feature)}${escape(titleOf(event))} ${outcome} ${money(costUsd)}</li>`;
+			return `<li>${idText(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcome} ${money(costUsd)}</li>`;
 		})
 		.reverse()
 		.join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
 
-function costOfCurrent(ledger: string, view: FactoryView): number {
-	const doing = view.status?.doing;
-	return doing?.kind === 'building' ? (costByFeature(ledger).get(doing.feature) ?? 0) : 0;
-}
-
 // The panels, which the page replaces whole each time an event brings new ones.
-export function renderPanels(root: string, view: FactoryView, now: Date): string {
-	const ledger = ledgerPath(root);
+export function renderPanels(root: string, view: FactoryView): string {
 	return [
-		header(lastRepo(ledger) ?? basename(root), view),
-		cards(view, builtOn(ledger, now)),
-		current(view, costOfCurrent(ledger, view)),
+		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
+		cards(view),
+		current(view),
 		queue(view),
 		waiting(view),
 		completed(view)
@@ -238,8 +227,10 @@ export function startUi(o: UiOptions): Promise<Ui> {
 	const panelsNow = () =>
 		renderPanels(
 			o.root,
-			readFactory(o.root, o.alive === undefined ? {} : { alive: o.alive }),
-			(o.now ?? (() => new Date()))()
+			readFactory(o.root, {
+				...(o.alive === undefined ? {} : { alive: o.alive }),
+				...(o.now === undefined ? {} : { now: o.now })
+			})
 		);
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);

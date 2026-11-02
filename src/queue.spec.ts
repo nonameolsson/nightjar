@@ -124,8 +124,9 @@ describe('the Queue in the status file', () => {
 	it('is the Features after the one taken, written before it builds', async () => {
 		const w = world();
 		await queue(w.deps, true);
-		expect(w.refreshes.map((r) => r.queue)).toEqual([[{ id: '4', title: 'Later' }]]);
-		expect(w.trail).toEqual(['refresh 4', 'build 2']);
+		expect(w.refreshes[0]?.queue).toEqual([{ id: '4', title: 'Later' }]);
+		// and again once it ended, for what its Tickets left
+		expect(w.trail).toEqual(['refresh 4', 'build 2', 'refresh 4']);
 	});
 
 	it('is refreshed between Features and on each idle poll, never mid-build', async () => {
@@ -134,8 +135,10 @@ describe('the Queue in the status file', () => {
 		expect(w.trail).toEqual([
 			'refresh 4',
 			'build 2',
+			'refresh 4',
 			'refresh ',
 			'build 4',
+			'refresh ',
 			'refresh ',
 			'refresh '
 		]);
@@ -167,6 +170,40 @@ describe('the Queue in the status file', () => {
 			],
 			trackerCannotList: true
 		});
+	});
+});
+
+describe("the last Feature's Tickets in Waiting on you", () => {
+	const left: Waiting[] = [{ id: '3', title: 'Ticket 3', why: 'needs info' }];
+	const ticket = { kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' };
+
+	// the first Feature leaves a Ticket for a person, the second ends as `second` says
+	async function afterSecond(second: (id: string) => Promise<FeatureOutcome>) {
+		const w = world();
+		const build = (id: string): Promise<FeatureOutcome> =>
+			id === '2'
+				? w.tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: left }))
+				: w.tracker.removeSignal(id, 'go').then(() => second(id));
+		await queue({ ...w.deps, build }, false);
+		return w.refreshes.map((r) => r.waitingOnYou.items.filter((i) => i.kind === 'ticket'));
+	}
+
+	it('shows them as soon as the Feature ends, before the next poll', async () => {
+		const shown = await afterSecond(() => Promise.resolve({ kind: 'nothing', waiting: [] }));
+		// before Feature 2, after it, before Feature 4, after it
+		expect(shown.slice(0, 3)).toEqual([[], [ticket], [ticket]]);
+	});
+
+	it("drops them when the next Feature fails, since they are no longer the last one's", async () => {
+		const shown = await afterSecond(() => Promise.reject(new Error('boom')));
+		expect(shown[3]).toEqual([]);
+	});
+
+	it('drops them when the next Feature pauses', async () => {
+		const shown = await afterSecond(() =>
+			Promise.resolve({ kind: 'paused', why: 'daily limit reached' })
+		);
+		expect(shown[3]).toEqual([]);
 	});
 });
 
