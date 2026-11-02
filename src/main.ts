@@ -17,6 +17,7 @@ import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
 import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
+import { runUiCommand } from './ui-command.js';
 import { startServe } from './serve.js';
 import { StatusFile, statusPath } from './status.js';
 import { worktreesFor } from './worktree.js';
@@ -70,6 +71,8 @@ export interface Host {
 	readonly request?: AzureDevOpsRequest;
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
+	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
+	readonly stop?: AbortSignal;
 }
 
 export async function runNightjar(
@@ -94,6 +97,7 @@ export async function runNightjar(
 	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
+	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);

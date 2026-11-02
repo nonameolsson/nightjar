@@ -69,6 +69,19 @@ export function spentOn(path: string, now: Date): number {
 	return sum;
 }
 
+// How many Tickets were built on the local day of `now`.
+export function builtOn(path: string, now: Date): number {
+	const day = localDay(now);
+	return readEntries(path).filter(
+		(e) => e.step === 'build' && e.outcome === 'built' && localDay(new Date(e.at)) === day
+	).length;
+}
+
+// The repo the ledger's latest line names, or null with no line.
+export function lastRepo(path: string): string | null {
+	return readEntries(path).at(-1)?.repo ?? null;
+}
+
 // The estimated dollars spent on each Feature over the whole ledger, by Feature id.
 export function costByFeature(path: string): Map<string, number> {
 	const costs = new Map<string, number>();
