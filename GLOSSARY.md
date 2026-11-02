@@ -22,6 +22,10 @@ _Avoid_: ticket format, template
 The order a Feature's Tickets are built in: their blocking links, then the Feature's own child order.
 _Avoid_: dependency graph, queue
 
+**Queue**:
+The Features assigned to a person with the Go, oldest first, that Nightjar builds one after another.
+_Avoid_: backlog, next up
+
 ### Workflows
 
 **Workflow**:
