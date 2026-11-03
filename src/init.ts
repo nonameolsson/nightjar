@@ -6,7 +6,7 @@ import { askOnStdin, type Ask } from './ask.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
-import { detectChecks } from './detect-check.js';
+import { detectChecks, detectTools } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote } from './github/api.js';
@@ -201,11 +201,15 @@ const CHECK_HELP: Help = {
 };
 
 const ALLOWED_HELP: Help = {
-	short: 'The agent may run only these commands; list what it needs, such as the test runner.',
+	short: [
+		'The agent may run only these commands; list what it needs, such as the test runner.',
+		'A pattern ends in `*` to take any arguments. Examples: `make lint *`, `npm test`.',
+		'Commit, push, network and `gh` stay denied, whatever is listed.'
+	].join('\n'),
 	long: [
 		'The agent may run only the commands listed here, separated by commas.',
 		'List everything it needs: the test runner, the linter, and scripts it writes.',
-		'Commit, push and `gh` are always denied, whatever is listed.',
+		'Commit, push, network and `gh` are always denied, whatever is listed.',
 		'A pattern ends in `*` to take any arguments. Examples: `make lint *`, `npm test`.',
 		'Type none to allow no command.'
 	]
@@ -257,10 +261,11 @@ async function interview(o: InitOptions): Promise<Record<string, unknown>> {
 		...(tracker.project === undefined ? {} : { project: tracker.project })
 	});
 	const check = await askCheck(o);
+	const suggested = [...new Set([check, ...detectTools(o.root).map((d) => d.command)])];
 	const listed = await answer(
 		o.ask,
 		'Commands the agent may run, separated by commas, or none',
-		check,
+		suggested.join(', '),
 		() => null,
 		ALLOWED_HELP
 	);

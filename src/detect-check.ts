@@ -98,6 +98,41 @@ function fromDeno(root: string): Detected[] {
 	];
 }
 
+// The test, lint and build commands the repo's package.json, Makefile and justfile name.
+export function detectTools(root: string): Detected[] {
+	const names = ['test', 'lint', 'build'];
+	const found: Detected[] = [];
+	const text = read(root, 'package.json');
+	let scripts: object | null = null;
+	try {
+		const parsed = (JSON.parse(text ?? 'null') as { scripts?: unknown } | null)?.scripts;
+		if (typeof parsed === 'object' && parsed !== null) scripts = parsed;
+	} catch {
+		scripts = null;
+	}
+	if (scripts !== null) {
+		const pm = packageManager(root);
+		for (const n of names)
+			if (n in scripts)
+				found.push({
+					command: n === 'test' ? `${pm} test` : `${pm} run ${n}`,
+					source: `package.json "${n}"`
+				});
+	}
+	for (const [file, tool] of [
+		['Makefile', 'make'],
+		['justfile', 'just'],
+		['Justfile', 'just']
+	] as const) {
+		const body = read(root, file);
+		if (body === null) continue;
+		for (const n of names)
+			if (new RegExp(`^${n}\\s*:`, 'm').test(body))
+				found.push({ command: `${tool} ${n}`, source: `${file} "${n}"` });
+	}
+	return found;
+}
+
 // Every distinct command the repo's files suggest, the likeliest first.
 export function detectChecks(root: string): Detected[] {
 	const exists = (f: string) => existsSync(join(root, f));

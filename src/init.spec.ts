@@ -188,6 +188,19 @@ describe('nightjar init asks, never guesses', () => {
 		expect(m.readConfig()).toMatchObject({ allowedCommands: [] });
 	});
 
+	it('offers detected test and lint commands besides the check command, and says what stays denied', async () => {
+		writeFileSync(join(m.root, 'package.json'), '{"scripts":{"check":"x","test":"x","lint":"x"}}');
+		await init(['github', '', 'github', '', '', '']);
+		expect(asked.find((q) => q.includes('Commands the agent may run'))).toContain(
+			'[npm run check, npm test, npm run lint]'
+		);
+		expect(m.readConfig()).toMatchObject({
+			allowedCommands: ['npm run check', 'npm test', 'npm run lint']
+		});
+		expect(out.join('\n')).toContain('Examples: `make lint *`, `npm test`');
+		expect(out.join('\n')).toContain('Commit, push, network and `gh` stay denied');
+	});
+
 	it('offers the check command as the command the agent may run', async () => {
 		await init(['github', '', 'github', '', 'make check', '']);
 		expect(m.readConfig()).toMatchObject({ allowedCommands: ['make check'] });
