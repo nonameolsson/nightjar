@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { z } from 'zod';
 import { askOnStdin, type Ask } from './ask.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import { runCheck } from './check.js';
 import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { detectChecks, detectTools } from './detect-check.js';
@@ -225,7 +226,8 @@ async function askCheck(o: InitOptions): Promise<string> {
 			o.ask,
 			question,
 			undefined,
-			(text) => (/\S/.test(text) ? null : 'name the command that checks the work'),
+			(text) =>
+				/\S/.test(text) ? warnIfNeverFails(text) : 'name the command that checks the work',
 			CHECK_HELP
 		);
 	}
@@ -242,13 +244,21 @@ async function askCheck(o: InitOptions): Promise<string> {
 		o.ask,
 		question,
 		found[0]?.command,
-		(t) =>
-			/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length)
-				? `choose 1 to ${String(found.length)}, or type a command`
-				: null,
+		(t) => {
+			if (/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length))
+				return `choose 1 to ${String(found.length)}, or type a command`;
+			return t === '' ? 'name the command that checks the work' : warnIfNeverFails(t);
+		},
 		CHECK_HELP
 	);
 	return /^\d+$/.test(text) ? (found[Number(text) - 1]?.command ?? text) : text;
+}
+
+// `true` and `:` always exit zero; the warning is printed, and the command is still taken.
+function warnIfNeverFails(command: string): null {
+	if (command === 'true' || command === ':')
+		say(`warning: \`${command}\` can never fail, so nothing will verify the work`);
+	return null;
 }
 
 async function interview(o: InitOptions): Promise<Record<string, unknown>> {
@@ -295,6 +305,14 @@ function ignoresFactory(root: string): boolean {
 	}
 }
 
+// Runs the check once on the tree as it is, and says whether it passes; it never fails init.
+async function reportCheck(o: InitOptions): Promise<void> {
+	const { check } = loadConfig(o.root);
+	say(`running the check once on the clean tree: ${check}`);
+	const got = await runCheck(check, o.root, o.env);
+	say(got.ok ? 'the check passes' : 'the check fails right now, so every Ticket will stop');
+}
+
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
 	if (existsSync(file)) {
@@ -338,6 +356,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 			'Signal labels not created: the Tracker could not be reached; fix that, then run `nightjar init` again.'
 		);
 	}
+	await reportCheck(o);
 	if (problems > 0) {
 		const count = problems === 1 ? '1 problem' : `${String(problems)} problems`;
 		console.error(`nightjar: ${count} above; fix it, then run \`nightjar init\` again.`);

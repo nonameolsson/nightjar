@@ -139,6 +139,22 @@ describe('nightjar init asks, never guesses', () => {
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
+	it('warns about a check that can never fail, and reports that it passes on the clean tree', async () => {
+		// the machine's PATH holds no sh, which the check runs through
+		await init(['github', '', 'github', '', 'true', ''], { PATH: `${m.env.PATH ?? ''}:/bin` });
+		expect(out.join('\n')).toContain('`true` can never fail');
+		expect(out.join('\n')).toContain('the check passes');
+	});
+
+	it('warns about `:` and reports a check that fails right now', async () => {
+		await init(['github', '', 'github', '', ':', '']);
+		expect(out.join('\n')).toContain('`:` can never fail');
+		out.length = 0;
+		m.writeConfig({ ...loadConfig(m.root), check: 'false' });
+		await init([]);
+		expect(out.join('\n')).toContain('fails right now, so every Ticket will stop');
+	});
+
 	it('says so and suggests a placeholder when no check command is detected', async () => {
 		await init(['github', '', 'github', '', 'make check', '']);
 		expect(out.join('\n')).toContain('no check command detected');
