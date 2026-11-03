@@ -77,6 +77,76 @@ describe('startLive', () => {
 		expect(log[0]).toMatch(/^2026-.*nightjar: #1: building on factory\/1$/);
 	});
 
+	describe('when the terminal narrows', () => {
+		const ERASE = '\x1b[2K';
+		function narrowing() {
+			const written: string[] = [];
+			let onResize: (() => void) | null = null;
+			let removed = false;
+			const out = {
+				write: (s: string) => void written.push(s),
+				columns: 80,
+				on: (_e: 'resize', fn: () => void) => {
+					onResize = fn;
+				},
+				off: (_e: 'resize', fn: () => void) => {
+					if (fn === onResize) removed = true;
+				}
+			};
+			let tick: (() => void) | null = null;
+			const live = startLive({
+				root,
+				repo: 'o/' + 'x'.repeat(50),
+				out,
+				now: () => at,
+				alive: () => true,
+				every: (fn) => {
+					tick = fn;
+					return () => undefined;
+				}
+			});
+			return {
+				out,
+				live,
+				written,
+				tick: () => tick?.(),
+				resize: () => onResize?.(),
+				removed: () => removed
+			};
+		}
+		const linesOf = (frame: string) =>
+			frame
+				.split('\n')
+				.filter((l) => l.includes(ERASE))
+				.map((l) => l.slice(l.indexOf(ERASE) + ERASE.length));
+
+		it('moves up the rows the last lines take at the new width, not their count', () => {
+			const w = narrowing();
+			const first = linesOf(w.written.join(''));
+			const rows = first.reduce((n, l) => n + Math.max(1, Math.ceil(Array.from(l).length / 40)), 0);
+			expect(rows).toBeGreaterThan(first.length);
+			w.out.columns = 40;
+			const before = w.written.length;
+			w.tick();
+			const frame = w.written.slice(before).join('');
+			expect(frame.startsWith(`\x1b[${String(rows)}A\r`)).toBe(true);
+		});
+
+		it('redraws at once on a resize', () => {
+			const w = narrowing();
+			const before = w.written.length;
+			w.out.columns = 40;
+			w.resize();
+			expect(w.written.length).toBeGreaterThan(before);
+		});
+
+		it('removes the resize listener on stop', () => {
+			const w = narrowing();
+			w.live.stop();
+			expect(w.removed()).toBe(true);
+		});
+	});
+
 	it('on stop ends the timer and gives the cursor back, once', () => {
 		const w = world();
 		w.live.stop();
