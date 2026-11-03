@@ -692,9 +692,8 @@ describe('nightjar ui Table', () => {
 		const sorts = ['id', 'title', 'state', 'time', 'cost', 'outcome'].map((k) => item('sort', k));
 		const chips = ['queue', 'building', 'waiting', 'completed'].map((k) => item('chip', k));
 		let message: ((e: { data: string }) => void) | undefined;
-		const script = (/<script>([\s\S]*)<\/script>/.exec(html) ?? [])[1];
+		const code = html.split('<script>')[1]?.split('</script>')[0] ?? '';
 		const withRows = rows.map((r) => Object.assign(r, { parentNode: body }));
-		const code = script ?? '';
 		return {
 			rows: () => body.list,
 			sorts,

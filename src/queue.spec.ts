@@ -110,7 +110,7 @@ describe('queue --once', () => {
 				feature: '2',
 				title: 'Older',
 				why: 'the network went away',
-				startedAt: '2026-10-30T08:00:00.000Z'
+				startedAt: new Date(2026, 9, 30, 9).toISOString()
 			}
 		]);
 	});
@@ -435,7 +435,7 @@ describe('nightjar <id>', () => {
 			feature: '4',
 			title: 'Later',
 			why: 'boom',
-			startedAt: '2026-10-30T08:00:00.000Z'
+			startedAt: new Date(2026, 9, 30, 9).toISOString()
 		});
 	});
 });
