@@ -691,7 +691,13 @@ tr[hidden] { display: none; }
 .fcard.pulled a { color: var(--good); }
 .tickets li.built { color: var(--good); }
 .tickets li.building { color: var(--accent); font-weight: 600; }
-@media (max-width: 700px) { .board { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+	body { padding: 0 12px 24px; }
+	.board { grid-template-columns: 1fr; }
+	.table { min-width: 0; }
+	.scroll { max-width: 100%; overflow-x: auto; }
+	.scroll table { min-width: 36rem; }
+}
 `;
 
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.
