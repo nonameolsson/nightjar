@@ -1,8 +1,8 @@
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { builtOn, record, spentOn, type Entry } from './ledger.js';
+import { builtOn, fileSpend, record, type Entry } from './ledger.js';
 
 let dir: string;
 beforeEach(() => {
@@ -22,15 +22,27 @@ const entry = (at: Date, costUsd: number): Entry => ({
 	outcome: 'built'
 });
 
-describe('spentOn', () => {
-	it('adds up the local day and skips other days and broken lines', () => {
+// What the Spend module's contract does not hold: the file's own format and how it reads a damaged one.
+describe('fileSpend', () => {
+	it('writes one JSON line per entry, and makes the folder', () => {
 		const path = join(dir, 'nested', 'runs.jsonl');
+		const first = entry(new Date(2026, 9, 30, 8), 4.5);
+		const second = entry(new Date(2026, 9, 30, 9), 1);
+		const spend = fileSpend(path);
+		spend.record(first);
+		spend.record(second);
+		const lines = [first, second].map((e) => `${JSON.stringify(e)}\n`);
+		expect(readFileSync(path, 'utf8')).toBe(lines.join(''));
+	});
+
+	it('skips broken lines', () => {
+		const path = join(dir, 'runs.jsonl');
 		const morning = new Date(2026, 9, 30, 8, 0);
 		record(path, entry(morning, 4.5));
-		record(path, entry(new Date(2026, 9, 30, 23, 30), 1.25));
-		record(path, entry(new Date(2026, 9, 29, 23, 59), 50));
 		appendFileSync(path, 'not json\n{"at":"x"}\n');
-		expect(spentOn(path, morning)).toBe(5.75);
+		record(path, entry(morning, 1.25));
+		expect(fileSpend(path).today(morning)).toBe(5.75);
+		expect(fileSpend(path).entries()).toHaveLength(2);
 	});
 
 	it('counts a line written when ids were numbers', () => {
@@ -38,11 +50,13 @@ describe('spentOn', () => {
 		const now = new Date(2026, 9, 30, 8, 0);
 		appendFileSync(path, `${JSON.stringify({ ...entry(now, 2), feature: 1, ticket: 2 })}\n`);
 		record(path, entry(now, 1));
-		expect(spentOn(path, now)).toBe(3);
+		const spend = fileSpend(path);
+		expect(spend.today(now)).toBe(3);
+		expect(spend.entries()[0]).toMatchObject({ feature: '1', ticket: '2' });
 	});
 
 	it('reads no file as nothing spent', () => {
-		expect(spentOn(join(dir, 'none.jsonl'), new Date())).toBe(0);
+		expect(fileSpend(join(dir, 'none.jsonl')).today(new Date())).toBe(0);
 	});
 });
 

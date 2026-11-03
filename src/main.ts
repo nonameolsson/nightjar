@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
-import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
+import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
@@ -19,6 +19,7 @@ import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
+import { fileSpend, ledgerPath } from './ledger.js';
 import { claimPorts, portEnv } from './ports.js';
 import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
@@ -149,9 +150,10 @@ export async function runNightjar(
 	}
 	const { root, config, adapters } = ready;
 
+	const spend = fileSpend(ledgerPath(root));
 	const status = new StatusFile({
 		path: statusPath(root),
-		ledger: ledgerPath(root),
+		spend,
 		now: () => new Date(),
 		pid: process.pid,
 		dailyUsd: ready.person.dailyUsd
@@ -207,6 +209,7 @@ export async function runNightjar(
 		runCheck: (command, cwd, env) => runCheck(command, cwd, env, config.gate ?? {}),
 		runSetup: runCheck,
 		serve: startServe,
+		spend,
 		now: () => new Date(),
 		newId: () => randomUUID(),
 		say: runSay,

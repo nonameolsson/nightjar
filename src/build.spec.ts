@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildFeature, LIMITS, ledgerPath, type Deps, type Setup } from './build.js';
+import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
 import type {
 	BuildOutcome,
 	BuildRequest,
@@ -26,9 +26,10 @@ import type {
 } from './coding-agent.js';
 import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
+import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
-import { record } from './ledger.js';
 import { QUESTIONS_MARK } from './prompt.js';
+import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
@@ -52,6 +53,8 @@ interface World {
 	readonly env: Record<string, string | undefined>;
 	readonly tracker: FakeTracker;
 	readonly host: FakeCodeHost;
+	// what the loop records, in place of .factory/runs.jsonl
+	readonly spend: Spend;
 	readonly asked: Work[];
 	// each check command run, with the folder it ran in
 	readonly checks: { readonly command: string; readonly cwd: string }[];
@@ -164,6 +167,7 @@ function makeWorld(dir = base): World {
 		env,
 		tracker,
 		host: new FakeCodeHost(),
+		spend: memorySpend(),
 		asked: [],
 		checks: [],
 		checkEnvs: [],
@@ -245,6 +249,7 @@ function deps(world: World): Deps {
 				}
 			});
 		},
+		spend: world.spend,
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
 		say: () => undefined,
@@ -277,11 +282,7 @@ const tree = () => join(base, 'worktrees', '1-one-escape');
 
 const refs = (world: World) => world.host.pulls[0]?.references.map((r) => r.text);
 
-const ledger = (world: World) =>
-	readFileSync(ledgerPath(world.root), 'utf8')
-		.trim()
-		.split('\n')
-		.map((l) => JSON.parse(l) as { step: string; outcome: string; costUsd: number });
+const ledger = (world: World) => world.spend.entries();
 
 const PORTS = { WEB_PORT: '4500', DB_PORT: '4501' };
 
@@ -734,7 +735,7 @@ describe('buildFeature', () => {
 
 	it('pauses before a session once the day has spent its limit, and gives the Go back', async () => {
 		const world = makeWorld();
-		record(ledgerPath(world.root), {
+		world.spend.record({
 			at: new Date(2026, 9, 30, 7).toISOString(),
 			repo: 'o/r',
 			feature: '9',

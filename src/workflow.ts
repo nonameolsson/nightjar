@@ -3,7 +3,7 @@ import type { CheckResult, RunCheck } from './check.js';
 import { envOf, type CodingAgent, type Ended, type Fixing } from './coding-agent.js';
 import { DEFAULT_ROUNDS, type Config } from './config.js';
 import type { Env } from './git.js';
-import type { Entry } from './ledger.js';
+import type { Allowance, Entry } from './spend.js';
 import type { Serve, Served } from './serve.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
 import type { Worktree } from './worktree.js';
@@ -164,6 +164,8 @@ export interface StepsRun {
 	) => void;
 	// why the run pauses before another Session, else null
 	readonly dailyPause: () => string | null;
+	// what a piece of work that has spent `spent` of its `cap` may still spend
+	readonly allowance: (cap: number, spent: number) => Allowance;
 	readonly aborted: () => boolean;
 }
 
@@ -300,8 +302,8 @@ export class WorkflowRun {
 		let holds = step.until === undefined;
 		let ran = 0;
 		for (let round = 1; round <= rounds && !(round > 1 && holds); round += 1) {
-			const budget = cap - spent;
-			if (round > 1 && budget < 1) break;
+			const { usd: budget, enough } = run.allowance(cap, spent);
+			if (round > 1 && !enough) break;
 			run.building(after, sessionId, { round, rounds });
 			const got = await run.codingAgent.step({
 				kind: 'step',

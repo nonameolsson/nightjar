@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { CheckResult } from './check.js';
 import type { StepOutcome, StepRequest } from './coding-agent.js';
+import { memorySpend } from './fakes/spend.js';
 import type { Env } from './git.js';
 import type { Ticket } from './tracker.js';
 import {
@@ -238,6 +239,7 @@ describe('the Steps of a Workflow', () => {
 			log: (entry) => b.logged.push(entry),
 			building: (t, session, rounds) => b.shown.push({ ticket: t, session, ...rounds }),
 			dailyPause: () => b.dailyPause,
+			allowance: (cap, spent) => memorySpend().allowance(cap, spent),
 			aborted: () => b.aborted
 		};
 		return openWorkflow({ name: 'w', workflow }, run);

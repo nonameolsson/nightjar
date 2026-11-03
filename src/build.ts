@@ -1,15 +1,14 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
-import { join } from 'node:path';
 import type { RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
-import { record, spentOn, type Entry } from './ledger.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
 import type { Signal } from './signals.js';
+import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import { branchFor, openWorktree, type Worktree } from './worktree.js';
@@ -53,6 +52,8 @@ export interface Deps {
 	readonly runSetup: RunCheck;
 	// starts a Workflow's serve command
 	readonly serve: Serve;
+	// records each Session's cost and answers for the caps
+	readonly spend: Spend;
 	readonly now: () => Date;
 	readonly newId: () => string;
 	readonly say: (line: string) => void;
@@ -103,8 +104,6 @@ export type FeatureOutcome =
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
-
-export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
@@ -219,7 +218,6 @@ function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
 }
 
 class FeatureRun {
-	private spent = 0;
 	private readonly costs: Cost[] = [];
 	private featureComments: Comment[] = [];
 	// the Feature's Workflow, which runs its own Steps
@@ -279,15 +277,13 @@ class FeatureRun {
 			log: (entry) => this.log(entry),
 			building: (ticket, session, rounds) => this.building(ticket, 'step', session, rounds),
 			dailyPause: () => this.dailyPause(),
+			allowance: (cap, spent) => this.deps.spend.allowance(cap, spent),
 			aborted: () => this.aborted
 		});
 	}
 
 	private dailyPause(): string | null {
-		const today = spentOn(ledgerPath(this.setup.root), this.deps.now());
-		return today >= this.setup.limits.dailyUsd
-			? `today's estimated spend, ${dollars(today)}, reached the daily limit of ${dollars(this.setup.limits.dailyUsd)}`
-			: null;
+		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd);
 	}
 
 	private async trusted(id: ItemId): Promise<Comment[]> {
@@ -295,9 +291,8 @@ class FeatureRun {
 	}
 
 	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
-		this.spent += entry.costUsd;
 		this.costs.push({ ticket: entry.ticket, work, usd: entry.costUsd });
-		record(ledgerPath(this.setup.root), {
+		this.deps.spend.record({
 			at: this.deps.now().toISOString(),
 			repo: this.setup.repo,
 			feature: this.feature.id,
@@ -472,8 +467,8 @@ class FeatureRun {
 		const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
 		let { check, spent } = o;
 		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
-			const budget = o.cap - spent;
-			if (budget < 1) break;
+			const { usd: budget, enough } = this.deps.spend.allowance(o.cap, spent);
+			if (!enough) break;
 			this.deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
 			this.building(o.ticket, 'fix', o.sessionId, { round, rounds: limits.fixRounds });
 			const got = await this.deps.codingAgent.fix({
@@ -592,7 +587,7 @@ class FeatureRun {
 			left,
 			red,
 			review,
-			spent: this.spent,
+			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,

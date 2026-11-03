@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { record } from './ledger.js';
+import { fileSpend, record } from './ledger.js';
 import { readFactory } from './status-reader.js';
 import { StatusFile } from './status.js';
 
@@ -21,7 +21,7 @@ const dead = () => false;
 const status = () =>
 	new StatusFile({
 		path: join(root, '.factory', 'status.json'),
-		ledger: join(root, '.factory', 'runs.jsonl'),
+		spend: fileSpend(join(root, '.factory', 'runs.jsonl')),
 		now: () => at,
 		pid: 42,
 		dailyUsd: 60
@@ -213,7 +213,7 @@ describe('the cost of each build', () => {
 		let now = time(0);
 		const file = new StatusFile({
 			path: join(root, '.factory', 'status.json'),
-			ledger: join(root, '.factory', 'runs.jsonl'),
+			spend: fileSpend(join(root, '.factory', 'runs.jsonl')),
 			now: () => now,
 			pid: 42,
 			dailyUsd: 60
