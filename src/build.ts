@@ -1,32 +1,14 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import type { CheckResult, RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
-import { envOf, logsPath, pauseWhy, ticketLine } from './coding-agent.js';
+import { envOf, type CodingAgent, type Fixing } from './coding-agent.js';
 import type { Env } from './git.js';
 import { record, spentOn, type Entry } from './ledger.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
-import {
-	BUILD_SCHEMA,
-	REVIEW_SCHEMA,
-	STEP_SCHEMA,
-	buildPrompt,
-	fixPrompt,
-	questionRounds,
-	questionsComment,
-	readBuildAnswer,
-	readReview,
-	readStepAnswer,
-	reviewPrompt,
-	stepPrompt,
-	stepRoundPrompt,
-	type Question,
-	type Review
-} from './prompt.js';
+import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve, Served } from './serve.js';
-import type { Session, SessionRequest } from './session.js';
-import { BUILD_TOOLS, REVIEW_TOOLS, buildSettings, reviewSettings, stepTools } from './settings.js';
 import type { Signal } from './signals.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -66,7 +48,7 @@ export const LIMITS: Limits = {
 export interface Deps {
 	readonly tracker: Tracker;
 	readonly codeHost: CodeHost;
-	readonly session: Session;
+	readonly codingAgent: CodingAgent;
 	readonly runCheck: RunCheck;
 	// the worktree setup command, run through the same shell as the check
 	readonly runSetup: RunCheck;
@@ -140,6 +122,9 @@ type Step =
 	| { readonly kind: 'red'; readonly tail: string };
 
 const NEXT: Step = { kind: 'next' };
+
+// What ends a piece of work before its own end: the run goes on later, or a person stopped it.
+type Halt = Extract<Step, { kind: 'paused' | 'aborted' }>;
 
 export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promise<FeatureOutcome> {
 	const { tracker } = deps;
@@ -263,11 +248,6 @@ class FeatureRun {
 		return this.setup.signal?.aborted === true;
 	}
 
-	// `aborted` again after an await, which TypeScript does not know may have changed
-	private stopped() {
-		return this.aborted;
-	}
-
 	async build(): Promise<FeatureOutcome> {
 		this.featureComments = await this.trusted(this.feature.id);
 		if (this.workflow !== null) this.stepsDone = await this.tree.stepsDone();
@@ -312,25 +292,6 @@ class FeatureRun {
 		});
 	}
 
-	private request(
-		over: Partial<SessionRequest> & Pick<SessionRequest, 'prompt' | 'sessionId'>
-	): SessionRequest {
-		const { setup } = this;
-		return {
-			cwd: this.tree.at.folder,
-			schema: BUILD_SCHEMA,
-			tools: BUILD_TOOLS,
-			settings: buildSettings(setup.allowedCommands),
-			budgetUsd: setup.limits.ticketUsd,
-			minutes: setup.limits.ticketMinutes,
-			log: join(logsPath(setup.root), `${over.sessionId}.jsonl`),
-			allowApiKey: setup.allowApiKey,
-			env: envOf(setup),
-			signal: setup.signal,
-			...over
-		};
-	}
-
 	// Hands a Ticket to a person: no code kept on the branch, the reason on the Ticket.
 	private async handBack(
 		ticket: Ticket,
@@ -367,63 +328,61 @@ class FeatureRun {
 			round: questionRounds(ticketComments) + 1,
 			rounds: this.setup.limits.questionRounds + 1
 		});
-		const prompt = buildPrompt({
+		const got = await this.deps.codingAgent.build({
+			kind: 'build',
+			at: this.tree.at,
+			sessionId,
 			feature: this.feature,
 			ticket,
 			featureComments: this.featureComments,
 			ticketComments,
 			built: this.tickets.filter((t) => this.built.has(t.id)),
-			allowed: this.setup.allowedCommands,
-			check: this.setup.check,
-			rules: this.setup.rules
+			budgetUsd: this.setup.limits.ticketUsd
 		});
-		const result = await this.deps.session(
-			this.request({
-				prompt,
-				sessionId,
-				model: this.setup.model ?? ticketLine(ticket.body, 'Model') ?? this.setup.defaults?.model,
-				effort:
-					this.setup.effort ?? ticketLine(ticket.body, 'Effort') ?? this.setup.defaults?.effort
-			})
-		);
-		const cost = 'costUsd' in result ? result.costUsd : 0;
-		const entry = { ticket: ticket.id, step: 'build' as const, session: sessionId, costUsd: cost };
+		const entry = {
+			ticket: ticket.id,
+			step: 'build' as const,
+			session: sessionId,
+			costUsd: got.costUsd
+		};
 
-		if (this.aborted) {
-			this.log({ ...entry, outcome: 'stopped by a person' });
-			await this.tree.discard(before, ticket.id);
-			return { kind: 'aborted' };
+		switch (got.kind) {
+			case 'aborted':
+				this.log({ ...entry, outcome: 'stopped by a person' });
+				await this.tree.discard(before, ticket.id);
+				return { kind: 'aborted' };
+			case 'paused':
+				await this.tree.discard(before, ticket.id);
+				this.log({ ...entry, outcome: `paused: ${got.why}` });
+				return { kind: 'paused', why: got.why };
+			case 'failed':
+				this.log({ ...entry, outcome: `failed: ${got.why}` });
+				await this.handBack(
+					ticket,
+					before,
+					`Nightjar could not build this Ticket: ${got.why}.\n\nSession: \`claude --resume ${sessionId}\``,
+					'needsInfo',
+					got.why
+				);
+				return NEXT;
+			case 'questions': {
+				const round = questionRounds(ticketComments) + 1;
+				this.log({ ...entry, outcome: `questions, round ${String(round)}` });
+				await this.askAbout(ticket, before, got.questions, round);
+				return NEXT;
+			}
+			case 'built':
+				this.log({ ...entry, outcome: 'built' });
+				return this.checkAndCommit(ticket, before, sessionId, got.summary, got.costUsd);
 		}
-		if (result.kind === 'api-key' || result.kind === 'rate-limited') {
-			await this.tree.discard(before, ticket.id);
-			const why = pauseWhy(result);
-			this.log({ ...entry, outcome: `paused: ${why}` });
-			return { kind: 'paused', why };
-		}
-		const answer = result.kind === 'done' ? readBuildAnswer(result.output) : null;
-		if (answer === null) {
-			const why = result.kind === 'stopped' ? result.why : 'it answered in a shape not known';
-			this.log({ ...entry, outcome: `failed: ${why}` });
-			await this.handBack(
-				ticket,
-				before,
-				`Nightjar could not build this Ticket: ${why}.\n\nSession: \`claude --resume ${sessionId}\``,
-				'needsInfo',
-				why
-			);
-			return NEXT;
-		}
-		if (answer.outcome === 'questions') {
-			const round = questionRounds(ticketComments) + 1;
-			this.log({ ...entry, outcome: `questions, round ${String(round)}` });
-			await this.askAbout(ticket, before, answer.questions, round);
-			return NEXT;
-		}
-		this.log({ ...entry, outcome: 'built' });
-		return this.checkAndCommit(ticket, before, sessionId, answer.summary, cost);
 	}
 
-	private async askAbout(ticket: Ticket, before: string, questions: Question[], round: number) {
+	private async askAbout(
+		ticket: Ticket,
+		before: string,
+		questions: readonly Question[],
+		round: number
+	) {
 		const limit = this.setup.limits.questionRounds;
 		if (round <= limit) {
 			const asked = `it asked ${String(questions.length)} question${questions.length === 1 ? '' : 's'}, round ${String(round)}`;
@@ -457,21 +416,13 @@ class FeatureRun {
 			cap: limits.ticketUsd,
 			spent: cost,
 			check: first,
-			request: {},
-			finished: (output) => {
-				const answer = readBuildAnswer(output);
-				return answer?.outcome === 'built' ? answer.summary : null;
-			}
+			of: { kind: 'build' }
 		});
 		const { check } = fixed;
 		const summary = [built, ...fixed.summaries].join('\n\n');
-		if (this.aborted) {
+		if (fixed.halt !== undefined) {
 			await this.tree.discard(before, ticket.id);
-			return { kind: 'aborted' };
-		}
-		if (fixed.paused !== undefined) {
-			await this.tree.discard(before, ticket.id);
-			return { kind: 'paused', why: fixed.paused };
+			return fixed.halt;
 		}
 		if (!(await this.tree.commitTicket(ticket.id, ticket.title, summary, sessionId))) {
 			await this.handBack(
@@ -509,11 +460,8 @@ class FeatureRun {
 		cap: number;
 		spent: number;
 		check: CheckResult;
-		// what a fix round's request changes from the Ticket defaults
-		request: Partial<SessionRequest>;
-		// the summary of a fix that finished, or null when it gave up
-		finished: (output: unknown) => string | null;
-	}): Promise<{ check: CheckResult; spent: number; summaries: string[]; paused?: string }> {
+		of: Fixing;
+	}): Promise<{ check: CheckResult; spent: number; summaries: string[]; halt?: Halt }> {
 		const { limits, check: command } = this.setup;
 		const summaries: string[] = [];
 		let { check, spent } = o;
@@ -522,40 +470,35 @@ class FeatureRun {
 			if (budget < 1) break;
 			this.deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
 			this.building(o.ticket, 'fix', o.sessionId, { round, rounds: limits.fixRounds });
-			const fix = await this.deps.session(
-				this.request({
-					prompt: fixPrompt(round, limits.fixRounds, command, check.tail),
-					sessionId: o.sessionId,
-					resume: o.sessionId,
-					budgetUsd: budget,
-					...o.request
-				})
-			);
-			const fixCost = 'costUsd' in fix ? fix.costUsd : 0;
-			spent += fixCost;
-			if (fix.kind === 'api-key' || fix.kind === 'rate-limited') {
-				const why = pauseWhy(fix);
-				this.log({
-					ticket: o.ticket,
-					step: 'fix',
-					session: o.sessionId,
-					costUsd: fixCost,
-					outcome: `paused: ${why}`
-				});
-				return { check, spent, summaries, paused: why };
-			}
-			const summary = fix.kind === 'done' ? o.finished(fix.output) : null;
-			this.log({
-				ticket: o.ticket,
-				step: 'fix',
-				session: o.sessionId,
-				costUsd: fixCost,
-				outcome: `round ${String(round)}${summary === null ? ' gave up' : ''}`
+			const got = await this.deps.codingAgent.fix({
+				kind: 'fix',
+				at: this.tree.at,
+				of: o.of,
+				resume: o.sessionId,
+				round,
+				tail: check.tail,
+				budgetUsd: budget
 			});
-			if (summary === null || this.aborted) break;
-			summaries.push(summary);
+			spent += got.costUsd;
+			const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
+			if (got.kind === 'paused') {
+				this.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` });
+				return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
+			}
+			// the ledger names a fix round that failed or was stopped as one that gave up
+			const gaveUp = got.kind !== 'fixed';
+			this.log({
+				...entry,
+				costUsd: got.costUsd,
+				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`
+			});
+			if (got.kind === 'aborted') return { check, spent, summaries, halt: { kind: 'aborted' } };
+			if (got.kind !== 'fixed') break;
+			summaries.push(got.summary);
 			check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
 		}
+		// a stop during the check, which no Session reports
+		if (this.aborted) return { check, spent, summaries, halt: { kind: 'aborted' } };
 		return { check, spent, summaries };
 	}
 
@@ -645,26 +588,6 @@ class FeatureRun {
 			allowedTools: workflow.allowedTools,
 			localNetwork: workflow.localNetwork
 		};
-		const over: Partial<SessionRequest> = {
-			schema: STEP_SCHEMA,
-			tools: stepTools(extras),
-			settings: buildSettings(setup.allowedCommands, extras),
-			model: setup.model ?? step.model ?? setup.defaults?.model,
-			effort: setup.effort ?? step.effort ?? setup.defaults?.effort
-		};
-		const first = stepPrompt({
-			workflow: name,
-			step,
-			rounds,
-			feature: this.feature,
-			...(ticket === null ? {} : { ticket }),
-			allowed: [...setup.allowedCommands, ...(workflow.allowedCommands ?? [])],
-			check: setup.check,
-			...(setup.rules === undefined ? {} : { rules: setup.rules }),
-			notes: relative(this.tree.at.folder, notes),
-			base: this.tree.at.base,
-			...(diff === undefined ? {} : { diff })
-		});
 		const giveUp = async (why: string): Promise<StepEnd> => {
 			await this.tree.revert(before);
 			return { kind: 'undone', why };
@@ -673,53 +596,57 @@ class FeatureRun {
 
 		const summaries: string[] = [];
 		let spent = 0;
-		let left: string[] = [];
+		let left: readonly string[] = [];
 		let holds = step.until === undefined;
 		let ran = 0;
 		for (let round = 1; round <= rounds && !(round > 1 && holds); round += 1) {
 			const budget = cap - spent;
 			if (round > 1 && budget < 1) break;
 			this.building(after, 'step', sessionId, { round, rounds });
-			const result = await this.deps.session(
-				this.request({
-					...over,
-					prompt:
-						round === 1 || step.until === undefined
-							? first
-							: stepRoundPrompt(round, rounds, step.until, left),
-					sessionId,
-					...(round > 1 ? { resume: sessionId } : {}),
-					budgetUsd: budget
-				})
-			);
+			const got = await this.deps.codingAgent.step({
+				kind: 'step',
+				at: this.tree.at,
+				sessionId,
+				workflow: name,
+				step,
+				extras,
+				round,
+				rounds,
+				feature: this.feature,
+				ticket,
+				notes,
+				...(diff === undefined ? {} : { diff }),
+				left,
+				budgetUsd: budget
+			});
 			ran = round;
-			const cost = 'costUsd' in result ? result.costUsd : 0;
-			spent += cost;
-			const entry = { ticket: after, step: 'step' as const, session: sessionId, costUsd: cost };
-			if (this.aborted) {
-				this.log({ ...entry, outcome: `${label}: stopped by a person` });
-				await this.tree.revert(before);
-				return { kind: 'aborted' };
-			}
-			if (result.kind === 'api-key' || result.kind === 'rate-limited') {
-				await this.tree.revert(before);
-				const why = pauseWhy(result);
-				this.log({ ...entry, outcome: `${label}: paused: ${why}` });
-				return { kind: 'paused', why };
-			}
-			const answer = result.kind === 'done' ? readStepAnswer(result.output) : null;
-			if (answer === null) {
-				const why = result.kind === 'stopped' ? result.why : 'it answered in a shape not known';
-				this.log({ ...entry, outcome: `${label}: failed: ${why}` });
-				return giveUp(why);
-			}
-			if (answer.outcome === 'blocked') {
-				const why = `it reported itself blocked${answer.blocker ? `: ${answer.blocker}` : ''}`;
-				this.log({ ...entry, outcome: `${label}: blocked` });
-				return giveUp(why);
+			spent += got.costUsd;
+			const entry = {
+				ticket: after,
+				step: 'step' as const,
+				session: sessionId,
+				costUsd: got.costUsd
+			};
+			switch (got.kind) {
+				case 'aborted':
+					this.log({ ...entry, outcome: `${label}: stopped by a person` });
+					await this.tree.revert(before);
+					return { kind: 'aborted' };
+				case 'paused':
+					await this.tree.revert(before);
+					this.log({ ...entry, outcome: `${label}: paused: ${got.why}` });
+					return { kind: 'paused', why: got.why };
+				case 'failed':
+					this.log({ ...entry, outcome: `${label}: failed: ${got.why}` });
+					return giveUp(got.why);
+				case 'blocked':
+					this.log({ ...entry, outcome: `${label}: blocked` });
+					return giveUp(`it reported itself blocked${got.blocker ? `: ${got.blocker}` : ''}`);
+				case 'done':
+					break;
 			}
 			this.log({ ...entry, outcome: `${label}: round ${String(round)}` });
-			summaries.push(answer.summary);
+			summaries.push(got.summary);
 			const checked = await this.fixUntilGreen({
 				ticket: after,
 				name: label,
@@ -727,25 +654,17 @@ class FeatureRun {
 				cap,
 				spent,
 				check: await this.deps.runCheck(setup.check, this.tree.at.folder, envOf(setup)),
-				request: over,
-				finished: (output) => {
-					const fixed = readStepAnswer(output);
-					return fixed?.outcome === 'done' ? fixed.summary : null;
-				}
+				of: { kind: 'step', step, extras }
 			});
 			spent = checked.spent;
 			summaries.push(...checked.summaries);
-			if (this.stopped()) {
+			if (checked.halt !== undefined) {
 				await this.tree.revert(before);
-				return { kind: 'aborted' };
-			}
-			if (checked.paused !== undefined) {
-				await this.tree.revert(before);
-				return { kind: 'paused', why: checked.paused };
+				return checked.halt;
 			}
 			if (!checked.check.ok) return giveUp('its changes leave the check failing');
-			left = answer.left;
-			holds = step.until === undefined || answer.untilHolds;
+			left = got.left;
+			holds = got.untilHolds;
 		}
 		await this.tree.commitStep({
 			workflow: name,
@@ -929,46 +848,30 @@ async function reviewFeature(
 	deps.status.doing(
 		show({ ticket: null, step: 'review', round: null, rounds: null, session: sessionId, tickets })
 	);
-	const result = await deps.session({
-		cwd: tree.at.folder,
-		prompt: reviewPrompt(feature, tree.at.base, built, setup.rules),
-		schema: REVIEW_SCHEMA,
-		tools: REVIEW_TOOLS,
-		settings: reviewSettings(),
-		budgetUsd: setup.limits.reviewUsd,
-		minutes: setup.limits.reviewMinutes,
-		model: setup.model ?? setup.review?.model ?? setup.defaults?.model,
-		effort: setup.effort ?? setup.review?.effort ?? setup.defaults?.effort,
+	const got = await deps.codingAgent.review({
+		kind: 'review',
+		at: tree.at,
 		sessionId,
-		log: join(logsPath(setup.root), `${sessionId}.jsonl`),
-		allowApiKey: setup.allowApiKey,
-		env: envOf(setup),
-		signal: setup.signal
+		feature,
+		tickets: built,
+		budgetUsd: setup.limits.reviewUsd
 	});
-	if (result.kind === 'api-key' || result.kind === 'rate-limited') {
-		const why = pauseWhy(result);
-		log({
-			ticket: null,
-			step: 'review',
-			session: sessionId,
-			costUsd: 0,
-			outcome: `paused: ${why}`
-		});
-		return { paused: why };
+	const entry = { ticket: null, step: 'review' as const, session: sessionId, costUsd: got.costUsd };
+	switch (got.kind) {
+		case 'paused':
+			log({ ...entry, outcome: `paused: ${got.why}` });
+			return { paused: got.why };
+		case 'reviewed':
+			log({ ...entry, outcome: got.review.verdict });
+			return got.review;
+		// a stopped review is one that did not finish: the run is past its last Ticket
+		case 'aborted':
+			log({ ...entry, outcome: 'failed: stopped by a person' });
+			return null;
+		case 'failed':
+			log({ ...entry, outcome: `failed: ${got.why}` });
+			return null;
 	}
-	const review = result.kind === 'done' ? readReview(result.output) : null;
-	log({
-		ticket: null,
-		step: 'review',
-		session: sessionId,
-		costUsd: 'costUsd' in result ? result.costUsd : 0,
-		outcome: review
-			? review.verdict
-			: result.kind === 'stopped'
-				? `failed: ${result.why}`
-				: result.kind
-	});
-	return review;
 }
 
 // `name` is how the place the list goes names a Ticket: #N on the Tracker, its reference on the Code host.

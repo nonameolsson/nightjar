@@ -47,6 +47,9 @@ function fakeSession(settled: Settled, onCall: () => void = () => undefined) {
 
 const done = (output: unknown): Settled => ({ kind: 'done', costUsd: 2.5, output });
 
+const permissions = (req: SessionRequest | undefined) =>
+	(req?.settings as { permissions: Record<string, string[]> }).permissions;
+
 const buildRequest = (over: Partial<{ ticket: Ticket }> = {}) => ({
 	kind: 'build' as const,
 	at,
@@ -77,6 +80,18 @@ describe('a build', () => {
 		expect(req?.allowApiKey).toBe(false);
 		expect(req?.env).toEqual({ PATH: '/bin', WEB_PORT: '4500' });
 		expect(JSON.stringify(req?.settings)).toContain('Bash(make test)');
+		expect(req?.settings).not.toHaveProperty('sandbox');
+	});
+
+	it('never loosens the deny rules, whatever commands the repo allows', async () => {
+		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Built it' }));
+		const loosening = ['make test', 'git push *', 'gh *'];
+		await codingAgent({ ...SETUP, allowedCommands: loosening }, session).build(buildRequest());
+		const { allow, deny } = permissions(sent[0]);
+		expect(allow).toContain('Bash(make test)');
+		expect(deny).toEqual(
+			expect.arrayContaining(['Bash(git push *)', 'Bash(git commit *)', 'Bash(gh *)'])
+		);
 	});
 
 	it('reads a built answer', async () => {
@@ -238,6 +253,10 @@ describe('a Step round', () => {
 		await codingAgent(SETUP, session).step(stepRequest({ diff }));
 		const req = sent[0];
 		expect(req?.resume).toBeUndefined();
+		expect(req?.prompt).toMatch(/^Nobody is at the keyboard/);
+		expect(req?.prompt).toContain('never ask a question in chat');
+		expect(req?.prompt).toContain('# Your Step\n\nLook at it.');
+		expect(req?.prompt).toContain('git diff origin/main...HEAD');
 		expect(req?.prompt).toContain('You run Step `looks` of Workflow `ui`');
 		expect(req?.prompt).toContain('`make test`, `npx playwright *`');
 		expect(req?.prompt).toContain('Notes folder: `.factory/notes`.');
@@ -247,6 +266,24 @@ describe('a Step round', () => {
 		expect(JSON.stringify(req?.settings)).toContain('Bash(npx playwright *)');
 		expect(req?.schema).toHaveProperty('properties.untilHolds');
 		expect([req?.budgetUsd, req?.minutes]).toEqual([4, 60]);
+	});
+
+	it('keeps the deny rules and opens only localhost to a Workflow that asks for its network', async () => {
+		const { sent, session } = fakeSession(done(stepDone));
+		await codingAgent(SETUP, session).step(stepRequest());
+		expect(permissions(sent[0]).deny).toEqual(
+			expect.arrayContaining([
+				'Bash(git commit *)',
+				'Bash(git push *)',
+				'Bash(git switch *)',
+				'Bash(gh *)',
+				'Bash(curl *)',
+				'WebFetch'
+			])
+		);
+		expect(sent[0]?.settings).toMatchObject({
+			sandbox: { enabled: true, network: { allowedDomains: ['localhost', '127.0.0.1'] } }
+		});
 	});
 
 	it('resumes it for a later round, with what the last round left', async () => {
@@ -422,6 +459,14 @@ describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) 
 			sessionId,
 			costUsd: 1.5
 		});
+	});
+
+	it("runs in the Feature's worktree, on the machine's environment and the reserved ports", async () => {
+		const { sent, session } = fakeSession(done({}));
+		await call(codingAgent({ ...SETUP, allowApiKey: true }, session));
+		expect(sent[0]?.cwd).toBe('/w/1-one-escape');
+		expect(sent[0]?.env).toEqual({ PATH: '/bin', WEB_PORT: '4500' });
+		expect(sent[0]?.allowApiKey).toBe(true);
 	});
 
 	it('passes the stop signal to the Session', async () => {
