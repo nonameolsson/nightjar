@@ -192,6 +192,31 @@ describe('nightjar doctor over Workflows', () => {
 		expect(code).toBe(0);
 	});
 
+	it('lists the skills of a session started with the plugins of factory.json', async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, plugins: ['.claude'], workflows: WORKFLOWS });
+		const asked: string[][] = [];
+		const skills = (_cwd: string, _env: unknown, plugins: readonly string[]) => {
+			asked.push([...plugins]);
+			return Promise.resolve(['design-critic']);
+		};
+		const checked = await checkMachine({
+			useApiKey: false,
+			env: m.env,
+			cwd: m.root,
+			failFast: true,
+			skills
+		});
+		expect(asked).toEqual([[join(m.root, '.claude')]]);
+		expect(checked.ready?.workflowProblems).toEqual({});
+	});
+
+	it('tells a missing skill to be named in plugins of factory.json', async () => {
+		const env = withWorkflows('tdd');
+		await start({ env });
+		expect(err.join('\n')).toContain('"plugins"');
+	});
+
 	it('fails the Workflow that names a missing skill, and no other', async () => {
 		const env = withWorkflows('tdd');
 		expect(await start({ env })).toBe(2);

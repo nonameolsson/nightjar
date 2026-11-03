@@ -165,6 +165,7 @@ export async function runNightjar(
 		check: config.check,
 		allowedCommands: config.allowedCommands,
 		...(ready.rules === null ? {} : { rules: ready.rules }),
+		...(config.plugins === undefined ? {} : { plugins: config.plugins }),
 		defaults: { model: config.model, effort: config.effort },
 		review: config.review,
 		...(config.setup === undefined ? {} : { setupCommand: config.setup }),

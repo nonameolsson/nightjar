@@ -42,6 +42,7 @@ export interface AgentSetup {
 	readonly check: string;
 	readonly allowedCommands: readonly string[];
 	readonly rules?: string;
+	readonly plugins?: readonly string[];
 	readonly portEnv?: Readonly<Record<string, string>>;
 	readonly allowApiKey: boolean;
 	readonly env: Env;
@@ -197,6 +198,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		budgetUsd: work.budgetUsd,
 		minutes: setup.limits.ticketMinutes,
 		log: join(logsPath(setup.root), `${over.sessionId}.jsonl`),
+		plugins: (setup.plugins ?? []).map((p) => join(work.at.folder, p)),
 		allowApiKey: setup.allowApiKey,
 		env: envOf(setup),
 		signal: setup.signal,

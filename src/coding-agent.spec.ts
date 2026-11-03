@@ -83,6 +83,12 @@ describe('a build', () => {
 		expect(req?.settings).not.toHaveProperty('sandbox');
 	});
 
+	it('loads the repo plugins from the worktree', async () => {
+		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Built it' }));
+		await codingAgent({ ...SETUP, plugins: ['.claude'] }, session).build(buildRequest());
+		expect(sent[0]?.plugins).toEqual(['/w/1-one-escape/.claude']);
+	});
+
 	it('never loosens the deny rules, whatever commands the repo allows', async () => {
 		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Built it' }));
 		const loosening = ['make test', 'git push *', 'gh *'];
