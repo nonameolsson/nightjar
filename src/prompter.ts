@@ -21,8 +21,8 @@ export interface Prompter {
 		initial: readonly string[]
 	): Promise<string[] | null>;
 	confirm(message: string, initial: boolean): Promise<boolean | null>;
-	// a line of context above the next question
-	note(line: string): void;
+	// context above the next question; it may run over several lines
+	note(text: string): void;
 }
 
 const orNull = <T>(got: T): Exclude<T, symbol> | null =>
@@ -42,11 +42,7 @@ export function clackPrompter(): Prompter {
 			orNull(
 				await clack.select({
 					message,
-					options: choices.map((c) => ({
-						value: c.value,
-						label: c.label,
-						...(c.hint === undefined ? {} : { hint: c.hint })
-					})),
+					options: [...choices],
 					...(initial === undefined ? {} : { initialValue: initial })
 				})
 			),
@@ -54,19 +50,15 @@ export function clackPrompter(): Prompter {
 			orNull(
 				await clack.multiselect({
 					message: `${message} (space selects, enter confirms)`,
-					options: choices.map((c) => ({
-						value: c.value,
-						label: c.label,
-						...(c.hint === undefined ? {} : { hint: c.hint })
-					})),
+					options: [...choices],
 					initialValues: [...initial],
 					required: false
 				})
 			),
 		confirm: async (message, initial) =>
 			orNull(await clack.confirm({ message, initialValue: initial })),
-		note: (line) => {
-			clack.log.info(line);
+		note: (text) => {
+			clack.log.info(text);
 		}
 	};
 }

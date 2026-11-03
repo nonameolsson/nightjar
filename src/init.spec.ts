@@ -675,7 +675,7 @@ describe('nightjar init with --yes and flags', () => {
 
 describe('nightjar init on a terminal, with select prompts', () => {
 	// scripted picks; a pick is a value, or a list of values for a multi-select
-	function withUi(picks: (string | string[] | boolean)[]): Prompter {
+	function withUi(picks: (string | string[] | boolean | null)[]): Prompter {
 		const left = [...picks];
 		const next = (message: string) => {
 			transcript.push(message);
@@ -686,7 +686,10 @@ describe('nightjar init on a terminal, with select prompts', () => {
 			text: (message, fallback, accept) => {
 				for (;;) {
 					const got = (next(message) as string) || (fallback ?? '');
+					const printed = out.length;
 					const problem = accept(got);
+					// a line printed while a prompt is drawn garbles it
+					if (out.length !== printed) transcript.push('<printed during a prompt>');
 					if (problem === null) return Promise.resolve(got);
 					transcript.push(problem);
 				}
@@ -696,17 +699,17 @@ describe('nightjar init on a terminal, with select prompts', () => {
 				transcript.push(`${message} [${choices.map((c) => c.value).join(' | ')}]`);
 				return Promise.resolve(left.shift() as string[]);
 			},
-			confirm: (message) => Promise.resolve(next(message) as boolean),
+			confirm: (message) => Promise.resolve(next(message) as boolean | null),
 			note: () => undefined
 		};
 	}
-	const initUi = (picks: (string | string[] | boolean)[]) =>
+	const initUi = (picks: (string | string[] | boolean | null)[]) =>
 		runNightjar(['init'], {
 			platform: 'linux',
 			cwd: m.root,
 			env: m.env,
 			gh: github.gh,
-			ui: withUi(picks)
+			prompter: withUi(picks)
 		});
 
 	it('takes a picked check and the ticked allowed commands', async () => {
@@ -740,14 +743,34 @@ describe('nightjar init on a terminal, with select prompts', () => {
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
+	it('shows the longer help for ?, and takes the answer after it', async () => {
+		const picks = ['github', '', 'github', '', '?', 'make check', ['make check'], '', false];
+		expect(await initUi(picks)).toBe(0);
+		expect(transcript.join('\n')).toContain('Keep it fast and deterministic');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
+	});
+
+	it('warns about a check that can never fail after the prompt, not inside it', async () => {
+		expect(await initUi(['github', '', 'github', '', 'true', ['true'], '', false])).toBe(0);
+		expect(out.join('\n')).toContain('`true` can never fail');
+		expect(transcript).not.toContain('<printed during a prompt>');
+	});
+
+	it('says it was cancelled when the person cancels the doctor question', async () => {
+		const picks = ['github', '', 'github', '', 'make check', ['make check'], '', 'y', null];
+		expect(await initUi(picks)).toBe(0);
+		expect(out.join('\n')).toContain('cancelled at: Run `nightjar doctor` now?');
+		expect(existsSync(written())).toBe(true);
+	});
+
 	it('writes nothing when the person cancels', async () => {
-		const ui = withUi([]);
+		const prompter = withUi([]);
 		const code = await runNightjar(['init'], {
 			platform: 'linux',
 			cwd: m.root,
 			env: m.env,
 			gh: github.gh,
-			ui: { ...ui, select: () => Promise.resolve(null) }
+			prompter: { ...prompter, select: () => Promise.resolve(null) }
 		});
 		expect(code).toBe(2);
 		expect(err.join('\n')).toContain('cancelled');

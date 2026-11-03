@@ -94,7 +94,7 @@ export interface Host {
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
 	// select and multi-select prompts for init; a terminal gets them unless a spec passes its own
-	readonly ui?: Prompter;
+	readonly prompter?: Prompter;
 	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
 }
