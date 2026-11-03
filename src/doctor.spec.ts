@@ -265,6 +265,38 @@ describe('nightjar doctor over Sources', () => {
 		);
 	});
 
+	describe('with a go: true Source', () => {
+		const GOING = {
+			weekly: { type: 'schedule', cron: '@weekly', template: 'weekly-deps', go: true, owner: 'bob' }
+		};
+
+		it('passes when the owner has write access, and says the Source gives the Go', async () => {
+			withSources(GOING);
+			github.grant('bob', 'write');
+			expect(await start()).toBe(0);
+			expect(out.join('\n')).toMatch(
+				/^ {2}ok {4}Source weekly: schedule @weekly, .*, template weekly-deps is in shape, gives the Go for bob$/m
+			);
+		});
+
+		it('refuses an owner the Tracker does not trust, as intake does', async () => {
+			withSources(GOING);
+			github.grant('bob', 'read');
+			expect(await start()).toBe(2);
+			expect(err.join('\n')).toMatch(
+				/FAIL {2}Source weekly: the owner bob is not trusted by the Tracker \(write access on GitHub/
+			);
+			expect(err.join('\n')).toContain('nightjar: a Source cannot run');
+		});
+
+		it("reads the owner from factory.json's trusted list when it has one", async () => {
+			m = machine();
+			m.writeConfig({ ...GITHUB, trusted: ['bob'], sources: GOING });
+			expect(await start()).toBe(0);
+			expect(out.join('\n')).toContain('gives the Go for bob');
+		});
+	});
+
 	it('does not stop a build, which never reads a Source', async () => {
 		withSources();
 		const checked = await checkMachine({

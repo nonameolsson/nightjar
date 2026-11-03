@@ -213,6 +213,26 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		return comments;
 	}
 
+	trusts(person: string): Promise<boolean> {
+		return this.isTrusted(person);
+	}
+
+	// GitHub drops an assignee it cannot assign without a word, so the answer is read for them.
+	async assign(id: ItemId, person: string): Promise<void> {
+		const n = issue(id);
+		const got = await this.api.parse(
+			`assign #${n} to ${person}`,
+			['-X', 'POST', `repos/${this.repo}/issues/${n}/assignees`, '-f', `assignees[]=${person}`],
+			IssueSchema
+		);
+		const held = (got.assignees ?? []).some((a) => a.login.toLowerCase() === person.toLowerCase());
+		if (!held) {
+			throw new GitHubFailure(
+				`GitHub did not assign #${n} to ${person}, who cannot be assigned issues on ${this.repo}.`
+			);
+		}
+	}
+
 	// On the configured list, else may push; the comment's own association answers when a proxy refuses the permission call.
 	private async isTrusted(login: string, association?: string): Promise<boolean> {
 		// GitHub logins are case-insensitive

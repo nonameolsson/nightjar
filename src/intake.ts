@@ -57,6 +57,8 @@ export interface ServedSource {
 	readonly type?: 'webhook' | 'sentry';
 	readonly key?: string;
 	readonly maxPerDay: number;
+	// for a `go: true` Source: whom each Feature is assigned to before it is given the Go; left out, the Go stays with a person
+	readonly owner?: string;
 }
 
 // A schedule Source as intake fires it.
@@ -64,6 +66,7 @@ export interface ScheduledSource {
 	readonly template: string;
 	readonly cron: Cron;
 	readonly maxPerDay: number;
+	readonly owner?: string;
 }
 
 // how often intake looks at the clock for a schedule that has come due
@@ -94,6 +97,7 @@ export interface IntakeServer {
 
 type Outcome =
 	| 'made'
+	| 'made without the go'
 	| 'again'
 	| 'still open'
 	| 'day limit'
@@ -227,10 +231,46 @@ function readBody(req: IncomingMessage): Promise<Buffer | null> {
 	});
 }
 
+// Why a `go: true` Source cannot give the Go for `owner` on this Tracker, or null when it can: the Tracker must assign, and must trust the owner by factory.json's `trusted` list, else by its own default.
+export async function goFault(
+	tracker: Tracker,
+	owner: string,
+	trusted: readonly string[] | undefined
+): Promise<string | null> {
+	if (typeof tracker.assign !== 'function') {
+		return `go: true assigns each Feature to its owner through assign, which this Tracker lacks (docs/custom-adapters.md)`;
+	}
+	let trusts: boolean;
+	if (trusted !== undefined) {
+		trusts = trusted.some((t) => t.toLowerCase() === owner.toLowerCase());
+	} else if (typeof tracker.trusts !== 'function') {
+		return `go: true needs a trusted owner, and this Tracker cannot say whether ${owner} is, as it lacks trusts: name ${owner} in factory.json's trusted list`;
+	} else {
+		try {
+			trusts = await tracker.trusts(owner);
+		} catch (fault) {
+			return `could not read whether the owner ${owner} is trusted: ${why(fault)}`;
+		}
+	}
+	if (trusts) return null;
+	const where =
+		trusted !== undefined
+			? "factory.json's trusted list"
+			: 'the Tracker (write access on GitHub, the Contributors group on Azure DevOps)';
+	return `the owner ${owner} is not trusted by ${where}, so this Source cannot give the Go in their name: trust ${owner} there, or take "go": true off`;
+}
+
 export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 	const now = o.now ?? (() => new Date());
 	const say = o.say ?? sayLine;
 	const { tracker } = o;
+	const going = [...o.sources, ...(o.schedules ?? [])].filter(([, s]) => s.owner !== undefined);
+	if (going.length > 0 && typeof tracker.assign !== 'function') {
+		const names = going.map(([name]) => name).join(', ');
+		return Promise.reject(
+			new Error(`Source ${names}: go: true needs the Tracker's assign, which it lacks`)
+		);
+	}
 	const failed = new Map<string, number[]>();
 	// one delivery of a Source at a time, so two of the same key never make two Features
 	const queues = new Map<string, Promise<unknown>>();
@@ -284,9 +324,25 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 	};
 
 	// a schedule has no payload and no key path: its key is its name, so it makes nothing while its last Feature is open
+	// The standing Go of a `go: true` Source (docs/adr/0003): assigned first, so the Go never lands on a Feature no one holds.
+	const giveGo = async (name: string, feature: ItemId, owner: string): Promise<Answer> => {
+		try {
+			if (tracker.assign === undefined) throw new Error('the Tracker has no assign');
+			await tracker.assign(feature, owner);
+			await tracker.addSignal(feature, 'go');
+			return { status: 201, outcome: 'made', feature };
+		} catch (fault) {
+			// the Feature is made, so a retry would only find it open: the sender is told it is made, and the Go waits for a person
+			say(
+				`Source ${name}: made ${tracker.reference(feature).text}, but could not give it the Go for ${owner}: ${why(fault)}. It waits for a person to give it.`
+			);
+			return { status: 201, outcome: 'made without the go', feature };
+		}
+	};
+
 	const make = async (
 		name: string,
-		source: Pick<ServedSource, 'template' | 'key' | 'maxPerDay'>,
+		source: Pick<ServedSource, 'template' | 'key' | 'maxPerDay' | 'owner'>,
 		payload: unknown,
 		scheduled = false
 	): Promise<Answer> => {
@@ -321,6 +377,7 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			const madeToday = found.filter((f) => day(new Date(f.at)) === today).length;
 			if (madeToday >= source.maxPerDay) return { status: 200, outcome: 'day limit' };
 			const made = await makeFeature(tracker, filled.plan, () => undefined);
+			if (source.owner !== undefined) return await giveGo(name, made.feature, source.owner);
 			return { status: 201, outcome: 'made', feature: made.feature };
 		} catch (fault) {
 			// the sender retries a 503; the key keeps a retry from making a second Feature
@@ -511,11 +568,14 @@ function served(config: Config, root: string, env: Env): Served {
 			faults.push(...own.map((f) => `Source ${name}: ${f}`));
 			continue;
 		}
-		if (source.go === true) {
-			notes.push(`Source ${name}: intake gives no Go; its Features wait for a person to give it`);
+		// config load refuses go: true without an owner
+		const owner = source.go === true ? source.owner : undefined;
+		if (owner !== undefined) {
+			notes.push(`Source ${name}: each Feature is assigned to ${owner} and given the Go`);
 		}
 		const template = readTemplate(root, source.template);
 		const maxPerDay = source.maxPerDay ?? DEFAULT_MAX_PER_DAY;
+		const going = owner === undefined ? {} : { owner };
 		if (cron === undefined) {
 			const key = source.key ?? (source.type === 'sentry' ? SENTRY_KEY : undefined);
 			sources.set(name, {
@@ -523,10 +583,11 @@ function served(config: Config, root: string, env: Env): Served {
 				secret,
 				type: source.type === 'sentry' ? 'sentry' : 'webhook',
 				...(key === undefined ? {} : { key }),
-				maxPerDay
+				maxPerDay,
+				...going
 			});
 		} else {
-			schedules.set(name, { template, cron, maxPerDay });
+			schedules.set(name, { template, cron, maxPerDay, ...going });
 		}
 	}
 	return { sources, schedules, faults, notes };
@@ -571,6 +632,12 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 		return refuse(missing.join('\nnightjar: '));
 	}
 	const { sources, schedules, faults, notes } = served(config, root, env);
+	// a standing Go only for an owner the Tracker trusts, read before intake listens
+	for (const [name, source] of [...sources, ...schedules]) {
+		if (source.owner === undefined) continue;
+		const fault = await goFault(writer, source.owner, config.trusted);
+		if (fault !== null) faults.push(`Source ${name}: ${fault}`);
+	}
 	if (faults.length > 0) return refuse(faults.join('\nnightjar: '));
 	if (sources.size === 0 && schedules.size === 0) {
 		return refuse('factory.json names no webhook or schedule Source for intake to run.');

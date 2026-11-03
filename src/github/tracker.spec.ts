@@ -65,6 +65,34 @@ describe('GitHubTracker', () => {
 		});
 	});
 
+	it('assigns an issue to a person, and fails when GitHub drops the assignee without a word', async () => {
+		const { gh, calls } = fakeGh(
+			on('POST', 'repos/o/r/issues/7/assignees', (call) =>
+				ok(
+					rawIssue(7, {
+						assignees: call.fields['assignees[]']?.includes('bob') ? [{ login: 'bob' }] : []
+					})
+				)
+			)
+		);
+		await tracker(gh).assign('7', 'bob');
+		expect(calls[0]?.fields).toEqual({ 'assignees[]': ['bob'] });
+		await expect(tracker(gh).assign('7', 'eve')).rejects.toThrow(
+			'GitHub did not assign #7 to eve, who cannot be assigned issues on o/r.'
+		);
+	});
+
+	it('trusts by write access, or by the trusted list when factory.json sets one', async () => {
+		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/collaborators/bob/permission', ok({ permission: 'write' })),
+			on('GET', 'repos/o/r/collaborators/eve/permission', ok({ permission: 'read' }))
+		);
+		expect(await tracker(gh).trusts('bob')).toBe(true);
+		expect(await tracker(gh).trusts('eve')).toBe(false);
+		expect(await tracker(gh, DEFAULT_SIGNAL_NAMES, ['Eve']).trusts('eve')).toBe(true);
+		expect(await tracker(gh, DEFAULT_SIGNAL_NAMES, ['Eve']).trusts('bob')).toBe(false);
+	});
+
 	it('reads a Feature', async () => {
 		const { gh } = fakeGh(on('GET', 'repos/o/r/issues/1', ok(rawIssue(1, { body: null }))));
 		expect(await tracker(gh).feature('1')).toEqual({ id: '1', title: 'Issue 1', body: '' });

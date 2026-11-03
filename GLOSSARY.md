@@ -37,7 +37,7 @@ One instruction in a Workflow, given to the Coding agent at a fixed point in a b
 _Avoid_: Stage, phase, hook, task
 
 **Source**:
-A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule or a signed webhook. `nightjar intake` runs it; it makes no Signal and builds nothing. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
+A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule or a signed webhook. `nightjar intake` runs it; it builds nothing, and makes no Signal unless it has `"go": true`, which gives each Feature a standing Go in its owner's name. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
 _Avoid_: trigger, automation, integration, hook, feed
 
 ### Steering
@@ -47,7 +47,7 @@ One of a fixed set of marks a person or Nightjar puts on a Feature or Ticket to 
 _Avoid_: label, tag, status (when the generic mark is meant)
 
 **Go**:
-The Signal by which a person tells Nightjar to build a Feature assigned to them. Its own mark, never shared with a triage role.
+The Signal by which a person tells Nightjar to build a Feature assigned to them. Its own mark, never shared with a triage role. Nightjar gives it in one place only: a Source with `"go": true` gives it to each Feature it makes, in the name of the trusted owner whose commit put that Source in `factory.json` (docs/adr/0003).
 _Avoid_: ready-for-agent (on a Feature), start, trigger
 
 **Trusted comment**:

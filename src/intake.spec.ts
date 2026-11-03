@@ -152,6 +152,48 @@ describe('intake', () => {
 		expect(made?.body).toContain('<!-- nightjar:source=alerts key=k-1 -->');
 	});
 
+	it("assigns a go: true Source's Feature to its owner and gives it the Go, so --watch builds it", async () => {
+		await start({ owner: 'bob' });
+		const { status, json } = await post(event('k-1'));
+		expect(status).toBe(201);
+		const [made] = features();
+		expect(json).toEqual({ outcome: 'made', feature: made?.id });
+		expect(made?.assignees).toEqual(['bob']);
+		expect(made?.signals).toEqual(['go']);
+		expect((await tracker.assignedFeatures('bob')).map((f) => f.id)).toEqual([made?.id]);
+		// its Tickets keep only the ready Signal nightjar create gives them
+		expect(made?.children.map((c) => tracker.signalsOf(c))).toEqual([['ready']]);
+	});
+
+	it('answers 201 and leaves the Go to a person when the owner cannot be assigned', async () => {
+		tracker.assign = () => Promise.reject(new Error('the Tracker refused'));
+		await start({ owner: 'bob' });
+		const { status, json } = await post(event('k-1'));
+		expect(status).toBe(201);
+		const [made] = features();
+		expect(json).toEqual({ outcome: 'made without the go', feature: made?.id });
+		expect(made?.signals).toEqual([]);
+		expect(said.join('\n')).toContain(
+			`made #${made?.id ?? ''}, but could not give it the Go for bob: the Tracker refused`
+		);
+		expect(logLines()[0]).toMatchObject({ answer: 201, outcome: 'made without the go' });
+	});
+
+	it('refuses to start a go: true Source on a Tracker without assign', async () => {
+		const { assign: _gone, ...without } = tracker;
+		await expect(
+			startIntake({
+				tracker: without,
+				sources: new Map([
+					['alerts', { template: TEMPLATE, secret: SECRET, maxPerDay: 3, owner: 'bob' }]
+				]),
+				host: '127.0.0.1',
+				port: 0,
+				log: logPath()
+			})
+		).rejects.toThrow("Source alerts: go: true needs the Tracker's assign");
+	});
+
 	it('makes nothing while a Feature with the same key is open, and comments at most once a day', async () => {
 		await start();
 		expect((await post(event('k-1'))).status).toBe(201);
@@ -400,6 +442,16 @@ describe('intake over a schedule', () => {
 			outcome: 'made',
 			feature: made?.id
 		});
+	});
+
+	it("assigns a go: true schedule's Feature to its owner and gives it the Go", async () => {
+		await startSchedule('0 6 * * 1', { owner: 'bob' });
+		clock = MONDAY;
+		await tick();
+		const [made] = features();
+		expect(made?.assignees).toEqual(['bob']);
+		expect(made?.signals).toEqual(['go']);
+		expect(logLines().at(-1)).toMatchObject({ answer: 201, outcome: 'made', feature: made?.id });
 	});
 
 	it('makes one Feature at one due time, however often the clock is read', async () => {
@@ -712,7 +764,7 @@ describe('nightjar intake', () => {
 		}
 	};
 
-	function repo(more: string, sources: unknown = ALERTS) {
+	function repo(more: string, sources: unknown = ALERTS, config: Record<string, unknown> = {}) {
 		writeFileSync(join(dir, 'tracker.mjs'), TRACKER(more));
 		writeFileSync(
 			join(dir, 'host.mjs'),
@@ -727,7 +779,8 @@ describe('nightjar intake', () => {
 				codeHost: { type: 'module', path: './host.mjs' },
 				check: 'make check',
 				allowedCommands: [],
-				sources
+				sources,
+				...config
 			})
 		);
 	}
@@ -840,6 +893,67 @@ describe('nightjar intake', () => {
 		});
 		expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
 		expect(err.join('\n')).toContain('Source sentry: SENTRY_SECRET is not set');
+	});
+
+	describe('with a go: true Source', () => {
+		const GOING = { alerts: { ...ALERTS.alerts, go: true, owner: 'bob' } };
+		// the Tracker trusts only its signed-in person, zed
+		const ASSIGNS = "assign: async () => {}, trusts: async (person) => person === 'zed',";
+
+		async function started(): Promise<string> {
+			const stop = new AbortController();
+			const done = runNightjar(['intake', '--port', '0'], host(stop.signal));
+			await vi.waitFor(() => expect(out.join('\n')).toContain('intake on http://127.0.0.1:'));
+			stop.abort();
+			expect(await done).toBe(0);
+			return out.join('\n');
+		}
+
+		it('refuses to start while the owner is not trusted on the Tracker, naming them', async () => {
+			repo(`${WRITES} ${FINDS} ${ASSIGNS}`, GOING);
+			expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+			expect(err.join('\n')).toContain(
+				'nightjar: Source alerts: the owner bob is not trusted by the Tracker'
+			);
+			expect(out.join('\n')).not.toContain('intake on');
+		});
+
+		it('starts when the Tracker trusts the owner, and says it gives the Go', async () => {
+			repo(`${WRITES} ${FINDS} ${ASSIGNS}`, { alerts: { ...GOING.alerts, owner: 'zed' } });
+			expect(await started()).toContain(
+				'Source alerts: each Feature is assigned to zed and given the Go'
+			);
+		});
+
+		it("takes an owner on factory.json's trusted list, whom the Tracker's own default does not trust", async () => {
+			repo(`${WRITES} ${FINDS} ${ASSIGNS}`, GOING, { trusted: ['bob'] });
+			expect(await started()).toContain('assigned to bob and given the Go');
+		});
+
+		it("refuses an owner left off factory.json's trusted list, whom the Tracker's own default trusts", async () => {
+			const zed = { alerts: { ...GOING.alerts, owner: 'zed' } };
+			repo(`${WRITES} ${FINDS} ${ASSIGNS}`, zed, { trusted: ['bob'] });
+			expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+			expect(err.join('\n')).toContain(
+				"Source alerts: the owner zed is not trusted by factory.json's trusted list"
+			);
+		});
+
+		it('refuses to start on a Tracker without assign, naming the method', async () => {
+			repo(`${WRITES} ${FINDS} trusts: async () => true,`, GOING);
+			expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+			expect(err.join('\n')).toContain(
+				'Source alerts: go: true assigns each Feature to its owner through assign, which this Tracker lacks'
+			);
+		});
+
+		it('refuses to start on a Tracker without trusts unless the trusted list names the owner', async () => {
+			repo(`${WRITES} ${FINDS} assign: async () => {},`, GOING);
+			expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+			expect(err.join('\n')).toContain(
+				"as it lacks trusts: name bob in factory.json's trusted list"
+			);
+		});
 	});
 
 	it('refuses to start with no Source', async () => {

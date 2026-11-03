@@ -371,8 +371,9 @@ Some work starts outside a person's head: an alert, a message from a script or f
 | `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one; a `sentry` Source's key is the Sentry issue id, `data.event.issue_id`. |
 | `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64); for a `sentry` Source, the integration's client secret. The secret is never in `factory.json`. |
 | `maxPerDay` | The most Features the Source makes in a day; 3 when left out. |
+| `go`, `owner` | `"go": true` gives each Feature the Go, assigned to `owner`, who must be trusted (see [Give the Go](#give-the-go)). Left out, the Go stays with a person. |
 
-The payload is untrusted. Each value a placeholder takes is cut to one line of at most 200 characters, with Markdown and HTML escaped, and the whole payload, cut to 8 KB, is added to the Feature in a block headed "Event payload (untrusted data)". Each Feature carries a `**Source:** <name>` line and a hidden marker, by which Nightjar finds it on the Tracker again. A Source makes its Features with no Signal: as with `nightjar create`, a person gives the Go.
+The payload is untrusted. Each value a placeholder takes is cut to one line of at most 200 characters, with Markdown and HTML escaped, and the whole payload, cut to 8 KB, is added to the Feature in a block headed "Event payload (untrusted data)". Each Feature carries a `**Source:** <name>` line and a hidden marker, by which Nightjar finds it on the Tracker again. A Source makes its Features with no Signal and no assignee: as with `nightjar create`, a person gives the Go, unless the Source has `"go": true`.
 
 Run the Sources with `nightjar intake`, from anywhere inside the repo, on a machine signed in to the Tracker:
 
@@ -381,7 +382,7 @@ ALERTS_HOOK_SECRET=whsec_... nightjar intake            # http://127.0.0.1:4546
 nightjar intake --port 8080 --host 0.0.0.0              # for a reverse proxy on another machine
 ```
 
-Each webhook Source is served at `POST /sources/<name>`. Intake makes Features and never builds: `--watch` builds them as always, beside it or on another machine. It refuses to start when the Tracker cannot make Features (`createFeature`) or find a Source's Features (`featuresFrom`), or when a Source's secret is not set; `nightjar doctor` checks each Source too.
+Each webhook Source is served at `POST /sources/<name>`. Intake makes Features and never builds: `--watch` builds them as always, beside it or on another machine. It refuses to start when the Tracker cannot make Features (`createFeature`) or find a Source's Features (`featuresFrom`), when a Source's secret is not set, or when a `go: true` Source's owner is not trusted or the Tracker cannot assign (`assign`); `nightjar doctor` checks each Source too.
 
 Intake answers a delivery only after the Tracker has:
 
@@ -428,7 +429,7 @@ Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteri
 
 ## Give the Go
 
-Nightjar builds a Feature that is **assigned to you** and carries the **Go** Signal (the label `factory-go` by default). Nothing else starts a build.
+Nightjar builds a Feature that is **assigned to you** and carries the **Go** Signal (the label `factory-go` by default). Nothing else starts a build. A person gives the Go, with one exception: a [Source](#make-features-from-sources) with `"go": true`, below.
 
 1. Write the Feature as an issue, with its spec in the body.
 2. Add its Tickets as **sub-issues**. Each Ticket holds its acceptance criteria in the body.
@@ -452,6 +453,14 @@ On Azure DevOps Boards the same steps read:
 5. Assign the Feature to yourself and add the Go tag. Signals are tags, which appear on first use, so there is nothing to create first.
 
 A work item counts as closed once Azure DevOps has stamped its Closed Date, which it does when the item reaches a closed state of your process; Nightjar reads that date and never the state ([ADR 0002](docs/adr/0002-signals-are-labels-or-tags-never-states.md)). A known limit follows: a **Removed** work item has no Closed Date, so Nightjar counts it as open. A removed Ticket that still carries the ready Signal is built, and one that blocks others keeps them waiting. Take the ready Signal off a Ticket before you remove it, and the Predecessor links from it.
+
+**A standing Go from a Source.** A Source with `"go": true` and an `owner` gives each Feature it makes the Go: intake assigns the Feature to the owner, then adds the Go, and the owner's `--watch` builds it. This is the one place Nightjar gives the Go. Whoever commits such a Source to `factory.json` gives a standing Go, ahead of time, to every Feature it makes ([ADR 0003](docs/adr/0003-a-source-may-give-a-standing-go.md)). It is bounded by the Source's `maxPerDay`, the [limits](#limits) of each Ticket, and the owner's own `dailyUsd`.
+
+```json
+"weekly-deps": { "type": "schedule", "cron": "0 6 * * 1", "template": "weekly-deps", "go": true, "owner": "ann" }
+```
+
+The owner must be trusted: on `factory.json`'s `trusted` list, or if there is no list, by the Tracker's own default, write access on GitHub or the project's Contributors group on Azure DevOps Boards. `nightjar intake` refuses to start, and `nightjar doctor` fails the Source, while the owner is not trusted, or while the Tracker has no `assign` (a [Tracker module](docs/custom-adapters.md) written before it). If assigning a Feature fails, intake still answers 201 and leaves the Feature with no Signal, for a person to give the Go.
 
 While it works, Nightjar puts the working Signal (`agent-working`) on the Feature. When it cannot build a Ticket it takes the ready Signal off, puts on needs info (`needs-info`) or needs a person (`ready-for-human`), and comments with why. Answer by commenting on the Ticket, put the ready Signal back on it, and give the Go again: the next run continues on the same branch and pull request. Only Trusted comments reach the agent. Nightjar never closes a Ticket and never sets a tracker state.
 

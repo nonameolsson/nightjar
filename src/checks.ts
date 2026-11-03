@@ -10,6 +10,7 @@ import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
+import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
 import { skillsNamed } from './workflow.js';
@@ -313,40 +314,61 @@ const workflowsCheck = check({
 const sourcesCheck = check({
 	name: 'Sources',
 	needs: ['root', 'loaded'],
-	run: ({ root, loaded }, o) => {
-		const lines = Object.entries(loaded.config.sources ?? {}).map(([name, source]): Line => {
+	run: async ({ root, loaded, adapters, me }, o) => {
+		const lines: Line[] = [];
+		for (const [name, source] of Object.entries(loaded.config.sources ?? {})) {
 			const said = { name: `Source ${name}`, summary: null, source: name };
 			const faults = templateFaults(root, source.template).map(
 				(f) => `template ${source.template}: ${f}`
 			);
-			if (source.type !== 'schedule') {
-				if (source.secretEnv === undefined) {
-					faults.push('name the variable that holds its webhook secret, as secretEnv');
-				} else if ((o.env[source.secretEnv] ?? '') === '') {
-					faults.push(
-						`${source.secretEnv} is not set; put the webhook secret in that variable, never in factory.json`
-					);
-				}
+			// the same refusal intake makes before it starts
+			if (source.go === true && source.owner !== undefined) {
+				const fault =
+					adapters === undefined || me === undefined
+						? `the owner ${source.owner} cannot be checked until the Tracker is reached`
+						: await goFault(adapters.tracker, source.owner, loaded.config.trusted);
+				if (fault !== null) faults.push(fault);
 			}
-			if (faults.length > 0) return { ...said, status: 'fail', detail: faults.join('\n') };
-			if (source.type !== 'schedule') {
-				return {
-					...said,
-					status: 'ok',
-					detail: `${source.type}, template ${source.template} is in shape`
-				};
-			}
-			// factory.json has loaded, so the cron time reads; intake fires it in the machine's local time zone
-			const next = nextDue(parseCron(source.cron ?? ''), o.now?.() ?? new Date());
-			return {
-				...said,
-				status: 'ok',
-				detail: `schedule ${source.cron ?? ''}, next due ${next === null ? 'never' : localTime(next)}, template ${source.template} is in shape`
-			};
-		});
+			lines.push(sourceLine(said, source, faults, o));
+		}
 		return { lines };
 	}
 });
+
+// The line of one Source: its faults, or what it is and when a schedule is next due.
+function sourceLine(
+	said: Pick<Line, 'name' | 'summary' | 'source'>,
+	source: NonNullable<Config['sources']>[string],
+	faults: readonly string[],
+	o: CheckOptions
+): Line {
+	const all = [...faults];
+	if (source.type !== 'schedule') {
+		if (source.secretEnv === undefined) {
+			all.push('name the variable that holds its webhook secret, as secretEnv');
+		} else if ((o.env[source.secretEnv] ?? '') === '') {
+			all.push(
+				`${source.secretEnv} is not set; put the webhook secret in that variable, never in factory.json`
+			);
+		}
+	}
+	if (all.length > 0) return { ...said, status: 'fail', detail: all.join('\n') };
+	const go = source.go === true ? `, gives the Go for ${source.owner ?? ''}` : '';
+	if (source.type !== 'schedule') {
+		return {
+			...said,
+			status: 'ok',
+			detail: `${source.type}, template ${source.template} is in shape${go}`
+		};
+	}
+	// factory.json has loaded, so the cron time reads; intake fires it in the machine's local time zone
+	const next = nextDue(parseCron(source.cron ?? ''), o.now?.() ?? new Date());
+	return {
+		...said,
+		status: 'ok',
+		detail: `schedule ${source.cron ?? ''}, next due ${next === null ? 'never' : localTime(next)}, template ${source.template} is in shape${go}`
+	};
+}
 
 // In the order doctor lists them.
 export const CHECKS: readonly Check<Found, CheckOptions>[] = [

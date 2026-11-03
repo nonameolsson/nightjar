@@ -32,6 +32,8 @@ export type NewItem = Pick<FakeItem, 'id' | 'title'> & Partial<FakeItem>;
 
 export class FakeTracker implements Tracker, FeatureWriter {
 	readonly items = new Map<ItemId, FakeItem>();
+	// the people it trusts besides the signed-in person
+	private readonly trustedPeople = new Set<string>();
 
 	constructor(
 		// the signed-in person, whose comments are trusted
@@ -60,6 +62,12 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		const item = this.get(id);
 		const at = comment.at ?? this.now().toISOString();
 		this.items.set(id, { ...item, comments: [...item.comments, { ...comment, at }] });
+		return this;
+	}
+
+	// People it trusts, as write access does on GitHub.
+	trust(...people: readonly string[]): this {
+		for (const person of people) this.trustedPeople.add(person);
 		return this;
 	}
 
@@ -171,6 +179,17 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	};
 
 	reference = (id: ItemId): TicketReference => ({ id, text: `#${id}` });
+
+	assign = (id: ItemId, person: string): Promise<void> => {
+		const item = this.get(id);
+		if (!item.assignees.includes(person)) {
+			this.items.set(id, { ...item, assignees: [...item.assignees, person] });
+		}
+		return Promise.resolve();
+	};
+
+	trusts = (person: string): Promise<boolean> =>
+		Promise.resolve(person === this.person || this.trustedPeople.has(person));
 
 	createFeature = ({ title, body }: ItemText): Promise<ItemId> => {
 		let n = this.items.size + 1;

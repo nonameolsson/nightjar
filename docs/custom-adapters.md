@@ -95,6 +95,16 @@ To let a Source's Features be found again on your Tracker, give it one more opti
 		featuresFrom: todo('featuresFrom'),
 ```
 
+To let a Source with `"go": true` give its Features the Go ([ADR 0003](adr/0003-a-source-may-give-a-standing-go.md)), give the Tracker two more optional methods. Without `assign`, intake and `nightjar doctor` refuse such a Source and name the method. Without `trusts`, they take the owner only from `factory.json`'s `trusted` list.
+
+```js
+		// assigns the Feature to `person`, so that with the Go it is among assignedFeatures(person)
+		assign: todo('assign'),
+		// whether `person` is trusted: on `trusted` when it is set, else by your Tracker's own default
+		// (as write access is on GitHub); a person your Tracker does not know is not trusted
+		trusts: todo('trusts'),
+```
+
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
@@ -137,7 +147,7 @@ Then run, from the repo:
 nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, and the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`, and the `assign` suite (`assignContract`, which checks `trusts` too when it is there) when it has `assign`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -150,6 +160,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract`, `assignContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

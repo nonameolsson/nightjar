@@ -184,6 +184,7 @@ export class FakeGitHub {
 			return ok(this.renderComment(this.say(issue.number, this.person, String(call.fields.body))));
 		}
 		if (method === 'POST' && rest === '/labels') return this.label(issue, call);
+		if (method === 'POST' && rest === '/assignees') return this.assign(issue, call);
 		const label = /^\/labels\/([^/]+)$/.exec(rest);
 		if (method === 'DELETE' && label)
 			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
@@ -305,6 +306,18 @@ export class FakeGitHub {
 		const labels = [...issue.labels, ...added];
 		this.change(issue.number, () => ({ labels }));
 		return ok(labels.map((name) => ({ name })));
+	}
+
+	// GitHub assigns only the signed-in person and the repo's collaborators, and drops anyone else without a word.
+	private assign(issue: Issue, call: GhCall): Run {
+		const asked = call.fields['assignees[]'];
+		const added = (Array.isArray(asked) ? asked : []).filter(
+			(login) =>
+				!issue.assignees.includes(login) &&
+				(login === this.person || (this.permissions.get(login) ?? 'none') !== 'none')
+		);
+		this.change(issue.number, (i) => ({ assignees: [...i.assignees, ...added] }));
+		return ok(this.render(this.get(issue.number)));
 	}
 
 	// GitHub answers 404 for a label the issue lacks.

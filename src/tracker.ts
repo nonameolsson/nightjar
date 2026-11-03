@@ -110,6 +110,10 @@ export interface Tracker {
 	waitingOn?(person: string): Promise<WaitingFeature[]>;
 	// optional, so a Tracker module written before it still loads: the Features, open or closed, whose body holds the marker of Source `source` (`nightjar:source=<name> key=<key>`), oldest first; the Tracker is the record of what a Source made
 	featuresFrom?(source: string): Promise<SourcedFeature[]>;
+	// optional, so a Tracker module written before it still loads: assigns the Feature to `person`, so a Source with `go: true` can give it the Go in their name
+	assign?(id: ItemId, person: string): Promise<void>;
+	// optional, so a Tracker module written before it still loads: whether `person` is trusted, by factory.json's trusted list when set, else the Tracker's own default (GitHub: write access; Azure DevOps: the project's Contributors group)
+	trusts?(person: string): Promise<boolean>;
 }
 
 // The title and body of a Feature or Ticket to be made.

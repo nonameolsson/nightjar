@@ -8,6 +8,7 @@ import {
 	DEFAULT_SIGNAL_NAMES,
 	GitHubCodeHost,
 	GitHubTracker,
+	assignContract,
 	codeHostContract,
 	featureWriterContract,
 	sourcesContract,
@@ -170,6 +171,15 @@ describe('GitHubTracker meets the waitingOn contract', () => {
 describe('GitHubTracker meets the featuresFrom contract', () => {
 	const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
 	for (const c of sourcesContract) it(c.name, () => c.run(harness));
+});
+
+describe('GitHubTracker meets the assign contract', () => {
+	for (const trust of ['write access', 'trusted list'] as const) {
+		describe(`with ${trust} as trust`, () => {
+			const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, trust);
+			for (const c of assignContract) it(c.name, () => c.run(harness));
+		});
+	}
 });
 
 // real git on a busy machine is slow

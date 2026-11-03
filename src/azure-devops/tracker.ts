@@ -81,6 +81,7 @@ const IdentitiesSchema = z.looseObject({
 	value: z.array(
 		z
 			.looseObject({
+				id: z.string().nullish(),
 				descriptor: z.string().nullish(),
 				memberOf: z.array(z.string()).nullish()
 			})
@@ -369,6 +370,29 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		return id === null ? false : this.members(id);
 	}
 
+	// On the configured list, else in the project's Contributors group; a person the organization does not know is not trusted.
+	async trusts(person: string): Promise<boolean> {
+		if (this.trusted !== undefined) return this.trusted.some((t) => same(t, person));
+		const me = await this.signedIn('');
+		const id = same(person, me.name) ? me.id : await this.identityOf(person);
+		return id === null ? false : this.members(id);
+	}
+
+	// The identity id of the person with the sign-in name `person`; null when the organization has none.
+	private async identityOf(person: string): Promise<string | null> {
+		const got = await this.api.parse(
+			`find ${person}`,
+			{
+				method: 'GET',
+				url: this.api.identities(
+					`_apis/identities?searchFilter=AccountName&filterValue=${encodeURIComponent(person)}&queryMembership=None&${API}`
+				)
+			},
+			IdentitiesSchema
+		);
+		return got.value.find((i) => typeof i?.id === 'string')?.id ?? null;
+	}
+
 	private async isContributor(id: string): Promise<boolean> {
 		const group = await this.contributors('');
 		const got = await this.api.parse(
@@ -425,6 +449,17 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		return this.setTags(id, (tags) =>
 			tags.some((t) => same(t, tag)) ? tags.filter((t) => !same(t, tag)) : null
 		);
+	}
+
+	// A work item has one assignee, so `person` takes the place of anyone before.
+	async assign(id: ItemId, person: string): Promise<void> {
+		const n = String(workItem(id));
+		await this.api.call(`assign work item ${n} to ${person}`, {
+			method: 'PATCH',
+			url: this.api.at(`${this.project}/_apis/wit/workitems/${n}?${API}`),
+			body: [{ op: 'add', path: '/fields/System.AssignedTo', value: person }],
+			contentType: 'application/json-patch+json'
+		});
 	}
 
 	async comment(id: ItemId, body: string): Promise<void> {
