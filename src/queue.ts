@@ -31,12 +31,23 @@ export interface QueueDeps {
 }
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
-export async function handBack(deps: QueueDeps, feature: Named, fault: unknown): Promise<void> {
+export async function handBack(
+	deps: QueueDeps,
+	feature: Named,
+	fault: unknown,
+	startedAt?: string
+): Promise<void> {
 	const { tracker } = deps;
 	const { id, title } = feature;
 	const reason = why(fault);
 	deps.say(`#${id} failed: ${reason}`);
-	deps.status.happened({ kind: 'failed', feature: id, title, why: reason });
+	deps.status.happened({
+		kind: 'failed',
+		feature: id,
+		title,
+		why: reason,
+		...(startedAt === undefined ? {} : { startedAt })
+	});
 	try {
 		await tracker.removeSignal(id, 'working');
 		await tracker.addSignal(id, 'needsInfo');
@@ -48,10 +59,11 @@ export async function handBack(deps: QueueDeps, feature: Named, fault: unknown):
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
 export async function buildOne(deps: QueueDeps, feature: Named): Promise<FeatureOutcome | null> {
+	const startedAt = deps.now().toISOString();
 	try {
 		return await deps.build(feature);
 	} catch (fault) {
-		await handBack(deps, feature, fault);
+		await handBack(deps, feature, fault, startedAt);
 		return null;
 	}
 }

@@ -383,6 +383,45 @@ describe('nightjar ui board', () => {
 		expect(page).toContain('not known while nightjar is off');
 	});
 
+	it('shows how long a Completed Feature took, and nothing for one with no start', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const start = new Date(at.getTime() - 14 * 60_000).toISOString();
+		file.happened({
+			kind: 'pull',
+			feature: '31',
+			url: 'https://example.test/pull/31',
+			startedAt: start
+		});
+		file.happened({ kind: 'failed', feature: '32', why: 'check red', startedAt: start });
+		file.happened({ kind: 'failed', feature: '33', why: 'check red' });
+		await open();
+		const page = (await get('/')).text;
+		const board = page.split('<div class="board">')[1]?.split('<div class="overview">')[0] ?? '';
+		expect(board.match(/<time class="took">14m 00s<\/time>/g)).toHaveLength(2);
+		expect(board.match(/class="took"/g)).toHaveLength(2);
+	});
+
+	it('records a session duration in the ledger, and still reads a line without one', () => {
+		const old = {
+			at: at.toISOString(),
+			repo: 'o/app',
+			feature: '1',
+			ticket: null,
+			branch: 'b',
+			step: 'build',
+			session: 's',
+			costUsd: 1,
+			outcome: 'built'
+		};
+		mkdirSync(join(root, '.factory'), { recursive: true });
+		record(ledgerFile(), { ...old, step: 'build', durationMs: 90_000 });
+		writeFileSync(ledgerFile(), `${JSON.stringify(old)}\n`, { flag: 'a' });
+		const lines = readFileSync(ledgerFile(), 'utf8').trim().split('\n');
+		expect(JSON.parse(lines[0] ?? '{}')).toMatchObject({ durationMs: 90_000 });
+		expect(JSON.parse(lines[1] ?? '{}')).not.toHaveProperty('durationMs');
+	});
+
 	it('remembers the view in local storage and applies it again', async () => {
 		await open();
 		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';

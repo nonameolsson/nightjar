@@ -245,6 +245,9 @@ class FeatureRun {
 	private readonly reports: StepReport[] = [];
 	// what the status file shows now, so a Ticket built can change its Tickets alone
 	private shown: Doing | null = null;
+	// when the Feature's build began, and when the session now running did
+	private readonly startedAt: Date;
+	private sessionStartedAt: Date;
 
 	constructor(
 		private readonly deps: Deps,
@@ -255,7 +258,10 @@ class FeatureRun {
 		private readonly built: Set<ItemId>,
 		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
 		private readonly show: ShowBuilding
-	) {}
+	) {
+		this.startedAt = deps.now();
+		this.sessionStartedAt = this.startedAt;
+	}
 
 	private get aborted() {
 		return this.setup.signal?.aborted === true;
@@ -297,13 +303,16 @@ class FeatureRun {
 	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
 		this.spent += entry.costUsd;
 		this.costs.push({ ticket: entry.ticket, work, usd: entry.costUsd });
+		const at = this.deps.now();
 		record(ledgerPath(this.setup.root), {
-			at: this.deps.now().toISOString(),
+			at: at.toISOString(),
 			repo: this.setup.repo,
 			feature: this.feature.id,
 			branch: this.tree.at.branch,
+			durationMs: Math.max(0, at.getTime() - this.sessionStartedAt.getTime()),
 			...entry
 		});
+		this.sessionStartedAt = at;
 	}
 
 	// Hands a Ticket to a person: no code kept on the branch, the reason on the Ticket.
@@ -526,6 +535,7 @@ class FeatureRun {
 		session: string,
 		rounds: { readonly round: number; readonly rounds: number }
 	) {
+		this.sessionStartedAt = this.deps.now();
 		this.shown = this.show({
 			ticket,
 			step,
@@ -785,7 +795,8 @@ class FeatureRun {
 			kind: 'pull',
 			feature: id,
 			title: this.feature.title,
-			url: pull.url
+			url: pull.url,
+			startedAt: this.startedAt.toISOString()
 		});
 		if (!paused && (left.length > 0 || red)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;

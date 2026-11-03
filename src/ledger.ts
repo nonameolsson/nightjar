@@ -13,7 +13,9 @@ const EntrySchema = z.looseObject({
 	step: z.enum(['build', 'fix', 'review', 'step']),
 	session: z.string(),
 	costUsd: z.number(),
-	outcome: z.string()
+	outcome: z.string(),
+	// older lines lack it
+	durationMs: z.number().optional()
 });
 
 export interface Entry {
@@ -26,6 +28,8 @@ export interface Entry {
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;
+	// how long the session ran, in milliseconds
+	readonly durationMs?: number;
 }
 
 export function record(path: string, entry: Entry): void {

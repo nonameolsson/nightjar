@@ -105,7 +105,13 @@ describe('queue --once', () => {
 		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
 		expect(w.tracker.said('2')[0]).toMatch(/^Nightjar stopped on a fault: the network went away/);
 		expect(w.happened).toEqual([
-			{ kind: 'failed', feature: '2', title: 'Older', why: 'the network went away' }
+			{
+				kind: 'failed',
+				feature: '2',
+				title: 'Older',
+				why: 'the network went away',
+				startedAt: '2026-10-30T08:00:00.000Z'
+			}
 		]);
 	});
 });
@@ -428,7 +434,8 @@ describe('nightjar <id>', () => {
 			kind: 'failed',
 			feature: '4',
 			title: 'Later',
-			why: 'boom'
+			why: 'boom',
+			startedAt: '2026-10-30T08:00:00.000Z'
 		});
 	});
 });

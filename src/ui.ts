@@ -311,7 +311,11 @@ function completedCard(card: CompletedCard): string {
 				? `<a href="${escape(event.url)}">draft pull request</a>`
 				: escape(event.url)
 			: `failed: ${escape(event.why)}`;
-	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcome}</p><p class="meta">${dollars(costUsd)}</p></article>`;
+	// a Feature whose event has no start, or a start that does not read, shows no duration
+	const took =
+		event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
+	const duration = Number.isNaN(took) ? '' : `<time class="took">${elapsed(took)}</time> `;
+	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcome}</p><p class="meta">${duration}${dollars(costUsd)}</p></article>`;
 }
 
 function column(name: string, body: string): string {

@@ -75,12 +75,16 @@ export type Happened =
 			// the Feature's title, for a view's list of outcomes; older files and a run by id lack it
 			readonly title?: string;
 			readonly why: string;
+			// when the Feature's build began; older files and a fault outside a build lack it
+			readonly startedAt?: string;
 	  }
 	| {
 			readonly kind: 'pull';
 			readonly feature: string;
 			readonly title?: string;
 			readonly url: string;
+			// when the Feature's build began; older files lack it
+			readonly startedAt?: string;
 	  }
 	// newer Nightjar code: `commit` is the newer version, or the commit of a linked checkout
 	| { readonly kind: 'stale'; readonly commit: string };
