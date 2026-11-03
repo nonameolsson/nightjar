@@ -162,6 +162,20 @@ describe('renderBlock', () => {
 			{ queue: [], waitingOnYou: { items: [], trackerCannotList: false } }
 		);
 		expect(render(view(none))).toContain('Waiting on you  nothing');
+		// with no waitingOn the current Feature's Tickets still show, beside the note
+		const tickets = status(
+			{ kind: 'idle', nextPollAt: iso(9, 31) },
+			{
+				queue: [],
+				waitingOnYou: {
+					items: [{ kind: 'ticket', id: '4', title: 'Copy', why: 'needs info' }],
+					trackerCannotList: true
+				}
+			}
+		);
+		expect(render(view(tickets))).toContain(
+			'Waiting on you  #4 Copy: needs info   not available from this Tracker'
+		);
 	});
 
 	it('shows only the step when there is no Ticket list, and the step alone during review', () => {

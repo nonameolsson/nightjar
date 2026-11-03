@@ -2,6 +2,7 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { ledgerPath, logsPath } from './build.js';
 import { builtOn, costByFeature } from './ledger.js';
 import { readStatus, statusPath, type Event, type Status } from './status.js';
 
@@ -107,7 +108,7 @@ function readEnd(path: string): string | null {
 function sessionTail(root: string, status: Status | null, keep: number): string[] {
 	const session = status?.doing.kind === 'building' ? status.doing.session : null;
 	if (session === null) return [];
-	const text = readEnd(join(root, '.factory', 'logs', `${session}.jsonl`));
+	const text = readEnd(join(logsPath(root), `${session}.jsonl`));
 	if (text === null) return [];
 	return text.split('\n').flatMap(shown).slice(-keep);
 }
@@ -118,15 +119,12 @@ const isDone = (event: Event): event is Done => event.kind === 'pull' || event.k
 export function readFactory(root: string, options: ReadOptions = {}): FactoryView {
 	const status = readStatus(statusPath(root));
 	const alive = options.alive ?? pidAlive;
-	const costs = costByFeature(join(root, '.factory', 'runs.jsonl'));
+	const costs = costByFeature(ledgerPath(root));
 	const doing = status?.doing;
 	return {
 		status,
 		featureCostUsd: doing?.kind === 'building' ? (costs.get(doing.feature) ?? 0) : 0,
-		builtToday: builtOn(
-			join(root, '.factory', 'runs.jsonl'),
-			(options.now ?? (() => new Date()))()
-		),
+		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
 		completed: (status?.recent ?? [])

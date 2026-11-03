@@ -107,14 +107,10 @@ function listed(status: Status): string[] {
 				? 'empty'
 				: status.queue.map((f) => `${hash(f.id)} ${f.title}`).join('   ');
 	const waiting = status.waitingOnYou;
+	const items = waiting?.items.map((i) => `${hash(i.id)} ${i.title}: ${i.why}`) ?? [];
+	if (waiting?.trackerCannotList === true) items.push('not available from this Tracker');
 	const waits =
-		waiting === undefined
-			? 'not read yet'
-			: waiting.items.length > 0
-				? waiting.items.map((i) => `${hash(i.id)} ${i.title}: ${i.why}`).join('   ')
-				: waiting.trackerCannotList
-					? 'not available from this Tracker'
-					: 'nothing';
+		waiting === undefined ? 'not read yet' : items.length > 0 ? items.join('   ') : 'nothing';
 	return [names('Queue', queue), names('Waiting on you', waits)];
 }
 

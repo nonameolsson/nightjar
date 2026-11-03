@@ -106,7 +106,7 @@ function current(view: FactoryView): string {
 			.join('');
 		const tail = view.tail.map(escape).join('\n');
 		body =
-			`<p>${idText(doing.feature)} <time data-since="${escape(doing.startedAt)}"></time> ${money(view.featureCostUsd)}</p>` +
+			`<p>${idText(doing.feature)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(doing.startedAt)}"></time> ${money(view.featureCostUsd)}</p>` +
 			`<p>${where}${doing.step}${round}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
 			(tail === '' ? '' : `<pre>${tail}</pre>`);

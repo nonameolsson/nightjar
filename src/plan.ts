@@ -30,9 +30,13 @@ export function waiting(tickets: readonly Ticket[], built: ReadonlySet<ItemId>):
 		.map((t) => ({ id: t.id, title: t.title, ...whyWaiting(t, built) }));
 }
 
+// the reasons Waiting on you lists, shared so a reworded one cannot empty it
+export const NEEDS_A_PERSON = 'needs a person';
+export const NEEDS_INFO = 'needs info';
+
 function whyWaiting(ticket: Ticket, built: ReadonlySet<ItemId>): Pick<Waiting, 'why' | 'blocker'> {
-	if (ticket.signals.includes('human')) return { why: 'needs a person' };
-	if (ticket.signals.includes('needsInfo')) return { why: 'needs info' };
+	if (ticket.signals.includes('human')) return { why: NEEDS_A_PERSON };
+	if (ticket.signals.includes('needsInfo')) return { why: NEEDS_INFO };
 	const blocker = ticket.blockedBy.find((b) => b.open && !built.has(b.id));
 	if (blocker) return { why: 'blocked by', blocker: blocker.id };
 	if (!ticket.signals.includes('ready')) return { why: 'not marked ready' };
@@ -41,7 +45,7 @@ function whyWaiting(ticket: Ticket, built: ReadonlySet<ItemId>): Pick<Waiting, '
 
 // Whether a Ticket is left for a person, who is what Waiting on you lists.
 export const needsAPerson = (w: { readonly why?: string }) =>
-	w.why === 'needs a person' || w.why === 'needs info';
+	w.why === NEEDS_A_PERSON || w.why === NEEDS_INFO;
 
 // The Feature's Tickets for a view: the open ones plus those built on the branch, each built, building or waiting with its reason.
 export function progress(

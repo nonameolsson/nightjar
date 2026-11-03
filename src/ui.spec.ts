@@ -129,6 +129,7 @@ describe('nightjar ui page', () => {
 		status().doing({
 			kind: 'building',
 			feature: '272',
+			title: 'Custom <views>',
 			ticket: '3',
 			step: 'build',
 			round: 1,
@@ -145,6 +146,7 @@ describe('nightjar ui page', () => {
 		const page = (await get('/')).text;
 		expect(page).toContain('<span class="state">watching</span>');
 		expect(page).toContain('#272');
+		expect(page).toContain('Custom &#60;views&#62;');
 		expect(page).toContain('data-since="2026-10-30T06:48:00.000Z"');
 		expect(page).toContain('Ticket 2 of 3');
 		expect(page).toContain('build, round 1 of 3');

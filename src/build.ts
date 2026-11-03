@@ -126,7 +126,7 @@ export type FeatureOutcome =
 const envOf = (setup: Setup): Env => ({ ...setup.env, ...setup.portEnv });
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
-const logsPath = (root: string) => join(root, '.factory', 'logs');
+export const logsPath = (root: string) => join(root, '.factory', 'logs');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
 

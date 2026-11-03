@@ -1,6 +1,6 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
-import { needsAPerson } from './plan.js';
+import { NEEDS_A_PERSON, NEEDS_INFO, needsAPerson } from './plan.js';
 import type { StatusReport, WaitingItem } from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
@@ -93,7 +93,7 @@ async function readWaitingFeatures(
 				kind: 'feature',
 				id: f.id,
 				title: f.title,
-				why: signals.includes('needsInfo') ? 'needs info' : 'needs a person'
+				why: signals.includes('needsInfo') ? NEEDS_INFO : NEEDS_A_PERSON
 			});
 		}
 		return items;
