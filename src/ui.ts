@@ -4,8 +4,9 @@ import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
+import { BANNER } from './ui-banner.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
-import type { Doing, Queued, TicketCounts, WaitingItem } from './status-shape.js';
+import type { Doing, Queued, TicketCounts, TicketProgress, WaitingItem } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -53,7 +54,7 @@ function header(repo: string, view: FactoryView): string {
 				: doing?.kind === 'paused' && running(view)
 					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
 					: '';
-	return `<header><h1>nightjar</h1> <span class="repo">${escape(repo)}</span> <span class="state">${runState(view)}</span>${poll}</header>`;
+	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}</header>`;
 }
 
 function cards(view: FactoryView): string {
@@ -63,7 +64,7 @@ function cards(view: FactoryView): string {
 			? 'no spend recorded'
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
 	const waiting = status?.waitingOnYou?.items.length;
-	return `<section id="cards"><div class="card"><span>spent today</span> ${spent}</div><div class="card"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="card"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
+	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
 function queue(view: FactoryView): string {
@@ -197,11 +198,30 @@ interface CompletedCard extends FeatureCard {
 const progressText = (p: Progress | null) =>
 	p === null ? '?' : `${String(p.built)} of ${String(p.total)}`;
 
-// `k of N built` under a bar; "?" and no bar without a count
-function progressHtml(p: Progress | null): string {
-	if (p === null) return '<p class="meta progress">?</p>';
-	const pct = p.total === 0 ? 0 : Math.min(100, Math.round((p.built / p.total) * 100));
-	return `<div class="bar"><i style="width:${String(pct)}%"></i></div><p class="meta progress">${progressText(p)} built</p>`;
+// A Ticket as an egg: built, being built, needs a person, or still waiting its turn
+type Egg = 'built' | 'building' | 'need' | 'waiting';
+const EGGS_SHOWN = 16;
+
+const EGG_OF: Record<TicketProgress['state'], Egg> = {
+	built: 'built',
+	building: 'building',
+	waiting: 'need'
+};
+
+// `k of N built` under a row of eggs, one per Ticket; "?" and no eggs without a count
+function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): string {
+	if (p === null) return '<p class="meta progress">count unknown</p>';
+	const slots: Egg[] =
+		tickets !== undefined && tickets.length > 0
+			? tickets.map((t) => EGG_OF[t.state])
+			: Array.from({ length: p.total }, (_, i): Egg => (i < p.built ? 'built' : 'waiting'));
+	const more =
+		slots.length > EGGS_SHOWN ? `<small>+${String(slots.length - EGGS_SHOWN)}</small>` : '';
+	const eggs = slots
+		.slice(0, EGGS_SHOWN)
+		.map((s) => `<i class="slot"><i class="egg ${s}"></i></i>`)
+		.join('');
+	return `<span class="eggs" role="img" aria-label="${progressText(p)} built">${eggs}${more}</span><p class="meta progress">${progressText(p)} built</p>`;
 }
 
 interface Features {
@@ -335,7 +355,19 @@ const waitingTicketsHtml = (card: FeatureCard) =>
 		? ''
 		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id)} ${escape(t.title)} <small>${escape(t.why)}</small></li>`).join('')}</ul>`;
 
-function buildingCard(card: BuildingCard, view: FactoryView): string {
+// One Feature as a nest in the ledger: who, its egg row, where it stands, its clock, and what hangs beneath it.
+function nest(
+	cls: string,
+	card: FeatureCard,
+	eggs: string,
+	now: string,
+	meta: string,
+	beneath = ''
+): string {
+	return `<article class="entry ${cls}"><div class="who">${feature(card)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+}
+
+function buildingCard(card: BuildingCard): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
 	const at = tickets.findIndex((t) => t.id === doing.ticket);
@@ -344,7 +376,26 @@ function buildingCard(card: BuildingCard, view: FactoryView): string {
 		doing.round === null || doing.rounds === null
 			? ''
 			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-	const list = tickets
+	return nest(
+		'building',
+		card,
+		card.progress === null ? '' : progressHtml(card.progress, tickets),
+		`<p class="label">Building</p><p>${where}${doing.step}${round}</p>`,
+		`<time data-since="${escape(featureStart(doing))}"></time>`
+	);
+}
+
+// What the one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its Session.
+function detail(card: BuildingCard, view: FactoryView): string {
+	const { doing } = card;
+	const tickets = doing.tickets ?? [];
+	const at = tickets.findIndex((t) => t.id === doing.ticket);
+	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
+	const round =
+		doing.round === null || doing.rounds === null
+			? ''
+			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
+	const steps = tickets
 		.map(
 			(t) =>
 				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
@@ -352,40 +403,48 @@ function buildingCard(card: BuildingCard, view: FactoryView): string {
 		.join('');
 	const tail = view.tail.map(escape).join('\n');
 	return (
-		`<article class="fcard building">${feature(card)}` +
-		`<p class="meta"><time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
-		`<p>${where}${doing.step}${round}</p>` +
-		(card.progress === null ? '' : progressHtml(card.progress)) +
-		(list === '' ? '' : `<ul class="tickets">${list}</ul>`) +
+		`<aside class="detail" aria-label="Building now"><p class="dk"><i></i>Building now</p>` +
+		`<h3>${feature(card)}</h3><p class="sub">${where}${doing.step}${round}</p>` +
+		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
+		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
-		'</article>'
+		'</aside>'
 	);
 }
 
-// A Feature not yet started: its Ticket count, `0 of N` and a bar; "?" and no bar when the count failed; nothing when the Tracker cannot count.
+// A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard): string {
 	const counts = card.ticketCounts;
 	let count = '';
 	if (counts === null) count = '<p class="meta count">? Tickets</p>';
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
-	const est =
-		card.estimateMs === null ? '' : `<p class="meta">${estimateHtml(card.estimateMs)}</p>`;
-	return `<article class="fcard">${feature(card)}${count}${est}</article>`;
+	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
+	return nest('queue', card, count, '<p class="label">Queued</p>', est);
 }
 
 function completedCard(card: CompletedCard): string {
 	const { event, costUsd } = card.done;
 	const took = tookMs(event);
 	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
-	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcomeHtml(event)}</p><p class="meta">${duration}${dollars(costUsd)}</p>${progressHtml(card.progress)}</article>`;
+	return nest(
+		event.kind === 'failed' ? 'failed' : 'pulled',
+		card,
+		progressHtml(card.progress),
+		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p>`,
+		`${duration}${dollars(costUsd)}`
+	);
 }
 
-function column(name: string, body: string): string {
-	return `<section class="column"><h2>${name}</h2>${body}</section>`;
+function group(state: string, name: string, count: number | null, body: string): string {
+	const shown = count === null ? '' : `<i class="tally">${String(count)}</i>`;
+	return `<section class="mat" data-state="${state}"><div class="tab"><h2>${name}</h2>${shown}</div><div class="lines">${body}</div></section>`;
 }
 
 const OFF = '<p class="empty">not known while nightjar is off</p>';
+
+const LEGEND =
+	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="egg waiting"></i>waiting</span></p>';
 
 function board(view: FactoryView): string {
 	const all = features(view);
@@ -399,16 +458,22 @@ function board(view: FactoryView): string {
 				? none('empty')
 				: all.queue.map(queuedCard).join('');
 	const building =
-		all.building === null ? none('nothing is being built') : buildingCard(all.building, view);
+		all.building === null ? none('nothing is being built') : buildingCard(all.building);
 	let waiting: string;
 	if (!on) waiting = OFF;
 	else if (all.waiting === undefined) waiting = none('not read yet');
 	else {
 		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
 		const cards = all.waiting
-			.map(
-				(c) =>
-					`<article class="fcard waiting">${feature(c)}<p>${escape(c.why)}</p>${progressHtml(c.progress)}${waitingTicketsHtml(c)}</article>`
+			.map((c) =>
+				nest(
+					'waiting',
+					c,
+					progressHtml(c.progress),
+					`<p class="label"><i class="egg need"></i>${escape(c.why)}</p>`,
+					'',
+					waitingTicketsHtml(c)
+				)
 			)
 			.join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
@@ -417,7 +482,16 @@ function board(view: FactoryView): string {
 		all.completed.length === 0
 			? none('nothing has finished yet')
 			: all.completed.map(completedCard).join('');
-	return `<div class="board">${column('Queue', queued)}${column('Building', building)}${column('Waiting on you', waiting)}${column('Completed', completed)}</div>`;
+	const side = all.building === null ? '' : detail(all.building, view);
+	return (
+		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
+		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
+		group('waiting', 'Waiting on you', on ? (all.waiting?.length ?? null) : null, waiting) +
+		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
+		group('queue', 'Queue', on ? (all.queue?.length ?? null) : null, queued) +
+		group('completed', 'Completed', all.completed.length, completed) +
+		`</div>${side}</div></div>`
+	);
 }
 
 const STATES = [
@@ -511,7 +585,7 @@ function table(view: FactoryView): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}" data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
 	const note = !running(view)
@@ -539,10 +613,11 @@ const PAGE = (panels: string) => `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nightjar</title>
-<style>${STYLE}</style>
+<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
 </head>
 <body>
-<nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>
+<div class="banner" role="img" aria-label="nightjar"></div>
+<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav></div>
 <main id="panels" data-view="board">${panels}</main>
 <script>${SCRIPT}</script>
 </body>
@@ -589,6 +664,8 @@ function compareRows(a, b, sort, dir, now) {
 	}
 	return Number(a.dataset.rank) - Number(b.dataset.rank) || Number(a.dataset.order) - Number(b.dataset.order);
 }
+// the page's own markup carries these; a stand-in element without them is left alone
+const attr = (el, name, value) => el && el.setAttribute && el.setAttribute(name, value);
 function applyTable() {
 	const now = Date.now();
 	const rows = Array.from(document.querySelectorAll('tr[data-state]'));
@@ -601,8 +678,12 @@ function applyTable() {
 	for (const b of document.querySelectorAll('button[data-sort]')) {
 		b.dataset.on = String(b.dataset.sort === tableState.sort);
 		b.dataset.dir = b.dataset.sort === tableState.sort ? (tableState.dir === 1 ? 'asc' : 'desc') : '';
+		attr(b.parentNode, 'aria-sort', b.dataset.dir === 'asc' ? 'ascending' : b.dataset.dir === 'desc' ? 'descending' : 'none');
 	}
-	for (const b of document.querySelectorAll('button[data-chip]')) b.dataset.on = String(tableState.states.includes(b.dataset.chip));
+	for (const b of document.querySelectorAll('button[data-chip]')) {
+		b.dataset.on = String(tableState.states.includes(b.dataset.chip));
+		attr(b, 'aria-pressed', b.dataset.on);
+	}
 }
 panels.onclick = (e) => {
 	const t = e.target && e.target.closest ? e.target : null;
@@ -621,7 +702,10 @@ panels.onclick = (e) => {
 // the choice lives on the panels element and in local storage, so a refresh of its content keeps it
 function show(view) {
 	panels.dataset.view = view;
-	for (const b of document.querySelectorAll('button[data-view]')) b.dataset.on = String(b.dataset.view === view);
+	for (const b of document.querySelectorAll('button[data-view]')) {
+		b.dataset.on = String(b.dataset.view === view);
+		attr(b, 'aria-current', b.dataset.on === 'true' ? 'page' : 'false');
+	}
 }
 let saved = null;
 try { saved = localStorage.getItem('nightjar-view'); } catch {}
@@ -638,7 +722,15 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
+	// a swap drops the focused sort header or chip; put focus back on its twin
+	const was = document.activeElement && document.activeElement.dataset;
+	const key = was && (was.sort ? 'sort' : was.chip ? 'chip' : null);
+	const value = key && was[key];
 	panels.innerHTML = JSON.parse(e.data);
+	if (key) {
+		const back = document.querySelector('[data-' + key + '="' + value + '"]');
+		if (back) back.focus();
+	}
 	applyTable();
 	tick();
 };
@@ -648,51 +740,146 @@ setInterval(tick, 1000);
 `;
 
 const STYLE = `
-:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; --surface: #f9fafb; --accent: #2563eb; --bad: #dc2626; --good: #16a34a; }
-@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; --surface: #1f2937; --accent: #60a5fa; --bad: #f87171; --good: #4ade80; } }
-body { font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0 auto; max-width: 80rem; padding: 0 20px 32px; }
+:root { color-scheme: dark; --void: #04070b; --panel: #0b131b; --line: #1b3a42; --teal: #22e3d2; --teal2: #14a89c; --amber: #ff9a1f; --slate: #8f98e0; --ok: #3fd17f; --ink: #e6f1f2; --ink2: #9db5b8; --muted: #7f979b; --err: #ff5a5f; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
+* { box-sizing: border-box; }
+body { background: var(--void) linear-gradient(rgba(34, 227, 210, 0.035) 1px, transparent 1px) 0 0 / 32px 32px; background-image: linear-gradient(rgba(34, 227, 210, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34, 227, 210, 0.035) 1px, transparent 1px); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0; scrollbar-color: var(--teal2) var(--void); }
+::selection { background: var(--teal); color: var(--void); }
+a { color: var(--teal); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre { font-variant-numeric: tabular-nums; }
+.banner { background: var(--void) center 40% / cover no-repeat; height: 260px; position: relative; }
+.banner::after { background: linear-gradient(180deg, transparent 60%, var(--void)); content: ""; inset: 0; position: absolute; }
+.bar { align-items: center; background: rgba(4, 7, 11, 0.94); border-bottom: 1px solid var(--line); display: flex; gap: 4px; padding: 10px 32px; position: sticky; top: 0; z-index: 3; }
+.mark { color: var(--teal); font: 700 0.85rem var(--mono); letter-spacing: 0.2em; margin: 0 22px 0 0; text-transform: uppercase; }
+#views { display: flex; gap: 4px; }
+#views button { background: none; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 5px 16px; }
+#views button:hover { color: var(--ink); }
+#views button[data-on="true"] { background: rgba(34, 227, 210, 0.07); border-color: var(--teal2); color: var(--teal); }
+#panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 0 32px 56px; }
 h1, h2 { font-size: 1em; margin: 0; }
-h1 { font-size: 1.25em; display: inline; }
-h2 { color: var(--muted); font-weight: 600; margin-top: 1.5em; }
-header { border-bottom: 1px solid var(--line); padding: 20px 0 10px; }
-header .repo, header .state { color: var(--muted); margin-left: 8px; }
-#views { display: flex; gap: 4px; padding-top: 12px; }
-#views button { background: none; border: 1px solid var(--line); border-radius: 6px; color: inherit; cursor: pointer; font: inherit; padding: 4px 14px; }
-#views button[data-on="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
-#cards { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
-.card span, .empty, small, .meta { color: var(--muted); }
-ul { list-style: none; margin: 4px 0; padding: 0; }
-pre, time, .overview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-pre { border: 1px solid var(--line); border-radius: 6px; font-size: 12px; margin: 8px 0; max-height: 14rem; overflow: auto; padding: 8px; white-space: pre-wrap; }
+header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 24px 0 6px; }
+h1 { font: 700 1.6rem var(--mono); }
+header span { color: var(--muted); font-family: var(--mono); font-size: 0.9rem; }
+header .state { color: var(--teal); font-weight: 600; }
+#cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0 0 10px; }
+.stat b { color: var(--ink); }
+.empty, small, .meta { color: var(--muted); }
+.empty { margin: 10px 0; }
+ul, ol { list-style: none; margin: 4px 0; padding: 0; }
+pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var(--ink2); font: 12px/1.7 var(--mono); margin: 8px 0 0; max-height: 14rem; overflow: auto; padding: 10px 12px; white-space: pre-wrap; }
+.overview { font-family: system-ui, sans-serif; }
 #panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 8px; }
-.chips button { background: none; border: 1px solid var(--line); border-radius: 999px; color: inherit; cursor: pointer; font: inherit; padding: 2px 12px; }
-.chips button[data-on="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.egg { background: radial-gradient(circle at 28% 26%, rgba(0, 0, 0, 0.35) 0 1.4px, transparent 2.4px), radial-gradient(circle at 66% 58%, rgba(0, 0, 0, 0.3) 0 1.8px, transparent 2.8px), var(--teal2); border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%; box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.3); display: inline-block; flex: none; height: 1.2rem; position: relative; width: 0.95rem; }
+.egg.building { background: var(--teal); outline: 2px solid var(--teal); outline-offset: 3px; animation: incubate 2.4s ease-in-out infinite; }
+.egg.need { background: var(--amber); box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.25); margin: 0 0.65rem; }
+.egg.need::before, .egg.need::after { background: var(--amber); border-radius: 2px; content: ""; height: 3px; position: absolute; top: 0.45rem; width: 0.5rem; }
+.egg.need::before { left: -0.65rem; transform: rotate(-20deg); }
+.egg.need::after { right: -0.65rem; transform: rotate(20deg); }
+.egg.waiting { background: none; border: 2px dashed #2f5a63; box-shadow: none; }
+@keyframes incubate { 50% { outline-color: rgba(34, 227, 210, 0.25); } }
+.slot { align-items: center; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); border-radius: 50%; display: inline-grid; height: 1.75rem; place-items: center; width: 1.75rem; }
+.slot > .egg.waiting { display: none; }
+.eggs { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.eggs small { align-self: center; }
+.legend { color: var(--muted); display: flex; flex-wrap: wrap; font: 0.8rem var(--mono); gap: 6px 22px; margin: 0 0 14px; }
+.legend span { align-items: center; display: inline-flex; gap: 8px; }
+.legend .egg { height: 1rem; width: 0.8rem; }
+.legend .egg.need { margin: 0 0.5rem; }
+.legend .egg.need::before, .legend .egg.need::after { top: 0.35rem; width: 0.4rem; }
+.legend .egg.need::before { left: -0.5rem; }
+.legend .egg.need::after { right: -0.5rem; }
+.cols { display: block; }
+.cols.has-detail { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) 340px; }
+.left { min-width: 0; }
+.head { border-bottom: 1px solid var(--line); color: var(--muted); display: grid; font-size: 0.7rem; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; letter-spacing: 0.18em; margin: 0 0 14px 88px; padding: 6px 18px; text-transform: uppercase; }
+.head span:last-child { text-align: right; white-space: nowrap; }
+.mat { --h: var(--teal); background: linear-gradient(90deg, color-mix(in srgb, var(--h) 12%, transparent), transparent 45%), rgba(8, 13, 19, 0.85); border: 1px solid var(--line); display: grid; grid-template-columns: 88px minmax(0, 1fr); margin-bottom: 16px; position: relative; }
+.mat::before, .mat::after { border: 2px solid var(--h); content: ""; height: 16px; pointer-events: none; position: absolute; right: -1px; width: 16px; }
+.mat::before { border-bottom: 0; border-left: 0; top: -1px; }
+.mat::after { border-left: 0; border-top: 0; bottom: -1px; }
+.mat[data-state="waiting"] { --h: var(--amber); }
+.mat[data-state="queue"] { --h: var(--slate); }
+.mat[data-state="completed"] { --h: var(--ok); }
+.tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
+.tab h2 { font: 600 0.72rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
+.tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1.1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
+.lines { padding: 4px 18px; }
+.entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
+.lines > .entry:first-child { border-top: 0; }
+.lines > .empty { padding: 10px 0; }
+.entry p { margin: 0; }
+.who { font-size: 1.05rem; font-weight: 600; }
+.who b { color: var(--ink2); font: 500 0.9rem var(--mono); margin-right: 10px; }
+.eggcell .meta { font: 0.76rem var(--mono); margin-top: 6px; }
+.now .label { align-items: center; color: var(--ink2); display: flex; font: 700 0.78rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.now .label .egg { height: 1rem; margin: 0 0.9rem 0 0.6rem; width: 0.8rem; }
+.now .label .egg.need::before, .now .label .egg.need::after { top: 0.35rem; width: 0.4rem; }
+.now .label .egg.need::before { left: -0.5rem; }
+.now .label .egg.need::after { right: -0.5rem; }
+.now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
+.clock { color: var(--muted); font: 0.8rem var(--mono); text-align: right; }
+.entry > ul { grid-column: 1 / -1; }
+.entry.waiting .now .label { color: var(--amber); }
+.entry.building .now .label { color: var(--teal); }
+.entry.pulled .now .label { color: var(--ok); }
+.entry.failed .now .label, .entry.failed .now p { color: var(--err); }
+.tickets li { font: 0.85rem var(--mono); padding: 2px 0 2px 4px; }
+.tickets li.waiting { color: var(--amber); }
+.detail { background: linear-gradient(180deg, rgba(34, 227, 210, 0.07), transparent 40%), rgba(8, 13, 19, 0.92); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: sticky; top: 60px; }
+.detail::before, .detail::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
+.detail::before { border-bottom: 0; border-right: 0; left: -1px; top: -1px; }
+.detail::after { border-left: 0; border-top: 0; bottom: -1px; right: -1px; }
+.dk { align-items: center; color: var(--teal); display: flex; font-size: 0.72rem; gap: 8px; letter-spacing: 0.18em; margin: 0; text-transform: uppercase; }
+.dk i { animation: blip 2s ease-out infinite; background: var(--teal); border-radius: 50%; height: 8px; width: 8px; }
+@keyframes blip { 0% { box-shadow: 0 0 0 0 rgba(34, 227, 210, 0.6); } 100% { box-shadow: 0 0 0 9px transparent; } }
+.detail h3 { font: 700 1.2rem system-ui, sans-serif; margin: 8px 0 2px; overflow-wrap: anywhere; }
+.detail h3 b { color: var(--ink2); font: 500 0.9rem var(--mono); margin-right: 8px; }
+.sub { color: var(--muted); font-size: 0.78rem; margin: 0; }
+.steps { margin: 16px 0; position: relative; }
+.steps::before { background: var(--line); bottom: 8px; content: ""; left: 8px; position: absolute; top: 8px; width: 1px; }
+.steps li { color: var(--ink2); font-size: 0.85rem; padding: 4px 0 4px 30px; position: relative; }
+.steps li::before { background: var(--void); border: 1.5px solid var(--muted); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); content: ""; height: 13px; left: 2px; position: absolute; top: 8px; width: 13px; }
+.steps li.built { color: var(--muted); }
+.steps li.built::before { background: var(--teal2); border-color: var(--teal2); }
+.steps li.building { color: var(--ink); font-weight: 700; }
+.steps li.building::before { background: var(--teal); border-color: var(--teal); }
+.steps li.waiting { color: var(--amber); }
+.steps li.waiting::before { border-color: var(--amber); }
+.meters { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin-bottom: 14px; }
+.meters div { background: rgba(0, 0, 0, 0.3); border: 1px solid var(--line); padding: 6px 10px; }
+.meters small { display: block; font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; }
+.meters b { font-size: 1rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
+.chips button { background: none; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 3px 14px; }
+.chips button[data-on="true"] { background: var(--teal); border-color: var(--teal); color: var(--void); }
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
-th, td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
-th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; font-weight: 600; padding: 0; }
-th button[data-on="true"] { color: inherit; }
-th button[data-dir="asc"]::after { content: " \\25B2"; }
-th button[data-dir="desc"]::after { content: " \\25BC"; }
+th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: 600 0.75rem var(--mono); letter-spacing: 0.16em; padding: 0; text-transform: uppercase; }
+th button[data-on="true"] { color: var(--teal); }
+th button[data-dir]::after { border: solid currentColor; border-width: 0 2px 2px 0; content: ""; display: inline-block; height: 0.4em; margin-left: 0.6em; transform: rotate(45deg) translateY(-0.2em); width: 0.4em; }
+th button[data-dir="asc"]::after { transform: rotate(-135deg) translate(-0.1em, -0.1em); }
 tr[hidden] { display: none; }
-.board { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.column { min-width: 0; }
-.fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; overflow-wrap: anywhere; padding: 10px 12px; }
-.fcard p { margin: 4px 0; }
-.bar { background: var(--line); border-radius: 4px; height: 6px; overflow: hidden; }
-.bar > i { background: var(--accent); display: block; height: 100%; }
-.fcard.building { border-color: var(--accent); }
-.fcard.failed { border-color: var(--bad); color: var(--bad); }
-.fcard.pulled a { color: var(--good); }
-.tickets li.built { color: var(--good); }
-.tickets li.building { color: var(--accent); font-weight: 600; }
-@media (max-width: 700px) {
-	body { padding: 0 12px 24px; }
-	.board { grid-template-columns: 1fr; }
-	.table { min-width: 0; }
-	.scroll { max-width: 100%; overflow-x: auto; }
+td.progress .eggs { margin-bottom: 4px; }
+.overview section { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 12px; }
+.overview h2 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; text-transform: uppercase; }
+.overview li { padding: 3px 0; }
+@media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
+@media (max-width: 1000px) {
+	.cols.has-detail { grid-template-columns: 1fr; }
+	.detail { position: static; }
+}
+@media (max-width: 760px) {
+	.banner { background-position: 25% 40%; height: 180px; }
+	.bar { flex-wrap: wrap; padding: 10px 16px; }
+	#panels { padding: 0 12px 40px; }
+	.head { display: none; }
+	.mat { grid-template-columns: 40px minmax(0, 1fr); }
+	.tab { padding: 10px 4px; }
+	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.9rem; }
+	.lines { padding: 4px 12px; }
+	.entry { grid-template-columns: 1fr; }
+	.clock { text-align: left; }
 	.scroll table { min-width: 36rem; }
 }
 `;
@@ -742,7 +929,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				'content-type': 'text/html; charset=utf-8',
 				'cache-control': 'no-store',
 				'content-security-policy':
-					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 			});
 			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow()));
 		} else {
