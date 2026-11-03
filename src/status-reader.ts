@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { ledgerPath } from './build.js';
 import { logsPath } from './coding-agent.js';
-import { builtOn, spends, spentOnFeature } from './ledger.js';
+import { builtOn, builtOnFeature, spends, spentOnFeature } from './ledger.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;
@@ -13,6 +13,8 @@ export interface Completed {
 	readonly event: Done;
 	// what this build's sessions cost: those after the Feature's previous outcome, up to this one
 	readonly costUsd: number;
+	// the ledger's built events for this build, counted over the same sessions; absent in a hand-made view
+	readonly builtTickets?: number;
 }
 
 export interface FactoryView {
@@ -138,7 +140,8 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 			const after = before === undefined ? null : Date.parse(before.at);
 			return {
 				event,
-				costUsd: spentOnFeature(spent, event.feature, after, Date.parse(event.at))
+				costUsd: spentOnFeature(spent, event.feature, after, Date.parse(event.at)),
+				builtTickets: builtOnFeature(spent, event.feature, after, Date.parse(event.at))
 			};
 		})
 	};

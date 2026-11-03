@@ -165,13 +165,30 @@ interface BuildingCard extends FeatureCard {
 	readonly state: 'building';
 	readonly doing: Building;
 }
+// Tickets built of the Feature's Tickets; null when there is no count to show
+interface Progress {
+	readonly built: number;
+	readonly total: number;
+}
 interface WaitingCard extends FeatureCard {
 	readonly state: 'waiting';
 	readonly why: string;
+	readonly progress: Progress | null;
 }
 interface CompletedCard extends FeatureCard {
 	readonly state: 'completed';
 	readonly done: Completed;
+	readonly progress: Progress | null;
+}
+
+const progressText = (p: Progress | null) =>
+	p === null ? '?' : `${String(p.built)} of ${String(p.total)}`;
+
+// `k of N built` under a bar; "?" and no bar without a count
+function progressHtml(p: Progress | null): string {
+	if (p === null) return '<p class="meta progress">?</p>';
+	const pct = p.total === 0 ? 0 : Math.min(100, Math.round((p.built / p.total) * 100));
+	return `<div class="bar"><i style="width:${String(pct)}%"></i></div><p class="meta progress">${progressText(p)} built</p>`;
 }
 
 interface Features {
@@ -201,15 +218,34 @@ function features(view: FactoryView): Features {
 					doing
 				}
 			: null;
-	const completedCard = (done: Completed): CompletedCard => ({
-		state: 'completed',
-		id: done.event.feature,
-		...(done.event.title === undefined ? {} : { title: done.event.title }),
-		waitingTickets: [],
-		done
-	});
-	const completed = view.completed.map(completedCard).reverse();
 	const found = on ? status?.waitingOnYou : undefined;
+	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
+	const totals = new Map<string, number>();
+	if (on) {
+		for (const q of status?.queue ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
+		for (const i of found?.items ?? [])
+			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
+	}
+	const completedCard = (done: Completed): CompletedCard => {
+		const built = done.builtTickets ?? 0;
+		const total = done.event.kind === 'pull' ? built : (totals.get(done.event.feature) ?? null);
+		return {
+			state: 'completed',
+			id: done.event.feature,
+			...(done.event.title === undefined ? {} : { title: done.event.title }),
+			waitingTickets: [],
+			done,
+			progress:
+				done.event.kind === 'pull'
+					? built > 0
+						? { built, total: built }
+						: null
+					: total === null
+						? null
+						: { built: Math.min(built, total), total }
+		};
+	};
+	const completed = view.completed.map(completedCard).reverse();
 	let waiting: WaitingCard[] | undefined;
 	if (found !== undefined) {
 		waiting = found.items
@@ -219,7 +255,10 @@ function features(view: FactoryView): Features {
 				id: i.id,
 				title: i.title,
 				why: i.why,
-				waitingTickets: []
+				waitingTickets: [],
+				progress: i.ticketCounts
+					? { built: i.ticketCounts.closed, total: i.ticketCounts.total }
+					: null
 			}));
 		// a waiting Ticket belongs to the Feature being built, else to the one that just ended
 		const owner = building ?? completed[0];
@@ -236,7 +275,8 @@ function features(view: FactoryView): Features {
 					id: parent?.id ?? '',
 					...(parent === undefined || parent.title === '' ? {} : { title: parent.title }),
 					why: tickets.some((t) => t.why.includes('info')) ? 'needs info' : 'needs a person',
-					waitingTickets: tickets
+					waitingTickets: tickets,
+					progress: null
 				});
 		}
 	}
@@ -315,7 +355,7 @@ function completedCard(card: CompletedCard): string {
 	const took =
 		event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
 	const duration = Number.isNaN(took) ? '' : `<time class="took">${elapsed(took)}</time> `;
-	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcome}</p><p class="meta">${duration}${dollars(costUsd)}</p></article>`;
+	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcome}</p><p class="meta">${duration}${dollars(costUsd)}</p>${progressHtml(card.progress)}</article>`;
 }
 
 function column(name: string, body: string): string {
@@ -345,7 +385,7 @@ function board(view: FactoryView): string {
 		const cards = all.waiting
 			.map(
 				(c) =>
-					`<article class="fcard waiting">${feature(c)}<p>${escape(c.why)}</p>${waitingTicketsHtml(c)}</article>`
+					`<article class="fcard waiting">${feature(c)}<p>${escape(c.why)}</p>${progressHtml(c.progress)}${waitingTicketsHtml(c)}</article>`
 			)
 			.join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
@@ -370,7 +410,8 @@ const COLUMNS = [
 	['state', 'State'],
 	['time', 'Time'],
 	['cost', 'Cost'],
-	['outcome', 'Outcome']
+	['outcome', 'Outcome'],
+	['progress', 'Progress']
 ] as const;
 
 // One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
@@ -384,6 +425,7 @@ function table(view: FactoryView): string {
 		readonly cost: number | null;
 		readonly outcome: string;
 		readonly outcomeText: string;
+		readonly progress: Progress | null;
 	}
 	const rows: Row[] = [];
 	for (const card of all.queue ?? [])
@@ -394,9 +436,11 @@ function table(view: FactoryView): string {
 			timeText: '',
 			cost: null,
 			outcome: '',
-			outcomeText: ''
+			outcomeText: '',
+			progress: card.ticketCounts ? { built: 0, total: card.ticketCounts.total } : null
 		});
 	if (all.building !== null) {
+		const tickets = all.building.doing.tickets ?? [];
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
 			card: all.building,
@@ -405,7 +449,14 @@ function table(view: FactoryView): string {
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
 			outcome: '',
-			outcomeText: ''
+			outcomeText: '',
+			progress:
+				tickets.length === 0
+					? null
+					: {
+							built: tickets.filter((t) => t.state === 'built').length,
+							total: tickets.length
+						}
 		});
 	}
 	for (const card of all.waiting ?? [])
@@ -416,7 +467,8 @@ function table(view: FactoryView): string {
 			timeText: '',
 			cost: null,
 			outcome: card.why,
-			outcomeText: escape(card.why)
+			outcomeText: escape(card.why),
+			progress: card.progress
 		});
 	for (const card of all.completed) {
 		const { event, costUsd } = card.done;
@@ -435,7 +487,8 @@ function table(view: FactoryView): string {
 			timeText: Number.isNaN(took) ? '' : `<time class="took">${elapsed(took)}</time>`,
 			cost: costUsd,
 			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
-			outcomeText: text
+			outcomeText: text,
+			progress: card.progress
 		});
 	}
 	const label = (state: string) => STATES.find(([s]) => s === state)?.[1] ?? state;
@@ -448,8 +501,8 @@ function table(view: FactoryView): string {
 	const body = rows
 		.map(
 			(r, i) =>
-				`<tr data-state="${r.state}" data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td></tr>`
+				`<tr data-state="${r.state}" data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress)}</td></tr>`
 		)
 		.join('');
 	const note = !running(view)
@@ -510,6 +563,7 @@ function rowKey(row, key, now) {
 		return d.time === '' || d.time === undefined ? null : Number(d.time);
 	}
 	if (key === 'cost') return d.cost === '' || d.cost === undefined ? null : Number(d.cost);
+	if (key === 'progress') return d.progress === '' || d.progress === undefined ? null : Number(d.progress);
 	return d[key] ?? '';
 }
 // default: state, then Queue order; a header sorts by its column, rows without a value last

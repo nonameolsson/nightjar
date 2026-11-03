@@ -103,7 +103,7 @@ describe('nightjar ui page', () => {
 			{ items: [], trackerCannotList: false }
 		);
 		await open();
-		const board = (await get('/')).text.split('<div class="overview">')[0] ?? '';
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
 		const card = (title: string) => board.split('<article').find((a) => a.includes(title)) ?? '';
 		expect(card('Saved filters')).toContain('4 Tickets');
 		expect(card('Saved filters')).toContain('0 of 4 built');
@@ -112,6 +112,64 @@ describe('nightjar ui page', () => {
 		expect(card('Exports')).not.toContain('class="bar"');
 		expect(card('Reports')).not.toContain('Tickets');
 		expect(card('Reports')).not.toContain('class="bar"');
+	});
+
+	it('shows progress on Waiting on you and Completed, in the Board and the Table', async () => {
+		const built = (feature: string, ticket: string, minute: number) =>
+			record(ledgerFile(), {
+				at: new Date(2026, 9, 30, 8, minute).toISOString(),
+				repo: 'o/r',
+				feature,
+				ticket,
+				branch: 'b',
+				step: 'build',
+				session: 's',
+				costUsd: 1,
+				outcome: 'built'
+			});
+		built('9', '91', 1);
+		built('9', '92', 2);
+		built('9', '93', 3);
+		built('8', '81', 4);
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const queued = [{ id: '8', title: 'Retry', ticketCounts: { total: 5, closed: 0 } }];
+		const items = [
+			{
+				kind: 'feature' as const,
+				id: '7',
+				title: 'Billing',
+				why: 'needs info',
+				ticketCounts: { total: 6, closed: 2 }
+			},
+			{
+				kind: 'feature' as const,
+				id: '6',
+				title: 'Unknown',
+				why: 'needs a person',
+				ticketCounts: null
+			}
+		];
+		file.refreshed(queued, { items, trackerCannotList: false });
+		const url = 'https://example.test/pull/9';
+		file.happened({ kind: 'pull', feature: '9', title: 'Done one', url });
+		file.happened({ kind: 'failed', feature: '8', title: 'Retry', why: 'it broke' });
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const table = rest.split('<div class="overview">')[0] ?? '';
+		const card = (html: string, title: string) =>
+			html.split('<article').find((a) => a.includes(title)) ?? '';
+		const row = (title: string) => table.split('<tr ').find((a) => a.includes(title)) ?? '';
+		expect(card(board, 'Billing')).toContain('2 of 6 built');
+		expect(card(board, 'Billing')).toContain('class="bar"');
+		expect(card(board, 'Unknown')).toContain('>?<');
+		expect(card(board, 'Unknown')).not.toContain('class="bar"');
+		expect(card(board, 'Done one')).toContain('3 of 3 built');
+		expect(card(board, 'it broke')).toContain('1 of 5 built');
+		expect(row('Billing')).toContain('2 of 6 built');
+		expect(row('Done one')).toContain('3 of 3 built');
+		expect(row('Unknown')).not.toContain('class="bar"');
 	});
 
 	it('says stopped when the pid is gone, and shows no Queue then, only history', async () => {

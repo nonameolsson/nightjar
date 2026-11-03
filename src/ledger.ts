@@ -90,6 +90,8 @@ export interface Spend {
 	readonly feature: string;
 	readonly at: number;
 	readonly costUsd: number;
+	// the session built a Ticket
+	readonly built: boolean;
 }
 
 // Each session's cost, by Feature id and the time it was recorded.
@@ -97,8 +99,24 @@ export function spends(path: string): Spend[] {
 	return readEntries(path).map((e) => ({
 		feature: String(e.feature),
 		at: Date.parse(e.at),
-		costUsd: e.costUsd
+		costUsd: e.costUsd,
+		built: e.step === 'build' && e.outcome === 'built'
 	}));
+}
+
+// How many Tickets of a Feature were built after `after` (exclusive) and up to `until` (inclusive), either open.
+export function builtOnFeature(
+	all: readonly Spend[],
+	feature: string,
+	after: number | null,
+	until: number | null
+): number {
+	let n = 0;
+	for (const s of all) {
+		if (!s.built || s.feature !== feature) continue;
+		if ((after === null || s.at > after) && (until === null || s.at <= until)) n += 1;
+	}
+	return n;
 }
 
 // The dollars spent on a Feature after `after` (exclusive) and up to `until` (inclusive), either open.
