@@ -451,8 +451,120 @@ describe('nightjar init in a repo that has a factory.json', () => {
 });
 
 describe('nightjar init arguments', () => {
-	it('takes only --use-api-key', async () => {
+	it('takes only its own flags', async () => {
 		expect(await init([], {}, ['init', 'now'])).toBe(2);
 		expect(err.join('\n')).toContain('unknown argument now');
+		expect(err.join('\n')).toContain('usage: nightjar init [--yes]');
+	});
+
+	it('refuses a value flag with no value', async () => {
+		expect(await init([], {}, ['init', '--yes', '--check'])).toBe(2);
+		expect(err.join('\n')).toContain('--check needs a value');
+	});
+});
+
+describe('nightjar init with --yes and flags', () => {
+	it('writes a valid factory.json from --yes and --check, asking nothing', async () => {
+		expect(await init([], {}, ['init', '--yes', '--check', 'make check'])).toBe(0);
+		expect(asked).toEqual([]);
+		expect(m.readConfig()).toEqual({
+			$schema: 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json',
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: ['make check']
+		});
+		expect(loadConfig(m.root).check).toBe('make check');
+		expect(out).toContain('nightjar: wrote factory.json');
+	});
+
+	it('takes the detected check command under --yes', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		expect(await init([], {}, ['init', '-y'])).toBe(0);
+		expect(asked).toEqual([]);
+		expect(out).toContain(
+			'nightjar: detected several check commands; taking the first, `make test`'
+		);
+		expect(m.readConfig()).toMatchObject({ check: 'make test' });
+	});
+
+	it('refuses, naming the flag, when a required value has no default', async () => {
+		expect(await init([], {}, ['init', '--yes'])).toBe(2);
+		expect(err.join('\n')).toContain(
+			'--yes found no default for: Command that checks the work, run after each Ticket; pass --check'
+		);
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('sets the Tracker and Code host from their flags', async () => {
+		const code = await init([], {}, [
+			'init',
+			'--yes',
+			'--check',
+			'make check',
+			'--tracker',
+			'azure-devops',
+			'--tracker-organization',
+			'contoso',
+			'--tracker-project',
+			'Fabrikam',
+			'--tracker-ticket-type',
+			'User Story',
+			'--code-host',
+			'azure-devops',
+			'--code-host-repo',
+			'fabrikam-app',
+			'--allowed-commands',
+			'make check, make lint *'
+		]);
+		expect(err).toEqual([]);
+		expect(code).toBe(0);
+		expect(asked).toEqual([]);
+		expect(m.readConfig()).toMatchObject({
+			tracker: {
+				type: 'azure-devops',
+				organization: 'contoso',
+				project: 'Fabrikam',
+				featureType: 'Feature',
+				ticketType: 'User Story'
+			},
+			codeHost: {
+				type: 'azure-devops',
+				organization: 'contoso',
+				project: 'Fabrikam',
+				repo: 'fabrikam-app'
+			},
+			allowedCommands: ['make check', 'make lint *']
+		});
+	});
+
+	it('refuses the Azure Repos repo under --yes when no flag names it', async () => {
+		const argv = ['init', '--yes', '--check', 'make check', '--tracker', 'azure-devops'];
+		const where = ['--tracker-organization', 'contoso', '--tracker-project', 'F'];
+		expect(await init([], {}, [...argv, ...where])).toBe(2);
+		expect(err.join('\n')).toContain('pass --code-host-repo');
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('refuses a flag whose value the schema does not take', async () => {
+		const argv = ['init', '--yes', '--tracker-repo', 'nope', '--check', 'make check'];
+		expect(await init([], {}, argv)).toBe(2);
+		expect(err.join('\n')).toContain('--tracker-repo nope: must be owner/name');
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('asks only what no flag answers, when --yes is not given', async () => {
+		const argv = ['init', '--tracker', 'github', '--code-host', 'github', '--check', 'make check'];
+		expect(await init(['', '', ''], {}, [...argv, '--tracker-repo', 'acme/widgets'])).toBe(0);
+		expect(asked).toEqual([
+			'GitHub repo the branch is pushed to, owner/name [o/r]: ',
+			'Commands the agent may run, separated by commas, or none (? for more) [make check]: ',
+			'Write factory.json and go on, y or n [y]: '
+		]);
+		expect(m.readConfig()).toMatchObject({
+			tracker: { repo: 'acme/widgets' },
+			check: 'make check'
+		});
 	});
 });

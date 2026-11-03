@@ -81,7 +81,15 @@ Then it writes `factory.json` (below), which you commit, and:
 - **on Azure DevOps** says tags appear on first use, so there is nothing to create;
 - checks every login it needs and says how to fix each one that is missing: `gh auth login`, `az login` or a token in `AZURE_DEVOPS_EXT_PAT`, and `claude auth login`.
 
-It reads its answers from standard input, line by line, so a script can pipe them in; there is no need for a terminal. If `factory.json` is already there, `init` keeps it, asks nothing, and only creates the labels and checks the logins: run it that way after you have fixed a login, or when you join a repo that has one.
+It reads its answers from standard input, line by line, so a script can pipe them in; there is no need for a terminal. A script or an agent can instead give the answers as flags, and `--yes` takes every default and asks nothing:
+
+```bash
+nightjar init --yes --check 'make check'
+nightjar init --yes --check 'make check' --tracker azure-devops --tracker-organization contoso \
+  --tracker-project Fabrikam --code-host-repo fabrikam-app
+```
+
+Each answer has its flag: `--check`, `--allowed-commands` (comma separated, or `none`), `--tracker` and `--code-host` (the type), and a field of either, as `--tracker-` or `--code-host-` then the field: `repo`, `organization`, `project`, `path`, and on the Tracker `feature-type` and `ticket-type`. Under `--yes`, a value with no default and no flag stops `init` before it writes anything, naming the flag to pass. If `factory.json` is already there, `init` keeps it, asks nothing, and only creates the labels and checks the logins: run it that way after you have fixed a login, or when you join a repo that has one.
 
 ## Configure: `factory.json`
 
