@@ -357,12 +357,116 @@ function board(view: FactoryView): string {
 	return `<div class="board">${column('Queue', queued)}${column('Building', building)}${column('Waiting on you', waiting)}${column('Completed', completed)}</div>`;
 }
 
+const STATES = [
+	['queue', 'Queue'],
+	['building', 'Building'],
+	['waiting', 'Waiting on you'],
+	['completed', 'Completed']
+] as const;
+
+const COLUMNS = [
+	['id', 'Id'],
+	['title', 'Title'],
+	['state', 'State'],
+	['time', 'Time'],
+	['cost', 'Cost'],
+	['outcome', 'Outcome']
+] as const;
+
+// One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
+function table(view: FactoryView): string {
+	const all = features(view);
+	interface Row {
+		readonly card: FeatureCard;
+		readonly state: (typeof STATES)[number][0];
+		readonly time: number | null;
+		readonly timeText: string;
+		readonly cost: number | null;
+		readonly outcome: string;
+		readonly outcomeText: string;
+	}
+	const rows: Row[] = [];
+	for (const card of all.queue ?? [])
+		rows.push({
+			card,
+			state: 'queue',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: '',
+			outcomeText: ''
+		});
+	if (all.building !== null) {
+		// the elapsed time is counted by the browser, so the row stays the same between events
+		rows.push({
+			card: all.building,
+			state: 'building',
+			time: null,
+			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
+			cost: view.featureCostUsd,
+			outcome: '',
+			outcomeText: ''
+		});
+	}
+	for (const card of all.waiting ?? [])
+		rows.push({
+			card,
+			state: 'waiting',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: card.why,
+			outcomeText: escape(card.why)
+		});
+	for (const card of all.completed) {
+		const { event, costUsd } = card.done;
+		const took =
+			event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
+		const text =
+			event.kind === 'pull'
+				? safeUrl(event.url)
+					? `<a href="${escape(event.url)}">draft pull request</a>`
+					: escape(event.url)
+				: `failed: ${escape(event.why)}`;
+		rows.push({
+			card,
+			state: 'completed',
+			time: Number.isNaN(took) ? null : took,
+			timeText: Number.isNaN(took) ? '' : `<time class="took">${elapsed(took)}</time>`,
+			cost: costUsd,
+			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
+			outcomeText: text
+		});
+	}
+	const label = (state: string) => STATES.find(([s]) => s === state)?.[1] ?? state;
+	const chips = STATES.map(
+		([s, name]) => `<button type="button" data-chip="${s}">${name}</button>`
+	).join('');
+	const head = COLUMNS.map(
+		([k, name]) => `<th><button type="button" data-sort="${k}">${name}</button></th>`
+	).join('');
+	const body = rows
+		.map(
+			(r, i) =>
+				`<tr data-state="${r.state}" data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}">` +
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td></tr>`
+		)
+		.join('');
+	const note = !running(view)
+		? OFF
+		: all.trackerCannotList
+			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
+			: '';
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+}
+
 // The panels, which the page replaces whole each time an event brings new ones.
 export function renderPanels(root: string, view: FactoryView): string {
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
 		cards(view),
 		board(view),
+		table(view),
 		`<div class="overview">${[current(view), queue(view), waiting(view), completed(view)].join('\n')}</div>`
 	].join('\n');
 }
@@ -376,7 +480,7 @@ const PAGE = (panels: string) => `<!doctype html>
 <style>${STYLE}</style>
 </head>
 <body>
-<nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="overview">Overview</button></nav>
+<nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>
 <main id="panels" data-view="board">${panels}</main>
 <script>${SCRIPT}</script>
 </body>
@@ -389,7 +493,68 @@ const panels = document.getElementById('panels');
 const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
-const VIEWS = ['board', 'overview'];
+const VIEWS = ['board', 'table', 'overview'];
+// the Table's sort and state filter, kept in local storage and applied again after each event
+let tableState = { sort: null, dir: 1, states: [] };
+try {
+	const kept = JSON.parse(localStorage.getItem('nightjar-table'));
+	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states };
+} catch {}
+function saveTable() {
+	try { localStorage.setItem('nightjar-table', JSON.stringify(tableState)); } catch {}
+}
+function rowKey(row, key, now) {
+	const d = row.dataset;
+	if (key === 'time') {
+		if (d.since) return now - Date.parse(d.since);
+		return d.time === '' || d.time === undefined ? null : Number(d.time);
+	}
+	if (key === 'cost') return d.cost === '' || d.cost === undefined ? null : Number(d.cost);
+	return d[key] ?? '';
+}
+// default: state, then Queue order; a header sorts by its column, rows without a value last
+function compareRows(a, b, sort, dir, now) {
+	const by = (x, y) => {
+		if (x === y) return 0;
+		if (x === null) return 1;
+		if (y === null) return -1;
+		return typeof x === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+	};
+	if (sort !== null) {
+		const c = by(rowKey(a, sort, now), rowKey(b, sort, now));
+		if (c !== 0) return c * dir;
+	}
+	return Number(a.dataset.rank) - Number(b.dataset.rank) || Number(a.dataset.order) - Number(b.dataset.order);
+}
+function applyTable() {
+	const now = Date.now();
+	const rows = Array.from(document.querySelectorAll('tr[data-state]'));
+	const parent = rows[0] && rows[0].parentNode;
+	rows.sort((a, b) => compareRows(a, b, tableState.sort, tableState.dir, now));
+	for (const row of rows) {
+		row.hidden = tableState.states.length > 0 && !tableState.states.includes(row.dataset.state);
+		if (parent) parent.appendChild(row);
+	}
+	for (const b of document.querySelectorAll('button[data-sort]')) {
+		b.dataset.on = String(b.dataset.sort === tableState.sort);
+		b.dataset.dir = b.dataset.sort === tableState.sort ? (tableState.dir === 1 ? 'asc' : 'desc') : '';
+	}
+	for (const b of document.querySelectorAll('button[data-chip]')) b.dataset.on = String(tableState.states.includes(b.dataset.chip));
+}
+panels.onclick = (e) => {
+	const t = e.target && e.target.closest ? e.target : null;
+	const sorter = t && t.closest('[data-sort]');
+	const chip = t && t.closest('[data-chip]');
+	if (sorter) {
+		const key = sorter.dataset.sort;
+		tableState = { ...tableState, sort: key, dir: tableState.sort === key ? -tableState.dir : 1 };
+	} else if (chip) {
+		const s = chip.dataset.chip;
+		tableState = { ...tableState, states: tableState.states.includes(s) ? tableState.states.filter((x) => x !== s) : [...tableState.states, s] };
+	} else return;
+	saveTable();
+	applyTable();
+};
 // the choice lives on the panels element and in local storage, so a refresh of its content keeps it
 function show(view) {
 	panels.dataset.view = view;
@@ -411,8 +576,10 @@ function tick() {
 }
 new EventSource('/events').onmessage = (e) => {
 	panels.innerHTML = JSON.parse(e.data);
+	applyTable();
 	tick();
 };
+applyTable();
 tick();
 setInterval(tick, 1000);
 `;
@@ -435,7 +602,18 @@ header .repo, header .state { color: var(--muted); margin-left: 8px; }
 ul { list-style: none; margin: 4px 0; padding: 0; }
 pre, time, .overview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 pre { border: 1px solid var(--line); border-radius: 6px; font-size: 12px; margin: 8px 0; max-height: 14rem; overflow: auto; padding: 8px; white-space: pre-wrap; }
-#panels[data-view="board"] .overview, #panels[data-view="overview"] .board { display: none; }
+#panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 8px; }
+.chips button { background: none; border: 1px solid var(--line); border-radius: 999px; color: inherit; cursor: pointer; font: inherit; padding: 2px 12px; }
+.chips button[data-on="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; font-weight: 600; padding: 0; }
+th button[data-on="true"] { color: inherit; }
+th button[data-dir="asc"]::after { content: " \\25B2"; }
+th button[data-dir="desc"]::after { content: " \\25BC"; }
+tr[hidden] { display: none; }
 .board { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .column { min-width: 0; }
 .fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; overflow-wrap: anywhere; padding: 10px 12px; }

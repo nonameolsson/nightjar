@@ -375,7 +375,7 @@ describe('nightjar ui board', () => {
 			file.happened({ kind: 'failed', feature: String(100 + n), why: 'check red' });
 		await open();
 		let page = (await get('/')).text;
-		const board = page.split('<div class="board">')[1]?.split('<div class="overview">')[0] ?? '';
+		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
 		expect(board.match(/class="fcard failed"/g)).toHaveLength(10);
 		expect(board.indexOf('#112')).toBeLessThan(board.indexOf('#111'));
 		alive = false;
@@ -397,7 +397,7 @@ describe('nightjar ui board', () => {
 		file.happened({ kind: 'failed', feature: '33', why: 'check red' });
 		await open();
 		const page = (await get('/')).text;
-		const board = page.split('<div class="board">')[1]?.split('<div class="overview">')[0] ?? '';
+		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
 		expect(board.match(/<time class="took">14m 00s<\/time>/g)).toHaveLength(2);
 		expect(board.match(/class="took"/g)).toHaveLength(2);
 	});
@@ -442,6 +442,163 @@ describe('nightjar ui board', () => {
 		expect(panels.dataset['view']).toBe('overview');
 		button.onclick();
 		expect([panels.dataset['view'], store['nightjar-view']]).toEqual(['board', 'board']);
+	});
+});
+
+describe('nightjar ui Table', () => {
+	const seed = () => {
+		const file = status(true);
+		const start = new Date(at.getTime() - 10 * 60_000).toISOString();
+		file.happened({
+			kind: 'pull',
+			feature: '31',
+			title: 'Done one',
+			url: 'https://example.test/pull/31',
+			startedAt: new Date(at.getTime() - 5 * 60_000).toISOString()
+		});
+		file.happened({
+			kind: 'failed',
+			feature: '32',
+			title: 'Broke',
+			why: 'check red',
+			startedAt: start
+		});
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed(
+			[
+				{ id: '9', title: 'Exports' },
+				{ id: '10', title: 'Alerts' }
+			],
+			{
+				items: [{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' }],
+				trackerCannotList: false
+			}
+		);
+	};
+	const tableHtml = async () =>
+		(await get('/')).text.split('<div class="table">')[1]?.split('<div class="overview">')[0] ?? '';
+
+	it('adds Table to the toggle and renders a row per Feature with six columns, in state then Queue order', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('data-view="table">Table</button>');
+		const table = await tableHtml();
+		for (const name of ['Id', 'Title', 'State', 'Time', 'Cost', 'Outcome'])
+			expect(table).toContain(`data-sort="${name.toLowerCase()}">${name}</button>`);
+		const ids = [...table.matchAll(/<tr data-state="(\w+)"[^>]*data-id="(\d+)"/g)].map(
+			(m) => `${m[1] ?? ''}:${m[2] ?? ''}`
+		);
+		expect(ids).toEqual(['queue:9', 'queue:10', 'waiting:3', 'completed:32', 'completed:31']);
+		expect(table).toContain('<a href="https://example.test/pull/31">draft pull request</a>');
+		expect(table).toContain('failed: check red');
+	});
+
+	// the page script run against rows read from the served table
+	const sandbox = (html: string, store: Record<string, string>) => {
+		interface Row {
+			dataset: Record<string, string>;
+			hidden: boolean;
+		}
+		const rows: Row[] = [...html.matchAll(/<tr ([^>]*)>/g)].map((m) => {
+			const dataset: Record<string, string> = {};
+			for (const a of (m[1] ?? '').matchAll(/data-([\w-]+)="([^"]*)"/g))
+				dataset[(a[1] ?? '').replace(/-(\w)/g, (_, c: string) => c.toUpperCase())] = a[2] ?? '';
+			return { dataset, hidden: false };
+		});
+		const body = {
+			list: rows,
+			appendChild(r: Row) {
+				body.list = body.list.filter((x) => x !== r);
+				body.list.push(r);
+			}
+		};
+		const panels: { dataset: Record<string, string>; onclick?: (e: unknown) => void } = {
+			dataset: {}
+		};
+		const item = (attr: string, k: string): { dataset: Record<string, string> } => ({
+			dataset: { [attr]: k }
+		});
+		const sorts = ['id', 'title', 'state', 'time', 'cost', 'outcome'].map((k) => item('sort', k));
+		const chips = ['queue', 'building', 'waiting', 'completed'].map((k) => item('chip', k));
+		let message: ((e: { data: string }) => void) | undefined;
+		const script = (/<script>([\s\S]*)<\/script>/.exec(html) ?? [])[1];
+		const withRows = rows.map((r) => Object.assign(r, { parentNode: body }));
+		const code = script ?? '';
+		return {
+			rows: () => body.list,
+			sorts,
+			chips,
+			panels,
+			load: () => {
+				runInNewContext(code, {
+					document: {
+						getElementById: () => panels,
+						querySelectorAll: (sel: string) =>
+							sel === 'tr[data-state]'
+								? [...body.list]
+								: sel === 'button[data-sort]'
+									? sorts
+									: sel === 'button[data-chip]'
+										? chips
+										: []
+					},
+					localStorage: {
+						getItem: (k: string) => store[k] ?? null,
+						setItem: (k: string, v: string) => (store[k] = v)
+					},
+					EventSource: function EventSource() {
+						return {
+							set onmessage(f: (e: { data: string }) => void) {
+								message = f;
+							}
+						};
+					},
+					setInterval: () => 0
+				});
+			},
+			click: (item: { dataset: Record<string, string> }, attr: 'sort' | 'chip') =>
+				panels.onclick?.({
+					target: { closest: (sel: string) => (sel === `[data-${attr}]` ? item : null) }
+				}),
+			refresh: () => message?.({ data: JSON.stringify('') }),
+			withRows
+		};
+	};
+	const order = (s: ReturnType<typeof sandbox>) => s.rows().map((r) => r.dataset['id']);
+
+	it('sorts by a header, reverses on a second click, filters by chip, and keeps both over a refresh and a reload', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		const store: Record<string, string> = {};
+		const s = sandbox(page, store);
+		s.load();
+		expect(order(s)).toEqual(['9', '10', '3', '32', '31']);
+		const idSort = s.sorts[0] as (typeof s.sorts)[number];
+		s.click(idSort, 'sort');
+		expect(order(s)).toEqual(['3', '9', '10', '31', '32']);
+		s.click(idSort, 'sort');
+		expect(order(s)).toEqual(['32', '31', '10', '9', '3']);
+		const time = s.sorts[3] as (typeof s.sorts)[number];
+		s.click(time, 'sort');
+		// 31 took 5 minutes, 32 took 10; rows with no time come last
+		expect(order(s).slice(0, 2)).toEqual(['31', '32']);
+		s.click(s.chips[3] as (typeof s.chips)[number], 'chip');
+		expect(s.rows().map((r) => r.hidden)).toEqual([false, false, true, true, true]);
+		expect(order(s).filter((_, i) => !s.rows()[i]?.hidden)).toEqual(['31', '32']);
+
+		// a live refresh swaps the panels' content but the arrangement stays
+		s.refresh();
+		expect(order(s).slice(0, 2)).toEqual(['31', '32']);
+		expect(s.rows().filter((r) => r.hidden)).toHaveLength(3);
+
+		// a reload reads it back from local storage
+		const again = sandbox(page, store);
+		again.load();
+		expect(order(again).slice(0, 2)).toEqual(['31', '32']);
+		expect(again.rows().filter((r) => r.hidden)).toHaveLength(3);
+		expect(again.chips.map((c) => c.dataset['on'])).toEqual(['false', 'false', 'false', 'true']);
 	});
 });
 
