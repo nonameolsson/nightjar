@@ -1,6 +1,6 @@
 {
 	"name": "@nonameolsson/nightjar",
-	"version": "0.4.1",
+	"version": "0.4.2",
 	"description": "Builds a repo's Features from its Tracker with nobody at the keyboard, one draft pull request per Feature.",
 	"license": "MIT",
 	"repository": {
