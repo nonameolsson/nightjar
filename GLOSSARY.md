@@ -69,7 +69,7 @@ The program that builds one Ticket in the Feature's worktree, in a Session Night
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes.
+One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
 **Adapter**:
