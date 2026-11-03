@@ -7,7 +7,16 @@ import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
-import type { Signal } from './signals.js';
+import {
+	featureStopStep,
+	featureWaitingStep,
+	reviewStep,
+	stoppedStep,
+	ticketAnswerStep,
+	ticketHumanStep,
+	ticketRetryStep
+} from './next-step.js';
+import type { Signal, SignalNames } from './signals.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -91,6 +100,8 @@ export interface Setup extends WorkflowSettings {
 		readonly model?: string;
 		readonly effort?: string;
 	};
+	// the names the Signals go by, for the next step each comment names
+	readonly signals: SignalNames;
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
 }
@@ -158,7 +169,8 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			id,
 			why,
 			`Nightjar built nothing: ${chosen.why}`,
-			waiting(tickets, new Set())
+			waiting(tickets, new Set()),
+			setup.signals
 		);
 	}
 	const tree = await deps.openWorktree(
@@ -182,7 +194,8 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 				id,
 				why,
 				`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${got.tail}\n\`\`\``,
-				waiting(tickets, built)
+				waiting(tickets, built),
+				setup.signals
 			);
 		}
 		await tree.markSetUp();
@@ -198,12 +211,13 @@ async function needsInfoStop(
 	id: ItemId,
 	why: string,
 	comment: string,
-	left: Waiting[]
+	left: Waiting[],
+	signals: SignalNames
 ): Promise<FeatureOutcome> {
 	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
 	await deps.tracker.removeSignal(id, 'working');
 	await deps.tracker.addSignal(id, 'needsInfo');
-	await deps.tracker.comment(id, `${comment}${FOOTER}`);
+	await deps.tracker.comment(id, `${comment}\n\n${featureStopStep(signals)}${FOOTER}`);
 	return { kind: 'nothing', waiting: left };
 }
 
@@ -324,7 +338,8 @@ class FeatureRun {
 		before: string,
 		body: string,
 		signal: Signal,
-		why: string
+		why: string,
+		next: string
 	) {
 		const { tracker } = this.deps;
 		this.deps.status.happened({
@@ -335,7 +350,7 @@ class FeatureRun {
 		});
 		const side = await this.tree.discard(before, ticket.id);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
-		await tracker.comment(ticket.id, `${body}${kept}${FOOTER}`);
+		await tracker.comment(ticket.id, `${body}${kept}\n\n${next}${FOOTER}`);
 		await tracker.removeSignal(ticket.id, 'ready');
 		await tracker.addSignal(ticket.id, signal);
 		const i = this.tickets.indexOf(ticket);
@@ -388,7 +403,8 @@ class FeatureRun {
 					before,
 					`Nightjar could not build this Ticket: ${got.why}.\n\nSession: \`claude --resume ${sessionId}\``,
 					'needsInfo',
-					got.why
+					got.why,
+					ticketRetryStep(this.setup.signals)
 				);
 				return NEXT;
 			case 'questions': {
@@ -412,7 +428,14 @@ class FeatureRun {
 		const limit = this.setup.limits.questionRounds;
 		if (round <= limit) {
 			const asked = `it asked ${String(questions.length)} question${questions.length === 1 ? '' : 's'}, round ${String(round)}`;
-			await this.handBack(ticket, before, questionsComment(questions, round), 'needsInfo', asked);
+			await this.handBack(
+				ticket,
+				before,
+				questionsComment(questions, round),
+				'needsInfo',
+				asked,
+				ticketAnswerStep(this.setup.signals)
+			);
 			return;
 		}
 		const asked = questions.map((q, i) => `${String(i + 1)}. ${q.question}`).join('\n');
@@ -421,7 +444,8 @@ class FeatureRun {
 			before,
 			`Nightjar asked about this Ticket ${String(limit)} times and still has questions, so it needs a person:\n\n${asked}`,
 			'human',
-			`still unclear after ${String(limit)} question rounds, so a person builds it`
+			`still unclear after ${String(limit)} question rounds, so a person builds it`,
+			ticketHumanStep(this.setup.signals)
 		);
 	}
 
@@ -456,7 +480,8 @@ class FeatureRun {
 				before,
 				`Nightjar's session said it built this Ticket but changed no file.\n\nSession: \`claude --resume ${sessionId}\``,
 				'needsInfo',
-				'it said it built the Ticket but changed no file'
+				'it said it built the Ticket but changed no file',
+				ticketRetryStep(this.setup.signals)
 			);
 			return NEXT;
 		}
@@ -547,7 +572,10 @@ class FeatureRun {
 		let paused = last.kind === 'paused' ? last.why : null;
 		await tracker.removeSignal(id, 'working');
 		if (this.aborted || last.kind === 'aborted') {
-			await tracker.comment(id, `The Nightjar run was stopped by a person.${FOOTER}`);
+			await tracker.comment(
+				id,
+				`The Nightjar run was stopped by a person.\n\n${stoppedStep(this.setup.signals)}${FOOTER}`
+			);
 			return { kind: 'stopped' };
 		}
 		if (paused) await this.pause(paused);
@@ -562,7 +590,7 @@ class FeatureRun {
 			await tracker.addSignal(id, 'needsInfo');
 			await tracker.comment(
 				id,
-				`Nightjar built nothing for this Feature.\n\n${waitingList(left)}${FOOTER}`
+				`Nightjar built nothing for this Feature.\n\n${waitingList(left)}\n\n${featureWaitingStep(this.setup.signals)}${FOOTER}`
 			);
 			return { kind: 'nothing', waiting: left };
 		}
@@ -642,7 +670,7 @@ class FeatureRun {
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
 			await tracker.comment(
 				id,
-				`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}${FOOTER}`
+				`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}\n\n${featureWaitingStep(this.setup.signals)}${FOOTER}`
 			);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
@@ -797,5 +825,5 @@ function reviewComment(review: Review): string {
 	const issues = review.issues
 		.map((i) => `- \`${i.file}${i.line ? `:${String(i.line)}` : ''}\`: ${i.problem}`)
 		.join('\n');
-	return `**Nightjar review: ${review.verdict === 'approve' ? 'approve' : 'changes'}**\n\n${review.summary}${issues ? `\n\n${issues}` : ''}${FOOTER}`;
+	return `**Nightjar review: ${review.verdict === 'approve' ? 'approve' : 'changes'}**\n\n${review.summary}${issues ? `\n\n${issues}` : ''}\n\n${reviewStep(review.verdict)}${FOOTER}`;
 }

@@ -34,6 +34,7 @@ import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
+import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { openWorktree } from './worktree.js';
 
 // A test over real git runs a few dozen processes, which take seconds on a busy machine.
@@ -298,6 +299,7 @@ const setup = (world: World, over: Partial<Setup> = {}): Setup => ({
 	allowApiKey: false,
 	env: world.env,
 	limits: LIMITS,
+	signals: DEFAULT_SIGNAL_NAMES,
 	...over
 });
 
@@ -1341,5 +1343,64 @@ describe('the cost split in the pull request', () => {
 				'- Review: $0.50'
 			].join('\n')
 		);
+	});
+});
+
+describe('the next step in each comment', () => {
+	it('tells a person how to answer a Ticket back to Nightjar', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.tracker.said('2')[0]).toContain('**Next step**');
+		expect(world.tracker.said('2')[0]).toContain('add `ready-for-agent`');
+		expect(world.tracker.said('2')[0]).toContain('add `factory-go`');
+		expect(world.tracker.said('2')[0]).toMatch(/\n\n---\n_Built by Nightjar\._$/);
+	});
+
+	it('uses the Signal names factory.json sets', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'ask';
+		const signals = { ...DEFAULT_SIGNAL_NAMES, go: 'run-it' };
+		await buildFeature(deps(world), setup(world, { signals }), '1');
+		expect(world.tracker.said('2')[0]).toContain('add `run-it`');
+		expect(world.tracker.said('2')[0]).not.toContain('factory-go');
+	});
+
+	it('tells a person what to fix when a Session failed', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'fail';
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.tracker.said('2')[0]).toContain('Read the reason above');
+	});
+
+	it('tells a person to build it when the question rounds are used up', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'ask';
+		world.tracker.say('2', { author: 'ann', body: `${QUESTIONS_MARK}\nround 1`, trusted: true });
+		world.tracker.say('2', { author: 'ann', body: `${QUESTIONS_MARK}\nround 2`, trusted: true });
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.tracker.said('2').at(-1)).toContain('Build it yourself');
+	});
+
+	it('tells a person to clear needs-info on a Feature that stopped before building', async () => {
+		const world = makeWorld();
+		world.setupOk = false;
+		await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), '1');
+		expect(world.tracker.said('1')[0]).toContain(
+			'On this Feature, remove `needs-info` and add `factory-go`'
+		);
+	});
+
+	it('sends a person from a Feature that built nothing to its waiting Tickets', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.tracker.said('1')[0]).toContain('waiting Tickets');
+	});
+
+	it('ends the review comment with what a person does next', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.host.pulls[0]?.comments[0]).toContain('**Next step**');
 	});
 });

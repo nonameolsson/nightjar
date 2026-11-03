@@ -190,9 +190,7 @@ export function questionsComment(questions: readonly Question[], round: number):
 	return `${QUESTIONS_MARK}
 Nightjar stopped before building this Ticket: it needs answers (round ${String(round)}).
 
-${asked}
-
-Answer in a comment here, then mark this Ticket ready and give its Feature the Go again.`;
+${asked}`;
 }
 
 export const questionRounds = (comments: readonly Comment[]): number =>
