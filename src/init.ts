@@ -8,7 +8,7 @@ import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
-import { repoFromRemote } from './github/api.js';
+import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
 
 export interface InitOptions {
@@ -18,6 +18,7 @@ export interface InitOptions {
 	readonly profile?: string;
 	readonly ask: Ask;
 	readonly request?: AzureDevOpsRequest;
+	readonly gh?: GhRunner;
 }
 
 // the published schema, so a repo that is no npm project gets editor completion too
@@ -224,7 +225,8 @@ export async function runInit(o: InitOptions): Promise<number> {
 		env: o.env,
 		cwd: o.root,
 		failFast: false,
-		...(o.request === undefined ? {} : { request: o.request })
+		...(o.request === undefined ? {} : { request: o.request }),
+		...(o.gh === undefined ? {} : { gh: o.gh })
 	});
 	printLines(checked.lines);
 	let problems = failures(checked.lines);
@@ -253,6 +255,7 @@ export interface InitHost {
 	readonly env: Env;
 	readonly cwd: string;
 	readonly request?: AzureDevOpsRequest;
+	readonly gh?: GhRunner;
 	readonly ask?: Ask;
 }
 
@@ -287,7 +290,8 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			useApiKey: argv.includes('--use-api-key'),
 			...(profile === undefined ? {} : { profile }),
 			ask: host.ask ?? asker?.ask ?? (() => Promise.resolve(null)),
-			...(host.request === undefined ? {} : { request: host.request })
+			...(host.request === undefined ? {} : { request: host.request }),
+			...(host.gh === undefined ? {} : { gh: host.gh })
 		});
 	} catch (fault) {
 		if (!(fault instanceof Refusal) && !(fault instanceof ConfigError)) throw fault;

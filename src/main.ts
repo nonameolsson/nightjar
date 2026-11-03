@@ -11,6 +11,7 @@ import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import type { GhRunner } from './github/api.js';
 import type { Ask } from './ask.js';
 import { runDoctor } from './doctor.js';
 import { runInitCommand } from './init.js';
@@ -61,7 +62,8 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 		env: host.env,
 		cwd: host.cwd,
 		failFast: true,
-		...(host.request === undefined ? {} : { request: host.request })
+		...(host.request === undefined ? {} : { request: host.request }),
+		...(host.gh === undefined ? {} : { gh: host.gh })
 	});
 	const failed = checked.lines.find((l) => l.status === 'fail' && l.only === undefined);
 	if (failed !== undefined) throw new Refusal(failed.detail);
@@ -86,6 +88,8 @@ export interface Host {
 	readonly cwd: string;
 	// answers every Azure DevOps call; a spec passes a fake Azure DevOps
 	readonly request?: AzureDevOpsRequest;
+	// runs every `gh` call; a spec passes a fake GitHub
+	readonly gh?: GhRunner;
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
 	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
@@ -126,13 +130,14 @@ export async function runNightjar(
 	}
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	if (args.mode === 'doctor') {
-		const { cwd, request } = host;
+		const { cwd, request, gh } = host;
 		return runDoctor({
 			useApiKey: args.useApiKey,
 			...(args.profile === undefined ? {} : { profile: args.profile }),
 			env,
 			cwd,
-			...(request ? { request } : {})
+			...(request ? { request } : {}),
+			...(gh ? { gh } : {})
 		});
 	}
 	let ready: Ready;

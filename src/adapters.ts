@@ -214,20 +214,27 @@ const codeHostFor = (spec: Config['codeHost'], m: Machine, t: TrackerBundle) =>
 		) => Promise<HostBundle>
 	)(spec, m, t);
 
-// `request` answers every Azure DevOps call; a spec passes a fake Azure DevOps.
+// What reaches outside this process: `request` answers every Azure DevOps call and `gh` every GitHub call.
+// A spec passes a fake Azure DevOps and a fake GitHub.
+export interface Seams {
+	readonly request?: AzureDevOpsRequest;
+	readonly gh?: GhRunner;
+}
+
 export async function makeAdapters(
 	config: Config,
 	root: string,
 	env: Env,
-	request: AzureDevOpsRequest = fetchRequest
+	seams: Seams = {}
 ): Promise<Adapters> {
+	const request = seams.request ?? fetchRequest;
 	let origin: string | null | undefined;
 	// one sign-in for every Azure DevOps Adapter, made when the first needs it
 	let signIn: AzureDevOpsSignIn | undefined;
 	const machine: Machine = {
 		config,
 		env,
-		gh: ghRunner(root, env),
+		gh: seams.gh ?? ghRunner(root, env),
 		context: {
 			root,
 			signals: config.signals,

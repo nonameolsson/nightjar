@@ -281,7 +281,7 @@ async function placed(c: Config, ticket: (ado: FakeAzureDevOps) => number) {
 	const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
 	ado.repository('app');
 	const id = ticket(ado);
-	const adapters = await makeAdapters(c, dir, env(), ado.request);
+	const adapters = await makeAdapters(c, dir, env(), { request: ado.request });
 	const pull = await adapters.codeHost.createDraft({
 		title: 'A',
 		head: 'factory/1-a',
@@ -359,19 +359,18 @@ describe('makeAdapters pairs each Tracker with Azure Repos as the Code host', ()
 	it('stops before a build when the Azure Repos repo cannot be read', async () => {
 		signedInAz();
 		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
-		const adapters = await makeAdapters(config({ codeHost: repos }), dir, env(), ado.request);
+		const adapters = await makeAdapters(config({ codeHost: repos }), dir, env(), {
+			request: ado.request
+		});
 		await expect(adapters.reachCodeHost()).rejects.toThrow(/could not read the repo app: HTTP 404/);
 	});
 
 	it('still makes Features through the Tracker whose references it rewrites for Azure Repos', async () => {
 		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
 		const tracker = { ...boards('contoso'), ticketType: 'Product Backlog Item' };
-		const adapters = await makeAdapters(
-			config({ tracker, codeHost: repos }),
-			dir,
-			env(),
-			ado.request
-		);
+		const adapters = await makeAdapters(config({ tracker, codeHost: repos }), dir, env(), {
+			request: ado.request
+		});
 		signedInAz();
 		if (typeof adapters.writer === 'string') throw new Error(adapters.writer);
 		const feature = await adapters.writer.createFeature({ title: 'A', body: 'The spec.' });
@@ -386,7 +385,7 @@ describe('makeAdapters and waitingOn', () => {
 			config({ tracker: boards('contoso'), codeHost: { ...repos, organization: 'other' } }),
 			dir,
 			env(),
-			ado.request
+			{ request: ado.request }
 		);
 		signedInAz();
 		expect(await adapters.tracker.waitingOn?.('ann@contoso.com')).toEqual([]);

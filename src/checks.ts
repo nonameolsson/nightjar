@@ -5,6 +5,7 @@ import { accountLine, parseAccount, profileEnv } from './account.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
@@ -61,6 +62,7 @@ export interface CheckOptions {
 	readonly env: Env;
 	readonly cwd: string;
 	readonly request?: AzureDevOpsRequest;
+	readonly gh?: GhRunner;
 	// stop at the first check that fails, as a build does
 	readonly failFast: boolean;
 	// the skills a headless claude session loads; a spec passes its own
@@ -192,7 +194,10 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 	let faulty = false;
 	if (loaded !== null && root !== null) {
 		try {
-			adapters = await makeAdapters(loaded.config, root, o.env, o.request);
+			adapters = await makeAdapters(loaded.config, root, o.env, {
+				...(o.request === undefined ? {} : { request: o.request }),
+				...(o.gh === undefined ? {} : { gh: o.gh })
+			});
 		} catch (fault) {
 			faulty = true;
 			const detail = why(fault).replace(/^factory\.json: /gm, '');

@@ -14,29 +14,29 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// gh as ann with Feature #1 on o/r; FAKE_GH_EXISTING (comma separated) labels exist; FAKE_GH_SIGNED_OUT fails every call
+// gh as ann on o/r, for a spec that runs the command as a process, which a Host cannot reach: Feature #1 with Ticket #2,
+// and a pull request that opens as #9. FAKE_GH_FEATURE_LABEL and FAKE_GH_FEATURE_ASSIGNEE change what the Feature
+// carries; FAKE_GH_FAIL_TICKETS makes the call for its sub-issues fail. A spec that runs the command in this process
+// passes a FakeGitHub as the Host's `gh` instead.
 const GH = String.raw`#!/bin/bash
 echo "$*" >> "$FAKE_GH_CALLS"
-if [ -n "$FAKE_GH_SIGNED_OUT" ]; then
-  echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4
-fi
-issue='{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"factory-go"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}'
-case "$*" in
-  "api user") echo '{"login":"ann"}' ;;
-  "api repos/o/r/issues?"*) echo "[$issue]" ;;
-  "api -X POST repos/"*"/labels "*)
-    all="$*"; name="@{all#*-f name=}"; name="@{name%% -f*}"
-    if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then
-      echo '{"message":"Validation Failed","errors":[{"code":"already_exists"}]}'
-      echo "gh: Validation Failed (HTTP 422)" >&2; exit 1
-    fi
-    if [ -n "$FAKE_GH_NO_LABELS" ]; then echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; fi
-    echo '{}' ;;
-  "api repos/"*"/labels/"*)
-    all="$*"; name="@{all#api repos/*/labels/}"; name="@{name//%20/ }"
-    if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then echo '{}'; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
-  *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
-esac`;
+issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
+feature() { printf '{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"%s"}],"assignees":[{"login":"%s"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}' "@{FAKE_GH_FEATURE_LABEL:-factory-go}" "@{FAKE_GH_FEATURE_ASSIGNEE:-ann}"; }
+for a in "$@"; do case "$a" in
+  user) echo '{"login":"ann"}'; exit 0 ;;
+  repos/o/r/labels) echo '{}'; exit 0 ;;
+  repos/o/r/issues\?*) echo "[$(feature)]"; exit 0 ;;
+  repos/o/r/issues/1) feature; exit 0 ;;
+  repos/o/r/issues/1/sub_issues*)
+    [ -n "$FAKE_GH_FAIL_TICKETS" ] && { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
+    echo "[$(issue 2 'Share the escape' '')]"; exit 0 ;;
+  repos/o/r/issues/*/dependencies/*) echo '[]'; exit 0 ;;
+  repos/o/r/issues/*/comments*) echo '[]'; exit 0 ;;
+  repos/o/r/issues/*/labels*) echo '[]'; exit 0 ;;
+  repos/o/r/pulls\?*) echo '[]'; exit 0 ;;
+  repos/o/r/pulls|repos/o/r/pulls/9) echo '{"number":9,"html_url":"https://github.com/o/r/pull/9","body":""}'; exit 0 ;;
+esac; done
+echo "gh: Not Found (HTTP 404)" >&2; exit 1`;
 
 // az: FAKE_AZ_SIGNED_OUT makes it refuse a token as a signed-out az does
 const AZ = String.raw`#!/bin/bash
@@ -46,9 +46,11 @@ if [ -n "$FAKE_AZ_SIGNED_OUT" ]; then
 fi
 echo '{"accessToken":"fake-azure-devops"}'`;
 
-// claude: FAKE_CLAUDE_SIGNED_OUT makes `claude auth status --json` exit 1 as a signed-out claude does, and each
-// call notes the CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN it ran with;
-// a headless session prints its init line with the skills of FAKE_CLAUDE_SKILLS (comma separated)
+// The one claude of every spec. FAKE_CLAUDE_SIGNED_OUT makes `claude auth status --json` exit 1 as a signed-out claude
+// does, and each call notes the CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN it ran with.
+// A headless session prints its init line with the skills of FAKE_CLAUDE_SKILLS (comma separated).
+// A session Nightjar starts for a Ticket (it has a session id) writes built.txt, port.txt and login.txt in its
+// folder and answers built, at a cost of $0.50; the review session approves.
 const CLAUDE = String.raw`#!/bin/bash
 echo "$* [dir=$CLAUDE_CONFIG_DIR token=$CLAUDE_CODE_OAUTH_TOKEN]" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
@@ -59,7 +61,19 @@ case "$*" in
   "-p "*)
     skills=""
     if [ -n "$FAKE_CLAUDE_SKILLS" ]; then skills="\"@{FAKE_CLAUDE_SKILLS//,/\",\"}\""; fi
-    echo "{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"none\",\"skills\":[$skills]}" ;;
+    echo "{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"none\",\"skills\":[$skills]}"
+    case "$*" in
+      *--session-id*|*--resume*)
+        case "$*" in
+          *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
+          *)
+            echo work > built.txt
+            echo "@{WEB_PORT:-none}" > port.txt
+            echo "@{CLAUDE_CONFIG_DIR:-none} @{CLAUDE_CODE_OAUTH_TOKEN:-notoken}" > login.txt
+            out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
+        esac
+        echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.5,\"structured_output\":$out}" ;;
+    esac ;;
 esac`;
 
 export type Tool = 'gh' | 'az' | 'claude';
@@ -67,6 +81,8 @@ export type Tool = 'gh' | 'az' | 'claude';
 export const STAND_INS: Record<Tool, string> = { gh: GH, az: AZ, claude: CLAUDE };
 
 export interface Machine {
+	// the folder that holds the whole machine: its checkout, its home and its stand-ins
+	readonly base: string;
 	// the checkout, with origin at git@github.com:o/r.git
 	readonly root: string;
 	readonly env: Record<string, string>;
@@ -118,6 +134,7 @@ export function machine(without: readonly Tool[] = []): Machine {
 	inRoot('remote', 'add', 'origin', 'git@github.com:o/r.git');
 	const file = join(root, 'factory.json');
 	return {
+		base,
 		root,
 		env,
 		calls: (tool) => readFileSync(env[`FAKE_${tool.toUpperCase()}_CALLS`] ?? '', 'utf8'),

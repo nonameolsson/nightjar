@@ -4,18 +4,22 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';
 import { loadConfig } from './config.js';
+import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
+import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
 
 let out: string[];
 let err: string[];
 let m: Machine;
+let github: FakeGitHub;
 let asked: string[];
 beforeEach(() => {
 	out = [];
 	err = [];
 	asked = [];
 	m = machine();
+	github = oneEscape();
 	vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void out.push(a.join(' ')));
 	vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => void err.push(a.join(' ')));
 });
@@ -34,6 +38,7 @@ function init(answers: string[], env: Record<string, string> = {}, argv: string[
 		cwd: m.root,
 		env: { ...m.env, ...env },
 		request: ado.request,
+		gh: github.gh,
 		ask: (question) => {
 			asked.push(question);
 			return Promise.resolve(left.shift() ?? null);
@@ -75,15 +80,15 @@ describe('nightjar init on GitHub', () => {
 			'needs-info',
 			'ready-for-human'
 		]) {
-			expect(m.calls('gh')).toContain(`-X POST repos/o/r/labels -f name=${name} `);
+			expect(github.repoLabelNames()).toContain(name);
 			expect(out).toContain(`nightjar: created the label ${name}`);
 		}
 	});
 
 	it('leaves a label that exists, and says so', async () => {
-		await init(['github', '', 'github', '', 'make check', ''], {
-			FAKE_GH_EXISTING: 'factory-go,needs-info'
-		});
+		github.addRepoLabel('factory-go');
+		github.addRepoLabel('needs-info');
+		await init(['github', '', 'github', '', 'make check', '']);
 		expect(out).toContain('nightjar: the label factory-go exists already');
 		expect(out).toContain('nightjar: created the label agent-working');
 	});
@@ -97,8 +102,8 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('says how to fix a login that is missing, and creates no label with it', async () => {
+		github.signOut();
 		const code = await init(['github', '', 'github', '', 'make check', ''], {
-			FAKE_GH_SIGNED_OUT: '1',
 			FAKE_CLAUDE_SIGNED_OUT: '1'
 		});
 		expect(code).toBe(2);
@@ -107,15 +112,14 @@ describe('nightjar init on GitHub', () => {
 			/FAIL {2}claude: .*not signed in.*type \/login, or pass another --profile/
 		);
 		expect(out.join('\n')).toContain('Signal labels not created');
-		expect(m.calls('gh')).not.toContain('POST');
+		expect(github.repoLabelNames()).toEqual([]);
 		// the file is written all the same, and init can be run again
 		expect(existsSync(written())).toBe(true);
 	});
 
 	it('says what to do when the labels cannot be created', async () => {
-		const code = await init(['github', '', 'github', '', 'make check', ''], {
-			FAKE_GH_NO_LABELS: '1'
-		});
+		github.refuseLabels();
+		const code = await init(['github', '', 'github', '', 'make check', '']);
 		expect(code).toBe(2);
 		expect(err.join('\n')).toContain('FAIL  Signals: gh could not create the label factory-go');
 	});
@@ -196,7 +200,7 @@ describe('nightjar init on Azure DevOps', () => {
 		expect(out).toContain(
 			'nightjar: Azure DevOps shows Signals as tags, which appear on first use: there is nothing to create.'
 		);
-		expect(m.calls('gh')).toBe('');
+		expect(github.calls).toEqual([]);
 		expect(out).toContain(
 			'  ok    Tracker: Azure DevOps as ann@contoso.com on contoso/Fabrikam, Azure Repos contoso/Fabrikam/fabrikam-app'
 		);
@@ -254,7 +258,7 @@ describe('nightjar init in a repo that has a factory.json', () => {
 		expect(await init([])).toBe(0);
 		expect(asked).toEqual([]);
 		expect(readFileSync(written(), 'utf8')).toBe(before);
-		expect(m.calls('gh')).toContain('-X POST repos/o/r/labels -f name=factory-go ');
+		expect(github.repoLabelNames()).toContain('factory-go');
 		expect(out).toContain('  ok    Tracker: gh as ann on o/r');
 	});
 
