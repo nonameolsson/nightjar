@@ -616,6 +616,89 @@ describe('nightjar ui board', () => {
 		expect(panel).toContain('data-since');
 	});
 
+	it('puts the detail panel Tickets in their order, with the clock, cost and Session tail', async () => {
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature: '272',
+			ticket: '1',
+			branch: 'b',
+			step: 'build',
+			session: 'sess',
+			costUsd: 1.18,
+			outcome: 'built'
+		});
+		mkdirSync(join(root, '.factory', 'logs'), { recursive: true });
+		writeFileSync(
+			join(root, '.factory', 'logs', 'sess.jsonl'),
+			JSON.stringify({
+				type: 'assistant',
+				message: { content: [{ type: 'text', text: 'tail line <one>' }] }
+			})
+		);
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: '2',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: 'sess',
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '1', title: 'First', state: 'built' },
+				{ id: '2', title: 'Second', state: 'building' },
+				{ id: '3', title: 'Third', state: 'waiting', why: 'waits for #2' }
+			]
+		});
+		await open();
+		const page = (await get('/')).text;
+		const panel = page.split('<aside class="detail"')[1]?.split('</aside>')[0] ?? '';
+		expect(panel).toContain('Ticket 2 of 3, build, round 1 of 3');
+		expect(panel.indexOf('First')).toBeLessThan(panel.indexOf('Second'));
+		expect(panel.indexOf('Second')).toBeLessThan(panel.indexOf('Third'));
+		expect(panel).toContain('waits for #2');
+		expect(panel).toContain('$1.18');
+		expect(panel).toContain('<pre>');
+		expect(panel).toContain('tail line &#60;one&#62;');
+	});
+
+	it('reads the Board with Waiting on you first, then Building, Queue and Completed', async () => {
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await open();
+		const page = (await get('/')).text;
+		const order = ['waiting', 'building', 'queue', 'completed'].map((state) =>
+			page.indexOf(`<section class="mat" data-state="${state}"`)
+		);
+		expect(order.every((i) => i >= 0)).toBe(true);
+		expect(order).toEqual([...order].sort((a, b) => a - b));
+	});
+
+	it('shows at most 16 eggs for a Feature, and how many more there are', async () => {
+		status().doing({
+			kind: 'building',
+			feature: '5',
+			title: 'Big',
+			ticket: '1',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: Array.from({ length: 20 }, (_, i) => ({
+				id: String(i + 1),
+				title: `T${String(i + 1)}`,
+				state: i === 0 ? ('building' as const) : ('waiting' as const)
+			}))
+		});
+		await open();
+		const page = (await get('/')).text;
+		const row = page.split('<span class="eggs"')[1]?.split('</span>')[0] ?? '';
+		expect(row.match(/class="slot"/g)).toHaveLength(16);
+		expect(row).toContain('<small>+4</small>');
+	});
+
 	it('shows no detail panel while nothing is being built', async () => {
 		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		await open();

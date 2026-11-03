@@ -82,27 +82,38 @@ function queue(view: FactoryView): string {
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
 }
 
+// Where a build stands, in words: `Ticket 2 of 3, step, round 1 of 2`.
+function stepLine(doing: Building): string {
+	const tickets = doing.tickets ?? [];
+	const at = tickets.findIndex((t) => t.id === doing.ticket);
+	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
+	const round =
+		doing.round === null || doing.rounds === null
+			? ''
+			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
+	return `${where}${doing.step}${round}`;
+}
+
+// One `<li>` per Ticket, in order, with its state and why.
+function ticketItems(tickets: readonly TicketProgress[]): string {
+	return tickets
+		.map(
+			(t) =>
+				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+		)
+		.join('');
+}
+
 function current(view: FactoryView): string {
 	const doing = view.status?.doing;
 	let body = '<p class="empty">nothing is being built</p>';
 	if (doing?.kind === 'building' && running(view)) {
 		const tickets = doing.tickets ?? [];
-		const at = tickets.findIndex((t) => t.id === doing.ticket);
-		const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
-		const round =
-			doing.round === null || doing.rounds === null
-				? ''
-				: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-		const progress = tickets
-			.map(
-				(t) =>
-					`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
-			)
-			.join('');
+		const progress = ticketItems(tickets);
 		const tail = view.tail.map(escape).join('\n');
 		body =
 			`<p>${idHtml(doing.feature)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
-			`<p>${where}${doing.step}${round}</p>` +
+			`<p>${stepLine(doing)}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
 			(tail === '' ? '' : `<pre>${tail}</pre>`);
 	}
@@ -370,17 +381,11 @@ function nest(
 function buildingCard(card: BuildingCard): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
-	const at = tickets.findIndex((t) => t.id === doing.ticket);
-	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
-	const round =
-		doing.round === null || doing.rounds === null
-			? ''
-			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
 	return nest(
 		'building',
 		card,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
-		`<p class="label">Building</p><p>${where}${doing.step}${round}</p>`,
+		`<p class="label">Building</p><p>${stepLine(doing)}</p>`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`
 	);
 }
@@ -389,22 +394,11 @@ function buildingCard(card: BuildingCard): string {
 function detail(card: BuildingCard, view: FactoryView): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
-	const at = tickets.findIndex((t) => t.id === doing.ticket);
-	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
-	const round =
-		doing.round === null || doing.rounds === null
-			? ''
-			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-	const steps = tickets
-		.map(
-			(t) =>
-				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
-		)
-		.join('');
+	const steps = ticketItems(tickets);
 	const tail = view.tail.map(escape).join('\n');
 	return (
 		`<aside class="detail" aria-label="Building now"><p class="dk"><i></i>Building now</p>` +
-		`<h3>${feature(card)}</h3><p class="sub">${where}${doing.step}${round}</p>` +
+		`<h3>${feature(card)}</h3><p class="sub">${stepLine(doing)}</p>` +
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +

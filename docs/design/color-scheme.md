@@ -1,5 +1,8 @@
 # Color scheme: Neon After Dark
 
+> **`nightjar ui` no longer follows this palette.** The page chooses its own night-shift world (see `DESIGN.md` and `PRODUCT.md`): teal on near-black, system fonts, no magenta. This file stays the brand palette for the icon and anything else outside the page.
+
+
 Nightjar's brand palette, kept here for when we improve the UI. It preserves the identity of the icon: deep midnight backgrounds, electric cyan, hot magenta, ultraviolet purple and sunset orange. It should feel like a futuristic autonomous software factory, not a generic cyberpunk dashboard.
 
 ## Palette
