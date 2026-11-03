@@ -3,9 +3,39 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { spentOn } from './ledger.js';
-import type { Doing, Event, Happened, Status } from './status-shape.js';
+import { needsAPerson } from './plan.js';
+import type {
+	Doing,
+	Event,
+	Happened,
+	Named,
+	Queued,
+	Status,
+	WaitingItem,
+	WaitingOnYou
+} from './status-shape.js';
 
-export type { Doing, Event, Happened, Status } from './status-shape.js';
+export type {
+	Doing,
+	Event,
+	Happened,
+	Named,
+	Queued,
+	Status,
+	TicketProgress,
+	WaitingItem,
+	WaitingOnYou
+} from './status-shape.js';
+
+// The Tickets among `tickets` that need info or a person, as Waiting on you lists them.
+export const waitingTickets = (tickets: readonly (Named & { readonly why?: string })[]) =>
+	tickets
+		.filter(needsAPerson)
+		.map((t): WaitingItem => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' }));
+
+// When the Feature being built began; a file older than featureStartedAt has only the step's start.
+export const featureStart = (doing: Extract<Doing, { kind: 'building' }>) =>
+	doing.featureStartedAt ?? doing.startedAt;
 
 export const statusPath = (root: string) => join(root, '.factory', 'status.json');
 
@@ -13,6 +43,8 @@ export const statusPath = (root: string) => join(root, '.factory', 'status.json'
 export interface StatusReport {
 	readonly doing: (doing: Doing) => void;
 	readonly happened: (event: Happened) => void;
+	// the Queue and Waiting on you, which the loop refreshes between Features and on each idle poll
+	readonly refreshed: (queue: Queued[], waitingOnYou: WaitingOnYou) => void;
 }
 
 const KEEP = 10;
@@ -33,6 +65,7 @@ export function readStatus(path: string): Status | null {
 export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
 	private recent: Event[];
+	private refresh: { queue: Queued[]; waitingOnYou: WaitingOnYou; at: string } | null = null;
 
 	constructor(
 		private readonly o: {
@@ -41,6 +74,8 @@ export class StatusFile implements StatusReport {
 			readonly now: () => Date;
 			readonly pid: number;
 			readonly dailyUsd: number;
+			// under --watch
+			readonly watching?: boolean;
 		}
 	) {
 		// the events go on from the last run's, so a reader that saw them does not toast them again
@@ -49,6 +84,8 @@ export class StatusFile implements StatusReport {
 
 	readonly doing = (doing: Doing) => {
 		this.now = doing;
+		// with no run going there is no Queue
+		if (doing.kind === 'off') this.refresh = null;
 		this.write();
 	};
 
@@ -59,6 +96,18 @@ export class StatusFile implements StatusReport {
 		this.write();
 	};
 
+	readonly refreshed = (queue: Queued[], waitingOnYou: WaitingOnYou) => {
+		this.refresh = { queue, waitingOnYou, at: this.o.now().toISOString() };
+		this.write();
+	};
+
+	// While a Feature builds, its own Tickets that need info or a person stand in place of the last Feature's
+	private waitingOnYou(found: WaitingOnYou): WaitingOnYou {
+		if (this.now.kind !== 'building') return found;
+		const tickets = waitingTickets(this.now.tickets ?? []);
+		return { ...found, items: [...found.items.filter((i) => i.kind === 'feature'), ...tickets] };
+	}
+
 	private write() {
 		const now = this.o.now();
 		const status: Status = {
@@ -67,8 +116,16 @@ export class StatusFile implements StatusReport {
 			spentTodayUsd: spentOn(this.o.ledger, now),
 			dailyUsd: this.o.dailyUsd,
 			doing: this.now,
+			...(this.o.watching === true ? { watching: true } : {}),
 			recent: this.recent,
-			codeMoved: null
+			codeMoved: null,
+			...(this.refresh === null
+				? {}
+				: {
+						queue: this.refresh.queue,
+						waitingOnYou: this.waitingOnYou(this.refresh.waitingOnYou),
+						refreshedAt: this.refresh.at
+					})
 		};
 		mkdirSync(dirname(this.o.path), { recursive: true });
 		const temp = `${this.o.path}.${String(this.o.pid)}.tmp`;

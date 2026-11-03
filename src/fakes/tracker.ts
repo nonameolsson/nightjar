@@ -11,6 +11,7 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
+import { waitingFrom, type WaitingFeature } from '../tracker.js';
 
 export interface FakeItem {
 	readonly id: ItemId;
@@ -90,6 +91,21 @@ export class FakeTracker implements Tracker, FeatureWriter {
 				// the fake counts a lower id as older, PROJ-2 before PROJ-10
 				.sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))
 				.map(({ id, title, body }) => ({ id, title, body }))
+		);
+
+	waitingOn = (person: string): Promise<WaitingFeature[]> =>
+		waitingFrom((signal) =>
+			Promise.resolve(
+				[...this.items.values()]
+					.filter(
+						(i) =>
+							i.open &&
+							i.children.length > 0 &&
+							i.assignees.includes(person) &&
+							i.signals.includes(signal)
+					)
+					.map(({ id, title, body }) => ({ id, title, body }))
+			)
 		);
 
 	feature = (id: ItemId): Promise<Feature> => {

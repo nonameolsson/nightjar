@@ -13,6 +13,7 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
+import { waitingFrom, type WaitingFeature } from '../tracker.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
 
@@ -213,16 +214,26 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	}
 
 	async assignedFeatures(person: string): Promise<Feature[]> {
+		return this.featuresWith(person, 'go');
+	}
+
+	// The WIQL here joins its clauses by AND only, so each Signal is asked for alone.
+	waitingOn(person: string): Promise<WaitingFeature[]> {
+		return waitingFrom((signal) => this.featuresWith(person, signal));
+	}
+
+	// The open Features assigned to `person` that carry the Signal, oldest first.
+	private async featuresWith(person: string, signal: Signal): Promise<Feature[]> {
 		// @Me matches the signed-in person however the directory spells their name
 		const assignee = same(person, await this.me()) ? '@Me' : quoted(person);
 		const query =
 			'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project' +
 			` AND [System.WorkItemType] = ${quoted(this.settings.featureType)}` +
 			` AND [System.AssignedTo] = ${assignee}` +
-			` AND [System.Tags] CONTAINS ${quoted(this.names.go)}` +
+			` AND [System.Tags] CONTAINS ${quoted(this.names[signal])}` +
 			' ORDER BY [System.Id]';
 		const found = await this.api.parse(
-			'find the Features assigned with the Go',
+			`find the Features assigned with ${this.names[signal]}`,
 			{
 				method: 'POST',
 				url: this.api.at(`${this.project}/_apis/wit/wiql?${API}`),
@@ -239,7 +250,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 				(i) =>
 					i.fields[CLOSED_DATE] === undefined &&
 					linked(i, CHILD).length > 0 &&
-					this.signalsOf(i).includes('go')
+					this.signalsOf(i).includes(signal)
 			)
 			.sort((a, b) => a.id - b.id)
 			.map((i) => this.toFeature(i));

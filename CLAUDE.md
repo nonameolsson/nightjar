@@ -27,6 +27,8 @@ The module map is `docs/architecture.md`. The rules that are not visible from th
 - Only `src/github/` calls `gh` (a lint rule holds this); only `src/azure-devops/` calls Azure DevOps.
 - Specs sit beside their code as `*.spec.ts` and run over `src/fakes/`. `src/cli.run.spec.ts` runs the real command end to end; `src/fakes/machine.ts` is a machine of stand-ins (git checkout, `gh`, `az`, `claude` alone on the PATH), so a stand-in script may use shell builtins only. `cli.run.spec.ts` carries its own `claude` and `gh`: a change to what Nightjar asks `claude` must be made in both `claude` stand-ins.
 - A Workflow only adds Steps to the loop: it can never loosen the deny rules in `src/settings.ts`.
+- Specs use placeholder repo names (`o/app`); `scripts/leak-check.spec.ts` rejects a real one, even from a ticket mockup.
+- A fresh worktree has no `node_modules`: run `npm install` before `npm run check`.
 
 ## Agent skills
 

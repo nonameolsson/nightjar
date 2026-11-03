@@ -2,8 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import type { FeatureOutcome } from './build.js';
 import { FakeTracker } from './fakes/tracker.js';
-import { cannotClaim, dryRun, queue, type QueueDeps } from './queue.js';
-import type { Doing, Happened } from './status.js';
+import type { Waiting } from './plan.js';
+import { buildNamed, cannotClaim, dryRun, queue, type QueueDeps } from './queue.js';
+import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
 
 function world() {
 	const tracker = new FakeTracker('ann');
@@ -16,18 +17,29 @@ function world() {
 	const lines: string[] = [];
 	const doing: Doing[] = [];
 	const happened: Happened[] = [];
+	const refreshes: { queue: Queued[]; waitingOnYou: WaitingOnYou }[] = [];
+	// refreshes and builds in the order they happened
+	const trail: string[] = [];
 	const sleeps: number[] = [];
 	const stop = new AbortController();
 	let outcome = (id: string): Promise<FeatureOutcome> => {
 		built.push(id);
+		trail.push(`build ${id}`);
 		// as the build loop does, the Go comes off the Feature it takes
 		return tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: [] }));
 	};
 	const deps: QueueDeps = {
 		tracker,
 		person: 'ann',
-		build: (id) => outcome(id),
-		status: { doing: (d) => doing.push(d), happened: (h) => happened.push(h) },
+		build: ({ id }) => outcome(id),
+		status: {
+			doing: (d) => doing.push(d),
+			happened: (h) => happened.push(h),
+			refreshed: (queue, waitingOnYou) => {
+				refreshes.push({ queue, waitingOnYou });
+				trail.push(`refresh ${queue.map((q) => q.id).join(',')}`);
+			}
+		},
 		now: () => new Date(2026, 9, 30, 9),
 		say: (line) => lines.push(line),
 		sleep: (ms) => {
@@ -37,6 +49,13 @@ function world() {
 		},
 		signal: stop.signal
 	};
+	const buildWaiting = (left: Waiting[]) => {
+		outcome = (id) => {
+			built.push(id);
+			trail.push(`build ${id}`);
+			return tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: left }));
+		};
+	};
 	const failWith = (fault: Error) => {
 		outcome = async (id) => {
 			built.push(id);
@@ -45,7 +64,19 @@ function world() {
 			throw fault;
 		};
 	};
-	return { tracker, deps, built, lines, doing, happened, sleeps, failWith };
+	return {
+		tracker,
+		deps,
+		built,
+		lines,
+		doing,
+		happened,
+		sleeps,
+		failWith,
+		refreshes,
+		trail,
+		buildWaiting
+	};
 }
 
 describe('queue --once', () => {
@@ -70,7 +101,9 @@ describe('queue --once', () => {
 		expect(await queue(w.deps, true)).toBe(1);
 		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
 		expect(w.tracker.said('2')[0]).toMatch(/^Nightjar stopped on a fault: the network went away/);
-		expect(w.happened).toEqual([{ kind: 'failed', feature: '2', why: 'the network went away' }]);
+		expect(w.happened).toEqual([
+			{ kind: 'failed', feature: '2', title: 'Older', why: 'the network went away' }
+		]);
 	});
 });
 
@@ -84,6 +117,169 @@ describe('queue --watch', () => {
 			kind: 'idle',
 			nextPollAt: new Date(2026, 9, 30, 9, 2).toISOString()
 		});
+	});
+});
+
+describe('the Queue in the status file', () => {
+	it('is the Features after the one taken, written before it builds', async () => {
+		const w = world();
+		await queue(w.deps, true);
+		expect(w.refreshes[0]?.queue).toEqual([{ id: '4', title: 'Later' }]);
+		// and again once it ended, for what its Tickets left
+		expect(w.trail).toEqual(['refresh 4', 'build 2', 'refresh 4']);
+	});
+
+	it('is refreshed between Features and on each idle poll, never mid-build', async () => {
+		const w = world();
+		await queue(w.deps, false);
+		expect(w.trail).toEqual([
+			'refresh 4',
+			'build 2',
+			'refresh 4',
+			'refresh ',
+			'build 4',
+			'refresh ',
+			'refresh ',
+			'refresh '
+		]);
+	});
+
+	it('leaves it as it was when the Tracker cannot be asked', async () => {
+		const w = world();
+		w.tracker.assignedFeatures = () => Promise.reject(new Error('the network went away'));
+		await queue(w.deps, false);
+		expect(w.refreshes).toEqual([]);
+	});
+
+	it('puts in Waiting on you the Tickets the last Feature left that need info or a person, and says the Tracker cannot list Features', async () => {
+		const w = world();
+		// a Tracker module written before waitingOn
+		Object.assign(w.tracker, { waitingOn: undefined });
+		w.buildWaiting([
+			{ id: '3', title: 'Ticket 3', why: 'needs info' },
+			{ id: '5', title: 'Ticket 5', why: 'not reached' },
+			{ id: '9', title: 'Ticket 9', why: 'needs a person' },
+			{ id: '7', title: 'Ticket 7', why: 'blocked by', blocker: '3' }
+		]);
+		await queue(w.deps, false);
+		expect(w.refreshes[0]?.waitingOnYou).toEqual({ items: [], trackerCannotList: true });
+		expect(w.refreshes[1]?.waitingOnYou).toEqual({
+			items: [
+				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' },
+				{ kind: 'ticket', id: '9', title: 'Ticket 9', why: 'needs a person' }
+			],
+			trackerCannotList: true
+		});
+	});
+});
+
+describe("the last Feature's Tickets in Waiting on you", () => {
+	const left: Waiting[] = [{ id: '3', title: 'Ticket 3', why: 'needs info' }];
+	const ticket = { kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' };
+
+	// the first Feature leaves a Ticket for a person, the second ends as `second` says
+	async function afterSecond(second: (id: string) => Promise<FeatureOutcome>) {
+		const w = world();
+		const build = ({ id }: { id: string }): Promise<FeatureOutcome> =>
+			id === '2'
+				? w.tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: left }))
+				: w.tracker.removeSignal(id, 'go').then(() => second(id));
+		await queue({ ...w.deps, build }, false);
+		return w.refreshes.map((r) => r.waitingOnYou.items.filter((i) => i.kind === 'ticket'));
+	}
+
+	it('shows them as soon as the Feature ends, and drops them at the next poll, when it is no longer current', async () => {
+		const shown = await afterSecond(() => Promise.resolve({ kind: 'nothing', waiting: [] }));
+		// before Feature 2, after it, before Feature 4, after it, then two idle polls
+		expect(shown).toEqual([[], [ticket], [], [], [], []]);
+	});
+
+	it("drops them when the next Feature fails, since they are no longer the last one's", async () => {
+		const shown = await afterSecond(() => Promise.reject(new Error('boom')));
+		expect(shown[3]).toEqual([]);
+	});
+
+	it('drops them when the next Feature pauses', async () => {
+		const shown = await afterSecond(() =>
+			Promise.resolve({ kind: 'paused', why: 'daily limit reached' })
+		);
+		expect(shown[3]).toEqual([]);
+	});
+});
+
+describe('Waiting on you from a Tracker that has waitingOn', () => {
+	function withWaiting() {
+		const w = world();
+		w.tracker.add({
+			id: '10',
+			title: 'Asks',
+			assignees: ['ann'],
+			signals: ['needsInfo'],
+			children: ['11']
+		});
+		w.tracker.add({
+			id: '12',
+			title: 'Stuck',
+			assignees: ['ann'],
+			signals: ['human'],
+			children: ['13']
+		});
+		w.tracker.add({
+			id: '14',
+			title: 'Theirs',
+			assignees: ['bob'],
+			signals: ['needsInfo'],
+			children: ['15']
+		});
+		for (const id of ['11', '13', '15']) w.tracker.add({ id, title: `Ticket ${id}` });
+		return w;
+	}
+
+	it('lists the Features assigned to the person that carry needs info or needs a person, and no longer says the Tracker cannot list', async () => {
+		const w = withWaiting();
+		await queue(w.deps, true);
+		expect(w.refreshes[0]?.waitingOnYou).toEqual({
+			items: [
+				{ kind: 'feature', id: '10', title: 'Asks', why: 'needs info' },
+				{ kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' }
+			],
+			trackerCannotList: false
+		});
+	});
+
+	it("puts the last Feature's waiting Tickets after the Features", async () => {
+		const w = withWaiting();
+		w.buildWaiting([{ id: '3', title: 'Ticket 3', why: 'needs info' }]);
+		await queue(w.deps, false);
+		expect(w.refreshes[1]?.waitingOnYou).toEqual({
+			items: [
+				{ kind: 'feature', id: '10', title: 'Asks', why: 'needs info' },
+				{ kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' },
+				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' }
+			],
+			trackerCannotList: false
+		});
+	});
+
+	it("reads each Feature's Signal from waitingOn, with no Tracker call per Feature", async () => {
+		const w = withWaiting();
+		const asked: string[] = [];
+		const standing = w.tracker.standing;
+		w.tracker.standing = (id) => {
+			asked.push(id);
+			return standing(id);
+		};
+		w.deps = { ...w.deps, build: () => Promise.resolve({ kind: 'nothing', waiting: [] }) };
+		await queue(w.deps, true);
+		expect(asked).toEqual([]);
+	});
+
+	it('says what went wrong when it fails, and still builds', async () => {
+		const w = withWaiting();
+		w.tracker.waitingOn = () => Promise.reject(new Error('the network went away'));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.lines).toContain('could not read what waits on ann: the network went away');
+		expect(w.built).toEqual(['2']);
 	});
 });
 
@@ -129,5 +325,26 @@ describe('dryRun', () => {
 		await dryRun(w.deps);
 		expect(w.lines).toEqual(['would build #2 Older', 'would build #4 Later']);
 		expect(w.built).toEqual([]);
+	});
+});
+
+describe('nightjar <id>', () => {
+	it('reads the Queue and Waiting on you before it builds, the named Feature not in the Queue', async () => {
+		const w = world();
+		expect(await buildNamed(w.deps, '4')).toEqual({ kind: 'nothing', waiting: [] });
+		expect(w.trail).toEqual(['refresh 2', 'build 4', 'refresh 2']);
+		expect(w.refreshes[0]?.waitingOnYou).toEqual({ items: [], trackerCannotList: false });
+	});
+
+	it('names the Feature in the failed event', async () => {
+		const w = world();
+		w.failWith(new Error('boom'));
+		expect(await buildNamed(w.deps, '4')).toBeNull();
+		expect(w.happened).toContainEqual({
+			kind: 'failed',
+			feature: '4',
+			title: 'Later',
+			why: 'boom'
+		});
 	});
 });

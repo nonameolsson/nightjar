@@ -1,6 +1,7 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
-import type { StatusReport } from './status.js';
+import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
+import { waitingTickets, type Named, type StatusReport, type WaitingItem } from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 
@@ -12,7 +13,7 @@ export interface QueueDeps {
 	readonly tracker: Tracker;
 	// whose Features to build
 	readonly person: string;
-	readonly build: (id: ItemId) => Promise<FeatureOutcome>;
+	readonly build: (feature: Named) => Promise<FeatureOutcome>;
 	readonly status: StatusReport;
 	readonly now: () => Date;
 	readonly say: (line: string) => void;
@@ -21,11 +22,12 @@ export interface QueueDeps {
 }
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
-export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Promise<void> {
+export async function handBack(deps: QueueDeps, feature: Named, fault: unknown): Promise<void> {
 	const { tracker } = deps;
+	const { id, title } = feature;
 	const reason = why(fault);
 	deps.say(`#${id} failed: ${reason}`);
-	deps.status.happened({ kind: 'failed', feature: id, why: reason });
+	deps.status.happened({ kind: 'failed', feature: id, title, why: reason });
 	try {
 		await tracker.removeSignal(id, 'working');
 		await tracker.addSignal(id, 'needsInfo');
@@ -36,11 +38,11 @@ export async function handBack(deps: QueueDeps, id: ItemId, fault: unknown): Pro
 }
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
-export async function buildOne(deps: QueueDeps, id: ItemId): Promise<FeatureOutcome | null> {
+export async function buildOne(deps: QueueDeps, feature: Named): Promise<FeatureOutcome | null> {
 	try {
-		return await deps.build(id);
+		return await deps.build(feature);
 	} catch (fault) {
-		await handBack(deps, id, fault);
+		await handBack(deps, feature, fault);
 		return null;
 	}
 }
@@ -65,27 +67,75 @@ export async function cannotClaim(
 	return null;
 }
 
+// The Features waiting on the person, each with the Signal it carries; the last answer when the Tracker fails, so a bad poll does not empty the panel.
+async function readWaitingFeatures(
+	deps: QueueDeps,
+	previous: WaitingItem[]
+): Promise<WaitingItem[]> {
+	try {
+		return ((await deps.tracker.waitingOn?.(deps.person)) ?? []).map((f) => ({
+			kind: 'feature',
+			id: f.id,
+			title: f.title,
+			why: f.signal === 'needsInfo' ? NEEDS_INFO : NEEDS_A_PERSON
+		}));
+	} catch (fault) {
+		deps.say(`could not read what waits on ${deps.person}: ${why(fault)}`);
+		return previous;
+	}
+}
+
+// Tells the status file the Queue and Waiting on you, keeping the Features that wait from one read to the next.
+function waitingOnYou(deps: QueueDeps) {
+	const canList = deps.tracker.waitingOn !== undefined;
+	let features: WaitingItem[] = [];
+	return {
+		read: async () => {
+			if (canList) features = await readWaitingFeatures(deps, features);
+		},
+		// `tickets` are the current Feature's, which only a Feature that ended well says
+		tell: (queue: Named[], outcome: FeatureOutcome | null = null) => {
+			const tickets =
+				outcome?.kind === 'pull' || outcome?.kind === 'nothing'
+					? waitingTickets(outcome.waiting)
+					: [];
+			deps.status.refreshed(queue, {
+				items: [...features, ...tickets],
+				trackerCannotList: !canList
+			});
+		}
+	};
+}
+
+const named = ({ id, title }: Named): Named => ({ id, title });
+
 const none = (deps: Pick<QueueDeps, 'person'>) =>
 	`no Feature with the Go is assigned to ${deps.person}`;
 
 // The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const stop = deps.signal;
+	const waiting = waitingOnYou(deps);
 	const idle = async () => {
 		const nextPollAt = new Date(deps.now().getTime() + POLL_MS).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(POLL_MS, stop);
 	};
 	while (stop?.aborted !== true) {
-		let next;
+		let features;
 		try {
-			next = (await deps.tracker.assignedFeatures(deps.person))[0];
+			features = await deps.tracker.assignedFeatures(deps.person);
 		} catch (fault) {
 			if (once) throw fault;
 			deps.say(why(fault));
 			await idle();
 			continue;
 		}
+		const next = features[0];
+		await waiting.read();
+		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
+		const rest = features.slice(1).map(named);
+		waiting.tell(rest);
 		if (next === undefined && once) {
 			deps.say(none(deps));
 			return 0;
@@ -94,7 +144,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			await idle();
 			continue;
 		}
-		const outcome = await buildOne(deps, next.id);
+		const outcome = await buildOne(deps, named(next));
+		waiting.tell(rest, outcome);
 		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
 		if (outcome?.kind === 'paused') {
 			const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();
@@ -103,6 +154,20 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		}
 	}
 	return 130;
+}
+
+// `nightjar <id>`: the Queue and Waiting on you read once, then the one Feature built. A Tracker fault before the claim is thrown.
+export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOutcome | null> {
+	const waiting = waitingOnYou(deps);
+	const { title } = await deps.tracker.feature(id);
+	const rest = (await deps.tracker.assignedFeatures(deps.person))
+		.filter((f) => f.id !== id)
+		.map(named);
+	await waiting.read();
+	waiting.tell(rest);
+	const outcome = await buildOne(deps, { id, title });
+	waiting.tell(rest, outcome);
+	return outcome;
 }
 
 export async function dryRun(deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>): Promise<void> {
