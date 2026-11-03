@@ -265,7 +265,18 @@ describe('loadRules', () => {
 		const config = { ...loadValid(), rules: 'rules.md' };
 		expect(loadRules(root, loadValid())).toBeNull();
 		writeFileSync(join(root, 'rules.md'), 'Write small functions.\n');
-		expect(loadRules(root, config)).toBe('Write small functions.');
+		expect(loadRules(root, config)).toBe('## rules.md\n\nWrite small functions.');
+	});
+
+	it('carries the CLAUDE.md and AGENTS.md of the repo, which a restricted session does not load', () => {
+		const config = { ...loadValid(), rules: 'rules.md' };
+		writeFileSync(join(root, 'CLAUDE.md'), 'Use tabs.\n');
+		expect(loadRules(root, loadValid())).toBe('## CLAUDE.md\n\nUse tabs.');
+		writeFileSync(join(root, 'AGENTS.md'), 'Run make.\n');
+		writeFileSync(join(root, 'rules.md'), 'Small functions.\n');
+		expect(loadRules(root, config)).toBe(
+			'## CLAUDE.md\n\nUse tabs.\n\n## AGENTS.md\n\nRun make.\n\n## rules.md\n\nSmall functions.'
+		);
 	});
 
 	it('refuses a rules file that cannot be read, naming it', () => {

@@ -332,15 +332,31 @@ export function configJsonSchema(): object {
 	return z.toJSONSchema(ConfigSchema, { io: 'input' });
 }
 
-// The text of the rules file factory.json names, or null when it names none.
+// The repo's CLAUDE.md and AGENTS.md, then the rules file factory.json names, each under its file name; null when there is none.
+// A restricted session loads no CLAUDE.md of its own, so the prompt carries the text.
 export function loadRules(root: string, config: Config): string | null {
-	if (config.rules === undefined) return null;
-	try {
-		return readFileSync(join(root, config.rules), 'utf8').trim();
-	} catch {
-		throw new ConfigError(`${CONFIG_FILE}: rules: cannot read ${config.rules} in ${root}`);
+	const parts: string[] = [];
+	for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+		const text = readIfThere(join(root, name));
+		if (text) parts.push(`## ${name}\n\n${text}`);
 	}
+	if (config.rules !== undefined) {
+		try {
+			parts.push(`## ${config.rules}\n\n${readFileSync(join(root, config.rules), 'utf8').trim()}`);
+		} catch {
+			throw new ConfigError(`${CONFIG_FILE}: rules: cannot read ${config.rules} in ${root}`);
+		}
+	}
+	return parts.length === 0 ? null : parts.join('\n\n');
 }
+
+const readIfThere = (path: string): string | null => {
+	try {
+		return readFileSync(path, 'utf8').trim();
+	} catch {
+		return null;
+	}
+};
 
 export const where = (path: readonly PropertyKey[]) =>
 	path.length === 0 ? '' : `${path.map(String).join('.')}: `;
