@@ -1,9 +1,9 @@
 name: release
 
-# Runs when a person pushes a version tag (RELEASING.md step 6); needs the NPM_TOKEN secret.
+# Runs when a person publishes a GitHub release (RELEASING.md); the release tag (vX.Y.Z) is the version. Needs the NPM_TOKEN secret.
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -13,20 +13,39 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      TAG: ${{ github.event.release.tag_name }}
     steps:
+      - name: Tag is a version
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::tag '$TAG' is not vX.Y.Z"; exit 1; }
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
+      # package.json in git may hold an older version; the release tag wins.
+      - run: npm version "${TAG#v}" --no-git-tag-version --allow-same-version
       - run: npm ci
       - run: npm run check
-      - name: Tag matches package.json
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-      - run: npm publish --provenance
+      # A prerelease (v1.2.3-rc.1) goes to the `next` dist-tag so `latest` stays stable.
+      - name: Publish
+        run: |
+          if [[ "$TAG" == *-* ]]; then npm publish --provenance --tag next; else npm publish --provenance; fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # Record the released version on main (needs main to accept pushes from github-actions).
+      - name: Bump package.json on main
+        run: |
+          cp package.json package-lock.json "$RUNNER_TEMP/"
+          git fetch origin main
+          git checkout -f main
+          cp "$RUNNER_TEMP/package.json" "$RUNNER_TEMP/package-lock.json" .
+          if git diff --quiet; then echo "main already at ${TAG#v}"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release ${TAG#v}"
+          git push origin main
