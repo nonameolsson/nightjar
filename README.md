@@ -298,6 +298,22 @@ To start on a repo:
 
 Never let an agent that does not know Nightjar add the Signal labels. If an agent files issues in this repo, have it write a Feature file and run `nightjar create` instead, or copy the `nightjar-feature` skill into the repo for it to use.
 
+## See your Features in a GitHub Project
+
+The issues list is flat: a Feature and its Tickets look the same. A GitHub Project (v2) shows the hierarchy. Create one from your profile or organization, link it to the repo, and add the repo's issues. Then make three table views:
+
+| View             | Filter                                 | Setup                                                                                  |
+| ---------------- | -------------------------------------- | -------------------------------------------------------------------------------------- |
+| Features         | `no:parent-issue`                      | Show **Sub-issues progress** and **Labels**. A Feature's arrow opens its Tickets.      |
+| Tickets          | none                                   | Group by **Parent issue**: each Feature heads its Tickets, with a progress bar.        |
+| Waiting on you   | `label:needs-info,ready-for-human`     | Empty while nothing waits. These are the issues that need a person.                    |
+
+Show a column with the **+** at the right of the headers. A view change is saved only after **View → Save changes**.
+
+A Board's columns come from a single-select field such as Status, never from labels, and the Signals are labels. So Nightjar does not feed a Board; use `nightjar ui` for that.
+
+Since June 2026, repository **saved views** (the Issues sidebar) keep a filter shared with everyone who has triage access. They are plain queries and show a flat list. Use them for the Signal filters, for example Queued: `is:open label:factory-go -label:agent-working`; the Project is what shows the hierarchy.
+
 ## Write a Feature
 
 What a Ticket must hold (acceptance criteria, blocking links, optional Model and Effort lines) is the [Ticket contract](docs/ticket-contract.md). Write a Feature and its Tickets by hand on the Tracker, as in [Give the Go](#give-the-go), or as one Markdown file in the contract's shape and let Nightjar make them through the configured Tracker:
