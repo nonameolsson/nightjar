@@ -122,3 +122,12 @@ NJ_ERROR='\033[38;2;255;85;122m'
 - **Lighting:** cyan and magenta edge lighting, amber highlights.
 - **Motion:** subtle pulsing status indicators, smooth transitions, animated pipeline progress.
 - **Icons:** thin-line technical icons with occasional neon accents.
+
+## Brand assets
+
+In `docs/design/assets/`:
+
+- `icon.webp`: app icon, nightjar over a synthwave sunset with the "N" mark.
+- `wordmark.webp`: NIGHTJAR wordmark with the tagline "The software factory that works while you are sleeping".
+- `banner-wide.webp`: wide banner, nightjar on a pipe above a neon city.
+- `banner-16x9.webp`: 16:9 banner, nightjar on machinery before a synthwave sunset.
