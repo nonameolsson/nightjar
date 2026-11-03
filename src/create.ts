@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { makeAdapters } from './adapters.js';
-import { ticketLine } from './build.js';
+import { ticketLine } from './coding-agent.js';
 import { ConfigError, loadConfig } from './config.js';
 import { FeatureFileError, readFeatureFile, type FeaturePlan } from './feature-file.js';
 import { run, type Env } from './git.js';

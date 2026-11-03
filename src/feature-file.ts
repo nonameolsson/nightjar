@@ -17,7 +17,7 @@ export interface FeaturePlan {
 const TITLE = /^#\s+(.*\S)\s*$/;
 const TICKET = /^##\s+Ticket\s+(\S+?):\s*(.*?)\s*$/i;
 const BLOCKED_BY = /^(?:\*\*)?Blocked by:(?:\*\*)?(.*)$/i;
-// the lines the build reads a Ticket's model and effort from (ticketLine in build.ts)
+// the lines the build reads a Ticket's model and effort from (ticketLine in coding-agent.ts)
 const SETTING = /^(?:\*\*)?(Model|Effort):(?:\*\*)?(.*)$/i;
 const CRITERIA = /^#{1,6}\s+Acceptance criteria\s*$/i;
 const CHECKBOX = /^\s*[-*]\s+\[[ xX]\]\s+\S/;

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { AzureDevOpsApi } from './azure-devops/api.js';
 import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';
 import { AzureBoardsTracker } from './azure-devops/tracker.js';
-import { ticketLine } from './build.js';
+import { ticketLine } from './coding-agent.js';
 import { makeFeature } from './create.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { readFeatureFile } from './feature-file.js';

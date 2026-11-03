@@ -2,6 +2,7 @@
 import { join, relative } from 'node:path';
 import type { CheckResult, RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
+import { envOf, logsPath, pauseWhy, ticketLine } from './coding-agent.js';
 import type { Env } from './git.js';
 import { record, spentOn, type Entry } from './ledger.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
@@ -122,19 +123,9 @@ export type FeatureOutcome =
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
 
-// What every session and command of the run sees: the machine's environment and the reserved ports.
-const envOf = (setup: Setup): Env => ({ ...setup.env, ...setup.portEnv });
-
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
-export const logsPath = (root: string) => join(root, '.factory', 'logs');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
-
-// A Ticket's own `**Model:**` and `**Effort:**` lines.
-export function ticketLine(body: string, name: string): string | undefined {
-	const match = new RegExp(`^(?:\\*\\*)?${name}:(?:\\*\\*)?\\s*(\\S+)`, 'im').exec(body);
-	return match?.[1]?.toLowerCase();
-}
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
@@ -922,19 +913,6 @@ class FeatureRun {
 		});
 	}
 }
-
-const API_KEY_PAUSE =
-	'the session billed an API key; unset ANTHROPIC_API_KEY or pass --use-api-key';
-
-const limitPause = (resetsAt: number | null) =>
-	`the plan's usage limit was reached${resetsAt ? `; it resets at ${new Date(resetsAt * 1000).toISOString()}` : ''}`;
-
-// Why a session that could not go on pauses the run.
-const pauseWhy = (
-	result:
-		| { readonly kind: 'api-key' }
-		| { readonly kind: 'rate-limited'; readonly resetsAt: number | null }
-) => (result.kind === 'api-key' ? API_KEY_PAUSE : limitPause(result.resetsAt));
 
 async function reviewFeature(
 	deps: Deps,

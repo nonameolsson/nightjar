@@ -1,6 +1,6 @@
 // A Feature file (docs/ticket-contract.md) read into the Feature and Tickets `nightjar create` makes.
 import { describe, expect, it } from 'vitest';
-import { ticketLine } from './build.js';
+import { ticketLine } from './coding-agent.js';
 import { FeatureFileError, readFeatureFile } from './feature-file.js';
 
 const FILE = `# Share one HTML escape

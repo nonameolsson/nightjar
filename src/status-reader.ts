@@ -2,7 +2,8 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { ledgerPath, logsPath } from './build.js';
+import { ledgerPath } from './build.js';
+import { logsPath } from './coding-agent.js';
 import { builtOn, spends, spentOnFeature } from './ledger.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
