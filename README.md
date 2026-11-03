@@ -283,6 +283,21 @@ What a Step changes goes through the check command and its fix rounds, then is c
 
 `nightjar doctor` looks up each `/skill` a Step's prompt names among the skills a headless Claude session loads. A skill that is missing is an error for that Workflow only: a Feature that picks it stops with a comment, and the others build as usual. (A word like `/tmp/notes` is a path, not a skill; a bare `/word` in a prompt is read as one.)
 
+## Onboard a repo and its existing issues
+
+Nightjar ignores every issue until a person promotes it. A Feature is built only when it is assigned to you and carries the Go; a Ticket only when it carries the ready Signal. Issues that were there before Nightjar, and issues an agent filed without knowing Nightjar, are never built by accident.
+
+To start on a repo:
+
+1. Run `nightjar init`, commit `factory.json`, and add `.factory/` to `.gitignore` ([Set up](#set-up-nightjar-init)).
+2. Run `nightjar doctor` and fix each `FAIL`.
+3. Pick the few issues worth automating. Leave the rest alone.
+4. Turn each pick into a Feature with Tickets that meet the [Ticket contract](#the-ticket-contract). An old issue rarely does: it has no acceptance criteria and no blocking links. Write it as a Feature file, link the old issue from the spec, and make it with `nightjar create --dry-run FILE`, then `nightjar create FILE` ([Write a Feature](#write-a-feature)). Close the old issue once the Feature carries its work.
+5. Check each Ticket before the Go: an `Acceptance criteria` checklist, its blockers linked, and the ready Signal on it. A Ticket without criteria only fails once the agent has spent a session on it.
+6. Assign the Feature to yourself and add the Go ([Give the Go](#give-the-go)).
+
+Never let an agent that does not know Nightjar add the Signal labels. If an agent files issues in this repo, have it write a Feature file and run `nightjar create` instead, or copy the `nightjar-feature` skill into the repo for it to use.
+
 ## Write a Feature
 
 What a Ticket must hold (acceptance criteria, blocking links, optional Model and Effort lines) is the [Ticket contract](docs/ticket-contract.md). Write a Feature and its Tickets by hand on the Tracker, as in [Give the Go](#give-the-go), or as one Markdown file in the contract's shape and let Nightjar make them through the configured Tracker:
