@@ -11,6 +11,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--u
   --profile NAME run the sessions as the Claude login in ~/.claude-NAME (a path is the folder itself, default is ~/.claude); over config.json's profile
   --model M      the model of every session, over a Ticket's own line and factory.json
   --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
+  --version, -v  print the installed version
 
        nightjar init              ask for the Tracker and Code host, write factory.json, create the Signal labels, check the logins
        nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
