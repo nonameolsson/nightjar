@@ -16,6 +16,15 @@ const file = (path: string, now = () => at) =>
 	new StatusFile({ path, ledger: join(dir, 'runs.jsonl'), now, pid: 42, dailyUsd: 60 });
 
 describe('StatusFile', () => {
+	it('flags newer code in codeMoved, and keeps it on later writes', () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.codeMoved('0.3.0');
+		expect(readStatus(path)?.codeMoved).toBe('0.3.0');
+		status.doing({ kind: 'off' });
+		expect(readStatus(path)?.codeMoved).toBe('0.3.0');
+	});
+
 	it('writes what Nightjar does now, with the day spent so far', () => {
 		const path = join(dir, 'nested', 'status.json');
 		record(join(dir, 'runs.jsonl'), {
