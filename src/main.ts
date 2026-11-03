@@ -6,6 +6,7 @@ import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
+import { codingAgent } from './coding-agent.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import type { Ask } from './ask.js';
 import { runDoctor } from './doctor.js';
@@ -151,18 +152,6 @@ export async function runNightjar(
 		: null;
 	// the run's own lines: into the block on a terminal, else printed as say prints them
 	const runSay = live?.say ?? say;
-	const deps: Deps = {
-		tracker: adapters.tracker,
-		codeHost: adapters.codeHost,
-		session: (req) => runSession(req),
-		runCheck,
-		runSetup: runCheck,
-		serve: startServe,
-		now: () => new Date(),
-		newId: () => randomUUID(),
-		say: runSay,
-		status
-	};
 	const setup: Setup = {
 		root,
 		repo: adapters.repo,
@@ -186,6 +175,18 @@ export async function runNightjar(
 		...(args.effort === undefined ? {} : { effort: args.effort }),
 		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
 		signal: stop.signal
+	};
+	const deps: Deps = {
+		tracker: adapters.tracker,
+		codeHost: adapters.codeHost,
+		codingAgent: codingAgent(setup, (req) => runSession(req)),
+		runCheck,
+		runSetup: runCheck,
+		serve: startServe,
+		now: () => new Date(),
+		newId: () => randomUUID(),
+		say: runSay,
+		status
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: Named | null = null;

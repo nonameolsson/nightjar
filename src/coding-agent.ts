@@ -130,7 +130,7 @@ export interface ReviewRequest extends Work {
 }
 
 // How any Session can end besides its answer.
-type Ended =
+export type Ended =
 	| { readonly kind: 'failed'; readonly why: string }
 	// a reason of the machine or the plan: the run goes on later
 	| { readonly kind: 'paused'; readonly why: string }
@@ -173,7 +173,7 @@ const limitPause = (resetsAt: number | null) =>
 	`the plan's usage limit was reached${resetsAt ? `; it resets at ${new Date(resetsAt * 1000).toISOString()}` : ''}`;
 
 // Why a session that could not go on pauses the run.
-export const pauseWhy = (
+const pauseWhy = (
 	result:
 		| { readonly kind: 'api-key' }
 		| { readonly kind: 'rate-limited'; readonly resetsAt: number | null }
