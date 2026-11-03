@@ -114,6 +114,62 @@ describe('nightjar ui page', () => {
 		expect(card('Reports')).not.toContain('class="bar"');
 	});
 
+	describe('estimate', () => {
+		const built = (ticket: string, durationMs: number | undefined, minute: number) =>
+			record(ledgerFile(), {
+				at: new Date(2026, 9, 30, 8, minute).toISOString(),
+				repo: 'o/r',
+				feature: '1',
+				ticket,
+				branch: 'b',
+				step: 'build',
+				session: 's',
+				costUsd: 1,
+				outcome: 'built',
+				...(durationMs === undefined ? {} : { durationMs })
+			});
+		const queue = () => {
+			const file = status();
+			file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+			file.refreshed(
+				[
+					{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed: 0 } },
+					{ id: '281', title: 'Exports', ticketCounts: null },
+					{ id: '290', title: 'Reports' }
+				],
+				{ items: [], trackerCannotList: false }
+			);
+		};
+		const cardOf = (page: string, title: string) =>
+			(page.split('<div class="table">')[0] ?? '')
+				.split('<article')
+				.find((a) => a.includes(title)) ?? '';
+
+		it('shows the median Ticket duration times the Ticket count, marked est., on a queued card and row', async () => {
+			built('11', 60_000, 1);
+			built('12', 300_000, 2);
+			built('13', 120_000, 3);
+			built('14', undefined, 4);
+			queue();
+			await open();
+			const page = (await get('/')).text;
+			// 2m median x 4 Tickets
+			expect(cardOf(page, 'Saved filters')).toMatch(/8m 00s<\/time> <small>est\./);
+			expect(cardOf(page, 'Exports')).not.toContain('est.');
+			expect(cardOf(page, 'Reports')).not.toContain('est.');
+			const rows = (page.split('<tbody>')[1] ?? '').split('<tr');
+			expect(rows.find((r) => r.includes('Saved filters'))).toContain('est.');
+			expect(rows.find((r) => r.includes('Exports'))).not.toContain('est.');
+		});
+
+		it('shows no estimate while no duration is recorded', async () => {
+			built('11', undefined, 1);
+			queue();
+			await open();
+			expect((await get('/')).text).not.toContain('est.');
+		});
+	});
+
 	it('shows progress on Waiting on you and Completed, in the Board and the Table', async () => {
 		const built = (feature: string, ticket: string, minute: number) =>
 			record(ledgerFile(), {

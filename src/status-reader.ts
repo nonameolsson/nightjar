@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { ledgerPath } from './build.js';
 import { logsPath } from './coding-agent.js';
-import { builtOn, builtOnFeature, spends, spentOnFeature } from './ledger.js';
+import { builtOn, builtOnFeature, medianTicketMs, spends, spentOnFeature } from './ledger.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;
@@ -29,6 +29,8 @@ export interface FactoryView {
 	readonly featureCostUsd: number;
 	// Tickets built on the local day
 	readonly builtToday: number;
+	// the median duration of a recorded Ticket build; null with none recorded; absent in a hand-made view
+	readonly medianTicketMs?: number | null;
 }
 
 export interface ReadOptions {
@@ -132,6 +134,7 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 				? // a session recorded the moment the build starts is its own
 					spentOnFeature(spent, doing.feature, Date.parse(featureStart(doing)) - 1, null)
 				: 0,
+		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),

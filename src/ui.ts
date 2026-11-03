@@ -160,7 +160,12 @@ interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
 	// null when the count could not be read; undefined when the Tracker cannot count
 	readonly ticketCounts: TicketCounts | null | undefined;
+	// null when there is nothing to estimate from
+	readonly estimateMs: number | null;
 }
+
+const estimateHtml = (ms: number | null) =>
+	ms === null ? '' : `<time class="est">${elapsed(ms)}</time> <small>est.</small>`;
 interface BuildingCard extends FeatureCard {
 	readonly state: 'building';
 	readonly doing: Building;
@@ -285,7 +290,12 @@ function features(view: FactoryView): Features {
 		id: q.id,
 		title: q.title,
 		waitingTickets: [],
-		ticketCounts: q.ticketCounts
+		ticketCounts: q.ticketCounts,
+		// the median Ticket duration times the Feature's Tickets; none without history or a count
+		estimateMs:
+			view.medianTicketMs == null || !q.ticketCounts
+				? null
+				: view.medianTicketMs * q.ticketCounts.total
 	});
 	const queue = on ? status?.queue?.map(queued) : undefined;
 	return {
@@ -340,7 +350,9 @@ function queuedCard(card: QueuedCard): string {
 		const n = String(counts.total);
 		count = `<p class="meta count">${n} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p><div class="bar"><i style="width:0%"></i></div><p class="meta">0 of ${n} built</p>`;
 	}
-	return `<article class="fcard">${feature(card)}${count}</article>`;
+	const est =
+		card.estimateMs === null ? '' : `<p class="meta">${estimateHtml(card.estimateMs)}</p>`;
+	return `<article class="fcard">${feature(card)}${count}${est}</article>`;
 }
 
 function completedCard(card: CompletedCard): string {
@@ -432,8 +444,8 @@ function table(view: FactoryView): string {
 		rows.push({
 			card,
 			state: 'queue',
-			time: null,
-			timeText: '',
+			time: card.estimateMs,
+			timeText: estimateHtml(card.estimateMs),
 			cost: null,
 			outcome: '',
 			outcomeText: '',

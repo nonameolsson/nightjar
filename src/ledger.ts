@@ -92,6 +92,21 @@ export interface Spend {
 	readonly costUsd: number;
 	// the session built a Ticket
 	readonly built: boolean;
+	// how long the session ran; absent in an older line
+	readonly durationMs?: number;
+}
+
+// The median of the recorded durations of built Tickets, or null with none.
+export function medianTicketMs(all: readonly Spend[]): number | null {
+	const sorted = all
+		.filter((s) => s.built && s.durationMs !== undefined)
+		.map((s) => s.durationMs as number)
+		.sort((a, b) => a - b);
+	if (sorted.length === 0) return null;
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 1
+		? (sorted[mid] as number)
+		: ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
 
 // Each session's cost, by Feature id and the time it was recorded.
@@ -100,7 +115,8 @@ export function spends(path: string): Spend[] {
 		feature: String(e.feature),
 		at: Date.parse(e.at),
 		costUsd: e.costUsd,
-		built: e.step === 'build' && e.outcome === 'built'
+		built: e.step === 'build' && e.outcome === 'built',
+		...(e.durationMs === undefined ? {} : { durationMs: e.durationMs })
 	}));
 }
 
