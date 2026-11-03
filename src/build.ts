@@ -11,7 +11,7 @@ import type { Signal } from './signals.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
-import { branchFor, openWorktree, type Worktree } from './worktree.js';
+import { branchFor, type OpenWorktree, type Worktree } from './worktree.js';
 import {
 	chooseWorkflow,
 	openWorkflow,
@@ -54,6 +54,8 @@ export interface Deps {
 	readonly serve: Serve;
 	// records each Session's cost and answers for the caps
 	readonly spend: Spend;
+	// opens the Feature's worktree: real git, or in memory
+	readonly openWorktree: OpenWorktree;
 	readonly now: () => Date;
 	readonly newId: () => string;
 	readonly say: (line: string) => void;
@@ -159,7 +161,13 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			waiting(tickets, new Set())
 		);
 	}
-	const tree = await openWorktree(setup.root, setup.worktrees, branch, setup.baseBranch, setup.env);
+	const tree = await deps.openWorktree(
+		setup.root,
+		setup.worktrees,
+		branch,
+		setup.baseBranch,
+		setup.env
+	);
 	const built = await tree.built();
 	// the Tickets are planned once the branch says which are built
 	deps.status.doing(settingUp(progress(tickets, built, null)));

@@ -27,7 +27,7 @@ import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
 import { StatusFile, statusPath, type Named } from './status.js';
-import { worktreesFor } from './worktree.js';
+import { openWorktree, worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
 import { startLive } from './live.js';
 
@@ -210,6 +210,7 @@ export async function runNightjar(
 		runSetup: runCheck,
 		serve: startServe,
 		spend,
+		openWorktree,
 		now: () => new Date(),
 		newId: () => randomUUID(),
 		say: runSay,

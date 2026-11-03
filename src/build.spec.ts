@@ -1,4 +1,4 @@
-// The build loop over real git, the in-memory Tracker and Code host, and a scripted Coding agent.
+// The build loop over the in-memory Tracker, Code host and worktree, and a scripted Coding agent; the few specs about commits, discards and cleanup run over real git.
 import { execFileSync } from 'node:child_process';
 import {
 	cpSync,
@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
 import type {
 	BuildOutcome,
@@ -28,13 +28,15 @@ import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
+import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { QUESTIONS_MARK } from './prompt.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
+import { openWorktree } from './worktree.js';
 
-// Each test runs a few dozen real git processes, which take seconds on a busy machine.
+// A test over real git runs a few dozen processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
@@ -47,6 +49,9 @@ type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
 type Ending = Ended & { readonly sessionId: string; readonly costUsd: number };
 
 interface World {
+	// whether its worktrees are real git; if not they are in memory, in `trees`
+	readonly git: boolean;
+	readonly trees: MemoryWorktrees;
 	readonly root: string;
 	// where its worktrees are made
 	readonly worktrees: string;
@@ -84,7 +89,7 @@ interface World {
 }
 
 let base: string;
-let template: string;
+let template: string | undefined;
 
 // git starts gc and maintenance detached, and they can still be writing when afterEach removes the folder.
 const GITCONFIG = '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n';
@@ -99,13 +104,14 @@ const gitEnv = (config: string) => ({
 	GIT_COMMITTER_EMAIL: 'test@example.com'
 });
 
-// Made once and copied per test: real git is the slow part of this file.
-beforeAll(() => {
-	template = mkdtempSync(join(tmpdir(), 'nightjar-build-template-'));
-	const config = join(template, 'gitconfig');
+// Made once, on the first world that wants real git, and copied per test: real git is the slow part.
+function templateRepo(): string {
+	if (template !== undefined) return template;
+	const dir = mkdtempSync(join(tmpdir(), 'nightjar-build-template-'));
+	const config = join(dir, 'gitconfig');
 	writeFileSync(config, GITCONFIG);
-	const origin = join(template, 'origin.git');
-	const app = join(template, 'app');
+	const origin = join(dir, 'origin.git');
+	const app = join(dir, 'app');
 	const sh = (...args: string[]) =>
 		execFileSync('git', args, { env: gitEnv(config), stdio: 'pipe' });
 	sh('init', '-q', '--bare', '-b', 'main', origin);
@@ -114,8 +120,12 @@ beforeAll(() => {
 	sh('-C', app, 'add', '.');
 	sh('-C', app, 'commit', '-q', '-m', 'first');
 	sh('-C', app, 'push', '-q', 'origin', 'main');
+	template = dir;
+	return dir;
+}
+afterAll(() => {
+	if (template !== undefined) rmSync(template, { recursive: true, force: true });
 });
-afterAll(() => rmSync(template, { recursive: true, force: true }));
 
 beforeEach(() => {
 	base = mkdtempSync(join(tmpdir(), 'nightjar-build-'));
@@ -135,10 +145,13 @@ const stepDone = (
 	...over
 });
 
-// A second world in one test needs a folder of its own: git's object files are read-only, so they cannot be copied over the first's.
-function makeWorld(dir = base): World {
+// A world whose worktrees are in memory: no git, so no folder either.
+const makeWorld = (): World => worldOf({ git: false, root: join(base, 'app'), env: {} });
+
+// A world over real git, for the specs about commits, discards and cleanup. A second one in a test needs a folder of its own: git's object files are read-only, so they cannot be copied over the first's.
+function makeGitWorld(dir = base): World {
 	if (existsSync(join(dir, 'origin.git'))) {
-		throw new Error(`makeWorld: ${dir} holds a world already; pass another folder`);
+		throw new Error(`makeGitWorld: ${dir} holds a world already; pass another folder`);
 	}
 	mkdirSync(dir, { recursive: true });
 	const home = join(dir, 'gitconfig');
@@ -146,10 +159,20 @@ function makeWorld(dir = base): World {
 	const env = gitEnv(home);
 	const origin = join(dir, 'origin.git');
 	const root = join(dir, 'app');
-	cpSync(join(template, 'origin.git'), origin, { recursive: true });
-	cpSync(join(template, 'app'), root, { recursive: true });
+	cpSync(join(templateRepo(), 'origin.git'), origin, { recursive: true });
+	cpSync(join(templateRepo(), 'app'), root, { recursive: true });
 	execFileSync('git', ['-C', root, 'remote', 'set-url', 'origin', origin], { env, stdio: 'pipe' });
+	return worldOf({ git: true, root, env, dir });
+}
 
+function worldOf(o: {
+	git: boolean;
+	root: string;
+	env: Record<string, string | undefined>;
+	dir?: string;
+}): World {
+	const { root, env } = o;
+	const dir = o.dir ?? base;
 	const tracker = new FakeTracker('ann', () => new Date(2026, 9, 30, 8));
 	// the Feature lists 3 first, but 3 waits for 2
 	tracker.add({
@@ -162,6 +185,8 @@ function makeWorld(dir = base): World {
 	tracker.add({ id: '2', title: 'Share the function', signals: ['ready'] });
 	tracker.add({ id: '3', title: 'Use it in marks', signals: ['ready'], blockedBy: ['2'] });
 	return {
+		git: o.git,
+		trees: memoryWorktrees(),
 		root,
 		worktrees: join(dir, 'worktrees'),
 		env,
@@ -203,7 +228,7 @@ function deps(world: World): Deps {
 				answer(req, (): BuildOutcome => {
 					const n = req.ticket.id;
 					const act = world.acts[n] ?? 'build';
-					writeFileSync(join(req.at.folder, `ticket-${n}.txt`), 'work\n');
+					write(world, req.at.folder, `ticket-${n}.txt`);
 					const { sessionId } = req;
 					if (act === 'ask') {
 						const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
@@ -250,6 +275,7 @@ function deps(world: World): Deps {
 			});
 		},
 		spend: world.spend,
+		openWorktree: world.git ? openWorktree : world.trees.open,
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
 		say: () => undefined,
@@ -280,6 +306,30 @@ const git = (world: World, cwd: string, ...args: string[]) =>
 
 const tree = () => join(base, 'worktrees', '1-one-escape');
 
+// What a scripted Session does in the worktree, and what a spec reads of it, over either adapter.
+function write(world: World, folder: string, file: string): void {
+	if (world.git) writeFileSync(join(folder, file), 'work\n');
+	else world.trees.write(folder, file);
+}
+
+function has(world: World, file: string): boolean {
+	return world.git ? existsSync(join(tree(), file)) : world.trees.has(tree(), file);
+}
+
+const lines = (text: string) => text.split('\n').filter(Boolean);
+
+// the files a Session left, with nothing committed or thrown away
+function left(world: World): string[] {
+	if (!world.git) return world.trees.left(tree());
+	return lines(git(world, tree(), 'status', '--porcelain'));
+}
+
+// the branch's own commits, newest first
+function subjects(world: World): string[] {
+	if (!world.git) return world.trees.subjects(tree());
+	return lines(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD'));
+}
+
 const refs = (world: World) => world.host.pulls[0]?.references.map((r) => r.text);
 
 const ledger = (world: World) => world.spend.entries();
@@ -288,8 +338,8 @@ const PORTS = { WEB_PORT: '4500', DB_PORT: '4501' };
 
 describe('the test repo', () => {
 	it('makes a second world in a folder of its own', async () => {
-		const one = makeWorld();
-		const two = makeWorld(join(base, 'second'));
+		const one = makeGitWorld();
+		const two = makeGitWorld(join(base, 'second'));
 		await buildFeature(deps(one), setup(one), '1');
 		await buildFeature(deps(two), setup(two), '1');
 		expect(one.host.pulls).toHaveLength(1);
@@ -297,12 +347,12 @@ describe('the test repo', () => {
 	});
 
 	it("says so when a second world would share the first one's folder", () => {
-		makeWorld();
-		expect(() => makeWorld()).toThrow('pass another folder');
+		makeGitWorld();
+		expect(() => makeGitWorld()).toThrow('pass another folder');
 	});
 
 	it('leaves no detached git maintenance behind to write into the folder after the test', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		const trace = join(base, 'trace.jsonl');
 		world.env['GIT_TRACE2_EVENT'] = trace;
 		await buildFeature(deps(world), setup(world), '1');
@@ -404,14 +454,11 @@ describe('reserved ports', () => {
 
 describe('buildFeature', () => {
 	it('builds the Tickets in Build order, one commit each, then reviews and opens one draft', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		const got = await buildFeature(deps(world), setup(world), '1');
 
 		expect(got).toMatchObject({ kind: 'pull', built: ['2', '3'], waiting: [] });
-		expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD').split('\n')).toEqual([
-			'Use it in marks (#3)',
-			'Share the function (#2)'
-		]);
+		expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
 		// pushed through the Code host to the Feature's branch, never to main
 		expect(world.host.pushes).toEqual([{ folder: tree(), branch: 'factory/1-one-escape' }]);
 		expect(git(world, world.root, 'rev-list', '--count', 'origin/main')).toBe('1');
@@ -595,7 +642,7 @@ describe('buildFeature', () => {
 		]);
 		expect(ledger(world).map((e) => e.outcome)).toEqual(['questions, round 1']);
 		// the file the session wrote is gone from the branch
-		expect(git(world, tree(), 'status', '--porcelain')).toBe('');
+		expect(left(world)).toEqual([]);
 		expect(world.host.pulls).toEqual([]);
 		expect(world.host.pushes).toEqual([]);
 	});
@@ -678,11 +725,11 @@ describe('buildFeature', () => {
 			['fix', 'round 2 gave up'],
 			['review', 'approve']
 		]);
-		expect(git(world, tree(), 'log', '-1', '--format=%B')).toContain('Built #2\n\nFixed the lint');
+		expect(world.trees.messages(tree())[0]).toContain('Built #2\n\nFixed the lint');
 	});
 
 	it('hands back a Ticket whose session stopped, keeping the attempt on a side branch', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		world.acts['2'] = 'fail';
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.tracker.said('2')[0]).toContain('it reached its budget');
@@ -822,8 +869,8 @@ describe('a Session that cannot go on', () => {
 			const got = await buildFeature(deps(world), setup(world), '1');
 
 			expect(got).toEqual({ kind: 'paused', why });
-			expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).toBe('');
-			expect(existsSync(join(tree(), 'ticket-2.txt'))).toBe(false);
+			expect(subjects(world)).toEqual([]);
+			expect(has(world, 'ticket-2.txt')).toBe(false);
 			expect(world.tracker.signalsOf('1')).toEqual(['go']);
 			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
 			expect(world.asked.map((r) => r.kind)).toEqual(['build', 'fix']);
@@ -856,7 +903,7 @@ describe('a Session that cannot go on', () => {
 			const got = await buildFeature(deps(world), setup(world), '1');
 
 			expect(got).toEqual({ kind: 'paused', why });
-			expect(existsSync(join(tree(), 'ticket-2.txt'))).toBe(false);
+			expect(has(world, 'ticket-2.txt')).toBe(false);
 			expect(world.tracker.signalsOf('1')).toEqual(['go']);
 			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
 			expect(ledger(world).map((e) => [e.step, e.outcome])).toEqual([['build', `paused: ${why}`]]);
@@ -892,7 +939,7 @@ describe('a Session that cannot go on', () => {
 	);
 
 	it("throws the work away when a stop lands during a Ticket's check, which no Session reports", async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		const stop = new AbortController();
 		const inner = deps(world);
 		const runCheck: Deps['runCheck'] = (command, cwd, env) => {
@@ -906,8 +953,8 @@ describe('a Session that cannot go on', () => {
 		);
 
 		expect(got).toEqual({ kind: 'stopped' });
-		expect(existsSync(join(tree(), 'ticket-2.txt'))).toBe(false);
-		expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).not.toContain('#2');
+		expect(has(world, 'ticket-2.txt')).toBe(false);
+		expect(subjects(world).join('\n')).not.toContain('#2');
 	});
 
 	// what each kind of work's ledger line says when a person stopped it
@@ -930,7 +977,7 @@ describe('a Session that cannot go on', () => {
 			expect(got).toEqual({ kind: 'stopped' });
 			expect(world.tracker.said('1').at(-1)).toContain('The Nightjar run was stopped by a person.');
 			expect(world.host.pulls).toEqual([]);
-			expect(git(world, tree(), 'status', '--porcelain')).toBe('');
+			expect(left(world)).toEqual([]);
 			expect(ledger(world).find((e) => e.step === kind)).toMatchObject({ outcome, costUsd: 1.5 });
 		}
 	);
@@ -960,13 +1007,11 @@ describe('Workflows', () => {
 		onFeature(world, WORKFLOW_LINE);
 		return setup(world, { workflows: { 'design-review': flow(over) } });
 	};
-	const subjects = (world: World) =>
-		git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD').split('\n');
 	const body = (world: World) => world.host.pulls[0]?.body ?? '';
 	const kinds = (world: World) => world.asked.map((r) => r.kind);
 
 	it('runs a two-Step Workflow before the review: the commits, the notes passed on, the pull request', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		let heard = '';
 		world.stepAgent = (req) => {
 			if (req.step.name === 'critique') {
@@ -1028,7 +1073,7 @@ describe('Workflows', () => {
 	it('throws a Step away that fails on the worktree, and still runs the next one', async () => {
 		const world = makeWorld();
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, `${req.step.name}.txt`), 'x\n');
+			write(world, req.at.folder, `${req.step.name}.txt`);
 			const { sessionId } = req;
 			if (req.step.name === 'polish') return stepDone(req);
 			return { kind: 'blocked', blocker: 'which palette?', sessionId, costUsd: 1 };
@@ -1037,8 +1082,8 @@ describe('Workflows', () => {
 
 		expect(subjects(world)[0]).toBe('design-review: polish');
 		expect(subjects(world)).not.toContain('design-review: critique');
-		expect(existsSync(join(tree(), 'critique.txt'))).toBe(false);
-		expect(existsSync(join(tree(), 'polish.txt'))).toBe(true);
+		expect(has(world, 'critique.txt')).toBe(false);
+		expect(has(world, 'polish.txt')).toBe(true);
 		expect(body(world)).toContain('- `critique`: **not done**, it reported itself blocked');
 	});
 
@@ -1093,7 +1138,7 @@ describe('Workflows', () => {
 		const world = makeWorld();
 		const lint = { name: 'lint', prompt: 'lint it', point: 'afterEachTicket' } as const;
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, `lint-${req.ticket?.id ?? ''}.txt`), 'x\n');
+			write(world, req.at.folder, `lint-${req.ticket?.id ?? ''}.txt`);
 			return stepDone(req);
 		};
 		await buildFeature(deps(world), withFlow(world, { steps: [lint] }), '1');
@@ -1123,7 +1168,7 @@ describe('Workflows', () => {
 	it('does not run a Step the branch already holds when a later run goes on', async () => {
 		const world = makeWorld();
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, `${req.step.name}.txt`), 'x\n');
+			write(world, req.at.folder, `${req.step.name}.txt`);
 			return stepDone(req);
 		};
 		const config = withFlow(world);
@@ -1151,7 +1196,7 @@ describe('Workflows', () => {
 		const world = makeWorld();
 		const extras = { allowedCommands: ['npm run e2e'], localNetwork: true };
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, 'critique.txt'), 'x\n');
+			write(world, req.at.folder, 'critique.txt');
 			world.checkOk = false;
 			return stepDone(req);
 		};
