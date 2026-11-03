@@ -185,7 +185,7 @@ export async function runNightjar(
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
 		codingAgent: codingAgent(setup, (req) => runSession(req)),
-		runCheck,
+		runCheck: (command, cwd, env) => runCheck(command, cwd, env, config.gate ?? {}),
 		runSetup: runCheck,
 		serve: startServe,
 		now: () => new Date(),

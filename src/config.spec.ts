@@ -119,6 +119,43 @@ describe('loadConfig', () => {
 		expect(loadConfig(root)).toMatchObject(asked);
 	});
 
+	it('loads a gate, and sets none by itself', () => {
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('gate');
+		const asked = {
+			failingTest: '^not ok \\d+ - (.+)$',
+			ignore: '^budget: ',
+			stages: { red: '^(\\S+)\\s+red\\b', log: '.cache/{stage}.log' }
+		};
+		write({ ...VALID, gate: asked });
+		expect(loadConfig(root)).toMatchObject({ gate: asked });
+	});
+
+	it.each([
+		['a pattern that is no regular expression', { failingTest: '(' }, 'gate.failingTest'],
+		['a failingTest with no group for the name', { failingTest: '^FAIL' }, 'gate.failingTest'],
+		['an ignore that is no regular expression', { ignore: '[' }, 'gate.ignore'],
+		['a stage pattern with no group', { stages: { red: 'red' } }, 'gate.stages.red'],
+		[
+			'a stage log with no {stage}',
+			{ stages: { red: '^(\\S+) red', log: 'all.log' } },
+			'gate.stages.log'
+		],
+		[
+			'a stage log outside the worktree',
+			{ stages: { red: '^(\\S+) red', log: '../{stage}.log' } },
+			'gate.stages.log'
+		],
+		[
+			'an absolute stage log',
+			{ stages: { red: '^(\\S+) red', log: '/tmp/{stage}.log' } },
+			'gate.stages.log'
+		]
+	])('refuses %s', (_, gate, field) => {
+		write({ ...VALID, gate });
+		expect(refusal()).toContain(`factory.json: ${field}`);
+	});
+
 	it('refuses an empty setup command', () => {
 		write({ ...VALID, setup: ' ' });
 		expect(refusal()).toMatch(/^factory\.json: setup: /m);

@@ -193,6 +193,60 @@ const Signals = z
 			'The name each Signal has on a Tracker: a label on GitHub, a tag on Azure DevOps. Leave out the ones you do not rename. needs-triage and wontfix are refused.'
 	});
 
+// A line pattern as a string; `group` asks for a capture group, which holds the name the line gives.
+const linePattern = (group: boolean) =>
+	z.string().superRefine((text, ctx) => {
+		try {
+			const re = new RegExp(text);
+			// adding an empty alternative makes exec('') match, and its length is 1 plus the groups
+			if (group && new RegExp(`${re.source}|`).exec('')?.length === 1) {
+				ctx.addIssue({ code: 'custom', message: 'needs a group (...) around the name' });
+			}
+		} catch {
+			ctx.addIssue({ code: 'custom', message: 'is not a regular expression' });
+		}
+	});
+
+const Gate = z
+	.strictObject({
+		failingTest: linePattern(true).optional().meta({
+			description:
+				'A regular expression, tried on each line of the check output and of each red stage log, whose first group names a failing test. Left out, a line of the form "FAIL name" matches.'
+		}),
+		ignore: linePattern(false).optional().meta({
+			description:
+				'A regular expression for lines that say nothing about why the check is red, such as notes about slow tests; they are left out of the report'
+		}),
+		stages: z
+			.strictObject({
+				red: linePattern(true).meta({
+					description:
+						'A regular expression, tried on each line of the check output, whose first group names a red stage'
+				}),
+				log: z
+					.string()
+					.refine((path) => path.includes('{stage}'), 'needs {stage}, the name of the stage')
+					.refine(
+						(path) => !path.startsWith('/') && !path.split('/').includes('..'),
+						'must stay inside the worktree'
+					)
+					.optional()
+					.meta({
+						description:
+							'Where a red stage leaves its whole log, relative to the worktree, with {stage} for its name; its failing tests join the report'
+					})
+			})
+			.optional()
+			.meta({
+				description:
+					'How to find the red stages when the check is split into stages. Left out, the report names none.'
+			})
+	})
+	.meta({
+		description:
+			'What the report on a red check holds, so that the fix rounds and the pull request name every failing test and not only the end of the output'
+	});
+
 export const ConfigSchema = z
 	.strictObject({
 		$schema: z.string().optional(),
@@ -217,6 +271,7 @@ export const ConfigSchema = z
 				description:
 					'The shell command that checks the work in the worktree, run after each Ticket; it fails with a non-zero exit'
 			}),
+		gate: Gate.optional(),
 		allowedCommands: z
 			.array(z.string().regex(/\S/, 'an allowed command is empty'), {
 				error: missingOr('list the commands the agent may run')

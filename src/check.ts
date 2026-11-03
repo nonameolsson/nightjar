@@ -1,5 +1,8 @@
-// The repo's check command; the end of its output, without colour codes, goes to the fix round and a red pull request.
+// The repo's check command; when it is red, its gate report goes to the fix round and the pull request.
 import { spawn } from 'node:child_process';
+import { readFileSync, realpathSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+import { gateReport, type Gate } from './gate.js';
 import type { Env } from './git.js';
 
 export interface CheckResult {
@@ -10,19 +13,26 @@ export interface CheckResult {
 // Also runs the worktree setup command, with the environment the run hands every command.
 export type RunCheck = (command: string, cwd: string, env: Env) => Promise<CheckResult>;
 
-const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
-
-const TAIL = 80;
-
-export function checkReport(output: string): string {
-	const lines = output.replace(ANSI, '').trimEnd().split('\n');
-	const end = lines.slice(-TAIL).join('\n');
-	const cut = lines.length > TAIL ? ` (last ${String(TAIL)} lines)` : '';
-	return `The end of the output${cut}:\n${end}`;
+// A stage log is read from inside the worktree only; real paths, so a symlink cannot point out of it.
+function readIn(cwd: string): (path: string) => string | null {
+	return (path) => {
+		try {
+			const root = realpathSync(cwd);
+			const file = realpathSync(resolve(root, path));
+			return file.startsWith(root + sep) ? readFileSync(file, 'utf8') : null;
+		} catch {
+			return null;
+		}
+	};
 }
 
 // The command is the repo's own, from its committed factory.json, so it runs through the shell.
-export function runCheck(command: string, cwd: string, env: Env): Promise<CheckResult> {
+export function runCheck(
+	command: string,
+	cwd: string,
+	env: Env,
+	gate?: Gate
+): Promise<CheckResult> {
 	return new Promise((done) => {
 		const child = spawn('sh', ['-c', command], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
 		let output = '';
@@ -33,7 +43,11 @@ export function runCheck(command: string, cwd: string, env: Env): Promise<CheckR
 		child.stderr.on('data', keep);
 		child.on('error', (fault) => done({ ok: false, tail: `sh could not start: ${fault.message}` }));
 		child.on('close', (code) =>
-			done(code === 0 ? { ok: true, tail: '' } : { ok: false, tail: checkReport(output) })
+			done(
+				code === 0
+					? { ok: true, tail: '' }
+					: { ok: false, tail: gateReport(output, gate, readIn(cwd)) }
+			)
 		);
 	});
 }
