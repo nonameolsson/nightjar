@@ -1,7 +1,9 @@
 // The `nightjar` command.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
@@ -29,6 +31,14 @@ import { startLive } from './live.js';
 
 // where this Nightjar is installed or checked out: src/ and dist/ both sit one level down
 const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
+
+// package.json sits at PACKAGE_DIR from both src/ and dist/
+function packageVersion(): string {
+	const pkg = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8')) as {
+		version: string;
+	};
+	return pkg.version;
+}
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -99,6 +109,10 @@ export async function runNightjar(
 	}
 	if (argv.length === 1 && ['--help', '-h', 'help'].includes(argv[0] ?? '')) {
 		console.log(USAGE);
+		return 0;
+	}
+	if (argv.length === 1 && ['--version', '-v'].includes(argv[0] ?? '')) {
+		console.log(packageVersion());
 		return 0;
 	}
 	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);

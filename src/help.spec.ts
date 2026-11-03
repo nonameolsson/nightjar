@@ -1,4 +1,5 @@
 // `nightjar --help` is how a newcomer checks an install worked: usage on stdout, exit 0.
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { USAGE } from './args.js';
 import { runNightjar } from './main.js';
@@ -18,6 +19,18 @@ describe('nightjar --help', () => {
 		const code = await runNightjar([flag], { platform: 'linux' });
 		expect(code).toBe(0);
 		expect(out).toEqual([USAGE]);
+		expect(err).toEqual([]);
+	});
+});
+
+describe('nightjar --version', () => {
+	it.each([['--version'], ['-v']])('%s prints the package version and exits 0', async (flag) => {
+		const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+			version: string;
+		};
+		const code = await runNightjar([flag], { platform: 'linux' });
+		expect(code).toBe(0);
+		expect(out).toEqual([pkg.version]);
 		expect(err).toEqual([]);
 	});
 });
