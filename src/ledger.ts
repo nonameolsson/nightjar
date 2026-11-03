@@ -1,11 +1,8 @@
-// .factory/runs.jsonl: one line per session with its cost, from which the day's spend is added up.
-// The file is the Spend module's file adapter; the build loop reaches it only through `Spend`.
+// .factory/runs.jsonl, the Spend module's file adapter: one line per session with its cost.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { localDay, spendOver, type Entry, type Spend } from './spend.js';
-
-export type { Entry };
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
 

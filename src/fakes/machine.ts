@@ -14,10 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// gh as ann on o/r, for a spec that runs the command as a process, which a Host cannot reach: Feature #1 with Ticket #2,
-// and a pull request that opens as #9. FAKE_GH_FEATURE_LABEL and FAKE_GH_FEATURE_ASSIGNEE change what the Feature
-// carries; FAKE_GH_FAIL_TICKETS makes the call for its sub-issues fail. A spec that runs the command in this process
-// passes a FakeGitHub as the Host's `gh` instead.
+// gh for a spec that runs the command as a process, which a Host cannot reach; an in-process spec passes a FakeGitHub
 const GH = String.raw`#!/bin/bash
 echo "$*" >> "$FAKE_GH_CALLS"
 issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }

@@ -45,8 +45,7 @@ interface Report {
 	readonly trackerOk: boolean;
 }
 
-// Ready when no check stops a build, as a failing Workflow stops only a Feature that picks it;
-// else the refusal, as the first check that stops it says.
+// Ready unless a check stops every build (a failing Workflow stops only the Feature that picks it); else the first refusal.
 type Outcome =
 	| { readonly ready: Ready; readonly refusal: null }
 	| { readonly ready: null; readonly refusal: string };

@@ -2,7 +2,8 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { builtOn, fileSpend, record, type Entry } from './ledger.js';
+import { builtOn, fileSpend, record } from './ledger.js';
+import type { Entry } from './spend.js';
 
 let dir: string;
 beforeEach(() => {

@@ -1,5 +1,4 @@
-// The Spend module: what Nightjar spends. It records each Session's cost as a ledger Entry and answers
-// whether the day is over and whether a piece of work may spend more. The caps are worked out here alone.
+// The Spend module: records each Session's cost and answers whether the day is over and whether work may spend more.
 
 // One Session's line in the ledger.
 export interface Entry {

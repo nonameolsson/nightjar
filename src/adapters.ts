@@ -232,7 +232,6 @@ const codeHostFor = (spec: Config['codeHost'], m: Machine, t: TrackerBundle) =>
 	)(spec, m, t);
 
 // What reaches outside this process: `request` answers every Azure DevOps call and `gh` every GitHub call.
-// A spec passes a fake Azure DevOps and a fake GitHub.
 export interface Seams {
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
