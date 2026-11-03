@@ -229,6 +229,10 @@ export const ConfigSchema = z
 			description:
 				'A text file, relative to the repo root, whose text is added to the agent prompt. Conventions normally live in CLAUDE.md or AGENTS.md.'
 		}),
+		plugins: z.array(z.string().regex(/\S/, 'a plugin directory is empty')).optional().meta({
+			description:
+				'Plugin directories, relative to the repo root, that every session loads (claude --plugin-dir). A restricted session ignores the repo\'s own .claude/skills, so a skill a Workflow Step names as /skill must come from one: [".claude"] loads the skills committed in .claude/skills.'
+		}),
 		model: modelField.meta({
 			description:
 				"The default model of every session; a Ticket's **Model:** line overrides it and --model overrides both"

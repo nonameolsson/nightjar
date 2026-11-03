@@ -41,6 +41,11 @@ const refusal = (): string => {
 };
 
 describe('loadConfig', () => {
+	it('reads the plugin directories of plugins', () => {
+		write({ ...VALID, plugins: ['.claude'] });
+		expect(loadConfig(root).plugins).toEqual(['.claude']);
+	});
+
 	it('loads a valid factory.json', () => {
 		write(VALID);
 		expect(loadConfig(root)).toEqual({

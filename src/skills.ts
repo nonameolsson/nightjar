@@ -3,7 +3,12 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Env } from './git.js';
 
-export type LoadedSkills = (cwd: string, env: Env) => Promise<string[] | null>;
+// `plugins` are absolute plugin directories, as a Step's session is started with them
+export type LoadedSkills = (
+	cwd: string,
+	env: Env,
+	plugins: readonly string[]
+) => Promise<string[] | null>;
 
 const WAIT_MS = 30_000;
 
@@ -11,7 +16,7 @@ const strings = (value: unknown): string[] =>
 	Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 
 // The session is started as a build starts one and killed at its init line, so it costs nothing.
-export const loadedSkills: LoadedSkills = (cwd, env) =>
+export const loadedSkills: LoadedSkills = (cwd, env, plugins) =>
 	new Promise((done) => {
 		const child = spawn(
 			'claude',
@@ -24,7 +29,8 @@ export const loadedSkills: LoadedSkills = (cwd, env) =>
 				'stream-json',
 				'--verbose',
 				'--tools',
-				'Skill'
+				'Skill',
+				...plugins.flatMap((p) => ['--plugin-dir', p])
 			],
 			{ cwd, env, stdio: ['ignore', 'pipe', 'ignore'], detached: true }
 		);

@@ -1,4 +1,5 @@
 // `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
+import { join } from 'node:path';
 import { makeAdapters, type Adapters } from './adapters.js';
 import { accountLine, parseAccount, profileEnv } from './account.js';
 import { apiKeyProblem } from './args.js';
@@ -271,7 +272,13 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 	}));
 	if (root !== null && claude !== null && named.length > 0) {
 		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
-		const skills = wanted ? await (o.skills ?? loadedSkills)(root, o.env) : [];
+		const skills = wanted
+			? await (o.skills ?? loadedSkills)(
+					root,
+					o.env,
+					(loaded?.config.plugins ?? []).map((p) => join(root, p))
+				)
+			: [];
 		for (const w of named) {
 			const missing = w.steps.flatMap((s) =>
 				s.skills
@@ -291,7 +298,7 @@ export async function checkMachine(o: CheckOptions): Promise<Checked> {
 					only: w.name
 				});
 			} else if (missing.length > 0) {
-				const detail = `${missing.join(' and ')}, which a headless claude session does not load. Install the skill in this repo or your plugins, then run \`nightjar doctor\` again.`;
+				const detail = `${missing.join(' and ')}, which a headless claude session does not load. Sessions load no skill from the repo's own .claude/skills; add the folder that holds it to "plugins" in factory.json (for example [".claude"]), then run \`nightjar doctor\` again.`;
 				workflowProblems[w.name] = detail;
 				lines.push({
 					name: `Workflow ${w.name}`,

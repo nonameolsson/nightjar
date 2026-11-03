@@ -210,6 +210,14 @@
 			"type": "string",
 			"pattern": "\\S"
 		},
+		"plugins": {
+			"description": "Plugin directories, relative to the repo root, that every session loads (claude --plugin-dir). A restricted session ignores the repo's own .claude/skills, so a skill a Workflow Step names as /skill must come from one: [\".claude\"] loads the skills committed in .claude/skills.",
+			"type": "array",
+			"items": {
+				"type": "string",
+				"pattern": "\\S"
+			}
+		},
 		"model": {
 			"description": "The default model of every session; a Ticket's **Model:** line overrides it and --model overrides both",
 			"type": "string",

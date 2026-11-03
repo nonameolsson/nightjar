@@ -20,6 +20,8 @@ export interface SessionRequest {
 	readonly resume?: string;
 	readonly model?: string;
 	readonly effort?: string;
+	// plugin directories (absolute) to load; --restricted leaves the repo's own skills out
+	readonly plugins?: readonly string[];
 	readonly log: string;
 	readonly allowApiKey: boolean;
 	readonly env: Env;
@@ -55,6 +57,7 @@ export function sessionArgs(req: SessionRequest): string[] {
 		'--max-budget-usd',
 		req.budgetUsd.toFixed(2)
 	];
+	for (const plugin of req.plugins ?? []) args.push('--plugin-dir', plugin);
 	if (req.resume) args.push('--resume', req.resume);
 	else args.push('--session-id', req.sessionId);
 	if (req.model) args.push('--model', req.model);

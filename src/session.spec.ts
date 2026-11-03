@@ -93,6 +93,15 @@ describe('sessionArgs', () => {
 		expect(args).not.toContain('--resume');
 	});
 
+	it('loads each plugin directory, which --restricted would not find on its own', () => {
+		const args = sessionArgs(request({ plugins: ['/w/.claude', '/w/tools'] }));
+		expect(args.filter((a, i) => args[i - 1] === '--plugin-dir')).toEqual([
+			'/w/.claude',
+			'/w/tools'
+		]);
+		expect(sessionArgs(request())).not.toContain('--plugin-dir');
+	});
+
 	it('resumes a session by its id in place of starting one', () => {
 		const args = sessionArgs(request({ resume: 'abc' }));
 		expect(args[args.indexOf('--resume') + 1]).toBe('abc');
