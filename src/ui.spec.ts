@@ -522,6 +522,20 @@ describe('nightjar ui board', () => {
 		expect(page).toContain('not known while nightjar is off');
 	});
 
+	it('explains the eggs in a legend, and shows no tallies while nightjar is off', async () => {
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await open();
+		alive = false;
+		const page = (await get('/')).text;
+		for (const word of ['built', 'building', 'needs a person', 'waiting'])
+			expect(page).toContain(`</i>${word}</span>`);
+		expect(page).toContain('<section class="mat" data-state="queue"');
+		for (const state of ['waiting', 'building', 'queue'])
+			expect(page).toMatch(
+				new RegExp(`data-state="${state}"><div class="tab"><h2>[^<]*</h2></div>`)
+			);
+	});
+
 	it('shows a waiting Ticket on the card of the Feature it belongs to, not the one that ended last', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });

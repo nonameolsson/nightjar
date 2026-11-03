@@ -97,7 +97,7 @@ components:
 
 **Creative North Star: "The Night Shift Mat"**
 
-Wingspan's habitat boards run through a cyberpunk HUD. A nightjar banner (teal and amber line art) sits over a dark void with a faint teal grid. Below it, one mat per state holds Tickets as eggs resting in round nest sockets. A person glancing at the board reads state from egg and mat colour alone; the text is there to confirm.
+A cyberpunk HUD runs over a field-guide's habitat boards. A nightjar banner (teal and amber line art) sits over a dark void with a faint teal grid. Below it, one mat per state holds Tickets as eggs resting in round nest sockets. A person glancing at the board reads state from egg and mat colour alone; the text is there to confirm.
 
 The page is dense and instrument-like: system sans for names and prose, `ui-monospace` for labels, counts, clocks and anything that is data. Colour is semantic (teal builds, amber needs a person, slate violet queues, green completes, red fails) and always paired with a shape change, so state never rests on hue alone. Frames are hard-edged and square, finished with corner brackets rather than rounded cards.
 
