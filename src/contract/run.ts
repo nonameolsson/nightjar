@@ -1,6 +1,7 @@
 // Runs the contract suites with no test runner, so an installed Nightjar can check a repo's own Adapter.
 import type { ContractCase } from './case.js';
-import { codeHostContract } from './code-host.js';
+import { codeHostContract, type CodeHostHarness, type CodeHostSubject } from './code-host.js';
+import { feedbackContract } from './feedback.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
@@ -77,7 +78,25 @@ async function optionalSuites(
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, and the waitingOn suite when it has waitingOn.
+// Whether the Code host answers feedback. A harness that cannot make a Code host has failed every case already, so it is asked nothing more.
+async function hasFeedback(harness: CodeHostHarness): Promise<boolean> {
+	let subject: CodeHostSubject;
+	try {
+		subject = await harness();
+	} catch {
+		return false;
+	}
+	try {
+		return (
+			typeof subject.codeHost.feedback === 'function' &&
+			typeof subject.codeHost.reply === 'function'
+		);
+	} finally {
+		await subject.close?.();
+	}
+}
+
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, and the feedback suite when the Code host has feedback and reply.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -97,6 +116,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 	}
 	if (codeHost !== undefined) {
 		suites.push(await runSuite('Code host', codeHostContract, codeHost as never));
+		if (await hasFeedback(codeHost as CodeHostHarness)) {
+			suites.push(await runSuite('Code host feedback', feedbackContract, codeHost as never));
+		}
 	}
 	const all = suites.flatMap((s) => s.results);
 	return { suites, total: all.length, failed: all.filter((r) => !r.ok).length };

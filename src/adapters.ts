@@ -165,7 +165,10 @@ const CODE_HOSTS: {
 	github: async (spec, m) => {
 		const repo = spec.repo ?? (await m.fromOrigin('codeHost.repo'));
 		return {
-			codeHost: new GitHubCodeHost(repo, m.gh, (args, cwd) => run('git', args, cwd, m.env)),
+			codeHost: new GitHubCodeHost(repo, m.gh, (args, cwd) => run('git', args, cwd, m.env), {
+				trusted: m.config.trusted,
+				trustedChecks: spec.trustedChecks
+			}),
 			repo,
 			// the branch is pushed and the pull request opened as the person gh is signed in as
 			reachCodeHost: async () => {

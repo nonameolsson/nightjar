@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { CheckResult, RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
 import { envOf, type CodingAgent, type Fixing } from './coding-agent.js';
+import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { record, spentOn, type Entry } from './ledger.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
@@ -106,8 +107,6 @@ export type FeatureOutcome =
 	| { readonly kind: 'stopped' };
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
-
-export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
