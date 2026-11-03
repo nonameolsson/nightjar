@@ -8,6 +8,7 @@ import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
 import type { Signal } from './signals.js';
+import { ticketFaults } from './ticket-contract.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -347,6 +348,17 @@ class FeatureRun {
 
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		const before = await this.tree.head();
+		const faults = ticketFaults(ticket.body);
+		if (faults.length > 0) {
+			await this.handBack(
+				ticket,
+				before,
+				`Nightjar did not start a Session on this Ticket, because it does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+				'needsInfo',
+				`it fails the Ticket contract: ${faults.join(' ')}`
+			);
+			return NEXT;
+		}
 		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
 		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);

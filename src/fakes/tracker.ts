@@ -42,7 +42,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 
 	add(item: NewItem): this {
 		this.items.set(item.id, {
-			body: `The body of ${item.title}.`,
+			body: `The body of ${item.title}.\n\n### Acceptance criteria\n\n- [ ] it works`,
 			open: true,
 			assignees: [],
 			signals: [],
