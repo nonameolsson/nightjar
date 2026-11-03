@@ -498,6 +498,10 @@ describe('nightjar ui board', () => {
 		expect(page).toContain('Webhooks');
 		expect(page).toContain('Facets <small>needs info</small>');
 		expect(page).toContain('<h2>Current build</h2>');
+		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
+		const card = board.split('<article').find((a) => a.includes('Search')) ?? '';
+		expect(card).toContain('<div class="bar"><i style="width:33%"></i></div>');
+		expect(card).toContain('1 of 3 built');
 	});
 
 	it('lists at most ten Completed, newest first, and says when the run is off', async () => {

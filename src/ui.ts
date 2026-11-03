@@ -132,18 +132,28 @@ const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
 function completed(view: FactoryView): string {
 	const rows = view.completed
-		.map(({ event, costUsd }) => {
-			const outcome =
-				event.kind === 'pull'
-					? safeUrl(event.url)
-						? `<a href="${escape(event.url)}">draft pull request</a>`
-						: escape(event.url)
-					: `failed: ${escape(event.why)}`;
-			return `<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcome} ${dollars(costUsd)}</li>`;
-		})
+		.map(
+			({ event, costUsd }) =>
+				`<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)}</li>`
+		)
 		.reverse()
 		.join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
+}
+
+// A draft pull request link, or the failure and why; a url that is not http stays text
+const outcomeHtml = (event: Completed['event']) =>
+	event.kind === 'pull'
+		? safeUrl(event.url)
+			? `<a href="${escape(event.url)}">draft pull request</a>`
+			: escape(event.url)
+		: `failed: ${escape(event.why)}`;
+
+// how long the build took; null for an event with no start, or a start that does not read
+function tookMs(event: Completed['event']): number | null {
+	const took =
+		event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
+	return Number.isNaN(took) ? null : took;
 }
 
 type Building = Extract<Doing, { kind: 'building' }>;
@@ -154,6 +164,8 @@ interface FeatureCard {
 	readonly title?: string;
 	// the Tickets that wait on a person, with why
 	readonly waitingTickets: readonly WaitingItem[];
+	// Tickets built of the Feature's Tickets; null when there is no count to show
+	readonly progress: Progress | null;
 }
 interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
@@ -169,7 +181,6 @@ interface BuildingCard extends FeatureCard {
 	readonly state: 'building';
 	readonly doing: Building;
 }
-// Tickets built of the Feature's Tickets; null when there is no count to show
 interface Progress {
 	readonly built: number;
 	readonly total: number;
@@ -177,12 +188,10 @@ interface Progress {
 interface WaitingCard extends FeatureCard {
 	readonly state: 'waiting';
 	readonly why: string;
-	readonly progress: Progress | null;
 }
 interface CompletedCard extends FeatureCard {
 	readonly state: 'completed';
 	readonly done: Completed;
-	readonly progress: Progress | null;
 }
 
 const progressText = (p: Progress | null) =>
@@ -210,15 +219,21 @@ function features(view: FactoryView): Features {
 	const status = view.status;
 	const doing = status?.doing;
 	const on = running(view);
+	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
 	const building: BuildingCard | null =
 		doing?.kind === 'building' && on
 			? {
 					state: 'building',
 					id: doing.feature,
 					...(doing.title === undefined ? {} : { title: doing.title }),
-					waitingTickets: (doing.tickets ?? [])
+					waitingTickets: tickets
 						.filter((t) => t.state === 'waiting')
 						.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
+					// from its own Ticket list, which is empty until the Tickets are planned
+					progress:
+						tickets.length === 0
+							? null
+							: { built: tickets.filter((t) => t.state === 'built').length, total: tickets.length },
 					doing
 				}
 			: null;
@@ -295,6 +310,7 @@ function features(view: FactoryView): Features {
 		title: q.title,
 		waitingTickets: [],
 		ticketCounts: q.ticketCounts,
+		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total } : null,
 		// the median Ticket duration times the Feature's Tickets; none without history or a count
 		estimateMs:
 			view.medianTicketMs == null || !q.ticketCounts
@@ -339,6 +355,7 @@ function buildingCard(card: BuildingCard, view: FactoryView): string {
 		`<article class="fcard building">${feature(card)}` +
 		`<p class="meta"><time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
 		`<p>${where}${doing.step}${round}</p>` +
+		(card.progress === null ? '' : progressHtml(card.progress)) +
 		(list === '' ? '' : `<ul class="tickets">${list}</ul>`) +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
 		'</article>'
@@ -350,10 +367,8 @@ function queuedCard(card: QueuedCard): string {
 	const counts = card.ticketCounts;
 	let count = '';
 	if (counts === null) count = '<p class="meta count">? Tickets</p>';
-	else if (counts !== undefined) {
-		const n = String(counts.total);
-		count = `<p class="meta count">${n} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p><div class="bar"><i style="width:0%"></i></div><p class="meta">0 of ${n} built</p>`;
-	}
+	else if (counts !== undefined)
+		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est =
 		card.estimateMs === null ? '' : `<p class="meta">${estimateHtml(card.estimateMs)}</p>`;
 	return `<article class="fcard">${feature(card)}${count}${est}</article>`;
@@ -361,17 +376,9 @@ function queuedCard(card: QueuedCard): string {
 
 function completedCard(card: CompletedCard): string {
 	const { event, costUsd } = card.done;
-	const outcome =
-		event.kind === 'pull'
-			? safeUrl(event.url)
-				? `<a href="${escape(event.url)}">draft pull request</a>`
-				: escape(event.url)
-			: `failed: ${escape(event.why)}`;
-	// a Feature whose event has no start, or a start that does not read, shows no duration
-	const took =
-		event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
-	const duration = Number.isNaN(took) ? '' : `<time class="took">${elapsed(took)}</time> `;
-	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcome}</p><p class="meta">${duration}${dollars(costUsd)}</p>${progressHtml(card.progress)}</article>`;
+	const took = tookMs(event);
+	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
+	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcomeHtml(event)}</p><p class="meta">${duration}${dollars(costUsd)}</p>${progressHtml(card.progress)}</article>`;
 }
 
 function column(name: string, body: string): string {
@@ -453,10 +460,9 @@ function table(view: FactoryView): string {
 			cost: null,
 			outcome: '',
 			outcomeText: '',
-			progress: card.ticketCounts ? { built: 0, total: card.ticketCounts.total } : null
+			progress: card.progress
 		});
 	if (all.building !== null) {
-		const tickets = all.building.doing.tickets ?? [];
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
 			card: all.building,
@@ -466,13 +472,7 @@ function table(view: FactoryView): string {
 			cost: view.featureCostUsd,
 			outcome: '',
 			outcomeText: '',
-			progress:
-				tickets.length === 0
-					? null
-					: {
-							built: tickets.filter((t) => t.state === 'built').length,
-							total: tickets.length
-						}
+			progress: all.building.progress
 		});
 	}
 	for (const card of all.waiting ?? [])
@@ -488,22 +488,15 @@ function table(view: FactoryView): string {
 		});
 	for (const card of all.completed) {
 		const { event, costUsd } = card.done;
-		const took =
-			event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
-		const text =
-			event.kind === 'pull'
-				? safeUrl(event.url)
-					? `<a href="${escape(event.url)}">draft pull request</a>`
-					: escape(event.url)
-				: `failed: ${escape(event.why)}`;
+		const took = tookMs(event);
 		rows.push({
 			card,
 			state: 'completed',
-			time: Number.isNaN(took) ? null : took,
-			timeText: Number.isNaN(took) ? '' : `<time class="took">${elapsed(took)}</time>`,
+			time: took,
+			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
 			cost: costUsd,
 			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
-			outcomeText: text,
+			outcomeText: outcomeHtml(event),
 			progress: card.progress
 		});
 	}
