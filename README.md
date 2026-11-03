@@ -72,16 +72,27 @@ It asks for:
 
 - the Tracker: `github`, `azure-devops` or `module` (your own, see [Another Tracker or Code host](#another-tracker-or-code-host)), and what that one needs: the `owner/name` repo on GitHub (it offers the one `origin` names), the organization, project and Feature type on Azure DevOps (and the type of a Ticket, which `nightjar create` needs), or the module's path;
 - the Code host, the same way (on Azure Repos: organization, project and repo);
-- the **check command**, which has no default: Nightjar assumes no language or toolchain, so it asks until you give one;
-- the commands the agent may run, which it offers as the check command alone.
+- the **check command**: it offers what the repo names (a `Makefile` or `justfile` target, a `package.json` script run by the package manager its lockfile names, `pyproject.toml`, `Cargo.toml`, `go.mod`, `mise.toml`, `deno.json`, a workflow under `.github/workflows/`, a `*.test.sh`), as a numbered list when there are several, and asks for one when it finds none. It warns about a check that can never fail, such as `true`;
+- the commands the Coding agent may run, which it offers as the check command and the test, lint and build commands it found.
 
-Then it writes `factory.json` (below), which you commit, and:
+Each question prints a line of help, and `?` prints more. Before it writes, `init` shows the `factory.json` it will write, the Signal labels it will create and the logins it will check, and asks to go on; on no it writes nothing. Then it writes `factory.json` (below), which you commit, names the optional settings it left out, and:
 
 - **on GitHub** creates the Signal labels (`factory-go`, `ready-for-agent`, `agent-working`, `needs-info`, `ready-for-human`, or the names `factory.json` gives them), leaving any that exist as they are;
 - **on Azure DevOps** says tags appear on first use, so there is nothing to create;
-- checks every login it needs and says how to fix each one that is missing: `gh auth login`, `az login` or a token in `AZURE_DEVOPS_EXT_PAT`, and `claude auth login`.
+- checks every login it needs and says how to fix each one that is missing: `gh auth login`, `az login` or a token in `AZURE_DEVOPS_EXT_PAT`, and `claude auth login`;
+- runs the check once on this checkout and says whether it passes: one that fails now will stop every Ticket.
 
-It reads its answers from standard input, line by line, so a script can pipe them in; there is no need for a terminal. If `factory.json` is already there, `init` keeps it, asks nothing, and only creates the labels and checks the logins: run it that way after you have fixed a login, or when you join a repo that has one.
+It ends with the next step, run `nightjar doctor`, then assign a Feature to yourself and give it the Go, and offers to run `doctor` straight away.
+
+It reads its answers from standard input, line by line, so a script can pipe them in; there is no need for a terminal. A script or an agent can instead give the answers as flags, and `--yes` takes every default and asks nothing:
+
+```bash
+nightjar init --yes --check 'make check'
+nightjar init --yes --check 'make check' --tracker azure-devops --tracker-organization contoso \
+  --tracker-project Fabrikam --code-host-repo fabrikam-app
+```
+
+Each answer has its flag: `--check`, `--allowed-commands` (comma separated, or `none`), `--tracker` and `--code-host` (the type), and a field of either, as `--tracker-` or `--code-host-` then the field: `repo`, `organization`, `project`, `path`, and on the Tracker `feature-type` and `ticket-type`. Under `--yes`, a value with no default and no flag stops `init` before it writes anything, naming the flag to pass. If `factory.json` is already there, `init` keeps it, asks nothing, runs no check, and only creates the labels and checks the logins: run it that way after you have fixed a login, or when you join a repo that has one.
 
 ## Configure: `factory.json`
 
