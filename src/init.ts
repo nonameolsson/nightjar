@@ -1,6 +1,7 @@
 // `nightjar init`: a repo with a factory.json is not asked again, and the check command is offered from what the repo holds, and asked for when nothing is found.
 // Before it writes, init shows what it is about to do and asks to go on.
 // A flag answers its question; --yes takes every default and asks nothing.
+// It ends with the next step, and offers to run doctor straight away.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -11,6 +12,7 @@ import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { detectChecks, detectTools } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
+import { dryRun } from './queue.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote } from './github/api.js';
 import { say, why } from './say.js';
@@ -438,7 +440,8 @@ async function reportCheck(o: InitOptions): Promise<void> {
 
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
-	if (existsSync(file)) {
+	const wrote = !existsSync(file);
+	if (!wrote) {
 		loadConfig(o.root);
 		say(`${CONFIG_FILE} is there already; keeping it`);
 	} else {
@@ -483,8 +486,31 @@ export async function runInit(o: InitOptions): Promise<number> {
 		console.error(`nightjar: ${count} above; fix it, then run \`nightjar init\` again.`);
 		return 2;
 	}
-	say('ready. Commit factory.json, give a Feature the Go, and run `nightjar doctor` any time.');
+	say(`ready. Commit ${CONFIG_FILE}, then:`);
+	console.log('  1. run `nightjar doctor` to see what would build');
+	console.log('  2. assign a Feature to yourself and give it the Go');
+	// only a person who just answered the interview is asked; --yes and a kept file ask nothing
+	if (!wrote || o.yes || checked.ready === null || !(await offerDoctor(o))) return 0;
+	say('running `nightjar doctor`:');
+	const { adapters, assignee } = checked.ready;
+	try {
+		await dryRun({ tracker: adapters.tracker, person: assignee, say });
+	} catch (fault) {
+		console.error(`  FAIL  Features: ${why(fault)}`);
+		return 2;
+	}
 	return 0;
+}
+
+// Whether to run doctor now; an empty answer is yes, and an input that has ended is no.
+async function offerDoctor(o: InitOptions): Promise<boolean> {
+	for (;;) {
+		const got = await o.ask('Run `nightjar doctor` now, y or n [y]: ');
+		if (got === null) return false;
+		const text = got.trim() === '' ? 'y' : got.trim();
+		if (yesOrNo(text) === null) return /^y/i.test(text);
+		console.log('  answer y or n');
+	}
 }
 
 export interface InitHost {

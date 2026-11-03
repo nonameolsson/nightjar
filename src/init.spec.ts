@@ -373,7 +373,7 @@ describe('nightjar init shows what it will do, and asks before it writes', () =>
 		expect(shown).toContain('    GitHub CLI for the Code host, on o/r');
 		expect(shown).toContain('    claude, signed in to your Claude plan');
 		expect(shown).toContain('  Any answer can be edited later in factory.json.');
-		expect(asked.at(-1)).toBe('Write factory.json and go on, y or n [y]: ');
+		expect(asked).toContain('Write factory.json and go on, y or n [y]: ');
 		expect(transcript.indexOf('nightjar: wrote factory.json')).toBeGreaterThan(
 			transcript.findIndex((line) => line.startsWith('Write factory.json and go on'))
 		);
@@ -422,6 +422,45 @@ describe('nightjar init shows what it will do, and asks before it writes', () =>
 	it('writes nothing when the input ends at the confirmation', async () => {
 		expect(await init(['github', '', 'github', '', 'make check', ''])).toBe(2);
 		expect(existsSync(written())).toBe(false);
+	});
+});
+
+describe('nightjar init ends with the next step', () => {
+	const answers = ['github', '', 'github', '', 'make check', '', ''];
+
+	it('says to run doctor, then to assign a Feature and give it the Go', async () => {
+		expect(await init(answers)).toBe(0);
+		expect(out).toEqual(
+			expect.arrayContaining([
+				'nightjar: ready. Commit factory.json, then:',
+				'  1. run `nightjar doctor` to see what would build',
+				'  2. assign a Feature to yourself and give it the Go'
+			])
+		);
+	});
+
+	it('offers to run doctor, and runs it on yes', async () => {
+		expect(await init([...answers, ''])).toBe(0);
+		expect(asked.at(-1)).toBe('Run `nightjar doctor` now, y or n [y]: ');
+		expect(out).toContain('nightjar: would build #1 One escape');
+	});
+
+	it('runs no doctor on no', async () => {
+		expect(await init([...answers, 'n'])).toBe(0);
+		expect(out).not.toContain('nightjar: running `nightjar doctor`:');
+		expect(out.join('\n')).not.toContain('would build #1');
+	});
+
+	it('asks again for an answer that is neither yes nor no', async () => {
+		expect(await init([...answers, 'maybe', 'y'])).toBe(0);
+		expect(out).toContain('  answer y or n');
+		expect(out).toContain('nightjar: would build #1 One escape');
+	});
+
+	it('offers nothing under --yes, but still says the next step', async () => {
+		expect(await init([], {}, ['init', '--yes', '--check', 'make check'])).toBe(0);
+		expect(asked).toEqual([]);
+		expect(out).toContain('  1. run `nightjar doctor` to see what would build');
 	});
 });
 
@@ -560,7 +599,8 @@ describe('nightjar init with --yes and flags', () => {
 		expect(asked).toEqual([
 			'GitHub repo the branch is pushed to, owner/name [o/r]: ',
 			'Commands the agent may run, separated by commas, or none (? for more) [make check]: ',
-			'Write factory.json and go on, y or n [y]: '
+			'Write factory.json and go on, y or n [y]: ',
+			'Run `nightjar doctor` now, y or n [y]: '
 		]);
 		expect(m.readConfig()).toMatchObject({
 			tracker: { repo: 'acme/widgets' },
