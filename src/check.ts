@@ -1,6 +1,6 @@
 // The repo's check command; when it is red, its gate report goes to the fix round and the pull request.
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { gateReport, type Gate } from './gate.js';
 import type { Env } from './git.js';
@@ -13,13 +13,13 @@ export interface CheckResult {
 // Also runs the worktree setup command, with the environment the run hands every command.
 export type RunCheck = (command: string, cwd: string, env: Env) => Promise<CheckResult>;
 
-// A stage log is read from inside the worktree only.
+// A stage log is read from inside the worktree only; real paths, so a symlink cannot point out of it.
 function readIn(cwd: string): (path: string) => string | null {
 	return (path) => {
-		const file = resolve(cwd, path);
-		if (!file.startsWith(cwd + sep)) return null;
 		try {
-			return readFileSync(file, 'utf8');
+			const root = realpathSync(cwd);
+			const file = realpathSync(resolve(root, path));
+			return file.startsWith(root + sep) ? readFileSync(file, 'utf8') : null;
 		} catch {
 			return null;
 		}

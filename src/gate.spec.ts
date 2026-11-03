@@ -68,9 +68,20 @@ describe('gateReport', () => {
 			' FAIL  src/a.spec.ts > one',
 			'done'
 		].join('\n');
-		const report = gateReport(output, undefined, () => null);
+		const report = gateReport(output, {}, () => null);
 		expect(report).toContain('Failing tests (2):\n- src/a.spec.ts > one\n- src/b.spec.ts > two');
 		expect(report).not.toContain('Red:');
+	});
+
+	it('names no stage when none is red, and drops ignored lines from a stage log too', () => {
+		const logs: Record<string, string> = {
+			'unit.log': ' FAIL  a > kept\n FAIL  budget: dropped\n'
+		};
+		const gate = { stages: { red: '^(\\S+)\\s+red\\b', log: '{stage}.log' }, ignore: 'budget' };
+		expect(gateReport('types  green\n', gate, () => null)).not.toContain('Red:');
+		const report = gateReport('unit  red\n', gate, (path) => logs[path] ?? null);
+		expect(report).toContain('- a > kept');
+		expect(report).not.toContain('dropped');
 	});
 
 	it('takes the test name from the failingTest pattern the repo configures', () => {

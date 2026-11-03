@@ -198,6 +198,7 @@ const linePattern = (group: boolean) =>
 	z.string().superRefine((text, ctx) => {
 		try {
 			const re = new RegExp(text);
+			// adding an empty alternative makes exec('') match, and its length is 1 plus the groups
 			if (group && new RegExp(`${re.source}|`).exec('')?.length === 1) {
 				ctx.addIssue({ code: 'custom', message: 'needs a group (...) around the name' });
 			}

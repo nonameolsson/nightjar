@@ -63,4 +63,9 @@ describe('runCheck', () => {
 		});
 		expect(got.tail).not.toContain('leaked');
 	});
+
+	it('hands on only the plain tail when it is given no gate, as for the setup command', async () => {
+		const got = await runCheck("echo ' FAIL  setup > step'; exit 1", dir, env);
+		expect(got.tail).toBe('End of the output:\n FAIL  setup > step');
+	});
 });
