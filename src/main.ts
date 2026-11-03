@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
@@ -19,11 +20,15 @@ import { claimPorts, portEnv } from './ports.js';
 import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
 import { runUiCommand } from './ui-command.js';
+import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
 import { StatusFile, statusPath, type Named } from './status.js';
 import { worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
 import { startLive } from './live.js';
+
+// where this Nightjar is installed or checked out: src/ and dist/ both sit one level down
+const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -205,7 +210,8 @@ export async function runNightjar(
 		now: () => new Date(),
 		say: runSay,
 		sleep,
-		signal: stop.signal
+		signal: stop.signal,
+		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 
 	process.once('exit', () => status.doing({ kind: 'off' }));

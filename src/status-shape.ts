@@ -73,6 +73,7 @@ export type Happened =
 			readonly title?: string;
 			readonly url: string;
 	  }
+	// newer Nightjar code: `commit` is the newer version, or the commit of a linked checkout
 	| { readonly kind: 'stale'; readonly commit: string };
 
 export type Event = Happened & { readonly seq: number; readonly at: string };
@@ -87,7 +88,7 @@ export interface Status {
 	readonly recent: Event[];
 	// true under --watch, whose next poll comes when the Feature being built ends; older files lack it
 	readonly watching?: boolean;
-	// the commit of newer Nightjar code than the one running; nothing sets it yet, older files lack it
+	// the version or commit of newer Nightjar code than the one running; older files lack it
 	readonly codeMoved?: string | null;
 	// the Features waiting to be built, oldest first, the current one not among them; older files lack it
 	readonly queue?: Queued[];

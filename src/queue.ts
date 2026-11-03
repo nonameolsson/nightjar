@@ -4,6 +4,7 @@ import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { waitingTickets, type Named, type StatusReport, type WaitingItem } from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
+import type { Newer } from './stale.js';
 
 export const POLL_MS = 2 * 60_000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
@@ -19,6 +20,8 @@ export interface QueueDeps {
 	readonly say: (line: string) => void;
 	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly signal?: AbortSignal;
+	// --watch only: newer Nightjar code than the one running, checked while idle
+	readonly newer?: Newer;
 }
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
@@ -116,7 +119,20 @@ const none = (deps: Pick<QueueDeps, 'person'>) =>
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const stop = deps.signal;
 	const waiting = waitingOnYou(deps);
+	let told: string | null = null;
+	// once per version; Nightjar never restarts itself
+	const warnIfStale = async () => {
+		const newer = await deps.newer?.();
+		if (newer === undefined || newer === null || newer === told) return;
+		told = newer;
+		deps.say(
+			`a newer Nightjar is available (${newer}); this run keeps the code it started with, restart it to use it`
+		);
+		deps.status.happened({ kind: 'stale', commit: newer });
+		deps.status.codeMoved(newer);
+	};
 	const idle = async () => {
+		await warnIfStale();
 		const nextPollAt = new Date(deps.now().getTime() + POLL_MS).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(POLL_MS, stop);

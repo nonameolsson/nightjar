@@ -16,25 +16,36 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Install
 
+Nightjar needs Node, but the repo it builds need not be a Node project. It is a tool you run on a machine, like `gh` or `claude`: it works in worktrees outside your checkout and uses that machine's logins. Only `factory.json` belongs to the repo.
 
-Nightjar needs Node, but the repo it builds need not be a Node project. Install it once for your user, so the repo gets no `package.json` or `node_modules`:
+| You are…                                                              | Install                         |
+| --------------------------------------------------------------------- | ------------------------------- |
+| Running it yourself, on any repo (the usual case)                     | Globally, once for your user    |
+| Trying it, or running it now and then                                 | Not at all: use `npx`           |
+| In a Node repo where everyone, or CI, must run the same version       | Pin it as a dev dependency      |
+
+**Globally** keeps `package.json` and `node_modules` out of the repo, so it works the same for a Python, Go or Node project:
 
 ```bash
 npm i -g @nonameolsson/nightjar
 nightjar init
 ```
 
-Or run it without installing, each time through `npx`:
+**With `npx`**, nothing is installed; each command fetches the package:
 
 ```bash
 npx @nonameolsson/nightjar init
 ```
 
-The commands below are written as `nightjar …`; with `npx`, put `npx @nonameolsson/nightjar` in its place. In a repo that is a Node project already, you can also pin the version with the repo, as a dev dependency, and run it as `npx nightjar …`:
+The commands below are written as `nightjar …`; with `npx`, put `npx @nonameolsson/nightjar` in its place.
+
+**As a dev dependency**, the version is locked with the repo, so a team and CI all run the same one. Use it in a repo that is a Node project already, and run it as `npx nightjar …`:
 
 ```bash
 npm i -D @nonameolsson/nightjar
 ```
+
+Whichever you pick, commit `factory.json` and add `.factory/` to `.gitignore`.
 
 From a tarball, built from a clone of this repo:
 

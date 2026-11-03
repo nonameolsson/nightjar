@@ -43,6 +43,8 @@ export const statusPath = (root: string) => join(root, '.factory', 'status.json'
 export interface StatusReport {
 	readonly doing: (doing: Doing) => void;
 	readonly happened: (event: Happened) => void;
+	// newer Nightjar code than the one running: its version or commit
+	readonly codeMoved: (newer: string) => void;
 	// the Queue and Waiting on you, which the loop refreshes between Features and on each idle poll
 	readonly refreshed: (queue: Queued[], waitingOnYou: WaitingOnYou) => void;
 }
@@ -64,6 +66,7 @@ export function readStatus(path: string): Status | null {
 
 export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
+	private moved: string | null = null;
 	private recent: Event[];
 	private refresh: { queue: Queued[]; waitingOnYou: WaitingOnYou; at: string } | null = null;
 
@@ -96,6 +99,11 @@ export class StatusFile implements StatusReport {
 		this.write();
 	};
 
+	readonly codeMoved = (newer: string) => {
+		this.moved = newer;
+		this.write();
+	};
+
 	readonly refreshed = (queue: Queued[], waitingOnYou: WaitingOnYou) => {
 		this.refresh = { queue, waitingOnYou, at: this.o.now().toISOString() };
 		this.write();
@@ -118,7 +126,7 @@ export class StatusFile implements StatusReport {
 			doing: this.now,
 			...(this.o.watching === true ? { watching: true } : {}),
 			recent: this.recent,
-			codeMoved: null,
+			codeMoved: this.moved,
 			...(this.refresh === null
 				? {}
 				: {
