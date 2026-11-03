@@ -42,7 +42,6 @@ export interface AgentSetup {
 	readonly check: string;
 	readonly allowedCommands: readonly string[];
 	readonly rules?: string;
-	// plugin directories relative to the repo root, loaded from the worktree
 	readonly plugins?: readonly string[];
 	readonly portEnv?: Readonly<Record<string, string>>;
 	readonly allowApiKey: boolean;

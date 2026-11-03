@@ -46,6 +46,13 @@ describe('loadConfig', () => {
 		expect(loadConfig(root).plugins).toEqual(['.claude']);
 	});
 
+	it('refuses a plugin directory outside the repo', () => {
+		for (const bad of ['/etc/plugin', '../plugin', 'a/../../plugin']) {
+			write({ ...VALID, plugins: [bad] });
+			expect(refusal()).toContain('plugins');
+		}
+	});
+
 	it('loads a valid factory.json', () => {
 		write(VALID);
 		expect(loadConfig(root)).toEqual({
