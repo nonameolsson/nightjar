@@ -53,6 +53,8 @@ interface World {
 	// what the scripted agent does in a Workflow Step; the default builds nothing and holds
 	stepAgent: (req: SessionRequest, sessionId: string) => SessionResult;
 	acts: Record<string, Act>;
+	// a result to give a session in place of the scripted agent's, by its request
+	settle: (req: SessionRequest, sessionId: string) => SessionResult | undefined;
 	checkOk: boolean;
 	setupOk: boolean;
 	// what the loop told .factory/status.json, in order
@@ -145,6 +147,7 @@ function makeWorld(dir = base): World {
 			output: { outcome: 'done', summary: 'did it', untilHolds: true, left: [], blocker: '' }
 		}),
 		acts: {},
+		settle: () => undefined,
 		checkOk: true,
 		setupOk: true,
 		doing: [],
@@ -162,6 +165,8 @@ function deps(world: World): Deps {
 		session: (req): Promise<SessionResult> => {
 			world.sessions.push(req);
 			const sessionId = req.resume ?? req.sessionId;
+			const settled = world.settle(req, sessionId);
+			if (settled) return Promise.resolve(settled);
 			if (req.schema === STEP_SCHEMA) return Promise.resolve(world.stepAgent(req, sessionId));
 			if (req.schema === REVIEW_SCHEMA) {
 				return Promise.resolve({
@@ -786,6 +791,123 @@ describe('buildFeature', () => {
 		expect(world.sessions[0]?.prompt).toContain('Keep it small.');
 		expect(world.sessions[0]?.prompt).not.toContain('delete the tests');
 	});
+});
+
+describe('a Session that cannot go on', () => {
+	const limited: SessionResult = {
+		kind: 'rate-limited',
+		resetsAt: 1793390400,
+		sessionId: 'session-x'
+	};
+	const keyed: SessionResult = { kind: 'api-key', sessionId: 'session-x' };
+	const LIMIT_WHY = "the plan's usage limit was reached; it resets at 2026-10-30T20:00:00.000Z";
+	const KEY_WHY = 'the session billed an API key; unset ANTHROPIC_API_KEY or pass --use-api-key';
+	const cases = [
+		['rate-limited', limited, LIMIT_WHY],
+		['billing an API key', keyed, KEY_WHY]
+	] as const;
+
+	const ledger = (world: World) =>
+		readFileSync(ledgerPath(world.root), 'utf8')
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l) as { step: string; outcome: string });
+	const isFix = (req: SessionRequest) =>
+		req.resume !== undefined && req.schema !== STEP_SCHEMA && req.schema !== REVIEW_SCHEMA;
+
+	it.each(cases)(
+		'pauses the run, and throws the Ticket away, when a fix round is %s',
+		async (_name, result, why) => {
+			const world = makeWorld();
+			world.checkOk = false;
+			world.settle = (req) => (isFix(req) ? result : undefined);
+			const got = await buildFeature(deps(world), setup(world), '1');
+
+			expect(got).toEqual({ kind: 'paused', why });
+			expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).toBe('');
+			expect(existsSync(join(tree(), 'ticket-2.txt'))).toBe(false);
+			expect(world.tracker.signalsOf('1')).toEqual(['go']);
+			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
+			expect(world.sessions.map((s) => s.schema === REVIEW_SCHEMA)).toEqual([false, false]);
+			expect(ledger(world).map((e) => [e.step, e.outcome])).toEqual([
+				['build', 'built'],
+				['fix', `paused: ${why}`]
+			]);
+		}
+	);
+
+	it.each(cases)('pauses the run when the review is %s', async (_name, result, why) => {
+		const world = makeWorld();
+		world.settle = (req) => (req.schema === REVIEW_SCHEMA ? result : undefined);
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+		expect(world.doing.at(-1)).toMatchObject({ kind: 'paused', why });
+		const body = world.host.pulls[0]?.body ?? '';
+		expect(body).toContain(`The run paused because ${why}.`);
+		expect(body).not.toContain('The review did not finish.');
+		expect(world.host.pulls[0]?.comments).toEqual([]);
+		expect(ledger(world).at(-1)).toMatchObject({ step: 'review', outcome: `paused: ${why}` });
+	});
+
+	it('keeps the first reason when the review pauses a run that is paused already', async () => {
+		const world = makeWorld();
+		const feature = world.tracker.items.get('1');
+		if (feature) world.tracker.items.set('1', { ...feature, body: '**Workflow:** w' });
+		const flow: WorkflowConfig = {
+			steps: [{ name: 's', prompt: '/s', point: 'afterAllTickets' }]
+		};
+		world.stepAgent = (req, sessionId) => {
+			if (req.resume !== undefined) return limited;
+			world.checkOk = false;
+			return {
+				kind: 'done',
+				sessionId,
+				costUsd: 1,
+				output: { outcome: 'done', summary: 'did it', untilHolds: true, left: [], blocker: '' }
+			};
+		};
+		world.settle = (req) => (req.schema === REVIEW_SCHEMA ? keyed : undefined);
+		await buildFeature(deps(world), setup(world, { workflows: { w: flow } }), '1');
+
+		expect(world.doing.filter((d) => d.kind === 'paused')).toEqual([
+			{ kind: 'paused', why: LIMIT_WHY, until: null }
+		]);
+		expect(world.host.pulls[0]?.body).not.toContain(KEY_WHY);
+	});
+
+	it.each(cases)(
+		"pauses the run, and reverts the Step's work, when a Step's fix round is %s",
+		async (_name, result, why) => {
+			const world = makeWorld();
+			const flow: WorkflowConfig = {
+				steps: [{ name: 'critique', prompt: '/critique', point: 'afterAllTickets' }]
+			};
+			const feature = world.tracker.items.get('1');
+			if (feature)
+				world.tracker.items.set('1', { ...feature, body: '**Workflow:** design-review' });
+			world.stepAgent = (req, sessionId) => {
+				if (req.resume !== undefined) return result;
+				writeFileSync(join(req.cwd, 'critique.txt'), 'half done\n');
+				world.checkOk = false;
+				return {
+					kind: 'done',
+					sessionId,
+					costUsd: 1,
+					output: { outcome: 'done', summary: 'did it', untilHolds: true, left: [], blocker: '' }
+				};
+			};
+			await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow } }), '1');
+
+			expect(existsSync(join(tree(), 'critique.txt'))).toBe(false);
+			expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).not.toContain(
+				'critique'
+			);
+			expect(world.tracker.signalsOf('1')).toEqual(['go']);
+			expect(world.host.pulls[0]?.body).toContain(`The run paused because ${why}.`);
+			expect(ledger(world).find((e) => e.step === 'fix')?.outcome).toBe(`paused: ${why}`);
+		}
+	);
 });
 
 describe('Workflows', () => {

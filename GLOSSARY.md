@@ -61,8 +61,12 @@ The system the Feature's branch is pushed to and its draft pull request opened o
 _Avoid_: repo host, forge, remote
 
 **Coding agent**:
-The program that builds one Ticket in the Feature's worktree, in a session Nightjar starts and ends; today only Claude Code. It edits files and runs the commands it is allowed, and never commits, pushes or touches the Tracker: Nightjar does that.
+The program that builds one Ticket in the Feature's worktree, in a Session Nightjar starts and ends; today only Claude Code. It edits files and runs the commands it is allowed, and never commits, pushes or touches the Tracker: Nightjar does that.
 _Avoid_: bot, AI, model, worker
+
+**Session**:
+One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes.
+_Avoid_: run, conversation, chat, job
 
 **Adapter**:
 The piece that connects Nightjar to one Tracker or one Code host, either built in or a module the repo's config names.

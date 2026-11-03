@@ -405,7 +405,7 @@ class FeatureRun {
 		}
 		if (result.kind === 'api-key' || result.kind === 'rate-limited') {
 			await this.tree.discard(before, ticket.id);
-			const why = result.kind === 'api-key' ? API_KEY_PAUSE : limitPause(result.resetsAt);
+			const why = pauseWhy(result);
 			this.log({ ...entry, outcome: `paused: ${why}` });
 			return { kind: 'paused', why };
 		}
@@ -478,6 +478,10 @@ class FeatureRun {
 			await this.tree.discard(before, ticket.id);
 			return { kind: 'aborted' };
 		}
+		if (fixed.paused !== undefined) {
+			await this.tree.discard(before, ticket.id);
+			return { kind: 'paused', why: fixed.paused };
+		}
 		if (!(await this.tree.commitTicket(ticket.id, ticket.title, summary, sessionId))) {
 			await this.handBack(
 				ticket,
@@ -518,7 +522,7 @@ class FeatureRun {
 		request: Partial<SessionRequest>;
 		// the summary of a fix that finished, or null when it gave up
 		finished: (output: unknown) => string | null;
-	}): Promise<{ check: CheckResult; spent: number; summaries: string[] }> {
+	}): Promise<{ check: CheckResult; spent: number; summaries: string[]; paused?: string }> {
 		const { limits, check: command } = this.setup;
 		const summaries: string[] = [];
 		let { check, spent } = o;
@@ -536,9 +540,20 @@ class FeatureRun {
 					...o.request
 				})
 			);
-			const summary = fix.kind === 'done' ? o.finished(fix.output) : null;
 			const fixCost = 'costUsd' in fix ? fix.costUsd : 0;
 			spent += fixCost;
+			if (fix.kind === 'api-key' || fix.kind === 'rate-limited') {
+				const why = pauseWhy(fix);
+				this.log({
+					ticket: o.ticket,
+					step: 'fix',
+					session: o.sessionId,
+					costUsd: fixCost,
+					outcome: `paused: ${why}`
+				});
+				return { check, spent, summaries, paused: why };
+			}
+			const summary = fix.kind === 'done' ? o.finished(fix.output) : null;
 			this.log({
 				ticket: o.ticket,
 				step: 'fix',
@@ -697,7 +712,7 @@ class FeatureRun {
 			}
 			if (result.kind === 'api-key' || result.kind === 'rate-limited') {
 				await this.tree.revert(before);
-				const why = result.kind === 'api-key' ? API_KEY_PAUSE : limitPause(result.resetsAt);
+				const why = pauseWhy(result);
 				this.log({ ...entry, outcome: `${label}: paused: ${why}` });
 				return { kind: 'paused', why };
 			}
@@ -733,6 +748,10 @@ class FeatureRun {
 				await this.tree.revert(before);
 				return { kind: 'aborted' };
 			}
+			if (checked.paused !== undefined) {
+				await this.tree.revert(before);
+				return { kind: 'paused', why: checked.paused };
+			}
 			if (!checked.check.ok) return giveUp('its changes leave the check failing');
 			left = answer.left;
 			holds = step.until === undefined || answer.untilHolds;
@@ -760,18 +779,13 @@ class FeatureRun {
 		const { tracker, codeHost } = this.deps;
 		const id = this.feature.id;
 		const left = waiting(this.tickets, this.built);
-		const paused = last.kind === 'paused' ? last.why : null;
+		let paused = last.kind === 'paused' ? last.why : null;
 		await tracker.removeSignal(id, 'working');
 		if (this.aborted || last.kind === 'aborted') {
 			await tracker.comment(id, `The Nightjar run was stopped by a person.${FOOTER}`);
 			return { kind: 'stopped' };
 		}
-		if (paused) {
-			// the Go back, so a later run goes on from the branch
-			await tracker.addSignal(id, 'go');
-			this.deps.say(`paused: ${paused}`);
-			this.deps.status.doing({ kind: 'paused', why: paused, until: null });
-		}
+		if (paused) await this.pause(paused);
 		if ((await this.tree.ahead()) === 0) {
 			if (paused) return { kind: 'paused', why: paused };
 			this.deps.status.happened({
@@ -791,19 +805,28 @@ class FeatureRun {
 		const red =
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? '', tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
-		const review =
-			this.setup.review?.enabled === false
-				? 'off'
-				: await reviewFeature(
-						this.deps,
-						this.setup,
-						this.tree,
-						this.feature,
-						done,
-						progress(this.tickets, this.built, null),
-						this.show,
-						(e) => this.log(e)
-					);
+		let review: Review | 'off' | null = 'off';
+		if (this.setup.review?.enabled !== false) {
+			const got = await reviewFeature(
+				this.deps,
+				this.setup,
+				this.tree,
+				this.feature,
+				done,
+				progress(this.tickets, this.built, null),
+				this.show,
+				(e) => this.log(e)
+			);
+			if (got !== null && 'paused' in got) {
+				// the pull request's Paused section says why, so it gets no Review section
+				if (paused === null) {
+					paused = got.paused;
+					await this.pause(paused);
+				}
+			} else {
+				review = got;
+			}
+		}
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
 		const workflow = this.workflowSection(done);
@@ -850,6 +873,13 @@ class FeatureRun {
 			);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	// The Go back, so a later run goes on from the branch.
+	private async pause(why: string): Promise<void> {
+		await this.deps.tracker.addSignal(this.feature.id, 'go');
+		this.deps.say(`paused: ${why}`);
+		this.deps.status.doing({ kind: 'paused', why, until: null });
 	}
 
 	// What the Workflow's Steps did, from this run and from the branch's commits; a Step that did not run is listed too.
@@ -899,6 +929,13 @@ const API_KEY_PAUSE =
 const limitPause = (resetsAt: number | null) =>
 	`the plan's usage limit was reached${resetsAt ? `; it resets at ${new Date(resetsAt * 1000).toISOString()}` : ''}`;
 
+// Why a session that could not go on pauses the run.
+const pauseWhy = (
+	result:
+		| { readonly kind: 'api-key' }
+		| { readonly kind: 'rate-limited'; readonly resetsAt: number | null }
+) => (result.kind === 'api-key' ? API_KEY_PAUSE : limitPause(result.resetsAt));
+
 async function reviewFeature(
 	deps: Deps,
 	setup: Setup,
@@ -908,7 +945,7 @@ async function reviewFeature(
 	tickets: TicketProgress[],
 	show: ShowBuilding,
 	log: (entry: LogEntry) => void
-): Promise<Review | null> {
+): Promise<Review | null | { readonly paused: string }> {
 	const sessionId = deps.newId();
 	deps.say(`${hash(feature.id)}: review, session ${sessionId}`);
 	deps.status.doing(
@@ -930,6 +967,17 @@ async function reviewFeature(
 		env: envOf(setup),
 		signal: setup.signal
 	});
+	if (result.kind === 'api-key' || result.kind === 'rate-limited') {
+		const why = pauseWhy(result);
+		log({
+			ticket: null,
+			step: 'review',
+			session: sessionId,
+			costUsd: 0,
+			outcome: `paused: ${why}`
+		});
+		return { paused: why };
+	}
 	const review = result.kind === 'done' ? readReview(result.output) : null;
 	log({
 		ticket: null,
