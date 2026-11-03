@@ -561,8 +561,38 @@ describe('buildFeature', () => {
 		expect(world.happened).toEqual([
 			{ kind: 'built', feature: '1', ticket: '2' },
 			{ kind: 'built', feature: '1', ticket: '3' },
-			{ kind: 'pull', feature: '1', title: 'One escape', url: 'https://code.example/pull/100' }
+			{
+				kind: 'pull',
+				feature: '1',
+				title: 'One escape',
+				url: 'https://code.example/pull/100',
+				startedAt: new Date(2026, 9, 30, 9).toISOString(),
+				tickets: { built: 2, total: 2 }
+			}
 		]);
+	});
+
+	it('counts the Tickets the branch holds on the pull event, though a later run builds none of them', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+		const pulls = world.happened.filter((e) => e.kind === 'pull');
+		expect(pulls).toHaveLength(2);
+		expect(pulls[1]).toMatchObject({ tickets: { built: 2, total: 2 } });
+	});
+
+	it('records how long each session ran in the ledger', async () => {
+		const world = makeWorld();
+		let minute = 0;
+		const now = () => new Date(2026, 9, 30, 9, minute++);
+		await buildFeature({ ...deps(world), now }, setup(world), '1');
+		const lines = ledger(world);
+		expect(lines.map((l) => l.step)).toEqual(['build', 'build', 'review']);
+		for (const l of lines) {
+			expect(l.durationMs).toBeGreaterThan(0);
+			expect((l.durationMs ?? 0) % 60_000).toBe(0);
+		}
 	});
 
 	it("keeps the Feature's start through every step, while each step starts its own clock", async () => {

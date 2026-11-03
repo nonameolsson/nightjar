@@ -1,6 +1,5 @@
-import { connect } from 'node:net';
+import { connect, createServer, type AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { claimPorts } from './ports.js';
 import { startServe } from './serve.js';
 
 const open = (port: number) =>
@@ -17,22 +16,24 @@ const LISTEN = `node -e "require('net').createServer().listen(Number(process.env
 
 describe('startServe', () => {
 	it('waits for the port, hands the command its environment, and ends it on stop', async () => {
-		const claim = await claimPorts({ count: 1 });
-		if (claim === null) throw new Error('no free port');
-		try {
-			const served = await startServe(
-				LISTEN,
-				process.cwd(),
-				{ ...process.env, WEB_PORT: String(claim.port) },
-				claim.port
-			);
-			expect(served.ok).toBe(true);
-			expect(await open(claim.port)).toBe(true);
-			if (served.ok) await served.stop();
-			expect(await open(claim.port)).toBe(false);
-		} finally {
-			claim.release();
-		}
+		// an ephemeral port, clear of the reserved block that other specs run a whole Nightjar on
+		const port = await new Promise<number>((done) => {
+			const probe = createServer();
+			probe.listen(0, '127.0.0.1', () => {
+				const { port: got } = probe.address() as AddressInfo;
+				probe.close(() => done(got));
+			});
+		});
+		const served = await startServe(
+			LISTEN,
+			process.cwd(),
+			{ ...process.env, WEB_PORT: String(port) },
+			port
+		);
+		expect(served.ok).toBe(true);
+		expect(await open(port)).toBe(true);
+		if (served.ok) await served.stop();
+		expect(await open(port)).toBe(false);
 	}, 30_000);
 
 	it('fails with what the command said when it exits before it listens', async () => {

@@ -13,13 +13,24 @@ export interface TicketProgress extends Named {
 	readonly why?: string;
 }
 
-// A Feature in the Queue: id and title only, as a Ticket count would cost a Tracker call each.
-export type Queued = Named;
+// How many Tickets a Feature has and how many are closed.
+export interface TicketCounts {
+	readonly total: number;
+	readonly closed: number;
+}
 
-// A Feature or Ticket that carries needs info or needs a person.
+// A Feature in the Queue. `ticketCounts` is null when the Tracker could not read them, and absent when it cannot count or the file is older.
+export interface Queued extends Named {
+	readonly ticketCounts?: TicketCounts | null;
+}
+
+// A Feature or Ticket that carries needs info or needs a person; counts only on a Feature.
 export interface WaitingItem extends Named {
 	readonly kind: 'feature' | 'ticket';
 	readonly why: string;
+	readonly ticketCounts?: TicketCounts | null;
+	// the Feature a Ticket belongs to; older files lack it
+	readonly feature?: string;
 }
 
 export interface WaitingOnYou {
@@ -66,12 +77,18 @@ export type Happened =
 			// the Feature's title, for a view's list of outcomes; older files and a run by id lack it
 			readonly title?: string;
 			readonly why: string;
+			// when the Feature's build began; older files and a fault outside a build lack it
+			readonly startedAt?: string;
 	  }
 	| {
 			readonly kind: 'pull';
 			readonly feature: string;
 			readonly title?: string;
 			readonly url: string;
+			// when the Feature's build began; older files lack it
+			readonly startedAt?: string;
+			// the Feature's Tickets the branch holds, of all its Tickets; older files lack it
+			readonly tickets?: { readonly built: number; readonly total: number };
 	  }
 	// newer Nightjar code: `commit` is the newer version, or the commit of a linked checkout
 	| { readonly kind: 'stale'; readonly commit: string };

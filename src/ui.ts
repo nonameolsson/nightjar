@@ -4,7 +4,8 @@ import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
-import { readFactory, type FactoryView } from './status-reader.js';
+import { readFactory, type Completed, type FactoryView } from './status-reader.js';
+import type { Doing, Queued, TicketCounts, WaitingItem } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -131,18 +132,394 @@ const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
 function completed(view: FactoryView): string {
 	const rows = view.completed
-		.map(({ event, costUsd }) => {
-			const outcome =
-				event.kind === 'pull'
-					? safeUrl(event.url)
-						? `<a href="${escape(event.url)}">draft pull request</a>`
-						: escape(event.url)
-					: `failed: ${escape(event.why)}`;
-			return `<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcome} ${dollars(costUsd)}</li>`;
-		})
+		.map(
+			({ event, costUsd }) =>
+				`<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)}</li>`
+		)
 		.reverse()
 		.join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
+}
+
+// A draft pull request link, or the failure and why; a url that is not http stays text
+const outcomeHtml = (event: Completed['event']) =>
+	event.kind === 'pull'
+		? safeUrl(event.url)
+			? `<a href="${escape(event.url)}">draft pull request</a>`
+			: escape(event.url)
+		: `failed: ${escape(event.why)}`;
+
+// how long the build took; null for an event with no start, or a start that does not read
+function tookMs(event: Completed['event']): number | null {
+	const took =
+		event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
+	return Number.isNaN(took) ? null : took;
+}
+
+type Building = Extract<Doing, { kind: 'building' }>;
+
+// A Feature as a view draws it; every view reads this one list.
+interface FeatureCard {
+	readonly id: string;
+	readonly title?: string;
+	// the Tickets that wait on a person, with why
+	readonly waitingTickets: readonly WaitingItem[];
+	// Tickets built of the Feature's Tickets; null when there is no count to show
+	readonly progress: Progress | null;
+}
+interface QueuedCard extends FeatureCard {
+	readonly state: 'queue';
+	// null when the count could not be read; undefined when the Tracker cannot count
+	readonly ticketCounts: TicketCounts | null | undefined;
+	// null when there is nothing to estimate from
+	readonly estimateMs: number | null;
+}
+
+const estimateHtml = (ms: number | null) =>
+	ms === null ? '' : `<time class="est">${elapsed(ms)}</time> <small>est.</small>`;
+interface BuildingCard extends FeatureCard {
+	readonly state: 'building';
+	readonly doing: Building;
+}
+interface Progress {
+	readonly built: number;
+	readonly total: number;
+}
+interface WaitingCard extends FeatureCard {
+	readonly state: 'waiting';
+	readonly why: string;
+}
+interface CompletedCard extends FeatureCard {
+	readonly state: 'completed';
+	readonly done: Completed;
+}
+
+const progressText = (p: Progress | null) =>
+	p === null ? '?' : `${String(p.built)} of ${String(p.total)}`;
+
+// `k of N built` under a bar; "?" and no bar without a count
+function progressHtml(p: Progress | null): string {
+	if (p === null) return '<p class="meta progress">?</p>';
+	const pct = p.total === 0 ? 0 : Math.min(100, Math.round((p.built / p.total) * 100));
+	return `<div class="bar"><i style="width:${String(pct)}%"></i></div><p class="meta progress">${progressText(p)} built</p>`;
+}
+
+interface Features {
+	// each is undefined while Nightjar is off or has not read it yet
+	readonly queue: readonly QueuedCard[] | undefined;
+	readonly building: BuildingCard | null;
+	readonly waiting: readonly WaitingCard[] | undefined;
+	readonly trackerCannotList: boolean;
+	// newest first
+	readonly completed: readonly CompletedCard[];
+}
+
+// The one list of Features, built from what the reader gives.
+function features(view: FactoryView): Features {
+	const status = view.status;
+	const doing = status?.doing;
+	const on = running(view);
+	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
+	const building: BuildingCard | null =
+		doing?.kind === 'building' && on
+			? {
+					state: 'building',
+					id: doing.feature,
+					...(doing.title === undefined ? {} : { title: doing.title }),
+					waitingTickets: tickets
+						.filter((t) => t.state === 'waiting')
+						.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
+					// from its own Ticket list, which is empty until the Tickets are planned
+					progress:
+						tickets.length === 0
+							? null
+							: { built: tickets.filter((t) => t.state === 'built').length, total: tickets.length },
+					doing
+				}
+			: null;
+	const found = on ? status?.waitingOnYou : undefined;
+	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
+	const totals = new Map<string, number>();
+	if (on) {
+		for (const q of status?.queue ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
+		for (const i of found?.items ?? [])
+			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
+	}
+	const completedCard = (done: Completed): CompletedCard => {
+		const built = done.builtTickets ?? 0;
+		const total = totals.get(done.event.feature) ?? null;
+		return {
+			state: 'completed',
+			id: done.event.feature,
+			...(done.event.title === undefined ? {} : { title: done.event.title }),
+			waitingTickets: [],
+			done,
+			// a pull request says what its branch holds; this run's sessions may have built only part of it
+			progress:
+				done.event.kind === 'pull'
+					? (done.event.tickets ?? null)
+					: total === null
+						? null
+						: { built: Math.min(built, total), total }
+		};
+	};
+	const completed = view.completed.map(completedCard).reverse();
+	let waiting: WaitingCard[] | undefined;
+	if (found !== undefined) {
+		waiting = found.items
+			.filter((i) => i.kind === 'feature')
+			.map((i) => ({
+				state: 'waiting',
+				id: i.id,
+				title: i.title,
+				why: i.why,
+				waitingTickets: [],
+				progress: i.ticketCounts
+					? { built: i.ticketCounts.closed, total: i.ticketCounts.total }
+					: null
+			}));
+		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
+		const owner = (building ?? completed[0])?.id ?? '';
+		const titleOf = (id: string) =>
+			[building, ...completed].find((c) => c?.id === id && c.title !== undefined)?.title;
+		const byFeature = new Map<string, WaitingItem[]>();
+		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
+			const id = t.feature ?? owner;
+			byFeature.set(id, [...(byFeature.get(id) ?? []), t]);
+		}
+		for (const [id, tickets] of byFeature) {
+			const at = waiting.findIndex((w) => w.id === id);
+			const own = at < 0 ? undefined : waiting[at];
+			const title = titleOf(id);
+			if (own !== undefined) waiting[at] = { ...own, waitingTickets: tickets };
+			else
+				waiting.push({
+					state: 'waiting',
+					id,
+					...(title === undefined ? {} : { title }),
+					// Nightjar gives needs info to a Feature whenever one of its Tickets waits
+					why: 'needs info',
+					waitingTickets: tickets,
+					progress: null
+				});
+		}
+	}
+	const queued = (q: Queued): QueuedCard => ({
+		state: 'queue',
+		id: q.id,
+		title: q.title,
+		waitingTickets: [],
+		ticketCounts: q.ticketCounts,
+		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total } : null,
+		// the median Ticket duration times the Feature's Tickets; none without history or a count
+		estimateMs:
+			view.medianTicketMs == null || !q.ticketCounts
+				? null
+				: view.medianTicketMs * q.ticketCounts.total
+	});
+	const queue = on ? status?.queue?.map(queued) : undefined;
+	return {
+		queue,
+		building,
+		waiting,
+		trackerCannotList: found?.trackerCannotList ?? false,
+		completed
+	};
+}
+
+const feature = (card: FeatureCard) =>
+	`<b>${card.id === '' ? '' : idHtml(card.id)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+
+const waitingTicketsHtml = (card: FeatureCard) =>
+	card.waitingTickets.length === 0
+		? ''
+		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id)} ${escape(t.title)} <small>${escape(t.why)}</small></li>`).join('')}</ul>`;
+
+function buildingCard(card: BuildingCard, view: FactoryView): string {
+	const { doing } = card;
+	const tickets = doing.tickets ?? [];
+	const at = tickets.findIndex((t) => t.id === doing.ticket);
+	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
+	const round =
+		doing.round === null || doing.rounds === null
+			? ''
+			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
+	const list = tickets
+		.map(
+			(t) =>
+				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+		)
+		.join('');
+	const tail = view.tail.map(escape).join('\n');
+	return (
+		`<article class="fcard building">${feature(card)}` +
+		`<p class="meta"><time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
+		`<p>${where}${doing.step}${round}</p>` +
+		(card.progress === null ? '' : progressHtml(card.progress)) +
+		(list === '' ? '' : `<ul class="tickets">${list}</ul>`) +
+		(tail === '' ? '' : `<pre>${tail}</pre>`) +
+		'</article>'
+	);
+}
+
+// A Feature not yet started: its Ticket count, `0 of N` and a bar; "?" and no bar when the count failed; nothing when the Tracker cannot count.
+function queuedCard(card: QueuedCard): string {
+	const counts = card.ticketCounts;
+	let count = '';
+	if (counts === null) count = '<p class="meta count">? Tickets</p>';
+	else if (counts !== undefined)
+		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
+	const est =
+		card.estimateMs === null ? '' : `<p class="meta">${estimateHtml(card.estimateMs)}</p>`;
+	return `<article class="fcard">${feature(card)}${count}${est}</article>`;
+}
+
+function completedCard(card: CompletedCard): string {
+	const { event, costUsd } = card.done;
+	const took = tookMs(event);
+	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
+	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcomeHtml(event)}</p><p class="meta">${duration}${dollars(costUsd)}</p>${progressHtml(card.progress)}</article>`;
+}
+
+function column(name: string, body: string): string {
+	return `<section class="column"><h2>${name}</h2>${body}</section>`;
+}
+
+const OFF = '<p class="empty">not known while nightjar is off</p>';
+
+function board(view: FactoryView): string {
+	const all = features(view);
+	const on = running(view);
+	const none = (text: string) => `<p class="empty">${text}</p>`;
+	const queued = !on
+		? OFF
+		: all.queue === undefined
+			? none('not read yet')
+			: all.queue.length === 0
+				? none('empty')
+				: all.queue.map(queuedCard).join('');
+	const building =
+		all.building === null ? none('nothing is being built') : buildingCard(all.building, view);
+	let waiting: string;
+	if (!on) waiting = OFF;
+	else if (all.waiting === undefined) waiting = none('not read yet');
+	else {
+		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
+		const cards = all.waiting
+			.map(
+				(c) =>
+					`<article class="fcard waiting">${feature(c)}<p>${escape(c.why)}</p>${progressHtml(c.progress)}${waitingTicketsHtml(c)}</article>`
+			)
+			.join('');
+		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
+	}
+	const completed =
+		all.completed.length === 0
+			? none('nothing has finished yet')
+			: all.completed.map(completedCard).join('');
+	return `<div class="board">${column('Queue', queued)}${column('Building', building)}${column('Waiting on you', waiting)}${column('Completed', completed)}</div>`;
+}
+
+const STATES = [
+	['queue', 'Queue'],
+	['building', 'Building'],
+	['waiting', 'Waiting on you'],
+	['completed', 'Completed']
+] as const;
+
+const COLUMNS = [
+	['id', 'Id'],
+	['title', 'Title'],
+	['state', 'State'],
+	['time', 'Time'],
+	['cost', 'Cost'],
+	['outcome', 'Outcome'],
+	['progress', 'Progress']
+] as const;
+
+// One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
+function table(view: FactoryView): string {
+	const all = features(view);
+	interface Row {
+		readonly card: FeatureCard;
+		readonly state: (typeof STATES)[number][0];
+		readonly time: number | null;
+		readonly timeText: string;
+		readonly cost: number | null;
+		readonly outcome: string;
+		readonly outcomeText: string;
+		readonly progress: Progress | null;
+	}
+	const rows: Row[] = [];
+	for (const card of all.queue ?? [])
+		rows.push({
+			card,
+			state: 'queue',
+			time: card.estimateMs,
+			timeText: estimateHtml(card.estimateMs),
+			cost: null,
+			outcome: '',
+			outcomeText: '',
+			progress: card.progress
+		});
+	if (all.building !== null) {
+		// the elapsed time is counted by the browser, so the row stays the same between events
+		rows.push({
+			card: all.building,
+			state: 'building',
+			time: null,
+			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
+			cost: view.featureCostUsd,
+			outcome: '',
+			outcomeText: '',
+			progress: all.building.progress
+		});
+	}
+	for (const card of all.waiting ?? [])
+		rows.push({
+			card,
+			state: 'waiting',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: card.why,
+			outcomeText: escape(card.why),
+			progress: card.progress
+		});
+	for (const card of all.completed) {
+		const { event, costUsd } = card.done;
+		const took = tookMs(event);
+		rows.push({
+			card,
+			state: 'completed',
+			time: took,
+			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
+			cost: costUsd,
+			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
+			outcomeText: outcomeHtml(event),
+			progress: card.progress
+		});
+	}
+	const label = (state: string) => STATES.find(([s]) => s === state)?.[1] ?? state;
+	const chips = STATES.map(
+		([s, name]) => `<button type="button" data-chip="${s}">${name}</button>`
+	).join('');
+	const head = COLUMNS.map(
+		([k, name]) => `<th><button type="button" data-sort="${k}">${name}</button></th>`
+	).join('');
+	const body = rows
+		.map(
+			(r, i) =>
+				`<tr data-state="${r.state}" data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress)}</td></tr>`
+		)
+		.join('');
+	const note = !running(view)
+		? OFF
+		: all.trackerCannotList
+			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
+			: '';
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
 }
 
 // The panels, which the page replaces whole each time an event brings new ones.
@@ -150,10 +527,9 @@ export function renderPanels(root: string, view: FactoryView): string {
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
 		cards(view),
-		current(view),
-		queue(view),
-		waiting(view),
-		completed(view)
+		board(view),
+		table(view),
+		`<div class="overview">${[current(view), queue(view), waiting(view), completed(view)].join('\n')}</div>`
 	].join('\n');
 }
 
@@ -166,7 +542,8 @@ const PAGE = (panels: string) => `<!doctype html>
 <style>${STYLE}</style>
 </head>
 <body>
-<main id="panels">${panels}</main>
+<nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>
+<main id="panels" data-view="board">${panels}</main>
 <script>${SCRIPT}</script>
 </body>
 </html>
@@ -178,6 +555,83 @@ const panels = document.getElementById('panels');
 const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
+const VIEWS = ['board', 'table', 'overview'];
+// the Table's sort and state filter, kept in local storage and applied again after each event
+let tableState = { sort: null, dir: 1, states: [] };
+try {
+	const kept = JSON.parse(localStorage.getItem('nightjar-table'));
+	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states };
+} catch {}
+function saveTable() {
+	try { localStorage.setItem('nightjar-table', JSON.stringify(tableState)); } catch {}
+}
+function rowKey(row, key, now) {
+	const d = row.dataset;
+	if (key === 'time') {
+		if (d.since) return now - Date.parse(d.since);
+		return d.time === '' || d.time === undefined ? null : Number(d.time);
+	}
+	if (key === 'cost') return d.cost === '' || d.cost === undefined ? null : Number(d.cost);
+	if (key === 'progress') return d.progress === '' || d.progress === undefined ? null : Number(d.progress);
+	return d[key] ?? '';
+}
+// default: state, then Queue order; a header sorts by its column, rows without a value last
+function compareRows(a, b, sort, dir, now) {
+	const by = (x, y) => {
+		if (x === y) return 0;
+		if (x === null) return 1;
+		if (y === null) return -1;
+		return typeof x === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+	};
+	if (sort !== null) {
+		const c = by(rowKey(a, sort, now), rowKey(b, sort, now));
+		if (c !== 0) return c * dir;
+	}
+	return Number(a.dataset.rank) - Number(b.dataset.rank) || Number(a.dataset.order) - Number(b.dataset.order);
+}
+function applyTable() {
+	const now = Date.now();
+	const rows = Array.from(document.querySelectorAll('tr[data-state]'));
+	const parent = rows[0] && rows[0].parentNode;
+	rows.sort((a, b) => compareRows(a, b, tableState.sort, tableState.dir, now));
+	for (const row of rows) {
+		row.hidden = tableState.states.length > 0 && !tableState.states.includes(row.dataset.state);
+		if (parent) parent.appendChild(row);
+	}
+	for (const b of document.querySelectorAll('button[data-sort]')) {
+		b.dataset.on = String(b.dataset.sort === tableState.sort);
+		b.dataset.dir = b.dataset.sort === tableState.sort ? (tableState.dir === 1 ? 'asc' : 'desc') : '';
+	}
+	for (const b of document.querySelectorAll('button[data-chip]')) b.dataset.on = String(tableState.states.includes(b.dataset.chip));
+}
+panels.onclick = (e) => {
+	const t = e.target && e.target.closest ? e.target : null;
+	const sorter = t && t.closest('[data-sort]');
+	const chip = t && t.closest('[data-chip]');
+	if (sorter) {
+		const key = sorter.dataset.sort;
+		tableState = { ...tableState, sort: key, dir: tableState.sort === key ? -tableState.dir : 1 };
+	} else if (chip) {
+		const s = chip.dataset.chip;
+		tableState = { ...tableState, states: tableState.states.includes(s) ? tableState.states.filter((x) => x !== s) : [...tableState.states, s] };
+	} else return;
+	saveTable();
+	applyTable();
+};
+// the choice lives on the panels element and in local storage, so a refresh of its content keeps it
+function show(view) {
+	panels.dataset.view = view;
+	for (const b of document.querySelectorAll('button[data-view]')) b.dataset.on = String(b.dataset.view === view);
+}
+let saved = null;
+try { saved = localStorage.getItem('nightjar-view'); } catch {}
+show(VIEWS.includes(saved) ? saved : 'board');
+for (const b of document.querySelectorAll('button[data-view]')) {
+	b.onclick = () => {
+		show(b.dataset.view);
+		try { localStorage.setItem('nightjar-view', b.dataset.view); } catch {}
+	};
+}
 function tick() {
 	const now = Date.now();
 	for (const t of document.querySelectorAll('time[data-since]')) t.textContent = elapsed(now - Date.parse(t.dataset.since));
@@ -185,24 +639,62 @@ function tick() {
 }
 new EventSource('/events').onmessage = (e) => {
 	panels.innerHTML = JSON.parse(e.data);
+	applyTable();
 	tick();
 };
+applyTable();
 tick();
 setInterval(tick, 1000);
 `;
 
 const STYLE = `
-:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; }
-@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; } }
-body { font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 auto; max-width: 56rem; padding: 0 16px 32px; }
+:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; --surface: #f9fafb; --accent: #2563eb; --bad: #dc2626; --good: #16a34a; }
+@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; --surface: #1f2937; --accent: #60a5fa; --bad: #f87171; --good: #4ade80; } }
+body { font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0 auto; max-width: 80rem; padding: 0 20px 32px; }
 h1, h2 { font-size: 1em; margin: 0; }
-h2 { color: var(--muted); font-weight: normal; margin-top: 1.5em; }
-header { border-bottom: 1px solid var(--line); padding: 16px 0 8px; }
-#cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
-.card span, .empty, small { color: var(--muted); }
+h1 { font-size: 1.25em; display: inline; }
+h2 { color: var(--muted); font-weight: 600; margin-top: 1.5em; }
+header { border-bottom: 1px solid var(--line); padding: 20px 0 10px; }
+header .repo, header .state { color: var(--muted); margin-left: 8px; }
+#views { display: flex; gap: 4px; padding-top: 12px; }
+#views button { background: none; border: 1px solid var(--line); border-radius: 6px; color: inherit; cursor: pointer; font: inherit; padding: 4px 14px; }
+#views button[data-on="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+#cards { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.card span, .empty, small, .meta { color: var(--muted); }
 ul { list-style: none; margin: 4px 0; padding: 0; }
-pre { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; overflow-x: auto; padding: 8px; white-space: pre-wrap; }
+pre, time, .overview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { border: 1px solid var(--line); border-radius: 6px; font-size: 12px; margin: 8px 0; max-height: 14rem; overflow: auto; padding: 8px; white-space: pre-wrap; }
+#panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 8px; }
+.chips button { background: none; border: 1px solid var(--line); border-radius: 999px; color: inherit; cursor: pointer; font: inherit; padding: 2px 12px; }
+.chips button[data-on="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; font-weight: 600; padding: 0; }
+th button[data-on="true"] { color: inherit; }
+th button[data-dir="asc"]::after { content: " \\25B2"; }
+th button[data-dir="desc"]::after { content: " \\25BC"; }
+tr[hidden] { display: none; }
+.board { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.column { min-width: 0; }
+.fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; overflow-wrap: anywhere; padding: 10px 12px; }
+.fcard p { margin: 4px 0; }
+.bar { background: var(--line); border-radius: 4px; height: 6px; overflow: hidden; }
+.bar > i { background: var(--accent); display: block; height: 100%; }
+.fcard.building { border-color: var(--accent); }
+.fcard.failed { border-color: var(--bad); color: var(--bad); }
+.fcard.pulled a { color: var(--good); }
+.tickets li.built { color: var(--good); }
+.tickets li.building { color: var(--accent); font-weight: 600; }
+@media (max-width: 700px) {
+	body { padding: 0 12px 24px; }
+	.board { grid-template-columns: 1fr; }
+	.table { min-width: 0; }
+	.scroll { max-width: 100%; overflow-x: auto; }
+	.scroll table { min-width: 36rem; }
+}
 `;
 
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.

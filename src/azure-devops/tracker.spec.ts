@@ -54,6 +54,22 @@ describe('AzureBoardsTracker', () => {
 		}
 	});
 
+	it('counts a Feature in two calls however many Tickets it has, and looks up no blockers', async () => {
+		const { ado, tracker } = setUp();
+		const feature = ado.workItem({ type: 'Product Backlog Item', title: 'Feature' });
+		const kids = [0, 1, 2, 3, 4].map((n) =>
+			ado.workItem({ type: 'Task', title: `T${String(n)}`, closed: n < 2 })
+		);
+		for (const k of kids) ado.addChild(feature, k);
+		ado.precede(kids[0] as number, kids[4] as number);
+		const before = ado.asked.length;
+		const got = await tracker.ticketCounts([String(feature)]);
+		expect(got.get(String(feature))).toEqual({ total: 5, closed: 2 });
+		const calls = ado.asked.slice(before);
+		expect(calls).toHaveLength(2);
+		expect(calls.every((c) => c.method === 'GET')).toBe(true);
+	});
+
 	it('references a Ticket as AB#<id>, which the Azure Boards app links from a pull request', () => {
 		const { tracker } = setUp();
 		expect(tracker.reference('42')).toEqual({ id: '42', text: 'AB#42' });

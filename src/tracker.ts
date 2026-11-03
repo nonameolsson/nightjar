@@ -81,6 +81,14 @@ export interface Tracker {
 	reference(id: ItemId): TicketReference;
 	// optional, so a Tracker module written before it still loads: the open Features assigned to `person` that carry needs info or needs a person, oldest first
 	waitingOn?(person: string): Promise<WaitingFeature[]>;
+	// optional, so a Tracker module written before it still loads: how many Tickets each Feature has and how many are closed; every id asked about is answered, null for one whose count cannot be read
+	ticketCounts?(featureIds: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>>;
+}
+
+// How many Tickets a Feature has, and how many of them are closed.
+export interface TicketCount {
+	readonly total: number;
+	readonly closed: number;
 }
 
 // The title and body of a Feature or Ticket to be made.

@@ -91,6 +91,161 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('<export>');
 	});
 
+	it('shows a queued Feature with its Ticket count, 0 of N and a bar', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed(
+			[
+				{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed: 1 } },
+				{ id: '281', title: 'Exports', ticketCounts: null },
+				{ id: '290', title: 'Reports' }
+			],
+			{ items: [], trackerCannotList: false }
+		);
+		await open();
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
+		const card = (title: string) => board.split('<article').find((a) => a.includes(title)) ?? '';
+		expect(card('Saved filters')).toContain('4 Tickets');
+		expect(card('Saved filters')).toContain('0 of 4 built');
+		expect(card('Saved filters')).toContain('class="bar"');
+		expect(card('Exports')).toContain('? Tickets');
+		expect(card('Exports')).not.toContain('class="bar"');
+		expect(card('Reports')).not.toContain('Tickets');
+		expect(card('Reports')).not.toContain('class="bar"');
+	});
+
+	describe('estimate', () => {
+		const built = (
+			ticket: string | null,
+			durationMs: number | undefined,
+			minute: number,
+			step: 'build' | 'fix' | 'review' = 'build'
+		) =>
+			record(ledgerFile(), {
+				at: new Date(2026, 9, 30, 8, minute).toISOString(),
+				repo: 'o/r',
+				feature: '1',
+				ticket,
+				branch: 'b',
+				step,
+				session: 's',
+				costUsd: 1,
+				outcome: step === 'build' ? 'built' : 'approve',
+				...(durationMs === undefined ? {} : { durationMs })
+			});
+		const queue = () => {
+			const file = status();
+			file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+			file.refreshed(
+				[
+					{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed: 0 } },
+					{ id: '281', title: 'Exports', ticketCounts: null },
+					{ id: '290', title: 'Reports' }
+				],
+				{ items: [], trackerCannotList: false }
+			);
+		};
+		const cardOf = (page: string, title: string) =>
+			(page.split('<div class="table">')[0] ?? '')
+				.split('<article')
+				.find((a) => a.includes(title)) ?? '';
+
+		it('shows the median Ticket duration times the Ticket count, marked est., on a queued card and row', async () => {
+			built('11', 60_000, 1);
+			built('12', 300_000, 2);
+			built('13', 120_000, 3);
+			built('14', undefined, 4);
+			built('13', 60_000, 5, 'fix');
+			built(null, 90_000, 6, 'review');
+			queue();
+			await open();
+			const page = (await get('/')).text;
+			// a Ticket's build and fix rounds, plus its share of the review over the 4 built: 1m22.5s, 5m22.5s, 3m22.5s
+			// median 3m22.5s x 4 Tickets
+			expect(cardOf(page, 'Saved filters')).toMatch(/13m 30s<\/time> <small>est\./);
+			expect(cardOf(page, 'Exports')).not.toContain('est.');
+			expect(cardOf(page, 'Reports')).not.toContain('est.');
+			const rows = (page.split('<tbody>')[1] ?? '').split('<tr');
+			expect(rows.find((r) => r.includes('Saved filters'))).toContain('est.');
+			expect(rows.find((r) => r.includes('Exports'))).not.toContain('est.');
+		});
+
+		it('shows no estimate while no duration is recorded', async () => {
+			built('11', undefined, 1);
+			queue();
+			await open();
+			expect((await get('/')).text).not.toContain('est.');
+		});
+	});
+
+	it('shows progress on Waiting on you and Completed, in the Board and the Table', async () => {
+		const built = (feature: string, ticket: string, minute: number) =>
+			record(ledgerFile(), {
+				at: new Date(2026, 9, 30, 8, minute).toISOString(),
+				repo: 'o/r',
+				feature,
+				ticket,
+				branch: 'b',
+				step: 'build',
+				session: 's',
+				costUsd: 1,
+				outcome: 'built'
+			});
+		built('9', '91', 1);
+		built('9', '92', 2);
+		built('9', '93', 3);
+		built('8', '81', 4);
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const queued = [{ id: '8', title: 'Retry', ticketCounts: { total: 5, closed: 0 } }];
+		const items = [
+			{
+				kind: 'feature' as const,
+				id: '7',
+				title: 'Billing',
+				why: 'needs info',
+				ticketCounts: { total: 6, closed: 2 }
+			},
+			{
+				kind: 'feature' as const,
+				id: '6',
+				title: 'Unknown',
+				why: 'needs a person',
+				ticketCounts: null
+			}
+		];
+		file.refreshed(queued, { items, trackerCannotList: false });
+		const url = 'https://example.test/pull/9';
+		file.happened({
+			kind: 'pull',
+			feature: '9',
+			title: 'Done one',
+			url,
+			tickets: { built: 3, total: 4 }
+		});
+		// an older status file: no Tickets on the event
+		file.happened({ kind: 'pull', feature: '5', title: 'Old one', url });
+		file.happened({ kind: 'failed', feature: '8', title: 'Retry', why: 'it broke' });
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const table = rest.split('<div class="overview">')[0] ?? '';
+		const card = (html: string, title: string) =>
+			html.split('<article').find((a) => a.includes(title)) ?? '';
+		const row = (title: string) => table.split('<tr ').find((a) => a.includes(title)) ?? '';
+		expect(card(board, 'Billing')).toContain('2 of 6 built');
+		expect(card(board, 'Billing')).toContain('class="bar"');
+		expect(card(board, 'Unknown')).toContain('>?<');
+		expect(card(board, 'Unknown')).not.toContain('class="bar"');
+		// the ledger holds 3 built sessions, but the branch is 3 of the Feature's 4
+		expect(card(board, 'Done one')).toContain('3 of 4 built');
+		expect(card(board, 'Old one')).toContain('>?<');
+		expect(card(board, 'it broke')).toContain('1 of 5 built');
+		expect(row('Billing')).toContain('2 of 6 built');
+		expect(row('Done one')).toContain('3 of 4 built');
+		expect(row('Unknown')).not.toContain('class="bar"');
+	});
+
 	it('says stopped when the pid is gone, and shows no Queue then, only history', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
@@ -204,7 +359,7 @@ describe('nightjar ui page', () => {
 		const until = { dataset: { until: '2026-10-30T08:01:12.000Z' }, textContent: '' };
 		runInNewContext(script, {
 			document: {
-				getElementById: () => ({}),
+				getElementById: () => ({ dataset: {} }),
 				querySelectorAll: (q: string) => (q.includes('since') ? [since] : [until])
 			},
 			EventSource: function EventSource() {
@@ -303,6 +458,320 @@ describe('nightjar ui events', () => {
 		const page = (await get('/')).text;
 		expect(page).toContain("new EventSource('/events')");
 		expect(page).toContain('data-since');
+	});
+});
+
+describe('nightjar ui board', () => {
+	it('opens on a Board of four columns with a card per Feature, and keeps Overview', async () => {
+		const file = status();
+		file.doing({
+			kind: 'building',
+			feature: '5',
+			title: 'Search',
+			ticket: '7',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '6', title: 'Index', state: 'built' },
+				{ id: '7', title: 'Query', state: 'building' },
+				{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+			]
+		});
+		file.refreshed([{ id: '9', title: 'Exports' }], {
+			items: [
+				{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' },
+				{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs info' }
+			],
+			trackerCannotList: false
+		});
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('<main id="panels" data-view="board">');
+		for (const name of ['Queue', 'Building', 'Waiting on you', 'Completed'])
+			expect(page).toContain(`<h2>${name}</h2>`);
+		expect(page).toContain('Exports');
+		expect(page).toContain('Ticket 2 of 3, build, round 1 of 3');
+		expect(page).toContain('<li class="built">');
+		expect(page).toContain('Webhooks');
+		expect(page).toContain('Facets <small>needs info</small>');
+		expect(page).toContain('<h2>Current build</h2>');
+		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
+		const card = board.split('<article').find((a) => a.includes('Search')) ?? '';
+		expect(card).toContain('<div class="bar"><i style="width:33%"></i></div>');
+		expect(card).toContain('1 of 3 built');
+	});
+
+	it('lists at most ten Completed, newest first, and says when the run is off', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		for (let n = 1; n <= 12; n++)
+			file.happened({ kind: 'failed', feature: String(100 + n), why: 'check red' });
+		await open();
+		let page = (await get('/')).text;
+		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
+		expect(board.match(/class="fcard failed"/g)).toHaveLength(10);
+		expect(board.indexOf('#112')).toBeLessThan(board.indexOf('#111'));
+		alive = false;
+		page = (await get('/')).text;
+		expect(page).toContain('not known while nightjar is off');
+	});
+
+	it('shows a waiting Ticket on the card of the Feature it belongs to, not the one that ended last', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.happened({
+			kind: 'pull',
+			feature: '4',
+			title: 'Later one',
+			url: 'https://example.test/pull/4'
+		});
+		file.refreshed([], {
+			items: [
+				{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' },
+				{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs info', feature: '3' }
+			],
+			trackerCannotList: false
+		});
+		await open();
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
+		const cards = board.split('<article').slice(1);
+		const webhooks = cards.find((a) => a.includes('Webhooks')) ?? '';
+		expect(webhooks).toContain('Facets <small>needs info</small>');
+		expect(cards.filter((a) => a.includes('Facets'))).toHaveLength(1);
+	});
+
+	it("gives a waiting Ticket's own card the needs info its Feature carries", async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed([], {
+			items: [{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs a person', feature: '3' }],
+			trackerCannotList: true
+		});
+		await open();
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
+		const card = board.split('<article').find((a) => a.includes('Facets')) ?? '';
+		expect(card).toContain('#3');
+		expect(card).toContain('needs info');
+	});
+
+	it('shows how long a Completed Feature took, and nothing for one with no start', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const start = new Date(at.getTime() - 14 * 60_000).toISOString();
+		file.happened({
+			kind: 'pull',
+			feature: '31',
+			url: 'https://example.test/pull/31',
+			startedAt: start
+		});
+		file.happened({ kind: 'failed', feature: '32', why: 'check red', startedAt: start });
+		file.happened({ kind: 'failed', feature: '33', why: 'check red' });
+		await open();
+		const page = (await get('/')).text;
+		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
+		expect(board.match(/<time class="took">14m 00s<\/time>/g)).toHaveLength(2);
+		expect(board.match(/class="took"/g)).toHaveLength(2);
+	});
+
+	it('records a session duration in the ledger, and still reads a line without one', () => {
+		const old = {
+			at: at.toISOString(),
+			repo: 'o/app',
+			feature: '1',
+			ticket: null,
+			branch: 'b',
+			step: 'build',
+			session: 's',
+			costUsd: 1,
+			outcome: 'built'
+		};
+		mkdirSync(join(root, '.factory'), { recursive: true });
+		record(ledgerFile(), { ...old, step: 'build', durationMs: 90_000 });
+		writeFileSync(ledgerFile(), `${JSON.stringify(old)}\n`, { flag: 'a' });
+		const lines = readFileSync(ledgerFile(), 'utf8').trim().split('\n');
+		expect(JSON.parse(lines[0] ?? '{}')).toMatchObject({ durationMs: 90_000 });
+		expect(JSON.parse(lines[1] ?? '{}')).not.toHaveProperty('durationMs');
+	});
+
+	it('remembers the view in local storage and applies it again', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const store: Record<string, string> = { 'nightjar-view': 'overview' };
+		const panels = { dataset: {} as Record<string, string> };
+		const button = { dataset: { view: 'board' } as Record<string, string>, onclick: () => {} };
+		runInNewContext(script, {
+			document: { getElementById: () => panels, querySelectorAll: () => [button] },
+			localStorage: {
+				getItem: (k: string) => store[k] ?? null,
+				setItem: (k: string, v: string) => (store[k] = v)
+			},
+			EventSource: function EventSource() {
+				return {};
+			},
+			setInterval: () => 0
+		});
+		expect(panels.dataset['view']).toBe('overview');
+		button.onclick();
+		expect([panels.dataset['view'], store['nightjar-view']]).toEqual(['board', 'board']);
+	});
+});
+
+describe('nightjar ui Table', () => {
+	const seed = () => {
+		const file = status(true);
+		const start = new Date(at.getTime() - 10 * 60_000).toISOString();
+		file.happened({
+			kind: 'pull',
+			feature: '31',
+			title: 'Done one',
+			url: 'https://example.test/pull/31',
+			startedAt: new Date(at.getTime() - 5 * 60_000).toISOString()
+		});
+		file.happened({
+			kind: 'failed',
+			feature: '32',
+			title: 'Broke',
+			why: 'check red',
+			startedAt: start
+		});
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed(
+			[
+				{ id: '9', title: 'Exports' },
+				{ id: '10', title: 'Alerts' }
+			],
+			{
+				items: [{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' }],
+				trackerCannotList: false
+			}
+		);
+	};
+	const tableHtml = async () =>
+		(await get('/')).text.split('<div class="table">')[1]?.split('<div class="overview">')[0] ?? '';
+
+	it('adds Table to the toggle and renders a row per Feature with six columns, in state then Queue order', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('data-view="table">Table</button>');
+		const table = await tableHtml();
+		for (const name of ['Id', 'Title', 'State', 'Time', 'Cost', 'Outcome'])
+			expect(table).toContain(`data-sort="${name.toLowerCase()}">${name}</button>`);
+		const ids = [...table.matchAll(/<tr data-state="(\w+)"[^>]*data-id="(\d+)"/g)].map(
+			(m) => `${m[1] ?? ''}:${m[2] ?? ''}`
+		);
+		expect(ids).toEqual(['queue:9', 'queue:10', 'waiting:3', 'completed:32', 'completed:31']);
+		expect(table).toContain('<a href="https://example.test/pull/31">draft pull request</a>');
+		expect(table).toContain('failed: check red');
+	});
+
+	// the page script run against rows read from the served table
+	const sandbox = (html: string, store: Record<string, string>) => {
+		interface Row {
+			dataset: Record<string, string>;
+			hidden: boolean;
+		}
+		const rows: Row[] = [...html.matchAll(/<tr ([^>]*)>/g)].map((m) => {
+			const dataset: Record<string, string> = {};
+			for (const a of (m[1] ?? '').matchAll(/data-([\w-]+)="([^"]*)"/g))
+				dataset[(a[1] ?? '').replace(/-(\w)/g, (_, c: string) => c.toUpperCase())] = a[2] ?? '';
+			return { dataset, hidden: false };
+		});
+		const body = {
+			list: rows,
+			appendChild(r: Row) {
+				body.list = body.list.filter((x) => x !== r);
+				body.list.push(r);
+			}
+		};
+		const panels: { dataset: Record<string, string>; onclick?: (e: unknown) => void } = {
+			dataset: {}
+		};
+		const item = (attr: string, k: string): { dataset: Record<string, string> } => ({
+			dataset: { [attr]: k }
+		});
+		const sorts = ['id', 'title', 'state', 'time', 'cost', 'outcome'].map((k) => item('sort', k));
+		const chips = ['queue', 'building', 'waiting', 'completed'].map((k) => item('chip', k));
+		let message: ((e: { data: string }) => void) | undefined;
+		const code = html.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const withRows = rows.map((r) => Object.assign(r, { parentNode: body }));
+		return {
+			rows: () => body.list,
+			sorts,
+			chips,
+			panels,
+			load: () => {
+				runInNewContext(code, {
+					document: {
+						getElementById: () => panels,
+						querySelectorAll: (sel: string) =>
+							sel === 'tr[data-state]'
+								? [...body.list]
+								: sel === 'button[data-sort]'
+									? sorts
+									: sel === 'button[data-chip]'
+										? chips
+										: []
+					},
+					localStorage: {
+						getItem: (k: string) => store[k] ?? null,
+						setItem: (k: string, v: string) => (store[k] = v)
+					},
+					EventSource: function EventSource() {
+						return {
+							set onmessage(f: (e: { data: string }) => void) {
+								message = f;
+							}
+						};
+					},
+					setInterval: () => 0
+				});
+			},
+			click: (item: { dataset: Record<string, string> }, attr: 'sort' | 'chip') =>
+				panels.onclick?.({
+					target: { closest: (sel: string) => (sel === `[data-${attr}]` ? item : null) }
+				}),
+			refresh: () => message?.({ data: JSON.stringify('') }),
+			withRows
+		};
+	};
+	const order = (s: ReturnType<typeof sandbox>) => s.rows().map((r) => r.dataset['id']);
+
+	it('sorts by a header, reverses on a second click, filters by chip, and keeps both over a refresh and a reload', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		const store: Record<string, string> = {};
+		const s = sandbox(page, store);
+		s.load();
+		expect(order(s)).toEqual(['9', '10', '3', '32', '31']);
+		const idSort = s.sorts[0] as (typeof s.sorts)[number];
+		s.click(idSort, 'sort');
+		expect(order(s)).toEqual(['3', '9', '10', '31', '32']);
+		s.click(idSort, 'sort');
+		expect(order(s)).toEqual(['32', '31', '10', '9', '3']);
+		const time = s.sorts[3] as (typeof s.sorts)[number];
+		s.click(time, 'sort');
+		// 31 took 5 minutes, 32 took 10; rows with no time come last
+		expect(order(s).slice(0, 2)).toEqual(['31', '32']);
+		s.click(s.chips[3] as (typeof s.chips)[number], 'chip');
+		expect(s.rows().map((r) => r.hidden)).toEqual([false, false, true, true, true]);
+		expect(order(s).filter((_, i) => !s.rows()[i]?.hidden)).toEqual(['31', '32']);
+
+		// a live refresh swaps the panels' content but the arrangement stays
+		s.refresh();
+		expect(order(s).slice(0, 2)).toEqual(['31', '32']);
+		expect(s.rows().filter((r) => r.hidden)).toHaveLength(3);
+
+		// a reload reads it back from local storage
+		const again = sandbox(page, store);
+		again.load();
+		expect(order(again).slice(0, 2)).toEqual(['31', '32']);
+		expect(again.rows().filter((r) => r.hidden)).toHaveLength(3);
+		expect(again.chips.map((c) => c.dataset['on'])).toEqual(['false', 'false', 'false', 'true']);
 	});
 });
 
