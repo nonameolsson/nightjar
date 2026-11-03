@@ -184,7 +184,7 @@ const personCheck = check({
 		const person = loadPersonConfig(o.env);
 		return {
 			found: { person },
-			detail: `$${String(person.dailyUsd)} a day, building for ${person.assignee ?? 'the signed-in person'}`,
+			detail: `$${String(person.dailyUsd)} a day, polling every ${String(person.pollSeconds)}s, building for ${person.assignee ?? 'the signed-in person'}`,
 			summary: null
 		};
 	}

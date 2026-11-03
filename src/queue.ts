@@ -6,7 +6,9 @@ import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 import type { Newer } from './stale.js';
 
-export const POLL_MS = 2 * 60_000;
+import { DEFAULT_POLL_SECONDS } from './person-config.js';
+
+export const POLL_MS = DEFAULT_POLL_SECONDS * 1000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
 export const PAUSE_MS = 30 * 60_000;
 
@@ -20,6 +22,8 @@ export interface QueueDeps {
 	readonly say: (line: string) => void;
 	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly signal?: AbortSignal;
+	// how long --watch waits when idle; POLL_MS when left out
+	readonly pollMs?: number;
 	// --watch only: newer Nightjar code than the one running, checked while idle
 	readonly newer?: Newer;
 }
@@ -133,9 +137,10 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	};
 	const idle = async () => {
 		await warnIfStale();
-		const nextPollAt = new Date(deps.now().getTime() + POLL_MS).toISOString();
+		const pollMs = deps.pollMs ?? POLL_MS;
+		const nextPollAt = new Date(deps.now().getTime() + pollMs).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
-		await deps.sleep(POLL_MS, stop);
+		await deps.sleep(pollMs, stop);
 	};
 	while (stop?.aborted !== true) {
 		let features;

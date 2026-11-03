@@ -210,6 +210,7 @@ What is yours rather than the repo's lives outside it, in `config.json` under `$
 | Key        | Default                | What it does                                                                                                                                                |
 | ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dailyUsd` | `60`                   | The estimated spend per local day in a repo, from its `.factory/runs.jsonl`, at which a run pauses. `--watch` looks again after 30 minutes.                                          |
+| `pollSeconds` | `120`               | How often `--watch` looks again when idle, at least `30`. `--poll` beats it. |
 | `assignee` | the signed-in person   | Whose Features to build: `--once`, `--watch` and `doctor` take the Features assigned to this login with the Go, and `nightjar <id>` refuses one assigned to anyone else. |
 | `profile`  | none, the terminal's own login | Which Claude login the sessions use: a name (`work` is `~/.claude-work`), a path to the config folder, or `default` for `~/.claude`. `--profile` beats it. |
 
@@ -391,14 +392,15 @@ nightjar doctor
 | `init`                 | Asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins. See [Set up](#set-up-nightjar-init). |
 | `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
-| `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
+| `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes, or `pollSeconds`. |
+| `--poll SECONDS`       | With `--watch` only: looks again after this many seconds (at least 30); beats `pollSeconds`.           |
 | `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). It refuses a Feature not assigned to you, without the Go, or already carrying the working Signal. |
 | `--use-api-key`        | Lets the sessions bill `ANTHROPIC_API_KEY` instead of your Claude plan.                                |
 | `--profile <name>`     | Runs the sessions as that Claude login: `~/.claude-NAME`, a path as the folder itself, or `default` for `~/.claude`. It drops `CLAUDE_CODE_OAUTH_TOKEN`, which would win over the folder. `doctor` and every build name the account, organization, plan and config folder first. |
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone.
+Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them; `--poll` only with `--watch`. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone.
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 

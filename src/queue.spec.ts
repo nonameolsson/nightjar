@@ -121,6 +121,12 @@ describe('queue --watch', () => {
 			nextPollAt: new Date(2026, 9, 30, 9, 2).toISOString()
 		});
 	});
+
+	it('waits the poll interval the person set', async () => {
+		const w = world();
+		await queue({ ...w.deps, pollMs: 45_000 }, false);
+		expect(w.sleeps).toEqual([45_000, 45_000]);
+	});
 });
 
 describe('queue --watch with newer Nightjar code', () => {

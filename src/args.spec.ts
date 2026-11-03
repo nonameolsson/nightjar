@@ -26,6 +26,20 @@ describe('parseArgs', () => {
 		});
 	});
 
+	it('reads --poll with --watch, and refuses it elsewhere or under 30', () => {
+		expect(parseArgs(['--watch', '--poll', '45'])).toEqual({
+			mode: 'watch',
+			useApiKey: false,
+			poll: 45
+		});
+		expect(parseArgs(['--poll', '30', '--watch'])).toMatchObject({ poll: 30 });
+		expect(parseArgs(['--watch', '--poll', '29'])).toMatch(/at least 30/);
+		expect(parseArgs(['--watch', '--poll', 'soon'])).toMatch(/at least 30/);
+		expect(parseArgs(['--watch', '--poll'])).toBe('--poll needs a value');
+		expect(parseArgs(['--once', '--poll', '60'])).toBe('--poll goes with --watch only');
+		expect(parseArgs(['--poll', '60'])).toBe('say what to build');
+	});
+
 	it('reads --profile with its name', () => {
 		expect(parseArgs(['--once', '--profile', 'work'])).toEqual({
 			mode: 'once',

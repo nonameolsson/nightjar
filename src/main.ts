@@ -234,6 +234,7 @@ export async function runNightjar(
 		say: runSay,
 		sleep,
 		signal: stop.signal,
+		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 

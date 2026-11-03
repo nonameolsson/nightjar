@@ -9,8 +9,15 @@ import { why } from './say.js';
 
 export const DEFAULT_DAILY_USD = 60;
 
+export const DEFAULT_POLL_SECONDS = 120;
+export const MIN_POLL_SECONDS = 30;
+
 const PersonConfigSchema = z.strictObject({
 	dailyUsd: z.number().positive('a dollar amount above 0').optional(),
+	pollSeconds: z
+		.number()
+		.min(MIN_POLL_SECONDS, `at least ${String(MIN_POLL_SECONDS)} seconds`)
+		.optional(),
 	assignee: z.string().regex(/\S/, 'a login on the Tracker').optional(),
 	profile: z.string().regex(/\S/, 'a Claude profile: a name, a path, or default').optional()
 });
@@ -18,6 +25,8 @@ const PersonConfigSchema = z.strictObject({
 export interface PersonConfig {
 	// the estimated spend per local day at which a run pauses
 	readonly dailyUsd: number;
+	// how often --watch looks again when idle, in seconds
+	readonly pollSeconds: number;
 	// whose Features to build; left out, the person signed in to the Tracker
 	readonly assignee?: string;
 	// the Claude login of the sessions: a name, a path, or `default`; left out, the terminal's own
@@ -36,7 +45,7 @@ export function loadPersonConfig(env: Env): PersonConfig {
 	try {
 		text = readFileSync(path, 'utf8');
 	} catch {
-		return { dailyUsd: DEFAULT_DAILY_USD };
+		return { dailyUsd: DEFAULT_DAILY_USD, pollSeconds: DEFAULT_POLL_SECONDS };
 	}
 	let value: unknown;
 	try {
@@ -50,9 +59,15 @@ export function loadPersonConfig(env: Env): PersonConfig {
 			parsed.error.issues.map((i) => `${path}: ${where(i.path)}${i.message}`).join('\n')
 		);
 	}
-	const { dailyUsd = DEFAULT_DAILY_USD, assignee, profile } = parsed.data;
+	const {
+		dailyUsd = DEFAULT_DAILY_USD,
+		pollSeconds = DEFAULT_POLL_SECONDS,
+		assignee,
+		profile
+	} = parsed.data;
 	return {
 		dailyUsd,
+		pollSeconds,
 		...(assignee === undefined ? {} : { assignee }),
 		...(profile === undefined ? {} : { profile })
 	};

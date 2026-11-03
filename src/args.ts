@@ -1,9 +1,11 @@
 // The `nightjar` command's arguments.
 import type { Env } from './git.js';
+import { MIN_POLL_SECONDS } from './person-config.js';
 
-export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL]
+export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL] [--poll SECONDS]
 
-  --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes
+  --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes (pollSeconds in config.json)
+  --poll SECONDS with --watch only: look again after this many seconds (at least 30), over config.json's pollSeconds
   --once         build the oldest Feature assigned to you with the Go, then exit
   FEATURE        build that Feature, by its id (42, #42, PROJ-123), now
   doctor         check this machine and list the Features it would build, building nothing (--dry-run is the old name)
@@ -25,6 +27,8 @@ export interface Args {
 	readonly profile?: string;
 	readonly model?: string;
 	readonly effort?: string;
+	// seconds between --watch polls, over config.json's pollSeconds
+	readonly poll?: number;
 }
 
 // The arguments, or the line that says what is wrong with them.
@@ -35,6 +39,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 	let profile: string | undefined;
 	let model: string | undefined;
 	let effort: string | undefined;
+	let poll: number | undefined;
 	const pick = (m: Args['mode']) => {
 		if (chosen.mode !== null && chosen.mode !== m)
 			return 'choose one of --watch, --once, a Feature and doctor';
@@ -55,6 +60,13 @@ export function parseArgs(argv: readonly string[]): Args | string {
 			else if (a === '--profile') profile = value;
 			else effort = value;
 			i += 1;
+		} else if (a === '--poll') {
+			const value = argv[i + 1];
+			if (value === undefined || value.startsWith('--')) return '--poll needs a value';
+			if (!/^\d+$/.test(value) || Number(value) < MIN_POLL_SECONDS)
+				return `--poll needs a whole number of seconds, at least ${String(MIN_POLL_SECONDS)}`;
+			poll = Number(value);
+			i += 1;
 		} else if (/^#?[A-Za-z0-9][\w.-]*$/.test(a)) {
 			fault = pick('feature');
 			feature = a.replace(/^#/, '');
@@ -63,7 +75,9 @@ export function parseArgs(argv: readonly string[]): Args | string {
 	}
 	const { mode } = chosen;
 	if (mode === null) return 'say what to build';
+	if (poll !== undefined && mode !== 'watch') return '--poll goes with --watch only';
 	return {
+		...(poll === undefined ? {} : { poll }),
 		mode,
 		useApiKey,
 		...(feature === undefined ? {} : { feature }),
