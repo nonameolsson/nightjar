@@ -7,7 +7,7 @@ import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
-import { detectChecks, detectTools } from './detect-check.js';
+import { detectChecks, detectTools, type Detected } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
 import { dryRun } from './queue.js';
 import { run, type Env } from './git.js';
@@ -308,15 +308,7 @@ async function askCheck(o: InitOptions): Promise<string> {
 	if (found.length === 0 || named) {
 		const hint = o.yes ? '' : '; try a placeholder such as `make check`';
 		if (!named) say(`no check command detected in this repo${hint}`);
-		return answer(
-			o,
-			'check',
-			question,
-			undefined,
-			(text) =>
-				/\S/.test(text) ? warnIfNeverFails(text) : 'name the command that checks the work',
-			CHECK_HELP
-		);
+		return answer(o, 'check', question, undefined, checkProblem, CHECK_HELP);
 	}
 	if (found.length === 1) {
 		const [only] = found;
@@ -342,7 +334,7 @@ async function askCheck(o: InitOptions): Promise<string> {
 				return `pick one number from 1 to ${String(found.length)}; the check is a single command`;
 			if (/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length))
 				return `pick one number from 1 to ${String(found.length)}, or type a command`;
-			return t === '' ? 'name the command that checks the work' : warnIfNeverFails(t);
+			return checkProblem(t);
 		},
 		CHECK_HELP
 	);
@@ -352,7 +344,7 @@ async function askCheck(o: InitOptions): Promise<string> {
 // Several checks detected: one is picked from a list, or the person types their own.
 async function pickCheck(
 	ui: Prompter,
-	found: ReturnType<typeof detectChecks>,
+	found: readonly Detected[],
 	o: Answering,
 	question: string
 ): Promise<string> {
@@ -370,14 +362,15 @@ async function pickCheck(
 	);
 	if (got === null) throw new Refusal(`cancelled at: ${question}`);
 	if (got !== own) return got;
-	return answer(
-		o,
-		'check-own',
-		'Command that checks the work',
-		undefined,
-		(t) => (t === '' ? 'name the command that checks the work' : warnIfNeverFails(t)),
-		CHECK_HELP
-	);
+	return answer(o, 'check', 'Command that checks the work', undefined, checkProblem, CHECK_HELP);
+}
+
+// A typed check command, or why it will not do; a list such as `1,2` is not one command.
+function checkProblem(text: string): string | null {
+	if (!/\S/.test(text)) return 'name the command that checks the work';
+	if (/^[\d\s,]+$/.test(text) && !/^\d+$/.test(text))
+		return 'the check is a single command, not a list of numbers';
+	return warnIfNeverFails(text);
 }
 
 // `true` and `:` always exit zero; the warning is printed, and the command is still taken.

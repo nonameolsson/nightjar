@@ -208,6 +208,12 @@ describe('nightjar init asks, never guesses', () => {
 		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
 	});
 
+	it('refuses a list of numbers as the check command when none is detected', async () => {
+		await init(['github', '', 'github', '', '1,2', 'make check', '', '']);
+		expect(out.join('\n')).toContain('the check is a single command');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
+	});
+
 	it('writes nothing when the input ends before the check command is given', async () => {
 		expect(await init(['github', '', 'github', ''])).toBe(2);
 		expect(err.join('\n')).toContain('the input ended before this was answered');
@@ -676,7 +682,15 @@ describe('nightjar init on a terminal, with select prompts', () => {
 			return left.shift();
 		};
 		return {
-			text: (message, fallback) => Promise.resolve((next(message) as string) || (fallback ?? '')),
+			// like a terminal, a refused answer is shown and asked again
+			text: (message, fallback, accept) => {
+				for (;;) {
+					const got = (next(message) as string) || (fallback ?? '');
+					const problem = accept(got);
+					if (problem === null) return Promise.resolve(got);
+					transcript.push(problem);
+				}
+			},
 			select: (message) => Promise.resolve(next(message) as string),
 			multiselect: (message, choices) => {
 				transcript.push(`${message} [${choices.map((c) => c.value).join(' | ')}]`);
@@ -714,6 +728,16 @@ describe('nightjar init on a terminal, with select prompts', () => {
 			allowedCommands: ['make test', 'make lint']
 		});
 		expect(transcript.join('\n')).toMatch(/Commands the Coding agent may run \[.*make test/);
+	});
+
+	it('refuses a list of numbers typed as my own check', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		const own = '\0own';
+		const picks = ['github', '', 'github', '', own, '1,2', 'make check', [], '', false];
+		expect(await initUi(picks)).toBe(0);
+		expect(transcript.join('\n')).toContain('the check is a single command');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
 	it('writes nothing when the person cancels', async () => {
