@@ -17,6 +17,7 @@ function world() {
 	const lines: string[] = [];
 	const doing: Doing[] = [];
 	const happened: Happened[] = [];
+	const moved: string[] = [];
 	const refreshes: { queue: Queued[]; waitingOnYou: WaitingOnYou }[] = [];
 	// refreshes and builds in the order they happened
 	const trail: string[] = [];
@@ -33,6 +34,7 @@ function world() {
 		person: 'ann',
 		build: ({ id }) => outcome(id),
 		status: {
+			codeMoved: (commit) => moved.push(commit),
 			doing: (d) => doing.push(d),
 			happened: (h) => happened.push(h),
 			refreshed: (queue, waitingOnYou) => {
@@ -74,6 +76,7 @@ function world() {
 		sleeps,
 		failWith,
 		refreshes,
+		moved,
 		trail,
 		buildWaiting
 	};
@@ -117,6 +120,37 @@ describe('queue --watch', () => {
 			kind: 'idle',
 			nextPollAt: new Date(2026, 9, 30, 9, 2).toISOString()
 		});
+	});
+});
+
+describe('queue --watch with newer Nightjar code', () => {
+	it('says so once per version while idle, in the output and the status file', async () => {
+		const w = world();
+		w.deps = { ...w.deps, newer: () => Promise.resolve('0.3.0') };
+		await queue(w.deps, false);
+		// the sleep stops the second idle: one say for two checks
+		expect(w.lines.filter((l) => l.includes('0.3.0'))).toHaveLength(1);
+		expect(w.lines.find((l) => l.includes('0.3.0'))).toMatch(/newer Nightjar/);
+		expect(w.happened.filter((h) => h.kind === 'stale')).toEqual([
+			{ kind: 'stale', commit: '0.3.0' }
+		]);
+		expect(w.moved).toEqual(['0.3.0']);
+	});
+
+	it('says again for a still newer version', async () => {
+		const w = world();
+		const versions = ['0.3.0', '0.4.0'];
+		w.deps = { ...w.deps, newer: () => Promise.resolve(versions.shift() ?? null) };
+		await queue(w.deps, false);
+		expect(w.moved).toEqual(['0.3.0', '0.4.0']);
+	});
+
+	it('does not check outside --watch', async () => {
+		const w = world();
+		let checked = 0;
+		w.deps = { ...w.deps, newer: () => ((checked += 1), Promise.resolve('0.3.0')) };
+		await queue(w.deps, true);
+		expect(checked).toBe(0);
 	});
 });
 

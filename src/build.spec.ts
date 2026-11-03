@@ -251,6 +251,7 @@ function deps(world: World): Deps {
 		status: {
 			doing: (d) => world.doing.push(d),
 			happened: (h) => world.happened.push(h),
+			codeMoved: () => undefined,
 			refreshed: () => undefined
 		}
 	};
