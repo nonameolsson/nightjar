@@ -18,7 +18,8 @@ import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { record } from './ledger.js';
 import { QUESTIONS_MARK, REVIEW_SCHEMA, STEP_SCHEMA } from './prompt.js';
-import type { WorkflowConfig } from './workflow.js';
+import type { StepConfig, WorkflowConfig } from './workflow.js';
+import { codingAgent, type CodingAgent, type StepRequest } from './coding-agent.js';
 import type { Served } from './serve.js';
 import type { SessionRequest, SessionResult } from './session.js';
 import type { Doing, Happened } from './status.js';
@@ -1268,5 +1269,229 @@ describe('Workflows', () => {
 			'1'
 		);
 		expect(stepRequest(world)?.model).toBe('haiku');
+	});
+});
+
+describe('the Coding agent module', () => {
+	const at = () => ({ branch: 'factory/1-one-escape', folder: tree(), base: 'origin/main' });
+
+	// What the module sends for one piece of work, over a Session that keeps it.
+	async function sends(config: Setup, call: (agent: CodingAgent) => Promise<unknown>) {
+		const sent: SessionRequest[] = [];
+		await call(
+			codingAgent(config, (req) => {
+				sent.push(req);
+				return Promise.resolve({ kind: 'api-key', sessionId: req.sessionId });
+			})
+		);
+		return sent[0];
+	}
+
+	const trusted = async (world: World, id: string) =>
+		(await world.tracker.comments(id)).filter((c) => c.trusted);
+
+	it("sends what the build loop sends today for a Ticket's build, its fix rounds and the review", async () => {
+		const world = makeWorld();
+		const two = world.tracker.items.get('2');
+		if (two) {
+			world.tracker.items.set('2', {
+				...two,
+				body: 'Move it.\n\n**Model:** opus\n**Effort:** max'
+			});
+		}
+		world.tracker.say('1', { author: 'ann', body: 'Keep it small.', trusted: true });
+		world.tracker.say('2', { author: 'ann', body: 'Use marks.ts.', trusted: true });
+		world.checkOk = false;
+		const config = setup(world, {
+			rules: 'Tabs.',
+			portEnv: PORTS,
+			defaults: { model: 'haiku', effort: 'low' },
+			review: { model: 'sonnet', effort: 'high' },
+			signal: new AbortController().signal
+		});
+		const feature = await world.tracker.feature('1');
+		const ticket = (await world.tracker.tickets('1')).find((t) => t.id === '2');
+		if (ticket === undefined) throw new Error('no Ticket 2');
+		const featureComments = await trusted(world, '1');
+		const ticketComments = await trusted(world, '2');
+		await buildFeature(deps(world), config, '1');
+
+		const [build, fix1, fix2, fix3, review, ...more] = world.sessions;
+		expect(more).toEqual([]);
+		expect(
+			await sends(config, (agent) =>
+				agent.build({
+					kind: 'build',
+					at: at(),
+					sessionId: 'session-1',
+					feature,
+					ticket,
+					featureComments,
+					ticketComments,
+					built: [],
+					budgetUsd: LIMITS.ticketUsd
+				})
+			)
+		).toStrictEqual(build);
+		for (const [i, fix] of [fix1, fix2, fix3].entries()) {
+			expect(
+				await sends(config, (agent) =>
+					agent.fix({
+						kind: 'fix',
+						at: at(),
+						of: { kind: 'build' },
+						resume: 'session-1',
+						round: i + 1,
+						tail: `lint: 1 problem (run ${String(i + 1)})`,
+						budgetUsd: fix?.budgetUsd ?? 0
+					})
+				)
+			).toStrictEqual(fix);
+		}
+		expect(
+			await sends(config, (agent) =>
+				agent.review({
+					kind: 'review',
+					at: at(),
+					sessionId: 'session-2',
+					feature,
+					tickets: [ticket],
+					budgetUsd: LIMITS.reviewUsd
+				})
+			)
+		).toStrictEqual(review);
+	});
+
+	it('sends what the build loop sends today for the rounds of a Step and its fix round', async () => {
+		const world = makeWorld();
+		const one = world.tracker.items.get('1');
+		if (one) world.tracker.items.set('1', { ...one, body: '**Workflow:** design-review' });
+		const look: StepConfig = {
+			name: 'look',
+			prompt: 'Look at it.',
+			point: 'afterAllTickets',
+			until: 'it looks right',
+			maxRounds: 2,
+			model: 'opus',
+			effort: 'max',
+			budgetUsd: 6
+		};
+		const extras = {
+			allowedCommands: ['npm run e2e'],
+			allowedTools: ['mcp__browser__*'],
+			localNetwork: true
+		};
+		const config = setup(world, {
+			workflows: { 'design-review': { steps: [look], ...extras } },
+			rules: 'Tabs.',
+			portEnv: PORTS
+		});
+		let diff = '';
+		const answers = [
+			{ untilHolds: false, left: ['the footer'] },
+			{ untilHolds: false, left: [] },
+			{ untilHolds: true, left: [] }
+		];
+		world.stepAgent = (_req, sessionId) => {
+			const calls = 3 - answers.length;
+			// the first round leaves the check red, and its fix round makes it green
+			if (calls === 0) {
+				diff = execFileSync('git', ['-C', tree(), 'diff', 'origin/main...HEAD'], {
+					env: world.env,
+					encoding: 'utf8'
+				});
+			}
+			world.checkOk = calls !== 0;
+			const answer = answers.shift();
+			return {
+				kind: 'done',
+				sessionId,
+				costUsd: 1,
+				output: { outcome: 'done', summary: 'did it', blocker: '', ...answer }
+			};
+		};
+		const feature = await world.tracker.feature('1');
+		await buildFeature(deps(world), config, '1');
+
+		const steps = world.sessions.filter((r) => r.schema === STEP_SCHEMA);
+		const [first, fix, second, ...more] = steps;
+		expect(more).toEqual([]);
+		const round = (n: number, left: string[], budgetUsd: number): StepRequest => ({
+			kind: 'step',
+			at: at(),
+			sessionId: 'session-3',
+			workflow: 'design-review',
+			step: look,
+			extras,
+			round: n,
+			rounds: 2,
+			feature,
+			ticket: null,
+			notes: join(tree(), '.factory', 'notes'),
+			diff: { text: diff, truncated: false },
+			left,
+			budgetUsd
+		});
+		expect(await sends(config, (agent) => agent.step(round(1, [], 6)))).toStrictEqual(first);
+		expect(
+			await sends(config, (agent) =>
+				agent.fix({
+					kind: 'fix',
+					at: at(),
+					of: { kind: 'step', step: look, extras },
+					resume: 'session-3',
+					round: 1,
+					tail: 'lint: 1 problem (run 3)',
+					budgetUsd: fix?.budgetUsd ?? 0
+				})
+			)
+		).toStrictEqual(fix);
+		expect(
+			await sends(config, (agent) => agent.step(round(2, ['the footer'], second?.budgetUsd ?? 0)))
+		).toStrictEqual(second);
+	});
+
+	it('sends what the build loop sends today for a Step after each Ticket, with no until', async () => {
+		const world = makeWorld();
+		const one = world.tracker.items.get('1');
+		if (one) world.tracker.items.set('1', { ...one, body: '**Workflow:** design-review' });
+		const tidy: StepConfig = { name: 'tidy', prompt: 'Tidy it.', point: 'afterEachTicket' };
+		const config = setup(world, { workflows: { 'design-review': { steps: [tidy] } } });
+		// it says the until does not hold, which a Step without one cannot mean
+		world.stepAgent = (_req, sessionId) => ({
+			kind: 'done',
+			sessionId,
+			costUsd: 1,
+			output: { outcome: 'done', summary: 'tidied', untilHolds: false, left: ['more'], blocker: '' }
+		});
+		const feature = await world.tracker.feature('1');
+		const tickets = await world.tracker.tickets('1');
+		await buildFeature(deps(world), config, '1');
+
+		const steps = world.sessions.filter((r) => r.schema === STEP_SCHEMA);
+		expect(steps).toHaveLength(2);
+		for (const [i, id] of ['2', '3'].entries()) {
+			const ticket = tickets.find((t) => t.id === id) ?? null;
+			const sent = steps[i];
+			expect(
+				await sends(config, (agent) =>
+					agent.step({
+						kind: 'step',
+						at: at(),
+						sessionId: sent?.sessionId ?? '',
+						workflow: 'design-review',
+						step: tidy,
+						extras: {},
+						round: 1,
+						rounds: 1,
+						feature,
+						ticket,
+						notes: join(tree(), '.factory', 'notes'),
+						left: [],
+						budgetUsd: LIMITS.ticketUsd
+					})
+				)
+			).toStrictEqual(sent);
+		}
 	});
 });
