@@ -10,6 +10,7 @@ import type {
 	ItemText,
 	Standing,
 	Ticket,
+	TicketCount,
 	TicketReference,
 	Tracker
 } from '../tracker.js';
@@ -298,6 +299,29 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			signals: this.signalsOf(child),
 			blockedBy: blockers(child)
 		}));
+	}
+
+	// Two calls per Feature: its child links, then one batch of the children's closed dates. No blocker lookups.
+	async ticketCounts(ids: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>> {
+		const counts = new Map<ItemId, TicketCount | null>();
+		for (const id of ids) {
+			try {
+				const [feature] = await this.items([workItem(id)], true);
+				if (feature === undefined) {
+					counts.set(id, null);
+					continue;
+				}
+				const children = linked(feature, CHILD);
+				const got = children.length === 0 ? [] : await this.items(children, true);
+				counts.set(id, {
+					total: children.length,
+					closed: got.filter((c) => c.fields[CLOSED_DATE] !== undefined).length
+				});
+			} catch {
+				counts.set(id, null);
+			}
+		}
+		return counts;
 	}
 
 	async comments(id: ItemId): Promise<Comment[]> {

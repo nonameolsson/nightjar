@@ -3,6 +3,7 @@ import { describe, it } from 'vitest';
 import {
 	DEFAULT_SIGNAL_NAMES,
 	featureWriterContract,
+	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
 	type SignalNames,
@@ -91,6 +92,11 @@ describe('AzureBoardsTracker meets the Tracker contract', () => {
 describe('AzureBoardsTracker meets the creation contract', () => {
 	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
 	for (const c of featureWriterContract) it(c.name, () => c.run(harness));
+});
+
+describe('AzureBoardsTracker meets the ticketCounts contract', () => {
+	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
+	for (const c of ticketCountsContract) it(c.name, () => c.run(harness));
 });
 
 describe('AzureBoardsTracker meets the waitingOn contract', () => {
