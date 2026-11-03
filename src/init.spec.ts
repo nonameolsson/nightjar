@@ -457,6 +457,25 @@ describe('nightjar init ends with the next step', () => {
 		expect(out).toContain('nightjar: would build #1 One escape');
 	});
 
+	it('names the optional settings once, in one line, with the README link', async () => {
+		expect(await init(answers)).toBe(0);
+		const lines = out.filter((l) => l.includes('optional settings'));
+		expect(lines).toEqual([
+			'nightjar: optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see https://github.com/nonameolsson/nightjar#configure-factoryjson'
+		]);
+	});
+
+	it('names no optional settings when it keeps a factory.json', async () => {
+		m.writeConfig({
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: []
+		});
+		expect(await init([])).toBe(0);
+		expect(out.join('\n')).not.toContain('optional settings');
+	});
+
 	it('offers nothing under --yes, but still says the next step', async () => {
 		expect(await init([], {}, ['init', '--yes', '--check', 'make check'])).toBe(0);
 		expect(asked).toEqual([]);

@@ -1,6 +1,7 @@
 // `nightjar init`: a repo with a factory.json is not asked again, and the check command is offered from what the repo holds, and asked for when nothing is found.
 // Before it writes, init shows what it is about to do and asks to go on.
 // A flag answers its question; --yes takes every default and asks nothing.
+// Once it writes, it names the optional settings it left out, in one line.
 // It ends with the next step, and offers to run doctor straight away.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -438,6 +439,10 @@ async function reportCheck(o: InitOptions): Promise<void> {
 	say(got.ok ? 'the check passes' : 'the check fails right now, so every Ticket will stop');
 }
 
+// The settings init leaves out, named once after it writes, with where the README explains them.
+const README_CONFIG = 'https://github.com/nonameolsson/nightjar#configure-factoryjson';
+const OPTIONAL_SETTINGS = `optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see ${README_CONFIG}`;
+
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
 	const wrote = !existsSync(file);
@@ -454,6 +459,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 		}
 		writeFileSync(file, `${JSON.stringify(answers.written, null, '\t')}\n`);
 		say(`wrote ${CONFIG_FILE}`);
+		say(OPTIONAL_SETTINGS);
 	}
 	if (!ignoresFactory(o.root))
 		say('add `.factory/` to .gitignore: Nightjar keeps its status and logs there');
