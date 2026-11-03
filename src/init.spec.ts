@@ -11,12 +11,18 @@ let out: string[];
 let err: string[];
 let m: Machine;
 let asked: string[];
+// what the person sees: the lines said and the questions asked, in order
+let transcript: string[];
 beforeEach(() => {
 	out = [];
 	err = [];
 	asked = [];
+	transcript = [];
 	m = machine();
-	vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void out.push(a.join(' ')));
+	vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+		out.push(a.join(' '));
+		transcript.push(a.join(' '));
+	});
 	vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => void err.push(a.join(' ')));
 });
 afterEach(() => {
@@ -36,7 +42,9 @@ function init(answers: string[], env: Record<string, string> = {}, argv: string[
 		request: ado.request,
 		ask: (question) => {
 			asked.push(question);
-			return Promise.resolve(left.shift() ?? null);
+			const next = left.shift() ?? null;
+			transcript.push(`${question}${next ?? '<end of input>'}`);
+			return Promise.resolve(next);
 		}
 	});
 }
@@ -268,6 +276,47 @@ describe('nightjar init with a module', () => {
 		expect(out).toContain(
 			'nightjar: ./tracker.mjs shows Signals its own way: Nightjar creates nothing for it.'
 		);
+	});
+});
+
+describe('nightjar init explains each prompt', () => {
+	const promptsOnly = () => {
+		const end = transcript.findIndex((line) => line.includes('wrote '));
+		return transcript.slice(0, end);
+	};
+
+	it('prints help before every prompt on GitHub, and shows longer help on ?', async () => {
+		await init(['github', '', 'github', '', '?', 'make check', '?', '']);
+		expect(promptsOnly().join('\n')).toMatchSnapshot();
+	});
+
+	it('prints help before every prompt on Azure DevOps', async () => {
+		await init([
+			'azure-devops',
+			'contoso',
+			'Fabrikam',
+			'',
+			'User Story',
+			'azure-devops',
+			'',
+			'',
+			'fabrikam-app',
+			'make check',
+			''
+		]);
+		expect(promptsOnly().join('\n')).toMatchSnapshot();
+	});
+
+	it('prints help before the module path prompt', async () => {
+		writeFileSync(join(m.root, 'tracker.mjs'), 'export const createTracker = () => ({});');
+		await init(['module', './tracker.mjs', 'github', '', 'make check', '']);
+		expect(promptsOnly().join('\n')).toMatchSnapshot();
+	});
+
+	it('takes ? as a request for help, not as an answer', async () => {
+		await init(['github', '', 'github', '', '?', 'make check', '']);
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
+		expect(out.join('\n')).toContain('No deploys and no network');
 	});
 });
 

@@ -35,16 +35,36 @@ function problemWith(schema: z.ZodType, candidate: Record<string, unknown>, key:
 	return parsed.error.issues.find((i) => i.path[0] === key)?.message ?? null;
 }
 
+// What a prompt says about itself: a line or two before it asks, and longer help on `?`.
+interface Help {
+	readonly short: string;
+	readonly long?: readonly string[];
+}
+
+const printHelp = (lines: readonly string[]) => {
+	for (const line of lines) console.log(`  ${line}`);
+};
+
 // Asks until the answer passes; an empty one takes the fallback, if there is one.
+// The help is printed once before the first ask; `?` prints it again, longer where there is more.
 async function answer(
 	ask: Ask,
 	question: string,
 	fallback: string | undefined,
-	accept: (text: string) => string | null
+	accept: (text: string) => string | null,
+	help: Help
 ): Promise<string> {
+	printHelp(help.short.split('\n'));
+	const hint = help.long === undefined ? '' : ' (? for more)';
 	for (;;) {
-		const got = await ask(fallback === undefined ? `${question}: ` : `${question} [${fallback}]: `);
+		const got = await ask(
+			fallback === undefined ? `${question}${hint}: ` : `${question}${hint} [${fallback}]: `
+		);
 		if (got === null) throw new Refusal(`the input ended before this was answered: ${question}`);
+		if (got.trim() === '?') {
+			printHelp(help.long ?? help.short.split('\n'));
+			continue;
+		}
 		const text = got.trim() === '' ? (fallback ?? '') : got.trim();
 		const problem = accept(text);
 		if (problem === null) return text;
@@ -54,8 +74,10 @@ async function answer(
 
 // The questions of one section, each checked by the schema's own rule for its field.
 const probing = (ask: Ask, schema: z.ZodType, base: Record<string, unknown>) => ({
-	field: (key: string, question: string, fallback?: string) =>
-		answer(ask, question, fallback, (text) => problemWith(schema, { ...base, [key]: text }, key))
+	field: (key: string, question: string, help: string, fallback?: string) =>
+		answer(ask, question, fallback, (text) => problemWith(schema, { ...base, [key]: text }, key), {
+			short: help
+		})
 });
 
 async function origin(root: string, env: Env): Promise<string | null> {
@@ -80,13 +102,19 @@ async function section(
 	const { ask } = o;
 	const schema = ConfigSchema.shape[which];
 	const label = which === 'tracker' ? 'Tracker' : 'Code host';
-	const kind = (await answer(ask, `${label}: ${KINDS.join(', ')}`, guess.kind, kindOf)) as Kind;
+	const kind = (await answer(ask, `${label}: ${KINDS.join(', ')}`, guess.kind, kindOf, {
+		short:
+			which === 'tracker'
+				? 'The Tracker is where your Features and Tickets live (issues or work items).'
+				: 'The Code host is where Nightjar pushes the branch and opens the draft pull request.'
+	})) as Kind;
 	if (kind === 'github') {
 		const ask1 = probing(ask, schema, { type: 'github' });
 		const where = which === 'tracker' ? 'whose issues are the Features' : 'the branch is pushed to';
 		const repo = await ask1.field(
 			'repo',
 			`GitHub repo ${where}, owner/name`,
+			'Written as owner/name, such as acme/widgets. Empty takes the repo of your git origin.',
 			fromOrigin ?? undefined
 		);
 		// origin answers for a repo left out, so it is written only when it is another
@@ -97,7 +125,8 @@ async function section(
 		const interview = probing(ask, schema, { type: 'module' });
 		const path = await interview.field(
 			'path',
-			`Module that builds the ${label}, as a path from the repo's root`
+			`Module that builds the ${label}, as a path from the repo's root`,
+			`A JavaScript module in this repo that exports createTracker (or createCodeHost) for your own ${label}.`
 		);
 		return { section: { type: 'module', path } };
 	}
@@ -112,15 +141,21 @@ async function section(
 	const organization = await interview.field(
 		'organization',
 		'Azure DevOps organization, as in dev.azure.com/<organization>',
+		'The first part of your Azure DevOps address, after dev.azure.com/.',
 		guess.organization
 	);
 	const project = await interview.field(
 		'project',
 		`Project that holds the ${which === 'tracker' ? 'Features' : 'repo'}`,
+		`The Azure DevOps project that holds the ${which === 'tracker' ? 'work items' : 'git repo'}.`,
 		guess.project
 	);
 	if (which === 'codeHost') {
-		const repo = await interview.field('repo', 'Git repo on Azure Repos, by name');
+		const repo = await interview.field(
+			'repo',
+			'Git repo on Azure Repos, by name',
+			'The name of the repo in Azure Repos that the branch is pushed to.'
+		);
 		return {
 			section: { type: 'azure-devops', organization, project, repo },
 			organization,
@@ -130,8 +165,12 @@ async function section(
 	const featureType = await interview.field(
 		'featureType',
 		'Work item type that plays the Feature, such as Feature, Epic or Product Backlog Item',
+		'The work item type Nightjar reads as a Feature; its children are the Tickets.',
 		'Feature'
 	);
+	printHelp([
+		'Only `nightjar create` needs this: the type it gives the Tickets it makes, such as User Story.'
+	]);
 	const ticket = await ask(
 		'Work item type of a Ticket, for `nightjar create` (empty to leave out): '
 	);
@@ -151,14 +190,39 @@ async function section(
 	};
 }
 
+const CHECK_HELP: Help = {
+	short: 'Runs after every Ticket; a non-zero exit means the work failed and the agent retries.',
+	long: [
+		'Runs after every Ticket. A non-zero exit means the work failed, and the agent retries.',
+		'Keep it fast and deterministic: typecheck, lint and tests.',
+		'No deploys and no network: it runs many times, and must give the same answer each time.',
+		'Examples: `npm run check`, `make check`.'
+	]
+};
+
+const ALLOWED_HELP: Help = {
+	short: 'The agent may run only these commands; list what it needs, such as the test runner.',
+	long: [
+		'The agent may run only the commands listed here, separated by commas.',
+		'List everything it needs: the test runner, the linter, and scripts it writes.',
+		'Commit, push and `gh` are always denied, whatever is listed.',
+		'A pattern ends in `*` to take any arguments. Examples: `make lint *`, `npm test`.',
+		'Type none to allow no command.'
+	]
+};
+
 // The check command: offered from what the repo holds, else asked for with a placeholder to go by.
 async function askCheck(o: InitOptions): Promise<string> {
 	const found = detectChecks(o.root);
 	const question = 'Command that checks the work, run after each Ticket';
 	if (found.length === 0) {
 		say('no check command detected in this repo; try a placeholder such as `make check`');
-		return answer(o.ask, question, undefined, (text) =>
-			/\S/.test(text) ? null : 'name the command that checks the work'
+		return answer(
+			o.ask,
+			question,
+			undefined,
+			(text) => (/\S/.test(text) ? null : 'name the command that checks the work'),
+			CHECK_HELP
 		);
 	}
 	if (found.length === 1) {
@@ -170,10 +234,15 @@ async function askCheck(o: InitOptions): Promise<string> {
 			say(`  ${String(i + 1)}. ${d.command}  (from ${d.source})`);
 		});
 	}
-	const text = await answer(o.ask, question, found[0]?.command, (t) =>
-		/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length)
-			? `choose 1 to ${String(found.length)}, or type a command`
-			: null
+	const text = await answer(
+		o.ask,
+		question,
+		found[0]?.command,
+		(t) =>
+			/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length)
+				? `choose 1 to ${String(found.length)}, or type a command`
+				: null,
+		CHECK_HELP
 	);
 	return /^\d+$/.test(text) ? (found[Number(text) - 1]?.command ?? text) : text;
 }
@@ -192,7 +261,8 @@ async function interview(o: InitOptions): Promise<Record<string, unknown>> {
 		o.ask,
 		'Commands the agent may run, separated by commas, or none',
 		check,
-		() => null
+		() => null,
+		ALLOWED_HELP
 	);
 	const allowedCommands =
 		listed === 'none'
