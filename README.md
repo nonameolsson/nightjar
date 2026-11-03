@@ -310,7 +310,7 @@ The issues list is flat: a Feature and its Tickets look the same. A GitHub Proje
 
 Show a column with the **+** at the right of the headers. A view change is saved only after **View → Save changes**.
 
-A Board's columns come from a single-select field such as Status, never from labels, and the Signals are labels. So Nightjar does not feed a Board; use `nightjar ui` for that.
+A Board's columns come from a single-select field such as Status, never from labels, and the Signals are labels. So Nightjar does not feed a Board; use `nightjar ui` for that. Which labels a Feature and its Tickets carry at each point of a build is in [Signals through a build](docs/ticket-contract.md#signals-through-a-build): a built Ticket, for one, keeps `ready-for-agent` until its pull request merges.
 
 Since June 2026, repository **saved views** (the Issues sidebar) keep a filter shared with everyone who has triage access. They are plain queries and show a flat list. Use them for the Signal filters, for example Queued: `is:open label:factory-go -label:agent-working`; the Project is what shows the hierarchy.
 
