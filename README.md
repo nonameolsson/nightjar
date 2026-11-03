@@ -1,4 +1,6 @@
-# Nightjar
+<h1 align="center">
+  <img src="docs/design/assets/banner-16x9.webp" alt="Nightjar: the software factory that works while you are sleeping">
+</h1>
 
 Nightjar builds a repo's Features with nobody at the keyboard. It reads a Feature's Tickets from a Tracker, has a Coding agent (Claude Code) build each one on a single branch, and opens one draft pull request per Feature on a Code host.
 
