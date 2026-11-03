@@ -796,7 +796,11 @@ class FeatureRun {
 			feature: id,
 			title: this.feature.title,
 			url: pull.url,
-			startedAt: this.startedAt.toISOString()
+			startedAt: this.startedAt.toISOString(),
+			tickets: {
+				built: this.tickets.filter((t) => this.built.has(t.id)).length,
+				total: this.tickets.length
+			}
 		});
 		if (!paused && (left.length > 0 || red)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;

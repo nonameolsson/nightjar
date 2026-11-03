@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import { ledgerPath } from './build.js';
 import { lastRepo } from './ledger.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
-import type { Doing, Named, Queued, TicketCounts, WaitingItem } from './status-shape.js';
+import type { Doing, Queued, TicketCounts, WaitingItem } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -233,18 +233,17 @@ function features(view: FactoryView): Features {
 	}
 	const completedCard = (done: Completed): CompletedCard => {
 		const built = done.builtTickets ?? 0;
-		const total = done.event.kind === 'pull' ? built : (totals.get(done.event.feature) ?? null);
+		const total = totals.get(done.event.feature) ?? null;
 		return {
 			state: 'completed',
 			id: done.event.feature,
 			...(done.event.title === undefined ? {} : { title: done.event.title }),
 			waitingTickets: [],
 			done,
+			// a pull request says what its branch holds; this run's sessions may have built only part of it
 			progress:
 				done.event.kind === 'pull'
-					? built > 0
-						? { built, total: built }
-						: null
+					? (done.event.tickets ?? null)
 					: total === null
 						? null
 						: { built: Math.min(built, total), total }
@@ -265,21 +264,27 @@ function features(view: FactoryView): Features {
 					? { built: i.ticketCounts.closed, total: i.ticketCounts.total }
 					: null
 			}));
-		// a waiting Ticket belongs to the Feature being built, else to the one that just ended
-		const owner = building ?? completed[0];
-		const parent: Named | undefined =
-			owner === undefined ? undefined : { id: owner.id, title: owner.title ?? '' };
-		const tickets = found.items.filter((i) => i.kind === 'ticket');
-		if (tickets.length > 0) {
-			const at = parent === undefined ? -1 : waiting.findIndex((w) => w.id === parent.id);
+		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
+		const owner = (building ?? completed[0])?.id ?? '';
+		const titleOf = (id: string) =>
+			[building, ...completed].find((c) => c?.id === id && c.title !== undefined)?.title;
+		const byFeature = new Map<string, WaitingItem[]>();
+		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
+			const id = t.feature ?? owner;
+			byFeature.set(id, [...(byFeature.get(id) ?? []), t]);
+		}
+		for (const [id, tickets] of byFeature) {
+			const at = waiting.findIndex((w) => w.id === id);
 			const own = at < 0 ? undefined : waiting[at];
+			const title = titleOf(id);
 			if (own !== undefined) waiting[at] = { ...own, waitingTickets: tickets };
 			else
 				waiting.push({
 					state: 'waiting',
-					id: parent?.id ?? '',
-					...(parent === undefined || parent.title === '' ? {} : { title: parent.title }),
-					why: tickets.some((t) => t.why.includes('info')) ? 'needs info' : 'needs a person',
+					id,
+					...(title === undefined ? {} : { title }),
+					// Nightjar gives needs info to a Feature whenever one of its Tickets waits
+					why: 'needs info',
 					waitingTickets: tickets,
 					progress: null
 				});

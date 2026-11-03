@@ -88,6 +88,9 @@ export function lastRepo(path: string): string | null {
 
 export interface Spend {
 	readonly feature: string;
+	readonly branch: string;
+	// the Ticket the session worked on; null for one over the whole Feature, such as the review
+	readonly ticket: string | null;
 	readonly at: number;
 	readonly costUsd: number;
 	// the session built a Ticket
@@ -96,11 +99,32 @@ export interface Spend {
 	readonly durationMs?: number;
 }
 
-// The median of the recorded durations of built Tickets, or null with none.
+// The median time a built Ticket took, or null with none recorded: its build, fix and Step sessions,
+// plus an even share of its Feature's sessions over all Tickets (the review, Steps after all Tickets).
 export function medianTicketMs(all: readonly Spend[]): number | null {
-	const sorted = all
-		.filter((s) => s.built && s.durationMs !== undefined)
-		.map((s) => s.durationMs as number)
+	const key = (s: Spend) => `${s.feature}\n${s.branch}`;
+	const ms = (s: Spend) => s.durationMs ?? 0;
+	const timed = new Set(
+		all
+			.filter((s) => s.built && s.durationMs !== undefined)
+			.map((s) => `${key(s)}\n${String(s.ticket)}`)
+	);
+	const builtIn = new Map<string, number>();
+	const shared = new Map<string, number>();
+	const own = new Map<string, number>();
+	for (const s of all) {
+		if (s.built) builtIn.set(key(s), (builtIn.get(key(s)) ?? 0) + 1);
+		if (s.ticket === null) shared.set(key(s), (shared.get(key(s)) ?? 0) + ms(s));
+		else {
+			const t = `${key(s)}\n${s.ticket}`;
+			if (timed.has(t)) own.set(t, (own.get(t) ?? 0) + ms(s));
+		}
+	}
+	const sorted = [...own]
+		.map(([t, took]) => {
+			const k = t.slice(0, t.lastIndexOf('\n'));
+			return took + (shared.get(k) ?? 0) / (builtIn.get(k) ?? 1);
+		})
 		.sort((a, b) => a - b);
 	if (sorted.length === 0) return null;
 	const mid = Math.floor(sorted.length / 2);
@@ -113,6 +137,8 @@ export function medianTicketMs(all: readonly Spend[]): number | null {
 export function spends(path: string): Spend[] {
 	return readEntries(path).map((e) => ({
 		feature: String(e.feature),
+		branch: e.branch,
+		ticket: e.ticket === null ? null : String(e.ticket),
 		at: Date.parse(e.at),
 		costUsd: e.costUsd,
 		built: e.step === 'build' && e.outcome === 'built',

@@ -29,6 +29,8 @@ export interface WaitingItem extends Named {
 	readonly kind: 'feature' | 'ticket';
 	readonly why: string;
 	readonly ticketCounts?: TicketCounts | null;
+	// the Feature a Ticket belongs to; older files lack it
+	readonly feature?: string;
 }
 
 export interface WaitingOnYou {
@@ -85,6 +87,8 @@ export type Happened =
 			readonly url: string;
 			// when the Feature's build began; older files lack it
 			readonly startedAt?: string;
+			// the Feature's Tickets the branch holds, of all its Tickets; older files lack it
+			readonly tickets?: { readonly built: number; readonly total: number };
 	  }
 	// newer Nightjar code: `commit` is the newer version, or the commit of a linked checkout
 	| { readonly kind: 'stale'; readonly commit: string };

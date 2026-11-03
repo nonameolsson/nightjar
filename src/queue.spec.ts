@@ -252,8 +252,8 @@ describe('the Queue in the status file', () => {
 		expect(w.refreshes[0]?.waitingOnYou).toEqual({ items: [], trackerCannotList: true });
 		expect(w.refreshes[1]?.waitingOnYou).toEqual({
 			items: [
-				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' },
-				{ kind: 'ticket', id: '9', title: 'Ticket 9', why: 'needs a person' }
+				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info', feature: '2' },
+				{ kind: 'ticket', id: '9', title: 'Ticket 9', why: 'needs a person', feature: '2' }
 			],
 			trackerCannotList: true
 		});
@@ -262,7 +262,7 @@ describe('the Queue in the status file', () => {
 
 describe("the last Feature's Tickets in Waiting on you", () => {
 	const left: Waiting[] = [{ id: '3', title: 'Ticket 3', why: 'needs info' }];
-	const ticket = { kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' };
+	const ticket = { kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info', feature: '2' };
 
 	// the first Feature leaves a Ticket for a person, the second ends as `second` says
 	async function afterSecond(second: (id: string) => Promise<FeatureOutcome>) {
@@ -345,7 +345,7 @@ describe('Waiting on you from a Tracker that has waitingOn', () => {
 			items: [
 				{ ...asks, ticketCounts: { total: 1, closed: 0 } },
 				{ ...stuck, ticketCounts: { total: 1, closed: 0 } },
-				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' }
+				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info', feature: '2' }
 			],
 			trackerCannotList: false
 		});

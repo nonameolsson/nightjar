@@ -115,17 +115,22 @@ describe('nightjar ui page', () => {
 	});
 
 	describe('estimate', () => {
-		const built = (ticket: string, durationMs: number | undefined, minute: number) =>
+		const built = (
+			ticket: string | null,
+			durationMs: number | undefined,
+			minute: number,
+			step: 'build' | 'fix' | 'review' = 'build'
+		) =>
 			record(ledgerFile(), {
 				at: new Date(2026, 9, 30, 8, minute).toISOString(),
 				repo: 'o/r',
 				feature: '1',
 				ticket,
 				branch: 'b',
-				step: 'build',
+				step,
 				session: 's',
 				costUsd: 1,
-				outcome: 'built',
+				outcome: step === 'build' ? 'built' : 'approve',
 				...(durationMs === undefined ? {} : { durationMs })
 			});
 		const queue = () => {
@@ -150,11 +155,14 @@ describe('nightjar ui page', () => {
 			built('12', 300_000, 2);
 			built('13', 120_000, 3);
 			built('14', undefined, 4);
+			built('13', 60_000, 5, 'fix');
+			built(null, 90_000, 6, 'review');
 			queue();
 			await open();
 			const page = (await get('/')).text;
-			// 2m median x 4 Tickets
-			expect(cardOf(page, 'Saved filters')).toMatch(/8m 00s<\/time> <small>est\./);
+			// a Ticket's build and fix rounds, plus its share of the review over the 4 built: 1m22.5s, 5m22.5s, 3m22.5s
+			// median 3m22.5s x 4 Tickets
+			expect(cardOf(page, 'Saved filters')).toMatch(/13m 30s<\/time> <small>est\./);
 			expect(cardOf(page, 'Exports')).not.toContain('est.');
 			expect(cardOf(page, 'Reports')).not.toContain('est.');
 			const rows = (page.split('<tbody>')[1] ?? '').split('<tr');
@@ -208,7 +216,15 @@ describe('nightjar ui page', () => {
 		];
 		file.refreshed(queued, { items, trackerCannotList: false });
 		const url = 'https://example.test/pull/9';
-		file.happened({ kind: 'pull', feature: '9', title: 'Done one', url });
+		file.happened({
+			kind: 'pull',
+			feature: '9',
+			title: 'Done one',
+			url,
+			tickets: { built: 3, total: 4 }
+		});
+		// an older status file: no Tickets on the event
+		file.happened({ kind: 'pull', feature: '5', title: 'Old one', url });
 		file.happened({ kind: 'failed', feature: '8', title: 'Retry', why: 'it broke' });
 		await open();
 		const page = (await get('/')).text;
@@ -221,10 +237,12 @@ describe('nightjar ui page', () => {
 		expect(card(board, 'Billing')).toContain('class="bar"');
 		expect(card(board, 'Unknown')).toContain('>?<');
 		expect(card(board, 'Unknown')).not.toContain('class="bar"');
-		expect(card(board, 'Done one')).toContain('3 of 3 built');
+		// the ledger holds 3 built sessions, but the branch is 3 of the Feature's 4
+		expect(card(board, 'Done one')).toContain('3 of 4 built');
+		expect(card(board, 'Old one')).toContain('>?<');
 		expect(card(board, 'it broke')).toContain('1 of 5 built');
 		expect(row('Billing')).toContain('2 of 6 built');
-		expect(row('Done one')).toContain('3 of 3 built');
+		expect(row('Done one')).toContain('3 of 4 built');
 		expect(row('Unknown')).not.toContain('class="bar"');
 	});
 
@@ -495,6 +513,44 @@ describe('nightjar ui board', () => {
 		alive = false;
 		page = (await get('/')).text;
 		expect(page).toContain('not known while nightjar is off');
+	});
+
+	it('shows a waiting Ticket on the card of the Feature it belongs to, not the one that ended last', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.happened({
+			kind: 'pull',
+			feature: '4',
+			title: 'Later one',
+			url: 'https://example.test/pull/4'
+		});
+		file.refreshed([], {
+			items: [
+				{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' },
+				{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs info', feature: '3' }
+			],
+			trackerCannotList: false
+		});
+		await open();
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
+		const cards = board.split('<article').slice(1);
+		const webhooks = cards.find((a) => a.includes('Webhooks')) ?? '';
+		expect(webhooks).toContain('Facets <small>needs info</small>');
+		expect(cards.filter((a) => a.includes('Facets'))).toHaveLength(1);
+	});
+
+	it("gives a waiting Ticket's own card the needs info its Feature carries", async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed([], {
+			items: [{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs a person', feature: '3' }],
+			trackerCannotList: true
+		});
+		await open();
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
+		const card = board.split('<article').find((a) => a.includes('Facets')) ?? '';
+		expect(card).toContain('#3');
+		expect(card).toContain('needs info');
 	});
 
 	it('shows how long a Completed Feature took, and nothing for one with no start', async () => {

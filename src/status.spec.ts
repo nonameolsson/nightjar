@@ -170,8 +170,8 @@ describe('StatusFile', () => {
 		);
 		expect(readStatus(path)?.waitingOnYou?.items).toEqual([
 			feature,
-			{ kind: 'ticket', id: '22', title: 'Asks', why: 'needs info' },
-			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person' }
+			{ kind: 'ticket', id: '22', title: 'Asks', why: 'needs info', feature: '20' },
+			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person', feature: '20' }
 		]);
 		// updated as the build runs
 		status.doing(
@@ -183,7 +183,7 @@ describe('StatusFile', () => {
 		);
 		expect(readStatus(path)?.waitingOnYou?.items).toEqual([
 			feature,
-			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person' }
+			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person', feature: '20' }
 		]);
 		// the Feature is over: what the loop last said shows again
 		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });

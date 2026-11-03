@@ -132,11 +132,11 @@ function waitingOnYou(deps: QueueDeps) {
 			if (canList) features = await readWaitingFeatures(deps, features);
 			await readCounts(queue);
 		},
-		// `tickets` are the current Feature's, which only a Feature that ended well says
-		tell: (queue: Named[], outcome: FeatureOutcome | null = null) => {
+		// `tickets` are those of `built`, the Feature just built, which only a Feature that ended well says
+		tell: (queue: Named[], outcome: FeatureOutcome | null = null, built: Named | null = null) => {
 			const tickets =
-				outcome?.kind === 'pull' || outcome?.kind === 'nothing'
-					? waitingTickets(outcome.waiting)
+				built !== null && (outcome?.kind === 'pull' || outcome?.kind === 'nothing')
+					? waitingTickets(outcome.waiting, built.id)
 					: [];
 			deps.status.refreshed(queue.map(withCount), {
 				items: [...features.map(withCount), ...tickets],
@@ -197,7 +197,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const outcome = await buildOne(deps, named(next));
-		waiting.tell(rest, outcome);
+		waiting.tell(rest, outcome, next);
 		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
 		if (outcome?.kind === 'paused') {
 			const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();
@@ -218,7 +218,7 @@ export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOu
 	await waiting.read(rest);
 	waiting.tell(rest);
 	const outcome = await buildOne(deps, { id, title });
-	waiting.tell(rest, outcome);
+	waiting.tell(rest, outcome, { id, title });
 	return outcome;
 }
 
