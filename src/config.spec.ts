@@ -459,6 +459,24 @@ describe('sources', () => {
 		}
 	});
 
+	it('refuses a cron time that has the shape and is out of range, naming the Source', () => {
+		const refused: Record<string, RegExp> = {
+			'61 * * * *': /minute: 61 is not from 0 to 59/,
+			'0 24 * * *': /hour: 24 is not from 0 to 23/,
+			'0 0 0 * *': /day of month: 0 is not from 1 to 31/,
+			'0 0 * 13 *': /month: 13 is not from 1 to 12/,
+			'0 0 * * 8': /day of week: 8 is not from 0 to 7/,
+			'30-10 * * * *': /minute: 30-10 runs backwards/,
+			'*/0 * * * *': /minute: the step in "\*\/0" is not a number from 1/,
+			'0 0 31 2 *': /never comes due/
+		};
+		for (const [cron, why] of Object.entries(refused)) {
+			write({ ...VALID, sources: { 'weekly-deps': { type: 'schedule', template: 't', cron } } });
+			expect(refusal()).toMatch(/^factory\.json: sources\.weekly-deps\.cron: /m);
+			expect(refusal()).toMatch(why);
+		}
+	});
+
 	it('refuses a field it does not know, such as a secret in factory.json', () => {
 		one({ type: 'webhook', template: 't', secret: 'hunter2' });
 		expect(refusal()).toMatch(/sources\.a: Unrecognized key.*secret/m);

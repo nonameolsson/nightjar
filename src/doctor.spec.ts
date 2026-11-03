@@ -191,8 +191,31 @@ describe('nightjar doctor over Sources', () => {
 		expect(await start({ env: { SENTRY_HOOK_SECRET: 'whsec' } })).toBe(0);
 		expect(err).toEqual([]);
 		expect(out).toContain('  ok    Source sentry: sentry, template sentry is in shape');
-		expect(out).toContain(
-			'  ok    Source weekly-deps: schedule 0 6 * * 1, template weekly-deps is in shape'
+		expect(out.join('\n')).toMatch(
+			/^ {2}ok {4}Source weekly-deps: schedule 0 6 \* \* 1, next due \d{4}-\d\d-\d\d 06:00, template weekly-deps is in shape$/m
+		);
+	});
+
+	it("prints each schedule's next due time, in local time", async () => {
+		withSources({
+			'weekly-deps': { type: 'schedule', cron: '0 6 * * 1', template: 'weekly-deps' },
+			daily: { type: 'schedule', cron: '@daily', template: 'weekly-deps' }
+		});
+		// a Tuesday, local noon
+		const checked = await checkMachine({
+			useApiKey: false,
+			env: m.env,
+			cwd: m.root,
+			failFast: false,
+			gh: github.gh,
+			now: () => new Date(2026, 10, 3, 12, 0)
+		});
+		const detail = (name: string) => checked.lines.find((l) => l.source === name)?.detail;
+		expect(detail('weekly-deps')).toBe(
+			'schedule 0 6 * * 1, next due 2026-11-09 06:00, template weekly-deps is in shape'
+		);
+		expect(detail('daily')).toBe(
+			'schedule @daily, next due 2026-11-04 00:00, template weekly-deps is in shape'
 		);
 	});
 
@@ -237,8 +260,8 @@ describe('nightjar doctor over Sources', () => {
 			'# {{ date }}\n\n## Ticket 1: Do it\n\n### Acceptance criteria\n\n- [ ] done\n'
 		);
 		expect(await start()).toBe(0);
-		expect(out).toContain(
-			'  ok    Source own: schedule @weekly, template .nightjar/own.md is in shape'
+		expect(out.join('\n')).toMatch(
+			/^ {2}ok {4}Source own: schedule @weekly, next due \d{4}-\d\d-\d\d 00:00, template \.nightjar\/own\.md is in shape$/m
 		);
 	});
 

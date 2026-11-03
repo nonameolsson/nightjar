@@ -21,8 +21,10 @@ import {
 	FAILED_SIGNATURES,
 	startIntake,
 	type IntakeServer,
+	type ScheduledSource,
 	type ServedSource
 } from './intake.js';
+import { parseCron } from './cron.js';
 import { runNightjar } from './main.js';
 import type { SourcedFeature } from './tracker.js';
 
@@ -321,6 +323,192 @@ describe('intake', () => {
 	});
 });
 
+const WEEKLY_TEMPLATE = `# Update the dependencies, {{ date }}
+
+The weekly update, made by {{ source }}.
+
+## Ticket 1: Update them
+
+Update each dependency.
+
+### Acceptance criteria
+
+- [ ] each dependency is current
+`;
+
+describe('intake over a schedule', () => {
+	// the clock starts on Tuesday 3 November at noon, so the next Monday 06:00 is the 9th
+	const MONDAY = new Date(2026, 10, 9, 6, 0);
+
+	async function startSchedule(
+		cron = '0 6 * * 1',
+		over: Partial<ScheduledSource> = {},
+		tickMs = 0
+	): Promise<IntakeServer> {
+		server = await startIntake({
+			tracker,
+			sources: new Map(),
+			schedules: new Map([
+				['weekly', { template: WEEKLY_TEMPLATE, cron: parseCron(cron), maxPerDay: 3, ...over }]
+			]),
+			host: '127.0.0.1',
+			port: 0,
+			log: logPath(),
+			now: () => clock,
+			say: (line) => said.push(line),
+			tickMs
+		});
+		return server;
+	}
+
+	const tick = () => server?.tick() ?? Promise.resolve();
+
+	it('makes nothing before it falls due', async () => {
+		await startSchedule();
+		await tick();
+		clock = new Date(2026, 10, 9, 5, 59);
+		await tick();
+		expect(features()).toEqual([]);
+	});
+
+	it('makes one Feature with the date in its title when it falls due', async () => {
+		await startSchedule();
+		clock = MONDAY;
+		await tick();
+		const [made, ...more] = features();
+		expect(more).toEqual([]);
+		expect(made?.title).toBe('Update the dependencies, 2026-11-09');
+		expect(made?.body).toContain('made by weekly.');
+		expect(made?.body).toContain('**Source:** weekly');
+		// the key is the Source's name, and a schedule has no payload to show
+		expect(made?.body).toContain('<!-- nightjar:source=weekly key=weekly -->');
+		expect(made?.body).not.toContain('Event payload');
+		// no Signal and no assignee: the Go stays with a person
+		expect(made?.signals).toEqual([]);
+		expect(made?.assignees).toEqual([]);
+		expect(logLines().at(-1)).toMatchObject({
+			source: 'weekly',
+			delivery: `schedule-${MONDAY.toISOString()}`,
+			answer: 201,
+			outcome: 'made',
+			feature: made?.id
+		});
+	});
+
+	it('makes one Feature at one due time, however often the clock is read', async () => {
+		await startSchedule();
+		clock = MONDAY;
+		await tick();
+		await tick();
+		later(1);
+		await tick();
+		expect(features()).toHaveLength(1);
+	});
+
+	it('makes nothing while its last Feature is open, and no comment either', async () => {
+		await startSchedule();
+		clock = MONDAY;
+		await tick();
+		const [made] = features();
+		clock = new Date(2026, 10, 16, 6, 0);
+		await tick();
+		expect(features()).toHaveLength(1);
+		expect(tracker.said(made?.id ?? '')).toEqual([]);
+		expect(logLines().at(-1)).toMatchObject({ outcome: 'still open', feature: made?.id });
+		// once a person has closed it, the next due time makes another
+		tracker.close(made?.id ?? '');
+		clock = new Date(2026, 10, 23, 6, 0);
+		await tick();
+		expect(features()).toHaveLength(2);
+		expect(features()[1]?.title).toBe('Update the dependencies, 2026-11-23');
+	});
+
+	it('makes one Feature for three missed weekly times, not three', async () => {
+		await startSchedule();
+		// the machine slept through the 9th, the 16th and the 23rd
+		clock = new Date(2026, 10, 24, 8, 0);
+		await tick();
+		expect(features()).toHaveLength(1);
+		// the next time counts from now: the 30th, not one of the missed ones
+		tracker.close(features()[0]?.id ?? '');
+		await tick();
+		expect(features()).toHaveLength(1);
+		clock = new Date(2026, 10, 30, 6, 0);
+		await tick();
+		expect(features()).toHaveLength(2);
+	});
+
+	it('does not make up a time that passed while intake was down', async () => {
+		// intake starts on the 10th, after the 9th at 06:00 has come and gone
+		clock = new Date(2026, 10, 10, 9, 0);
+		await startSchedule();
+		await tick();
+		expect(features()).toEqual([]);
+		clock = new Date(2026, 10, 16, 6, 0);
+		await tick();
+		expect(features()).toHaveLength(1);
+		expect(features()[0]?.title).toBe('Update the dependencies, 2026-11-16');
+	});
+
+	it('counts what it makes against maxPerDay from the Tracker', async () => {
+		await startSchedule('* * * * *', { maxPerDay: 1 });
+		later(1);
+		await tick();
+		expect(features()).toHaveLength(1);
+		tracker.close(features()[0]?.id ?? '');
+		later(1);
+		await tick();
+		expect(features()).toHaveLength(1);
+		expect(logLines().at(-1)).toMatchObject({ outcome: 'day limit' });
+	});
+
+	it('says when the Tracker fails, and tries again at the next due time', async () => {
+		const finds = tracker.featuresFrom;
+		let down = true;
+		tracker.featuresFrom = (source: string): Promise<SourcedFeature[]> =>
+			down ? Promise.reject(new Error('HTTP 502')) : finds(source);
+		await startSchedule();
+		clock = MONDAY;
+		await tick();
+		expect(said.join('\n')).toContain('HTTP 502');
+		expect(features()).toEqual([]);
+		expect(logLines().at(-1)).toMatchObject({ answer: 503, outcome: 'tracker failed' });
+		down = false;
+		clock = new Date(2026, 10, 16, 6, 0);
+		await tick();
+		expect(features()).toHaveLength(1);
+	});
+
+	it('fires by its own timer as the clock reaches the due time', async () => {
+		await startSchedule('0 6 * * 1', {}, 5);
+		clock = MONDAY;
+		await vi.waitFor(() => expect(features()).toHaveLength(1));
+	});
+
+	it('shares a webhook Source server with schedules', async () => {
+		server = await startIntake({
+			tracker,
+			sources: new Map([['alerts', { template: TEMPLATE, secret: SECRET, maxPerDay: 3 }]]),
+			schedules: new Map([
+				['weekly', { template: WEEKLY_TEMPLATE, cron: parseCron('0 6 * * 1'), maxPerDay: 3 }]
+			]),
+			host: '127.0.0.1',
+			port: 0,
+			log: logPath(),
+			now: () => clock,
+			say: (line) => said.push(line),
+			tickMs: 0
+		});
+		expect((await post(event('k-1'))).status).toBe(201);
+		clock = MONDAY;
+		await tick();
+		expect(features().map((f) => f.title)).toEqual([
+			'Alert: Disk full',
+			'Update the dependencies, 2026-11-09'
+		]);
+	});
+});
+
 describe('nightjar intake arguments', () => {
 	it('listens on 127.0.0.1:4546 unless --host or --port says otherwise', () => {
 		expect(parseIntakeArgs([])).toEqual({ host: INTAKE_HOST, port: INTAKE_PORT });
@@ -443,6 +631,36 @@ describe('nightjar intake', () => {
 		const bare = { ...host(), env: { PATH: process.env.PATH } };
 		expect(await runNightjar(['intake', '--port', '0'], bare)).toBe(2);
 		expect(err.join('\n')).toContain('Source alerts: ALERTS_SECRET is not set');
+	});
+
+	it('runs a schedule Source with no webhook, and says when it is next due', async () => {
+		repo(`${WRITES} ${FINDS}`, {
+			weekly: { type: 'schedule', cron: '0 6 * * 1', template: '.nightjar/alerts.md' }
+		});
+		const stop = new AbortController();
+		const bare = { ...host(stop.signal), env: { PATH: process.env.PATH } };
+		const done = runNightjar(['intake', '--port', '0'], bare);
+		await vi.waitFor(() => expect(out.join('\n')).toContain('Source weekly: next due '));
+		expect(out.join('\n')).toMatch(/Source weekly: next due \d{4}-\d\d-\d\d 06:00/);
+		expect(out.join('\n')).not.toContain('POST');
+		stop.abort();
+		expect(await done).toBe(0);
+	});
+
+	it('refuses to start while a schedule Source has a template that does not read', async () => {
+		repo(`${WRITES} ${FINDS}`, {
+			weekly: { type: 'schedule', cron: '@weekly', template: '.nightjar/gone.md' }
+		});
+		expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+		expect(err.join('\n')).toContain('Source weekly: template .nightjar/gone.md');
+	});
+
+	it('refuses to start while factory.json has a cron time that is out of range, naming the Source', async () => {
+		repo(`${WRITES} ${FINDS}`, {
+			weekly: { type: 'schedule', cron: '61 * * * *', template: '.nightjar/alerts.md' }
+		});
+		expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+		expect(err.join('\n')).toContain('sources.weekly.cron: minute: 61 is not from 0 to 59');
 	});
 
 	it('refuses to start with no Source', async () => {

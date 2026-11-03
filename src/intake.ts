@@ -13,6 +13,7 @@ import { makeAdapters, type Adapters, type Seams } from './adapters.js';
 import { INTAKE_USAGE, parseIntakeArgs } from './args.js';
 import { ConfigError, DEFAULT_MAX_PER_DAY, loadConfig, type Config } from './config.js';
 import { makeFeature } from './create.js';
+import { localTime, nextDue, parseCron, type Cron } from './cron.js';
 import { FeatureFileError } from './feature-file.js';
 import { run, type Env } from './git.js';
 import { say as sayLine, why } from './say.js';
@@ -50,9 +51,23 @@ export interface ServedSource {
 	readonly maxPerDay: number;
 }
 
+// A schedule Source as intake fires it.
+export interface ScheduledSource {
+	readonly template: string;
+	readonly cron: Cron;
+	readonly maxPerDay: number;
+}
+
+// how often intake looks at the clock for a schedule that has come due
+export const TICK_MS = 1000;
+
 export interface IntakeOptions {
 	readonly tracker: IntakeTracker;
 	readonly sources: ReadonlyMap<string, ServedSource>;
+	// the schedules, which fire at their due times as the clock reaches them; none when left out
+	readonly schedules?: ReadonlyMap<string, ScheduledSource>;
+	// how often the clock is looked at; 0 leaves it to `tick`, as a spec does
+	readonly tickMs?: number;
 	readonly host: string;
 	readonly port: number;
 	// .factory/intake.log
@@ -64,12 +79,15 @@ export interface IntakeOptions {
 export interface IntakeServer {
 	readonly address: string;
 	readonly port: number;
+	// fires each schedule whose due time the clock has reached; resolves once their Features are made or refused
+	readonly tick: () => Promise<void>;
 	readonly close: () => Promise<void>;
 }
 
 type Outcome =
 	| 'made'
 	| 'again'
+	| 'still open'
 	| 'day limit'
 	| 'bad signature'
 	| 'too many bad signatures'
@@ -141,8 +159,6 @@ const pad = (n: number) => String(n).padStart(2, '0');
 // the day as the machine's calendar has it, as maxPerDay counts days
 const day = (at: Date) =>
 	`${String(at.getFullYear())}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
-
-const minute = (at: Date) => `${day(at)} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
 
 // The deliveries of `source` that found `feature` open since `since`, by this machine's log, leaving out the one that commented.
 function repeatsSince(log: string, source: string, feature: ItemId, since: string): number {
@@ -240,12 +256,18 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		const times = repeatsSince(o.log, name, open.id, since) + 1;
 		await tracker.comment(
 			open.id,
-			`Happened again, ${String(times)} ${times === 1 ? 'time' : 'times'} since ${minute(new Date(since))}.\n\n${AGAIN_MARKER}`
+			`Happened again, ${String(times)} ${times === 1 ? 'time' : 'times'} since ${localTime(new Date(since))}.\n\n${AGAIN_MARKER}`
 		);
 		return true;
 	};
 
-	const make = async (name: string, source: ServedSource, payload: unknown): Promise<Answer> => {
+	// a schedule has no payload and no key path: its key is its name, so it makes nothing while its last Feature is open
+	const make = async (
+		name: string,
+		source: Pick<ServedSource, 'template' | 'key' | 'maxPerDay'>,
+		payload: unknown,
+		scheduled = false
+	): Promise<Answer> => {
 		let filled;
 		try {
 			filled = fillTemplate({
@@ -253,17 +275,23 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 				source: name,
 				payload,
 				key: source.key,
+				...(scheduled ? { fixedKey: name } : {}),
 				now: now()
 			});
 		} catch (fault) {
 			if (!(fault instanceof FeatureFileError)) throw fault;
-			say(`Source ${name}: the payload does not fill the template: ${why(fault)}`);
+			say(
+				scheduled
+					? `Source ${name}: the template does not make a Feature: ${why(fault)}`
+					: `Source ${name}: the payload does not fill the template: ${why(fault)}`
+			);
 			return { status: 400, outcome: 'template failed' };
 		}
 		try {
 			const found = await tracker.featuresFrom(name);
 			const open = found.filter((f) => f.open && f.key === filled.key).at(-1);
 			if (filled.key !== '' && open !== undefined) {
+				if (scheduled) return { status: 200, outcome: 'still open', feature: open.id };
 				const commented = await again(name, open);
 				return { status: 200, outcome: 'again', feature: open.id, commented };
 			}
@@ -344,15 +372,45 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		);
 	});
 
+	// The next due time of each schedule, counted from the start: a time that passed while intake was down is not made up.
+	const schedules = o.schedules ?? new Map<string, ScheduledSource>();
+	const due = new Map<string, Date | null>();
+	for (const [name, schedule] of schedules) due.set(name, nextDue(schedule.cron, now()));
+
+	const tick = async (): Promise<void> => {
+		const at = now();
+		await Promise.all(
+			[...schedules].map(async ([name, schedule]) => {
+				const when = due.get(name);
+				if (when === undefined || when === null || at < when) return;
+				// the next time is counted from now, not from the one that came, so times missed while the machine slept make one Feature
+				due.set(name, nextDue(schedule.cron, at));
+				try {
+					const made = await inTurn(name, () => make(name, schedule, undefined, true));
+					record(name, `schedule-${when.toISOString()}`, made);
+				} catch (fault) {
+					say(`Source ${name}: ${why(fault)}`);
+				}
+			})
+		);
+	};
+
+	const tickMs = o.tickMs ?? TICK_MS;
+
 	return new Promise((done, fail) => {
 		server.once('error', fail);
 		server.listen(o.port, o.host, () => {
 			const { address, port } = server.address() as AddressInfo;
+			// the clock is watched only once intake is listening
+			const timer =
+				tickMs > 0 && schedules.size > 0 ? setInterval(() => void tick(), tickMs) : undefined;
 			done({
 				address,
 				port,
+				tick,
 				close: () =>
 					new Promise<void>((closed) => {
+						clearInterval(timer);
 						server.closeAllConnections();
 						server.close(() => closed());
 					})
@@ -383,19 +441,21 @@ function onSignals(): AbortSignal {
 
 interface Served {
 	readonly sources: Map<string, ServedSource>;
+	readonly schedules: Map<string, ScheduledSource>;
 	// why intake cannot start
 	readonly faults: string[];
 	// what intake leaves out
 	readonly notes: string[];
 }
 
-// The webhook Sources intake serves, with their templates read and their secrets taken.
+// The webhook and schedule Sources intake runs, with their templates read and their secrets taken.
 function served(config: Config, root: string, env: Env): Served {
 	const sources = new Map<string, ServedSource>();
+	const schedules = new Map<string, ScheduledSource>();
 	const faults: string[] = [];
 	const notes: string[] = [];
 	for (const [name, source] of Object.entries(config.sources ?? {})) {
-		if (source.type !== 'webhook') {
+		if (source.type === 'sentry') {
 			notes.push(`Source ${name}: intake takes no ${source.type} Source; it is left out`);
 			continue;
 		}
@@ -403,10 +463,20 @@ function served(config: Config, root: string, env: Env): Served {
 			(f) => `template ${source.template}: ${f}`
 		);
 		const secret = source.secretEnv === undefined ? '' : (env[source.secretEnv] ?? '');
-		if (source.secretEnv === undefined) {
-			own.push('name the variable that holds its webhook secret, as secretEnv');
-		} else if (secret === '') {
-			own.push(`${source.secretEnv} is not set; put the webhook secret in that variable`);
+		if (source.type === 'webhook') {
+			if (source.secretEnv === undefined) {
+				own.push('name the variable that holds its webhook secret, as secretEnv');
+			} else if (secret === '') {
+				own.push(`${source.secretEnv} is not set; put the webhook secret in that variable`);
+			}
+		}
+		let cron: Cron | undefined;
+		if (source.type === 'schedule') {
+			try {
+				cron = parseCron(source.cron ?? '');
+			} catch (fault) {
+				own.push(`cron: ${why(fault)}`);
+			}
 		}
 		if (own.length > 0) {
 			faults.push(...own.map((f) => `Source ${name}: ${f}`));
@@ -415,14 +485,20 @@ function served(config: Config, root: string, env: Env): Served {
 		if (source.go === true) {
 			notes.push(`Source ${name}: intake gives no Go; its Features wait for a person to give it`);
 		}
-		sources.set(name, {
-			template: readTemplate(root, source.template),
-			secret,
-			...(source.key === undefined ? {} : { key: source.key }),
-			maxPerDay: source.maxPerDay ?? DEFAULT_MAX_PER_DAY
-		});
+		const template = readTemplate(root, source.template);
+		const maxPerDay = source.maxPerDay ?? DEFAULT_MAX_PER_DAY;
+		if (cron === undefined) {
+			sources.set(name, {
+				template,
+				secret,
+				...(source.key === undefined ? {} : { key: source.key }),
+				maxPerDay
+			});
+		} else {
+			schedules.set(name, { template, cron, maxPerDay });
+		}
 	}
-	return { sources, faults, notes };
+	return { sources, schedules, faults, notes };
 }
 
 // 0 once it is told to stop, 2 when it cannot start.
@@ -463,16 +539,17 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 	if (typeof writer === 'string' || !findsSources(writer) || missing.length > 0) {
 		return refuse(missing.join('\nnightjar: '));
 	}
-	const { sources, faults, notes } = served(config, root, env);
+	const { sources, schedules, faults, notes } = served(config, root, env);
 	if (faults.length > 0) return refuse(faults.join('\nnightjar: '));
-	if (sources.size === 0) {
-		return refuse('factory.json names no webhook Source for intake to take.');
+	if (sources.size === 0 && schedules.size === 0) {
+		return refuse('factory.json names no webhook or schedule Source for intake to run.');
 	}
 	let server: IntakeServer;
 	try {
 		server = await startIntake({
 			tracker: writer,
 			sources,
+			schedules,
 			host: args.host,
 			port: args.port,
 			log: intakeLogPath(root)
@@ -490,6 +567,10 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 	const base = `http://${address}:${String(server.port)}`;
 	sayLine(`intake on ${base}  (Ctrl-C to stop)`);
 	for (const name of sources.keys()) sayLine(`Source ${name}: POST ${base}/sources/${name}`);
+	for (const [name, schedule] of schedules) {
+		const next = nextDue(schedule.cron, new Date());
+		sayLine(`Source ${name}: next due ${next === null ? 'never' : localTime(next)}`);
+	}
 	for (const note of notes) sayLine(note);
 	const stop = host.stop ?? onSignals();
 	await new Promise<void>((done) => {

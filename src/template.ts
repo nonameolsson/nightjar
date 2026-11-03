@@ -135,6 +135,8 @@ export interface FillRequest {
 	readonly payload?: unknown;
 	// the Source's `key`: a path into the payload
 	readonly key?: string | undefined;
+	// a key given outright, over `key`, written as it is: a schedule has no payload, so its key is its name, which holds no space
+	readonly fixedKey?: string | undefined;
 	readonly now?: Date;
 }
 
@@ -152,6 +154,7 @@ export function fillTemplate({
 	source,
 	payload,
 	key,
+	fixedKey,
 	now = new Date()
 }: FillRequest): FilledTemplate {
 	// one pass, so a value is never read for placeholders of its own
@@ -160,7 +163,7 @@ export function fillTemplate({
 		if (path === 'source') return cleanValue(source);
 		return cleanValue(lookup(payload, path));
 	});
-	const eventKeyText = eventKey(payload, key);
+	const eventKeyText = fixedKey === undefined ? eventKey(payload, key) : fixedKey;
 	const lines = filled.replace(/\r\n/g, '\n').split('\n');
 	const end = firstTicketLine(lines);
 	const head = lines.slice(0, end);

@@ -365,7 +365,8 @@ Some work starts outside a person's head: an alert, a message from a script or f
 
 | Field       | What it does |
 | ----------- | ------------ |
-| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. |
+| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme; `schedule` fires from a `cron` time. |
+| `cron`      | A schedule's time, required for a `schedule` and refused on anything else: five fields (minute, hour, day of month, month, day of week; numbers, ranges `1-5`, lists `1,15`, steps `*/15`), or `@daily` (midnight) or `@weekly` (Sunday midnight). It is read in the machine's local time zone. As in cron, a day of the month and a day of the week that are both named make a time on either. A bad one is refused when `factory.json` loads, naming the Source. |
 | `template`  | A Feature file, in the shape of [Write a Feature](#write-a-feature), as a path from the repo's root, or the name of a template Nightjar ships (`sentry`, `weekly-deps`). Placeholders are plain paths into the payload, as `{{ data.alert.title }}`, plus `{{ date }}` and `{{ source }}`; there is no logic. |
 | `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one. |
 | `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64). The secret is never in `factory.json`. |
@@ -392,6 +393,8 @@ Intake answers a delivery only after the Tracker has:
 | 413    | the body is over 256 KB |
 | 429    | the Source has had 20 bad signatures in the last minute |
 | 503    | the Tracker failed; the sender retries, and the key keeps a retry from making a second Feature |
+
+**Schedules.** Intake fires each `schedule` Source at its due time, through the same path as a webhook, from the template with no payload. The Source's name is its key, so a schedule whose last Feature is still open makes nothing, and says nothing on it. `maxPerDay` holds as for a webhook. Times that pass while intake is down are not made up, and a machine that sleeps through several makes one Feature when it wakes, not one for each. Only `nightjar intake` fires schedules, never `--watch`. A schedule needs no secret, so intake with schedules only starts and serves nothing. `nightjar doctor` prints each schedule's next due time, and intake prints it as it starts.
 
 The open Features and the day's count are read from the Tracker, so two intakes on two machines share them. Each delivery is logged to `.factory/intake.log` with the Source, the delivery id, the answer and the Feature, never with the payload.
 

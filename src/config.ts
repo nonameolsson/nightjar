@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
+import { cronFault } from './cron.js';
 import { DEFAULT_SIGNAL_NAMES, RESERVED_NAMES, type SignalNames } from './signals.js';
 import { why } from './say.js';
 
@@ -233,6 +234,11 @@ const Source = z
 	.refine((s) => s.type === 'schedule' || s.cron === undefined, {
 		path: ['cron'],
 		error: 'only a schedule has a cron time'
+	})
+	.superRefine((s, ctx) => {
+		// the pattern refuses the shape; what it lets through, such as minute 61, is read here
+		const fault = s.cron === undefined || !CRON.test(s.cron) ? null : cronFault(s.cron);
+		if (fault !== null) ctx.addIssue({ code: 'custom', path: ['cron'], message: fault });
 	})
 	.refine((s) => s.go !== true || s.owner !== undefined, {
 		path: ['owner'],

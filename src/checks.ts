@@ -6,6 +6,7 @@ import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
@@ -65,6 +66,8 @@ export interface CheckOptions {
 	readonly failFast: boolean;
 	// the skills a headless claude session loads; a spec passes its own
 	readonly skills?: LoadedSkills;
+	// the clock a schedule's next due time is counted from; a spec passes its own
+	readonly now?: () => Date;
 }
 
 // What the checks find, each for the checks after it and for Ready.
@@ -326,11 +329,19 @@ const sourcesCheck = check({
 				}
 			}
 			if (faults.length > 0) return { ...said, status: 'fail', detail: faults.join('\n') };
-			const when = source.type === 'schedule' ? ` ${source.cron ?? ''}` : '';
+			if (source.type !== 'schedule') {
+				return {
+					...said,
+					status: 'ok',
+					detail: `${source.type}, template ${source.template} is in shape`
+				};
+			}
+			// factory.json has loaded, so the cron time reads; intake fires it in the machine's local time zone
+			const next = nextDue(parseCron(source.cron ?? ''), o.now?.() ?? new Date());
 			return {
 				...said,
 				status: 'ok',
-				detail: `${source.type}${when}, template ${source.template} is in shape`
+				detail: `schedule ${source.cron ?? ''}, next due ${next === null ? 'never' : localTime(next)}, template ${source.template} is in shape`
 			};
 		});
 		return { lines };
