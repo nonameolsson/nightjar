@@ -1,0 +1,15 @@
+{
+	"$schema": "https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json",
+	"tracker": {
+		"type": "github"
+	},
+	"codeHost": {
+		"type": "github"
+	},
+	"check": "npm run check",
+	"allowedCommands": [
+		"npm run check",
+		"npm test",
+		"npm install"
+	]
+}
