@@ -1,8 +1,4 @@
-// `nightjar init`: a repo with a factory.json is not asked again, and the check command is offered from what the repo holds, and asked for when nothing is found.
-// Before it writes, init shows what it is about to do and asks to go on.
-// A flag answers its question; --yes takes every default and asks nothing.
-// Once it writes, it names the optional settings it left out, in one line.
-// It ends with the next step, and offers to run doctor straight away.
+// `nightjar init`: a repo with a factory.json is not asked again; else it asks, offering what the repo holds, and shows what it will write before it writes.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -59,10 +55,7 @@ const printHelp = (lines: readonly string[]) => {
 	for (const line of lines) console.log(`  ${line}`);
 };
 
-// A flag's value is taken as it is, and refused when it does not pass; under --yes the fallback
-// is taken, and a question with none is refused, naming its flag.
-// Else it asks until the answer passes; an empty one takes the fallback, if there is one.
-// The help is printed once before the first ask; `?` prints it again, longer where there is more.
+// A flag answers as given; --yes takes the fallback, or refuses naming the flag; else it asks until the answer passes.
 async function answer(
 	o: Answering,
 	flag: string,
@@ -104,10 +97,9 @@ async function answer(
 	}
 }
 
-// The questions of one section, each checked by the schema's own rule for its field.
 const kebab = (key: string) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 
-// Each field's flag is the section's, then the field's name in kebab case: `--code-host-repo`.
+// The questions of one section, each checked by the schema's own rule for its field; each field's flag is the section's, then the field's name in kebab case: `--code-host-repo`.
 const probing = (
 	o: Answering,
 	prefix: string,
@@ -244,9 +236,10 @@ async function section(
 }
 
 const CHECK_HELP: Help = {
-	short: 'Runs after every Ticket; a non-zero exit means the work failed and the agent retries.',
+	short:
+		'Runs after every Ticket; a non-zero exit means the work failed and the Coding agent retries.',
 	long: [
-		'Runs after every Ticket. A non-zero exit means the work failed, and the agent retries.',
+		'Runs after every Ticket. A non-zero exit means the work failed, and the Coding agent retries.',
 		'Keep it fast and deterministic: typecheck, lint and tests.',
 		'No deploys and no network: it runs many times, and must give the same answer each time.',
 		'Examples: `npm run check`, `make check`.'
@@ -255,12 +248,11 @@ const CHECK_HELP: Help = {
 
 const ALLOWED_HELP: Help = {
 	short: [
-		'The agent may run only these commands; list what it needs, such as the test runner.',
-		'A pattern ends in `*` to take any arguments. Examples: `make lint *`, `npm test`.',
-		'Commit, push, network and `gh` stay denied, whatever is listed.'
+		'The Coding agent may run only these, such as the test runner. Commit, push, network and `gh` stay denied, whatever is listed.',
+		'A pattern ends in `*` to take any arguments. Examples: `make lint *`, `npm test`.'
 	].join('\n'),
 	long: [
-		'The agent may run only the commands listed here, separated by commas.',
+		'The Coding agent may run only the commands listed here, separated by commas.',
 		'List everything it needs: the test runner, the linter, and scripts it writes.',
 		'Commit, push, network and `gh` are always denied, whatever is listed.',
 		'A pattern ends in `*` to take any arguments. Examples: `make lint *`, `npm test`.',
@@ -338,7 +330,7 @@ async function interview(o: InitOptions, fromOrigin: string | null): Promise<Ans
 	const listed = await answer(
 		o,
 		'allowed-commands',
-		'Commands the agent may run, separated by commas, or none',
+		'Commands the Coding agent may run, separated by commas, or none',
 		suggested.join(', '),
 		() => null,
 		ALLOWED_HELP
@@ -431,10 +423,10 @@ function ignoresFactory(root: string): boolean {
 	}
 }
 
-// Runs the check once on the tree as it is, and says whether it passes; it never fails init.
+// Runs the check once on the checkout as it is, and says whether it passes; it never fails init.
 async function reportCheck(o: InitOptions): Promise<void> {
 	const { check } = loadConfig(o.root);
-	say(`running the check once on the clean tree: ${check}`);
+	say(`running the check once on this checkout: ${check}`);
 	const got = await runCheck(check, o.root, o.env);
 	say(got.ok ? 'the check passes' : 'the check fails right now, so every Ticket will stop');
 }
@@ -486,7 +478,8 @@ export async function runInit(o: InitOptions): Promise<number> {
 			'Signal labels not created: the Tracker could not be reached; fix that, then run `nightjar init` again.'
 		);
 	}
-	await reportCheck(o);
+	// a kept file's check was reported when it was written, and a re-run after a login fix needs none
+	if (wrote) await reportCheck(o);
 	if (problems > 0) {
 		const count = problems === 1 ? '1 problem' : `${String(problems)} problems`;
 		console.error(`nightjar: ${count} above; fix it, then run \`nightjar init\` again.`);
@@ -510,6 +503,9 @@ export async function runInit(o: InitOptions): Promise<number> {
 
 // Whether to run doctor now; an empty answer is yes, and an input that has ended is no.
 async function offerDoctor(o: InitOptions): Promise<boolean> {
+	printHelp([
+		'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
+	]);
 	for (;;) {
 		const got = await o.ask('Run `nightjar doctor` now, y or n [y]: ');
 		if (got === null) return false;

@@ -23,23 +23,27 @@ function packageManager(root: string): 'npm' | 'pnpm' | 'yarn' | 'bun' {
 	return 'npm';
 }
 
-function fromPackageJson(root: string): Detected[] {
-	const text = read(root, 'package.json');
-	if (text === null) return [];
+// `bun test` starts Bun's own test runner, so under bun the script is named with `run`.
+function fromPackageJson(root: string, names: readonly string[]): Detected[] {
 	let scripts: unknown;
 	try {
-		scripts = (JSON.parse(text) as { scripts?: unknown }).scripts;
+		scripts = (JSON.parse(read(root, 'package.json') ?? 'null') as { scripts?: unknown } | null)
+			?.scripts;
 	} catch {
 		return [];
 	}
 	if (typeof scripts !== 'object' || scripts === null) return [];
 	const pm = packageManager(root);
-	const found: Detected[] = [];
-	if ('check' in scripts)
-		found.push({ command: `${pm} run check`, source: 'package.json "check"' });
-	if ('test' in scripts) found.push({ command: `${pm} test`, source: 'package.json "test"' });
-	return found;
+	return names
+		.filter((n) => n in scripts)
+		.map((n) => ({
+			command: n === 'test' && pm !== 'bun' ? `${pm} test` : `${pm} run ${n}`,
+			source: `package.json "${n}"`
+		}));
 }
+
+// A make or just target, not a variable of the same name such as `check := …`.
+const target = (n: string) => new RegExp(`^${n}\\s*:(?!=)`, 'm');
 
 function fromTargets(
 	root: string,
@@ -101,24 +105,7 @@ function fromDeno(root: string): Detected[] {
 // The test, lint and build commands the repo's package.json, Makefile and justfile name.
 export function detectTools(root: string): Detected[] {
 	const names = ['test', 'lint', 'build'];
-	const found: Detected[] = [];
-	const text = read(root, 'package.json');
-	let scripts: object | null = null;
-	try {
-		const parsed = (JSON.parse(text ?? 'null') as { scripts?: unknown } | null)?.scripts;
-		if (typeof parsed === 'object' && parsed !== null) scripts = parsed;
-	} catch {
-		scripts = null;
-	}
-	if (scripts !== null) {
-		const pm = packageManager(root);
-		for (const n of names)
-			if (n in scripts)
-				found.push({
-					command: n === 'test' ? `${pm} test` : `${pm} run ${n}`,
-					source: `package.json "${n}"`
-				});
-	}
+	const found = fromPackageJson(root, names);
 	for (const [file, tool] of [
 		['Makefile', 'make'],
 		['justfile', 'just'],
@@ -127,8 +114,7 @@ export function detectTools(root: string): Detected[] {
 		const body = read(root, file);
 		if (body === null) continue;
 		for (const n of names)
-			if (new RegExp(`^${n}\\s*:`, 'm').test(body))
-				found.push({ command: `${tool} ${n}`, source: `${file} "${n}"` });
+			if (target(n).test(body)) found.push({ command: `${tool} ${n}`, source: `${file} "${n}"` });
 	}
 	return found;
 }
@@ -137,25 +123,13 @@ export function detectTools(root: string): Detected[] {
 export function detectChecks(root: string): Detected[] {
 	const exists = (f: string) => existsSync(join(root, f));
 	const all: Detected[] = [
-		...fromTargets(
-			root,
-			'Makefile',
-			(n) => new RegExp(`^${n}\\s*:`, 'm'),
-			(n) => `make ${n}`
-		),
-		...fromPackageJson(root),
+		...fromTargets(root, 'Makefile', target, (n) => `make ${n}`),
+		...fromPackageJson(root, ['check', 'test']),
 		...(exists('pyproject.toml') ? [{ command: 'pytest', source: 'pyproject.toml' }] : []),
 		...(exists('Cargo.toml') ? [{ command: 'cargo test', source: 'Cargo.toml' }] : []),
 		...(exists('go.mod') ? [{ command: 'go test ./...', source: 'go.mod' }] : []),
 		...['justfile', 'Justfile'].flatMap((f) =>
-			exists(f)
-				? fromTargets(
-						root,
-						f,
-						(n) => new RegExp(`^${n}\\s*:`, 'm'),
-						(n) => `just ${n}`
-					)
-				: []
+			exists(f) ? fromTargets(root, f, target, (n) => `just ${n}`) : []
 		),
 		...['mise.toml', '.mise.toml'].flatMap((f) =>
 			exists(f)

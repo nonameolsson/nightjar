@@ -141,19 +141,25 @@ describe('nightjar init asks, never guesses', () => {
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
-	it('warns about a check that can never fail, and reports that it passes on the clean tree', async () => {
-		// the machine's PATH holds no sh, which the check runs through
-		await init(['github', '', 'github', '', 'true', '', ''], { PATH: `${m.env.PATH ?? ''}:/bin` });
+	// the machine's PATH holds no sh, which the check runs through
+	const withSh = () => ({ PATH: `${m.env.PATH ?? ''}:/bin` });
+
+	it('warns about a check that can never fail, and reports that it passes on this checkout', async () => {
+		await init(['github', '', 'github', '', 'true', '', ''], withSh());
 		expect(out.join('\n')).toContain('`true` can never fail');
+		expect(out).toContain('nightjar: running the check once on this checkout: true');
 		expect(out.join('\n')).toContain('the check passes');
 	});
 
-	it('warns about `:` and reports a check that fails right now', async () => {
-		await init(['github', '', 'github', '', ':', '', '']);
+	it('warns about `:`', async () => {
+		await init(['github', '', 'github', '', ':', '', ''], withSh());
 		expect(out.join('\n')).toContain('`:` can never fail');
-		out.length = 0;
-		m.writeConfig({ ...loadConfig(m.root), check: 'false' });
-		await init([]);
+		expect(out.join('\n')).toContain('the check passes');
+	});
+
+	it('reports a check that fails right now', async () => {
+		await init(['github', '', 'github', '', 'false', '', ''], withSh());
+		expect(out.join('\n')).not.toContain('can never fail');
 		expect(out.join('\n')).toContain('fails right now, so every Ticket will stop');
 	});
 
@@ -209,7 +215,7 @@ describe('nightjar init asks, never guesses', () => {
 	it('offers detected test and lint commands besides the check command, and says what stays denied', async () => {
 		writeFileSync(join(m.root, 'package.json'), '{"scripts":{"check":"x","test":"x","lint":"x"}}');
 		await init(['github', '', 'github', '', '', '', '']);
-		expect(asked.find((q) => q.includes('Commands the agent may run'))).toContain(
+		expect(asked.find((q) => q.includes('Commands the Coding agent may run'))).toContain(
 			'[npm run check, npm test, npm run lint]'
 		);
 		expect(m.readConfig()).toMatchObject({
@@ -312,13 +318,17 @@ describe('nightjar init with a module', () => {
 });
 
 describe('nightjar init explains each prompt', () => {
+	// the interview, then each later prompt with the line printed just before it
 	const promptsOnly = () => {
 		const end = transcript.findIndex((line) => line.includes('this is what init will do'));
-		return transcript.slice(0, end);
+		const later = transcript.flatMap((line, i) =>
+			i > end && asked.some((q) => line.startsWith(q)) ? [transcript[i - 1] ?? '', line] : []
+		);
+		return [...transcript.slice(0, end), ...later];
 	};
 
 	it('prints help before every prompt on GitHub, and shows longer help on ?', async () => {
-		await init(['github', '', 'github', '', '?', 'make check', '?', '', '']);
+		await init(['github', '', 'github', '', '?', 'make check', '?', '', '', 'n']);
 		expect(promptsOnly().join('\n')).toMatchSnapshot();
 	});
 
@@ -445,6 +455,14 @@ describe('nightjar init ends with the next step', () => {
 		expect(out).toContain('nightjar: would build #1 One escape');
 	});
 
+	it('prints a line of help before it offers doctor', async () => {
+		await init([...answers, 'n']);
+		const offer = transcript.findIndex((line) => line.startsWith('Run `nightjar doctor` now'));
+		expect(transcript[offer - 1]).toBe(
+			'  Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
+		);
+	});
+
 	it('runs no doctor on no', async () => {
 		expect(await init([...answers, 'n'])).toBe(0);
 		expect(out).not.toContain('nightjar: running `nightjar doctor`:');
@@ -499,6 +517,12 @@ describe('nightjar init in a repo that has a factory.json', () => {
 		expect(readFileSync(written(), 'utf8')).toBe(before);
 		expect(m.calls('gh')).toContain('-X POST repos/o/r/labels -f name=factory-go ');
 		expect(out).toContain('  ok    Tracker: gh as ann on o/r');
+	});
+
+	it('runs no check: the check of a kept file was reported when it was written', async () => {
+		m.writeConfig(config);
+		expect(await init([])).toBe(0);
+		expect(out.join('\n')).not.toContain('running the check');
 	});
 
 	it('refuses a factory.json that is wrong, naming the field', async () => {
@@ -617,7 +641,7 @@ describe('nightjar init with --yes and flags', () => {
 		expect(await init(['', '', ''], {}, [...argv, '--tracker-repo', 'acme/widgets'])).toBe(0);
 		expect(asked).toEqual([
 			'GitHub repo the branch is pushed to, owner/name [o/r]: ',
-			'Commands the agent may run, separated by commas, or none (? for more) [make check]: ',
+			'Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: ',
 			'Write factory.json and go on, y or n [y]: ',
 			'Run `nightjar doctor` now, y or n [y]: '
 		]);
