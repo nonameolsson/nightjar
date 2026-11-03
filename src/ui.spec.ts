@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { record } from './ledger.js';
+import { fileSpend, record } from './ledger.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
 
@@ -24,7 +24,7 @@ const ledgerFile = () => join(root, '.factory', 'runs.jsonl');
 const status = (watching = false) =>
 	new StatusFile({
 		path: join(root, '.factory', 'status.json'),
-		ledger: ledgerFile(),
+		spend: fileSpend(ledgerFile()),
 		now: () => at,
 		pid: 42,
 		dailyUsd: 8,

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { fileSpend } from './ledger.js';
 import { startLive } from './live.js';
 import { StatusFile } from './status.js';
 
@@ -52,7 +53,7 @@ describe('startLive', () => {
 		const first = w.text().split('\n').length - 1;
 		new StatusFile({
 			path: join(root, '.factory', 'status.json'),
-			ledger: join(root, '.factory', 'runs.jsonl'),
+			spend: fileSpend(join(root, '.factory', 'runs.jsonl')),
 			now: () => at,
 			pid: 42,
 			dailyUsd: 8

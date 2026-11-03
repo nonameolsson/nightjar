@@ -6,11 +6,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
-import { buildFeature, ledgerPath, LIMITS, type Deps, type Setup } from './build.js';
+import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import type { GhRunner } from './github/api.js';
 import type { Ask } from './ask.js';
 import { runDoctor } from './doctor.js';
 import { runInitCommand } from './init.js';
@@ -18,6 +19,7 @@ import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
+import { fileSpend, ledgerPath } from './ledger.js';
 import { claimPorts, portEnv } from './ports.js';
 import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
@@ -25,7 +27,7 @@ import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
 import { StatusFile, statusPath, type Named } from './status.js';
-import { worktreesFor } from './worktree.js';
+import { openWorktree, worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
 import { startLive } from './live.js';
 
@@ -61,22 +63,22 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 		env: host.env,
 		cwd: host.cwd,
 		failFast: true,
-		...(host.request === undefined ? {} : { request: host.request })
+		...(host.request === undefined ? {} : { request: host.request }),
+		...(host.gh === undefined ? {} : { gh: host.gh })
 	});
-	const failed = checked.lines.find((l) => l.status === 'fail' && l.only === undefined);
-	if (failed !== undefined) throw new Refusal(failed.detail);
-	if (checked.ready === null) throw new Refusal('the checks did not finish');
-	const { adapters, me } = checked.ready;
-	say(`${adapters.repo}, as ${me}, on ${checked.ready.login ?? 'ANTHROPIC_API_KEY'}`);
-	for (const l of checked.lines) {
+	if (checked.refusal !== null) throw new Refusal(checked.refusal);
+	const { ready, lines } = checked;
+	const { adapters, me, assignee, person } = ready;
+	say(`${adapters.repo}, as ${me}, on ${ready.login ?? 'ANTHROPIC_API_KEY'}`);
+	// with the build ready, a line that failed is a Workflow's own
+	for (const l of lines) {
 		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
 	}
-	const found = checked.lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
+	const found = lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
-	const { assignee, person } = checked.ready;
 	if (assignee !== me) say(`building the Features assigned to ${assignee}`);
 	if (person.dailyUsd !== LIMITS.dailyUsd) say(`daily limit $${String(person.dailyUsd)}`);
-	return checked.ready;
+	return ready;
 }
 
 // What the command reads of the machine it runs on; a spec passes its own.
@@ -86,6 +88,8 @@ export interface Host {
 	readonly cwd: string;
 	// answers every Azure DevOps call; a spec passes a fake Azure DevOps
 	readonly request?: AzureDevOpsRequest;
+	// runs every `gh` call; a spec passes a fake GitHub
+	readonly gh?: GhRunner;
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
 	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
@@ -126,13 +130,14 @@ export async function runNightjar(
 	}
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	if (args.mode === 'doctor') {
-		const { cwd, request } = host;
+		const { cwd, request, gh } = host;
 		return runDoctor({
 			useApiKey: args.useApiKey,
 			...(args.profile === undefined ? {} : { profile: args.profile }),
 			env,
 			cwd,
-			...(request ? { request } : {})
+			...(request ? { request } : {}),
+			...(gh ? { gh } : {})
 		});
 	}
 	let ready: Ready;
@@ -145,9 +150,10 @@ export async function runNightjar(
 	}
 	const { root, config, adapters } = ready;
 
+	const spend = fileSpend(ledgerPath(root));
 	const status = new StatusFile({
 		path: statusPath(root),
-		ledger: ledgerPath(root),
+		spend,
 		now: () => new Date(),
 		pid: process.pid,
 		dailyUsd: ready.person.dailyUsd
@@ -203,6 +209,8 @@ export async function runNightjar(
 		runCheck: (command, cwd, env) => runCheck(command, cwd, env, config.gate ?? {}),
 		runSetup: runCheck,
 		serve: startServe,
+		spend,
+		openWorktree,
 		now: () => new Date(),
 		newId: () => randomUUID(),
 		say: runSay,
