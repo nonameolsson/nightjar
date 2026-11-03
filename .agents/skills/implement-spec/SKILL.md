@@ -30,6 +30,8 @@ Communication to and from subagents should be sparse. Communicate primarily thro
    - confirms its worktree is based on the integration branch before starting, and resets onto it if not;
    - calls the Skill tool with `tdd` to build the ticket;
    - merges the integration branch tip into its own branch before reporting done
+   - picks its own test seams for `tdd` (no user to agree them with);
+   - when `git commit` fails (signing agent locked), leaves the work staged and reports it, never disabling signing;
 
 5. Once an **implementer subagent** completes, merge its work to the integration branch with a **merger subagent**.
 
@@ -39,4 +41,4 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 8. If a draft PR exists, mark it ready for review. Otherwise, resolve each ticket the way the issue tracker closes work, and report the integration branch.
 
-9. Clean up all **implementer subagent** worktrees.
+9. Clean up all **implementer subagent** worktrees with `git worktree remove --force <path>` and `git branch -D <branch>`.

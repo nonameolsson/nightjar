@@ -36,16 +36,15 @@ export function record(path: string, entry: Entry): void {
 const localDay = (d: Date) =>
 	`${String(d.getFullYear())}-${String(d.getMonth() + 1)}-${String(d.getDate())}`;
 
-// The estimated dollars spent on the local day of `now`. A line that does not parse counts nothing.
-export function spentOn(path: string, now: Date): number {
+// The lines of the ledger that parse; a line that does not, or the missing file, gives none.
+function readEntries(path: string) {
 	let text: string;
 	try {
 		text = readFileSync(path, 'utf8');
 	} catch {
-		return 0;
+		return [];
 	}
-	const day = localDay(now);
-	let sum = 0;
+	const entries: z.infer<typeof EntrySchema>[] = [];
 	for (const line of text.split('\n')) {
 		if (line.trim() === '') continue;
 		let value: unknown;
@@ -55,7 +54,60 @@ export function spentOn(path: string, now: Date): number {
 			continue;
 		}
 		const entry = EntrySchema.safeParse(value);
-		if (entry.success && localDay(new Date(entry.data.at)) === day) sum += entry.data.costUsd;
+		if (entry.success) entries.push(entry.data);
+	}
+	return entries;
+}
+
+// The estimated dollars spent on the local day of `now`. A line that does not parse counts nothing.
+export function spentOn(path: string, now: Date): number {
+	const day = localDay(now);
+	let sum = 0;
+	for (const entry of readEntries(path)) {
+		if (localDay(new Date(entry.at)) === day) sum += entry.costUsd;
+	}
+	return sum;
+}
+
+// How many Tickets were built on the local day of `now`.
+export function builtOn(path: string, now: Date): number {
+	const day = localDay(now);
+	return readEntries(path).filter(
+		(e) => e.step === 'build' && e.outcome === 'built' && localDay(new Date(e.at)) === day
+	).length;
+}
+
+// The repo the ledger's latest line names, or null with no line.
+export function lastRepo(path: string): string | null {
+	return readEntries(path).at(-1)?.repo ?? null;
+}
+
+export interface Spend {
+	readonly feature: string;
+	readonly at: number;
+	readonly costUsd: number;
+}
+
+// Each session's cost, by Feature id and the time it was recorded.
+export function spends(path: string): Spend[] {
+	return readEntries(path).map((e) => ({
+		feature: String(e.feature),
+		at: Date.parse(e.at),
+		costUsd: e.costUsd
+	}));
+}
+
+// The dollars spent on a Feature after `after` (exclusive) and up to `until` (inclusive), either open.
+export function spentOnFeature(
+	all: readonly Spend[],
+	feature: string,
+	after: number | null,
+	until: number | null
+): number {
+	let sum = 0;
+	for (const s of all) {
+		if (s.feature !== feature) continue;
+		if ((after === null || s.at > after) && (until === null || s.at <= until)) sum += s.costUsd;
 	}
 	return sum;
 }

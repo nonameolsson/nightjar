@@ -15,12 +15,14 @@ import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
+import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
+import { runUiCommand } from './ui-command.js';
 import { startServe } from './serve.js';
-import { StatusFile, statusPath } from './status.js';
+import { StatusFile, statusPath, type Named } from './status.js';
 import { worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
+import { startLive } from './live.js';
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -70,6 +72,8 @@ export interface Host {
 	readonly request?: AzureDevOpsRequest;
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
+	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
+	readonly stop?: AbortSignal;
 }
 
 export async function runNightjar(
@@ -94,6 +98,7 @@ export async function runNightjar(
 	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
+	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);
@@ -140,6 +145,12 @@ export async function runNightjar(
 		say(`ports ${String(claim.port)} to ${String(claim.port + config.ports.count - 1)}`);
 	}
 	const stop = new AbortController();
+	// on a terminal the block redraws in place and the lines the command says go to it and to .factory/nightjar.log
+	const live = process.stdout.isTTY
+		? startLive({ root, repo: adapters.repo, out: process.stdout, now: () => new Date() })
+		: null;
+	// the run's own lines: into the block on a terminal, else printed as say prints them
+	const runSay = live?.say ?? say;
 	const deps: Deps = {
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
@@ -149,7 +160,7 @@ export async function runNightjar(
 		serve: startServe,
 		now: () => new Date(),
 		newId: () => randomUUID(),
-		say,
+		say: runSay,
 		status
 	};
 	const setup: Setup = {
@@ -177,26 +188,27 @@ export async function runNightjar(
 		signal: stop.signal
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: string | null = null;
+	let building: Named | null = null;
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
-		build: async (id) => {
-			building = id;
+		build: async (feature) => {
+			building = feature;
 			try {
-				return await buildFeature(deps, setup, id);
+				return await buildFeature(deps, setup, feature.id);
 			} finally {
 				building = null;
 			}
 		},
 		status,
 		now: () => new Date(),
-		say,
+		say: runSay,
 		sleep,
 		signal: stop.signal
 	};
 
 	process.once('exit', () => status.doing({ kind: 'off' }));
+	process.once('exit', () => live?.stop());
 	// keep a Mac awake, so a long run is not put to sleep and a signing agent stays unlocked
 	if (process.platform === 'darwin') {
 		const awake = spawn('caffeinate', ['-di', '-w', String(process.pid)], { stdio: 'ignore' });
@@ -204,7 +216,7 @@ export async function runNightjar(
 	}
 	process.on('SIGINT', () => {
 		if (stop.signal.aborted) process.exit(130);
-		say(
+		runSay(
 			'stopping: the running session ends and its Ticket goes back; Ctrl-C again to quit at once'
 		);
 		stop.abort();
@@ -217,19 +229,33 @@ export async function runNightjar(
 		);
 	});
 
-	if (args.mode === 'feature' && args.feature !== undefined) {
-		let refusal: string | null;
-		try {
-			refusal = await cannotClaim(queueDeps, args.feature);
-		} catch (fault) {
-			refusal = why(fault);
+	try {
+		if (args.mode === 'feature' && args.feature !== undefined) {
+			let refusal: string | null;
+			try {
+				refusal = await cannotClaim(queueDeps, args.feature);
+			} catch (fault) {
+				refusal = why(fault);
+			}
+			if (refusal !== null) {
+				live?.stop();
+				console.error(`nightjar: ${refusal}`);
+				return 2;
+			}
+			let outcome;
+			try {
+				outcome = await buildNamed(queueDeps, args.feature);
+			} catch (fault) {
+				live?.stop();
+				console.error(`nightjar: ${why(fault)}`);
+				return 2;
+			}
+			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
 		}
-		if (refusal !== null) {
-			console.error(`nightjar: ${refusal}`);
-			return 2;
-		}
-		const outcome = await buildOne(queueDeps, args.feature);
-		return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
+		return await queue(queueDeps, args.mode === 'once');
+	} finally {
+		// the redraws would keep the process alive; the block ends on "stopped"
+		status.doing({ kind: 'off' });
+		live?.stop();
 	}
-	return queue(queueDeps, args.mode === 'once');
 }

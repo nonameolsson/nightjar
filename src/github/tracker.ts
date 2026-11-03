@@ -13,6 +13,7 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
+import { waitingFrom, type WaitingFeature } from '../tracker.js';
 import {
 	GitHubApi,
 	GitHubFailure,
@@ -75,9 +76,19 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 	}
 
 	async assignedFeatures(person: string): Promise<Feature[]> {
+		return this.featuresWith(person, this.names.go);
+	}
+
+	// labels in one query must all be there, so each Signal is asked for alone
+	waitingOn(person: string): Promise<WaitingFeature[]> {
+		return waitingFrom((signal) => this.featuresWith(person, this.names[signal]));
+	}
+
+	// the open Features assigned to `person` that carry the label, oldest first
+	private async featuresWith(person: string, label: string): Promise<Feature[]> {
 		const query = new URLSearchParams({
 			state: 'open',
-			labels: this.names.go,
+			labels: label,
 			assignee: person,
 			sort: 'created',
 			direction: 'asc',

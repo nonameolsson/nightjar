@@ -5,7 +5,7 @@ import type { CodeHost, Pull } from './code-host.js';
 import type { Env } from './git.js';
 import { record, spentOn, type Entry } from './ledger.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
-import { nextTicket, waiting, type Waiting } from './plan.js';
+import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import {
 	BUILD_SCHEMA,
 	REVIEW_SCHEMA,
@@ -27,7 +27,7 @@ import type { Serve, Served } from './serve.js';
 import type { Session, SessionRequest } from './session.js';
 import { BUILD_TOOLS, REVIEW_TOOLS, buildSettings, reviewSettings, stepTools } from './settings.js';
 import type { Signal } from './signals.js';
-import type { StatusReport } from './status.js';
+import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import { branchFor, openWorktree, type Worktree } from './worktree.js';
 import { DEFAULT_ROUNDS } from './config.js';
@@ -126,7 +126,7 @@ export type FeatureOutcome =
 const envOf = (setup: Setup): Env => ({ ...setup.env, ...setup.portEnv });
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
-const logsPath = (root: string) => join(root, '.factory', 'logs');
+export const logsPath = (root: string) => join(root, '.factory', 'logs');
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
@@ -157,16 +157,17 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
 	await tracker.addSignal(id, 'working');
 	await tracker.removeSignal(id, 'go');
-	deps.status.doing({
-		kind: 'building',
-		feature: id,
-		ticket: null,
-		step: 'setup',
-		round: null,
-		rounds: null,
-		session: null,
-		startedAt: deps.now().toISOString()
-	});
+	const show = buildingOf(feature, deps.now);
+	const settingUp = (tickets?: TicketProgress[]): Doing =>
+		show({
+			ticket: null,
+			step: 'setup',
+			round: null,
+			rounds: null,
+			session: null,
+			...(tickets === undefined ? {} : { tickets })
+		});
+	deps.status.doing(settingUp());
 	const tickets = await tracker.tickets(id);
 	const chosen = chooseWorkflow(setup, feature.body);
 	if (chosen.kind === 'refused') {
@@ -181,6 +182,8 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 	}
 	const tree = await openWorktree(setup.root, setup.worktrees, branch, setup.baseBranch, setup.env);
 	const built = await tree.built();
+	// the Tickets are planned once the branch says which are built
+	deps.status.doing(settingUp(progress(tickets, built, null)));
 	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
 		const command = setup.setupCommand;
 		deps.say(`${hash(id)}: setup: ${command}`);
@@ -198,7 +201,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 		await tree.markSetUp();
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow);
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show);
 	return run.build();
 }
 
@@ -227,12 +230,32 @@ type StepEnd =
 // The most of a Feature's diff a Step's prompt carries; the rest is in git.
 const DIFF_CHARS = 60_000;
 
+type Building = Extract<Doing, { kind: 'building' }>;
+type ShowBuilding = (
+	at: Pick<Building, 'ticket' | 'step' | 'round' | 'rounds' | 'session' | 'tickets'>
+) => Building;
+
+// One Feature's building states: the Feature's start in every one, and a fresh start for each step.
+function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
+	const featureStartedAt = now().toISOString();
+	return (at) => ({
+		kind: 'building',
+		feature: feature.id,
+		title: feature.title,
+		featureStartedAt,
+		startedAt: now().toISOString(),
+		...at
+	});
+}
+
 class FeatureRun {
 	private spent = 0;
 	private featureComments: Comment[] = [];
 	// the Steps the branch holds already, by their trailers
 	private stepsDone = new Set<string>();
 	private readonly reports: StepReport[] = [];
+	// what the status file shows now, so a Ticket built can change its Tickets alone
+	private shown: Doing | null = null;
 
 	constructor(
 		private readonly deps: Deps,
@@ -241,7 +264,8 @@ class FeatureRun {
 		private readonly tree: Worktree,
 		private readonly tickets: Ticket[],
 		private readonly built: Set<ItemId>,
-		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null
+		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
+		private readonly show: ShowBuilding
 	) {}
 
 	private get aborted() {
@@ -465,6 +489,16 @@ class FeatureRun {
 			return NEXT;
 		}
 		this.built.add(ticket.id);
+		if (this.shown?.kind === 'building') {
+			// no round of its own any more, so it is not counted as another fix round
+			this.deps.status.doing({
+				...this.shown,
+				step: 'build',
+				round: null,
+				rounds: null,
+				tickets: progress(this.tickets, this.built, null)
+			});
+		}
 		this.deps.status.happened({ kind: 'built', feature: this.feature.id, ticket: ticket.id });
 		// later Tickets would build on red, so the run stops here and a person looks
 		if (!check.ok) return { kind: 'red', tail: check.tail };
@@ -525,15 +559,14 @@ class FeatureRun {
 		session: string,
 		rounds: { readonly round: number; readonly rounds: number }
 	) {
-		this.deps.status.doing({
-			kind: 'building',
-			feature: this.feature.id,
+		this.shown = this.show({
 			ticket,
 			step,
 			...rounds,
 			session,
-			startedAt: this.deps.now().toISOString()
+			tickets: progress(this.tickets, this.built, ticket)
 		});
+		this.deps.status.doing(this.shown);
 	}
 
 	// The Workflow's Steps at one point, in order; a Step that fails is thrown away and the next still runs.
@@ -761,8 +794,15 @@ class FeatureRun {
 		const review =
 			this.setup.review?.enabled === false
 				? 'off'
-				: await reviewFeature(this.deps, this.setup, this.tree, this.feature, done, (e) =>
-						this.log(e)
+				: await reviewFeature(
+						this.deps,
+						this.setup,
+						this.tree,
+						this.feature,
+						done,
+						progress(this.tickets, this.built, null),
+						this.show,
+						(e) => this.log(e)
 					);
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
@@ -788,7 +828,12 @@ class FeatureRun {
 		);
 		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
-		this.deps.status.happened({ kind: 'pull', feature: id, url: pull.url });
+		this.deps.status.happened({
+			kind: 'pull',
+			feature: id,
+			title: this.feature.title,
+			url: pull.url
+		});
 		if (!paused && (left.length > 0 || red)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
 			this.deps.status.happened({
@@ -860,20 +905,15 @@ async function reviewFeature(
 	tree: Worktree,
 	feature: Feature,
 	built: readonly Ticket[],
+	tickets: TicketProgress[],
+	show: ShowBuilding,
 	log: (entry: LogEntry) => void
 ): Promise<Review | null> {
 	const sessionId = deps.newId();
 	deps.say(`${hash(feature.id)}: review, session ${sessionId}`);
-	deps.status.doing({
-		kind: 'building',
-		feature: feature.id,
-		ticket: null,
-		step: 'review',
-		round: null,
-		rounds: null,
-		session: sessionId,
-		startedAt: deps.now().toISOString()
-	});
+	deps.status.doing(
+		show({ ticket: null, step: 'review', round: null, rounds: null, session: sessionId, tickets })
+	);
 	const result = await deps.session({
 		cwd: tree.at.folder,
 		prompt: reviewPrompt(feature, tree.at.base, built, setup.rules),

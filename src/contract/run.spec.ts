@@ -5,6 +5,7 @@ import { codeHostContract } from './code-host.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
+import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
 import type { FakeTracker } from '../fakes/tracker.js';
 
@@ -20,7 +21,12 @@ describe('runContract', () => {
 			trackerHarness: fakeTrackerHarness,
 			codeHostHarness: fakeCodeHostHarness
 		});
-		expect(report.suites.map((s) => s.title)).toEqual(['Tracker', 'Tracker creation', 'Code host']);
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Tracker',
+			'Tracker creation',
+			'Tracker waiting on',
+			'Code host'
+		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
 		);
@@ -28,6 +34,9 @@ describe('runContract', () => {
 			featureWriterContract.map((c) => c.name)
 		);
 		expect(report.suites[2]?.results.map((r) => r.name)).toEqual(
+			waitingOnContract.map((c) => c.name)
+		);
+		expect(report.suites[3]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
@@ -36,12 +45,43 @@ describe('runContract', () => {
 	it('runs no creation suite over a Tracker that makes no Features, as a module written before it', async () => {
 		const reads: TrackerHarness = async (world) => {
 			const { tracker, ...rest } = await fakeTrackerHarness(world);
-			const { createFeature: _a, createTicket: _b, block: _c, ...only } = tracker as FakeTracker;
+			const {
+				createFeature: _a,
+				createTicket: _b,
+				block: _c,
+				waitingOn: _d,
+				...only
+			} = tracker as FakeTracker;
 			return { ...rest, tracker: only };
 		};
 		const report = await runContract({ trackerHarness: reads });
 		expect(report.suites.map((s) => s.title)).toEqual(['Tracker']);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no waitingOn suite over a Tracker without the method, and the creation suite still runs', async () => {
+		const lacks: TrackerHarness = async (world) => {
+			const { tracker, ...rest } = await fakeTrackerHarness(world);
+			const { waitingOn: _gone, ...without } = tracker as FakeTracker;
+			return { ...rest, tracker: without };
+		};
+		const report = await runContract({ trackerHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual(['Tracker', 'Tracker creation']);
+		expect(report.failed).toBe(0);
+	});
+
+	it('names a waitingOn that is wrong', async () => {
+		const wrong: TrackerHarness = async (world) => {
+			const subject = await fakeTrackerHarness(world);
+			return {
+				...subject,
+				tracker: Object.assign(subject.tracker, { waitingOn: () => Promise.resolve([]) })
+			};
+		};
+		const report = await runContract({ trackerHarness: wrong });
+		const failing = report.suites.find((s) => s.title === 'Tracker waiting on')?.results ?? [];
+		expect(failing.every((r) => !r.ok)).toBe(true);
+		expect(failing).toHaveLength(waitingOnContract.length);
 	});
 
 	it('runs only the suite whose harness the module exports', async () => {
@@ -59,7 +99,9 @@ describe('runContract', () => {
 		]);
 		expect(failing[0]?.error).toContain('Expected values to be strictly equal');
 		expect(report.failed).toBe(2);
-		expect(report.total).toBe(trackerContract.length + featureWriterContract.length);
+		expect(report.total).toBe(
+			trackerContract.length + featureWriterContract.length + waitingOnContract.length
+		);
 		const text = formatReport(report);
 		expect(text).toContain('FAIL  names the signed-in person');
 		expect(text).toContain('ok    lists the open Features assigned to a person');
