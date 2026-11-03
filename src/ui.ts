@@ -5,7 +5,8 @@ import type { AddressInfo } from 'node:net';
 import { basename, join } from 'node:path';
 import { ledgerPath } from './build.js';
 import { lastRepo } from './ledger.js';
-import { readFactory, type FactoryView } from './status-reader.js';
+import { readFactory, type Completed, type FactoryView } from './status-reader.js';
+import type { Doing, Named, WaitingItem } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -146,15 +147,204 @@ function completed(view: FactoryView): string {
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
 
+type Building = Extract<Doing, { kind: 'building' }>;
+
+// A Feature as a view draws it; every view reads this one list.
+interface FeatureCard {
+	readonly id: string;
+	readonly title?: string;
+	// the Tickets that wait on a person, with why
+	readonly waitingTickets: readonly WaitingItem[];
+}
+interface QueuedCard extends FeatureCard {
+	readonly state: 'queue';
+}
+interface BuildingCard extends FeatureCard {
+	readonly state: 'building';
+	readonly doing: Building;
+}
+interface WaitingCard extends FeatureCard {
+	readonly state: 'waiting';
+	readonly why: string;
+}
+interface CompletedCard extends FeatureCard {
+	readonly state: 'completed';
+	readonly done: Completed;
+}
+
+interface Features {
+	// each is undefined while Nightjar is off or has not read it yet
+	readonly queue: readonly QueuedCard[] | undefined;
+	readonly building: BuildingCard | null;
+	readonly waiting: readonly WaitingCard[] | undefined;
+	readonly trackerCannotList: boolean;
+	// newest first
+	readonly completed: readonly CompletedCard[];
+}
+
+// The one list of Features, built from what the reader gives.
+function features(view: FactoryView): Features {
+	const status = view.status;
+	const doing = status?.doing;
+	const on = running(view);
+	const building: BuildingCard | null =
+		doing?.kind === 'building' && on
+			? {
+					state: 'building',
+					id: doing.feature,
+					...(doing.title === undefined ? {} : { title: doing.title }),
+					waitingTickets: (doing.tickets ?? [])
+						.filter((t) => t.state === 'waiting')
+						.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
+					doing
+				}
+			: null;
+	const completedCard = (done: Completed): CompletedCard => ({
+		state: 'completed',
+		id: done.event.feature,
+		...(done.event.title === undefined ? {} : { title: done.event.title }),
+		waitingTickets: [],
+		done
+	});
+	const completed = view.completed.map(completedCard).reverse();
+	const found = on ? status?.waitingOnYou : undefined;
+	let waiting: WaitingCard[] | undefined;
+	if (found !== undefined) {
+		waiting = found.items
+			.filter((i) => i.kind === 'feature')
+			.map((i) => ({
+				state: 'waiting',
+				id: i.id,
+				title: i.title,
+				why: i.why,
+				waitingTickets: []
+			}));
+		// a waiting Ticket belongs to the Feature being built, else to the one that just ended
+		const owner = building ?? completed[0];
+		const parent: Named | undefined =
+			owner === undefined ? undefined : { id: owner.id, title: owner.title ?? '' };
+		const tickets = found.items.filter((i) => i.kind === 'ticket');
+		if (tickets.length > 0) {
+			const at = parent === undefined ? -1 : waiting.findIndex((w) => w.id === parent.id);
+			const own = at < 0 ? undefined : waiting[at];
+			if (own !== undefined) waiting[at] = { ...own, waitingTickets: tickets };
+			else
+				waiting.push({
+					state: 'waiting',
+					id: parent?.id ?? '',
+					...(parent === undefined || parent.title === '' ? {} : { title: parent.title }),
+					why: tickets.some((t) => t.why.includes('info')) ? 'needs info' : 'needs a person',
+					waitingTickets: tickets
+				});
+		}
+	}
+	const queued = (q: Named): QueuedCard => ({
+		state: 'queue',
+		id: q.id,
+		title: q.title,
+		waitingTickets: []
+	});
+	const queue = on ? status?.queue?.map(queued) : undefined;
+	return {
+		queue,
+		building,
+		waiting,
+		trackerCannotList: found?.trackerCannotList ?? false,
+		completed
+	};
+}
+
+const feature = (card: FeatureCard) =>
+	`<b>${card.id === '' ? '' : idHtml(card.id)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+
+const waitingTicketsHtml = (card: FeatureCard) =>
+	card.waitingTickets.length === 0
+		? ''
+		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id)} ${escape(t.title)} <small>${escape(t.why)}</small></li>`).join('')}</ul>`;
+
+function buildingCard(card: BuildingCard, view: FactoryView): string {
+	const { doing } = card;
+	const tickets = doing.tickets ?? [];
+	const at = tickets.findIndex((t) => t.id === doing.ticket);
+	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
+	const round =
+		doing.round === null || doing.rounds === null
+			? ''
+			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
+	const list = tickets
+		.map(
+			(t) =>
+				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+		)
+		.join('');
+	const tail = view.tail.map(escape).join('\n');
+	return (
+		`<article class="fcard building">${feature(card)}` +
+		`<p class="meta"><time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
+		`<p>${where}${doing.step}${round}</p>` +
+		(list === '' ? '' : `<ul class="tickets">${list}</ul>`) +
+		(tail === '' ? '' : `<pre>${tail}</pre>`) +
+		'</article>'
+	);
+}
+
+function completedCard(card: CompletedCard): string {
+	const { event, costUsd } = card.done;
+	const outcome =
+		event.kind === 'pull'
+			? safeUrl(event.url)
+				? `<a href="${escape(event.url)}">draft pull request</a>`
+				: escape(event.url)
+			: `failed: ${escape(event.why)}`;
+	return `<article class="fcard ${event.kind === 'failed' ? 'failed' : 'pulled'}">${feature(card)}<p>${outcome}</p><p class="meta">${dollars(costUsd)}</p></article>`;
+}
+
+function column(name: string, body: string): string {
+	return `<section class="column"><h2>${name}</h2>${body}</section>`;
+}
+
+const OFF = '<p class="empty">not known while nightjar is off</p>';
+
+function board(view: FactoryView): string {
+	const all = features(view);
+	const on = running(view);
+	const none = (text: string) => `<p class="empty">${text}</p>`;
+	const queued = !on
+		? OFF
+		: all.queue === undefined
+			? none('not read yet')
+			: all.queue.length === 0
+				? none('empty')
+				: all.queue.map((c) => `<article class="fcard">${feature(c)}</article>`).join('');
+	const building =
+		all.building === null ? none('nothing is being built') : buildingCard(all.building, view);
+	let waiting: string;
+	if (!on) waiting = OFF;
+	else if (all.waiting === undefined) waiting = none('not read yet');
+	else {
+		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
+		const cards = all.waiting
+			.map(
+				(c) =>
+					`<article class="fcard waiting">${feature(c)}<p>${escape(c.why)}</p>${waitingTicketsHtml(c)}</article>`
+			)
+			.join('');
+		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
+	}
+	const completed =
+		all.completed.length === 0
+			? none('nothing has finished yet')
+			: all.completed.map(completedCard).join('');
+	return `<div class="board">${column('Queue', queued)}${column('Building', building)}${column('Waiting on you', waiting)}${column('Completed', completed)}</div>`;
+}
+
 // The panels, which the page replaces whole each time an event brings new ones.
 export function renderPanels(root: string, view: FactoryView): string {
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
 		cards(view),
-		current(view),
-		queue(view),
-		waiting(view),
-		completed(view)
+		board(view),
+		`<div class="overview">${[current(view), queue(view), waiting(view), completed(view)].join('\n')}</div>`
 	].join('\n');
 }
 
@@ -167,7 +357,8 @@ const PAGE = (panels: string) => `<!doctype html>
 <style>${STYLE}</style>
 </head>
 <body>
-<main id="panels">${panels}</main>
+<nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="overview">Overview</button></nav>
+<main id="panels" data-view="board">${panels}</main>
 <script>${SCRIPT}</script>
 </body>
 </html>
@@ -179,6 +370,21 @@ const panels = document.getElementById('panels');
 const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
+const VIEWS = ['board', 'overview'];
+// the choice lives on the panels element and in local storage, so a refresh of its content keeps it
+function show(view) {
+	panels.dataset.view = view;
+	for (const b of document.querySelectorAll('button[data-view]')) b.dataset.on = String(b.dataset.view === view);
+}
+let saved = null;
+try { saved = localStorage.getItem('nightjar-view'); } catch {}
+show(VIEWS.includes(saved) ? saved : 'board');
+for (const b of document.querySelectorAll('button[data-view]')) {
+	b.onclick = () => {
+		show(b.dataset.view);
+		try { localStorage.setItem('nightjar-view', b.dataset.view); } catch {}
+	};
+}
 function tick() {
 	const now = Date.now();
 	for (const t of document.querySelectorAll('time[data-since]')) t.textContent = elapsed(now - Date.parse(t.dataset.since));
@@ -193,17 +399,34 @@ setInterval(tick, 1000);
 `;
 
 const STYLE = `
-:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; }
-@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; } }
-body { font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 auto; max-width: 56rem; padding: 0 16px 32px; }
+:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; --surface: #f9fafb; --accent: #2563eb; --bad: #dc2626; --good: #16a34a; }
+@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; --surface: #1f2937; --accent: #60a5fa; --bad: #f87171; --good: #4ade80; } }
+body { font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0 auto; max-width: 80rem; padding: 0 20px 32px; }
 h1, h2 { font-size: 1em; margin: 0; }
-h2 { color: var(--muted); font-weight: normal; margin-top: 1.5em; }
-header { border-bottom: 1px solid var(--line); padding: 16px 0 8px; }
-#cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
-.card span, .empty, small { color: var(--muted); }
+h1 { font-size: 1.25em; display: inline; }
+h2 { color: var(--muted); font-weight: 600; margin-top: 1.5em; }
+header { border-bottom: 1px solid var(--line); padding: 20px 0 10px; }
+header .repo, header .state { color: var(--muted); margin-left: 8px; }
+#views { display: flex; gap: 4px; padding-top: 12px; }
+#views button { background: none; border: 1px solid var(--line); border-radius: 6px; color: inherit; cursor: pointer; font: inherit; padding: 4px 14px; }
+#views button[data-on="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+#cards { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.card span, .empty, small, .meta { color: var(--muted); }
 ul { list-style: none; margin: 4px 0; padding: 0; }
-pre { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; overflow-x: auto; padding: 8px; white-space: pre-wrap; }
+pre, time, .overview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { border: 1px solid var(--line); border-radius: 6px; font-size: 12px; margin: 8px 0; max-height: 14rem; overflow: auto; padding: 8px; white-space: pre-wrap; }
+#panels[data-view="board"] .overview, #panels[data-view="overview"] .board { display: none; }
+.board { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.column { min-width: 0; }
+.fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; overflow-wrap: anywhere; padding: 10px 12px; }
+.fcard p { margin: 4px 0; }
+.fcard.building { border-color: var(--accent); }
+.fcard.failed { border-color: var(--bad); color: var(--bad); }
+.fcard.pulled a { color: var(--good); }
+.tickets li.built { color: var(--good); }
+.tickets li.building { color: var(--accent); font-weight: 600; }
+@media (max-width: 700px) { .board { grid-template-columns: 1fr; } }
 `;
 
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.

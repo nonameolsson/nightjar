@@ -204,7 +204,7 @@ describe('nightjar ui page', () => {
 		const until = { dataset: { until: '2026-10-30T08:01:12.000Z' }, textContent: '' };
 		runInNewContext(script, {
 			document: {
-				getElementById: () => ({}),
+				getElementById: () => ({ dataset: {} }),
 				querySelectorAll: (q: string) => (q.includes('since') ? [since] : [until])
 			},
 			EventSource: function EventSource() {
@@ -303,6 +303,83 @@ describe('nightjar ui events', () => {
 		const page = (await get('/')).text;
 		expect(page).toContain("new EventSource('/events')");
 		expect(page).toContain('data-since');
+	});
+});
+
+describe('nightjar ui board', () => {
+	it('opens on a Board of four columns with a card per Feature, and keeps Overview', async () => {
+		const file = status();
+		file.doing({
+			kind: 'building',
+			feature: '5',
+			title: 'Search',
+			ticket: '7',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '6', title: 'Index', state: 'built' },
+				{ id: '7', title: 'Query', state: 'building' },
+				{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+			]
+		});
+		file.refreshed([{ id: '9', title: 'Exports' }], {
+			items: [
+				{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' },
+				{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs info' }
+			],
+			trackerCannotList: false
+		});
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('<main id="panels" data-view="board">');
+		for (const name of ['Queue', 'Building', 'Waiting on you', 'Completed'])
+			expect(page).toContain(`<h2>${name}</h2>`);
+		expect(page).toContain('Exports');
+		expect(page).toContain('Ticket 2 of 3, build, round 1 of 3');
+		expect(page).toContain('<li class="built">');
+		expect(page).toContain('Webhooks');
+		expect(page).toContain('Facets <small>needs info</small>');
+		expect(page).toContain('<h2>Current build</h2>');
+	});
+
+	it('lists at most ten Completed, newest first, and says when the run is off', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		for (let n = 1; n <= 12; n++)
+			file.happened({ kind: 'failed', feature: String(100 + n), why: 'check red' });
+		await open();
+		let page = (await get('/')).text;
+		const board = page.split('<div class="board">')[1]?.split('<div class="overview">')[0] ?? '';
+		expect(board.match(/class="fcard failed"/g)).toHaveLength(10);
+		expect(board.indexOf('#112')).toBeLessThan(board.indexOf('#111'));
+		alive = false;
+		page = (await get('/')).text;
+		expect(page).toContain('not known while nightjar is off');
+	});
+
+	it('remembers the view in local storage and applies it again', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const store: Record<string, string> = { 'nightjar-view': 'overview' };
+		const panels = { dataset: {} as Record<string, string> };
+		const button = { dataset: { view: 'board' } as Record<string, string>, onclick: () => {} };
+		runInNewContext(script, {
+			document: { getElementById: () => panels, querySelectorAll: () => [button] },
+			localStorage: {
+				getItem: (k: string) => store[k] ?? null,
+				setItem: (k: string, v: string) => (store[k] = v)
+			},
+			EventSource: function EventSource() {
+				return {};
+			},
+			setInterval: () => 0
+		});
+		expect(panels.dataset['view']).toBe('overview');
+		button.onclick();
+		expect([panels.dataset['view'], store['nightjar-view']]).toEqual(['board', 'board']);
 	});
 });
 
