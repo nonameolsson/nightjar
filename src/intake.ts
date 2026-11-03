@@ -1,4 +1,4 @@
-// `nightjar intake`: takes the deliveries of factory.json's webhook Sources and makes their Features on the Tracker; it never builds.
+// `nightjar intake`: takes the deliveries of factory.json's webhook and Sentry Sources and makes their Features on the Tracker; it never builds.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import {
@@ -17,7 +17,7 @@ import { localTime, nextDue, parseCron, type Cron } from './cron.js';
 import { FeatureFileError } from './feature-file.js';
 import { run, type Env } from './git.js';
 import { say as sayLine, why } from './say.js';
-import { fillTemplate, readTemplate, templateFaults } from './template.js';
+import { fillTemplate, lookup, readTemplate, templateFaults } from './template.js';
 import type { FeatureWriter, ItemId, SourcedFeature, Tracker } from './tracker.js';
 
 // the largest body a delivery may have
@@ -41,12 +41,20 @@ export type IntakeTracker = Tracker & FeatureWriter & Required<Pick<Tracker, 'fe
 const findsSources = (tracker: Tracker & FeatureWriter): tracker is IntakeTracker =>
 	typeof tracker.featuresFrom === 'function';
 
+// where Sentry puts the id of the issue an alert is about; the key of a sentry Source that names none
+export const SENTRY_KEY = 'data.event.issue_id';
+
+// the one Sentry resource intake takes: an issue alert rule that fired
+export const SENTRY_RESOURCE = 'event_alert';
+
 // A webhook Source as intake serves it: its template read, its secret taken from the environment.
 export interface ServedSource {
 	// the template's text, a Feature file with placeholders
 	readonly template: string;
-	// the Standard Webhooks secret, `whsec_` and base64 as the sender gives it
+	// the Standard Webhooks secret, `whsec_` and base64 as the sender gives it; for a sentry Source, the integration's client secret as it is
 	readonly secret: string;
+	// how a delivery is signed: by the Standard Webhooks scheme, or Sentry's own; webhook when left out
+	readonly type?: 'webhook' | 'sentry';
 	readonly key?: string;
 	readonly maxPerDay: number;
 }
@@ -89,6 +97,7 @@ type Outcome =
 	| 'again'
 	| 'still open'
 	| 'day limit'
+	| 'other resource'
 	| 'bad signature'
 	| 'too many bad signatures'
 	| 'too large'
@@ -152,6 +161,19 @@ export function signedRight(
 		const given = Buffer.from(signature.slice('v1,'.length), 'base64');
 		return given.length === expected.length && timingSafeEqual(given, expected);
 	});
+}
+
+// Whether a delivery carries the signature Sentry gives it: the hex HMAC SHA-256 of the raw body, with the integration's client secret.
+export function sentrySignedRight(
+	secret: string,
+	headers: IncomingHttpHeaders,
+	body: Buffer
+): boolean {
+	const signature = header(headers, 'sentry-hook-signature');
+	if (signature === undefined || !/^[0-9a-f]+$/i.test(signature)) return false;
+	const expected = createHmac('sha256', secret).update(body).digest();
+	const given = Buffer.from(signature, 'hex');
+	return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -324,15 +346,26 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			req.resume();
 			return { status: 413, outcome: 'too large' };
 		}
-		if (!signedRight(source.secret, req.headers, body, now())) {
+		const sentry = source.type === 'sentry';
+		const right = sentry
+			? sentrySignedRight(source.secret, req.headers, body)
+			: signedRight(source.secret, req.headers, body, now());
+		if (!right) {
 			failedRecently(name).push(now().getTime());
 			return { status: 401, outcome: 'bad signature' };
+		}
+		// Sentry sends every resource of the integration to the one URL; filtering stays in Sentry's alert rules
+		if (sentry && header(req.headers, 'sentry-hook-resource') !== SENTRY_RESOURCE) {
+			return { status: 200, outcome: 'other resource' };
 		}
 		let payload: unknown;
 		try {
 			payload = JSON.parse(body.toString('utf8'));
 		} catch {
 			return { status: 400, outcome: 'not json' };
+		}
+		if (sentry && lookup(payload, 'action') !== 'triggered') {
+			return { status: 200, outcome: 'other resource' };
 		}
 		return inTurn(name, () => make(name, source, payload));
 	};
@@ -455,15 +488,11 @@ function served(config: Config, root: string, env: Env): Served {
 	const faults: string[] = [];
 	const notes: string[] = [];
 	for (const [name, source] of Object.entries(config.sources ?? {})) {
-		if (source.type === 'sentry') {
-			notes.push(`Source ${name}: intake takes no ${source.type} Source; it is left out`);
-			continue;
-		}
 		const own: string[] = templateFaults(root, source.template).map(
 			(f) => `template ${source.template}: ${f}`
 		);
 		const secret = source.secretEnv === undefined ? '' : (env[source.secretEnv] ?? '');
-		if (source.type === 'webhook') {
+		if (source.type !== 'schedule') {
 			if (source.secretEnv === undefined) {
 				own.push('name the variable that holds its webhook secret, as secretEnv');
 			} else if (secret === '') {
@@ -488,10 +517,12 @@ function served(config: Config, root: string, env: Env): Served {
 		const template = readTemplate(root, source.template);
 		const maxPerDay = source.maxPerDay ?? DEFAULT_MAX_PER_DAY;
 		if (cron === undefined) {
+			const key = source.key ?? (source.type === 'sentry' ? SENTRY_KEY : undefined);
 			sources.set(name, {
 				template,
 				secret,
-				...(source.key === undefined ? {} : { key: source.key }),
+				type: source.type === 'sentry' ? 'sentry' : 'webhook',
+				...(key === undefined ? {} : { key }),
 				maxPerDay
 			});
 		} else {

@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runCreateCommand, makeFeature } from './create.js';
+import { SENTRY_EVENT_ALERT } from './fakes/sentry.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { readFeatureFile } from './feature-file.js';
+import { SENTRY_KEY } from './intake.js';
 import {
 	PAYLOAD_LIMIT,
 	TemplateError,
@@ -316,7 +318,48 @@ describe('a template on disk', () => {
 			writeFileSync(file, text);
 			expect(await runCreateCommand(['--dry-run', file])).toBe(0);
 			expect(out.join('\n')).toContain('would make the Feature Fix the Sentry error');
-			expect(out.join('\n')).toContain('would make Ticket 1 Find the cause and fix it');
+			expect(out.join('\n')).toContain(
+				'would make Ticket 1 Reproduce the error in a spec, then fix it so the spec passes'
+			);
+			expect(out.join('\n')).not.toContain('would make Ticket 2');
+		});
+
+		it('passes for the sentry template filled from a Sentry alert, with its title, culprit and link', async () => {
+			const { text } = fillTemplate({
+				template: readTemplate(root, 'sentry'),
+				source: 'sentry',
+				payload: SENTRY_EVENT_ALERT,
+				key: SENTRY_KEY
+			});
+			expect(text).toContain('Error: TypeError');
+			expect(text).toContain('Culprit: handleRequest');
+			expect(text).toContain('https://sentry.io/organizations/example-org/issues/4501/events/');
+			expect(text).toContain('<!-- nightjar:source=sentry key=4501 -->');
+			const file = join(root, 'sentry.md');
+			writeFileSync(file, text);
+			expect(await runCreateCommand(['--dry-run', file])).toBe(0);
+			expect(out.join('\n')).toContain('would make the Feature Fix the Sentry error: TypeError');
+			expect(out.join('\n')).toContain(
+				'would make Ticket 1 Reproduce the error in a spec, then fix it so the spec passes'
+			);
+		});
+
+		it('passes for the weekly-deps template filled for a schedule, which has no payload', async () => {
+			const { text } = fillTemplate({
+				template: readTemplate(root, 'weekly-deps'),
+				source: 'weekly-deps',
+				fixedKey: 'weekly-deps',
+				now: NOW
+			});
+			const file = join(root, 'weekly.md');
+			writeFileSync(file, text);
+			expect(await runCreateCommand(['--dry-run', file])).toBe(0);
+			expect(out.join('\n')).toContain(
+				'would make the Feature Update the dependencies, 2026-11-03'
+			);
+			expect(out.join('\n')).toContain(
+				'would make Ticket 1 Update the dependencies the check command still passes with'
+			);
 			expect(out.join('\n')).not.toContain('would make Ticket 2');
 		});
 	});

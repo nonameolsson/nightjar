@@ -365,11 +365,11 @@ Some work starts outside a person's head: an alert, a message from a script or f
 
 | Field       | What it does |
 | ----------- | ------------ |
-| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme; `schedule` fires from a `cron` time. |
+| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme; `sentry` takes a Sentry alert (set up below); `schedule` fires from a `cron` time. |
 | `cron`      | A schedule's time, required for a `schedule` and refused on anything else: five fields (minute, hour, day of month, month, day of week; numbers, ranges `1-5`, lists `1,15`, steps `*/15`), or `@daily` (midnight) or `@weekly` (Sunday midnight). It is read in the machine's local time zone. As in cron, a day of the month and a day of the week that are both named make a time on either. A bad one is refused when `factory.json` loads, naming the Source. |
 | `template`  | A Feature file, in the shape of [Write a Feature](#write-a-feature), as a path from the repo's root, or the name of a template Nightjar ships (`sentry`, `weekly-deps`). Placeholders are plain paths into the payload, as `{{ data.alert.title }}`, plus `{{ date }}` and `{{ source }}`; there is no logic. |
-| `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one. |
-| `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64). The secret is never in `factory.json`. |
+| `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one; a `sentry` Source's key is the Sentry issue id, `data.event.issue_id`. |
+| `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64); for a `sentry` Source, the integration's client secret. The secret is never in `factory.json`. |
 | `maxPerDay` | The most Features the Source makes in a day; 3 when left out. |
 
 The payload is untrusted. Each value a placeholder takes is cut to one line of at most 200 characters, with Markdown and HTML escaped, and the whole payload, cut to 8 KB, is added to the Feature in a block headed "Event payload (untrusted data)". Each Feature carries a `**Source:** <name>` line and a hidden marker, by which Nightjar finds it on the Tracker again. A Source makes its Features with no Signal: as with `nightjar create`, a person gives the Go.
@@ -393,6 +393,26 @@ Intake answers a delivery only after the Tracker has:
 | 413    | the body is over 256 KB |
 | 429    | the Source has had 20 bad signatures in the last minute |
 | 503    | the Tracker failed; the sender retries, and the key keeps a retry from making a second Feature |
+
+**Sentry.** A `sentry` Source takes the alerts of Sentry's issue alert rules. Set it up once:
+
+1. In Sentry, open Settings, Developer Settings, and create an **internal integration**. Under Webhooks, put the public HTTPS address of the Source as its webhook URL (`https://<your address>/sources/sentry`, see Public HTTPS below), and tick **alert rule action**. Give it the permission Read for Issue & Event. Save it, and copy its **Client Secret**.
+2. Put the client secret in the variable the Source names as `secretEnv`, where intake runs: `SENTRY_HOOK_SECRET=... nightjar intake`.
+3. In the project's **Alerts**, make an issue alert rule (or edit one), and under actions pick **Send a notification via** your integration. The rule decides which errors reach Nightjar: filter by environment, level or frequency there, as Nightjar takes every alert the rule sends.
+
+```json
+"sources": {
+	"sentry": { "type": "sentry", "template": "sentry", "secretEnv": "SENTRY_HOOK_SECRET" }
+}
+```
+
+Intake checks `Sentry-Hook-Signature`, the HMAC SHA-256 of the raw body with the client secret, and answers 401 when it is wrong. It takes `event_alert` deliveries only (the `triggered` alert): a delivery of any other `Sentry-Hook-Resource` that Sentry sends to the same URL gets 200 and makes nothing. The key is the Sentry issue id, so while the Feature of an issue is open, a new alert for it makes no second Feature and only comments "happened again", at most once a day. The shipped `sentry` template fills the Feature from the alert (`data.event.title`, `culprit`, `level`, `web_url` and `data.triggered_rule`) with one Ticket: reproduce the error in a spec, then fix it so the spec passes.
+
+**Shipped templates.** Name one in a Source's `template`. `sentry` is the one above. `weekly-deps` has one Ticket, to update the dependencies the repo's check command still passes with, and goes with a schedule:
+
+```json
+"weekly-deps": { "type": "schedule", "cron": "0 6 * * 1", "template": "weekly-deps" }
+```
 
 **Schedules.** Intake fires each `schedule` Source at its due time, through the same path as a webhook, from the template with no payload. The Source's name is its key, so a schedule whose last Feature is still open makes nothing, and says nothing on it. `maxPerDay` holds as for a webhook. Times that pass while intake is down are not made up, and a machine that sleeps through several makes one Feature when it wakes, not one for each. Only `nightjar intake` fires schedules, never `--watch`. A schedule needs no secret, so intake with schedules only starts and serves nothing. `nightjar doctor` prints each schedule's next due time, and intake prints it as it starts.
 

@@ -14,11 +14,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INTAKE_HOST, INTAKE_PORT, parseIntakeArgs, USAGE } from './args.js';
+import {
+	SENTRY_CLIENT_SECRET,
+	SENTRY_EVENT_ALERT,
+	SENTRY_ISSUE_ID,
+	sentryHeaders
+} from './fakes/sentry.js';
 import { FakeTracker } from './fakes/tracker.js';
 import {
 	AGAIN_MARKER,
 	BODY_LIMIT,
 	FAILED_SIGNATURES,
+	SENTRY_KEY,
 	startIntake,
 	type IntakeServer,
 	type ScheduledSource,
@@ -509,6 +516,147 @@ describe('intake over a schedule', () => {
 	});
 });
 
+describe('intake over a Sentry Source', () => {
+	const body = JSON.stringify(SENTRY_EVENT_ALERT);
+
+	async function startSentry(over: Partial<ServedSource> = {}): Promise<IntakeServer> {
+		server = await startIntake({
+			tracker,
+			sources: new Map([
+				[
+					'sentry',
+					{
+						template: readFileSync(new URL('../templates/sentry.md', import.meta.url), 'utf8'),
+						secret: SENTRY_CLIENT_SECRET,
+						type: 'sentry',
+						key: SENTRY_KEY,
+						maxPerDay: 3,
+						...over
+					}
+				]
+			]),
+			host: '127.0.0.1',
+			port: 0,
+			log: logPath(),
+			now: () => clock,
+			say: (line) => said.push(line)
+		});
+		return server;
+	}
+
+	const deliver = (raw: string, headers: Record<string, string>) =>
+		post(raw, headers, '/sources/sentry');
+
+	it('makes a Feature from the sentry template for a signed event_alert, keyed by the issue id', async () => {
+		await startSentry();
+		const { status, json } = await deliver(body, sentryHeaders(body));
+		expect(status).toBe(201);
+		const [made, ...more] = features();
+		expect(more).toEqual([]);
+		expect(json).toEqual({ outcome: 'made', feature: made?.id });
+		expect(made?.title).toContain('Fix the Sentry error: TypeError');
+		expect(made?.signals).toEqual([]);
+		expect(made?.body).toContain(`<!-- nightjar:source=sentry key=${SENTRY_ISSUE_ID} -->`);
+		expect(made?.body).toContain('**Source:** sentry');
+		expect(made?.body).toContain('Event payload (untrusted data)');
+		const [ticket] = made?.children.map((id) => tracker.items.get(id)) ?? [];
+		expect(ticket?.title).toBe('Reproduce the error in a spec, then fix it so the spec passes');
+	});
+
+	it('makes nothing for the same issue while its Feature is open, and answers 200', async () => {
+		await startSentry();
+		expect((await deliver(body, sentryHeaders(body))).status).toBe(201);
+		const [made] = features();
+		later(1);
+		expect(await deliver(body, sentryHeaders(body))).toEqual({
+			status: 200,
+			json: { outcome: 'again', feature: made?.id }
+		});
+		expect(features()).toHaveLength(1);
+	});
+
+	it('keeps another issue apart: it is another Feature', async () => {
+		await startSentry();
+		const other = JSON.stringify({
+			...SENTRY_EVENT_ALERT,
+			data: {
+				...SENTRY_EVENT_ALERT.data,
+				event: { ...SENTRY_EVENT_ALERT.data.event, issue_id: '4502' }
+			}
+		});
+		expect((await deliver(body, sentryHeaders(body))).status).toBe(201);
+		expect((await deliver(other, sentryHeaders(other))).status).toBe(201);
+		expect(features()).toHaveLength(2);
+	});
+
+	it('answers 200 and makes nothing for any other resource, signed or not by a good secret', async () => {
+		await startSentry();
+		for (const resource of ['issue', 'installation', 'comment', 'error', 'metric_alert']) {
+			expect(await deliver(body, sentryHeaders(body, resource))).toEqual({
+				status: 200,
+				json: { outcome: 'other resource' }
+			});
+		}
+		// an event_alert whose action is not "triggered" is not one either
+		const resolved = JSON.stringify({ ...SENTRY_EVENT_ALERT, action: 'resolved' });
+		expect((await deliver(resolved, sentryHeaders(resolved))).status).toBe(200);
+		expect(features()).toEqual([]);
+		// a delivery with no resource header is no event_alert
+		const bare = { ...sentryHeaders(body) } as Record<string, string>;
+		delete bare['sentry-hook-resource'];
+		expect((await deliver(body, bare)).status).toBe(200);
+		expect(features()).toEqual([]);
+	});
+
+	it('answers 401 to a wrong or missing Sentry-Hook-Signature, whatever the resource', async () => {
+		await startSentry();
+		const wrong = sentryHeaders(body, 'event_alert', 'another secret');
+		const missing = { ...sentryHeaders(body) } as Record<string, string>;
+		delete missing['sentry-hook-signature'];
+		for (const headers of [
+			wrong,
+			missing,
+			{ ...sentryHeaders(body), 'sentry-hook-signature': 'not hex' },
+			{ ...sentryHeaders(body), 'sentry-hook-signature': 'abcd' },
+			{
+				...sentryHeaders(body, 'issue'),
+				'sentry-hook-signature': wrong['sentry-hook-signature'] ?? ''
+			}
+		]) {
+			expect((await deliver(body, headers)).status).toBe(401);
+		}
+		// a body changed after it was signed
+		const changed = body.replace('4501', '4599');
+		expect((await deliver(changed, sentryHeaders(body))).status).toBe(401);
+		// the signature of the Standard Webhooks scheme is no signature here
+		expect((await deliver(body, signed(body))).status).toBe(401);
+		expect(features()).toEqual([]);
+	});
+
+	it('counts bad signatures as a webhook Source does', async () => {
+		await startSentry();
+		const wrong = sentryHeaders(body, 'event_alert', 'another secret');
+		for (let i = 0; i < FAILED_SIGNATURES; i += 1) {
+			expect((await deliver(body, wrong)).status).toBe(401);
+		}
+		expect((await deliver(body, sentryHeaders(body))).status).toBe(429);
+	});
+
+	it('logs a delivery for another resource, without its payload', async () => {
+		await startSentry();
+		await deliver(body, sentryHeaders(body, 'issue'));
+		expect(logLines()).toEqual([
+			{
+				at: clock.toISOString(),
+				source: 'sentry',
+				delivery: '',
+				answer: 200,
+				outcome: 'other resource'
+			}
+		]);
+	});
+});
+
 describe('nightjar intake arguments', () => {
 	it('listens on 127.0.0.1:4546 unless --host or --port says otherwise', () => {
 		expect(parseIntakeArgs([])).toEqual({ host: INTAKE_HOST, port: INTAKE_PORT });
@@ -661,6 +809,37 @@ describe('nightjar intake', () => {
 		});
 		expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
 		expect(err.join('\n')).toContain('sources.weekly.cron: minute: 61 is not from 0 to 59');
+	});
+
+	it('serves a sentry Source with the issue id as its key when factory.json names none', async () => {
+		// the Tracker already holds an open Feature of this Source for the alert's issue
+		const open = `featuresFrom: async () => [{ id: '9', key: '${SENTRY_ISSUE_ID}', open: true, at: new Date().toISOString() }],`;
+		repo(`${WRITES} ${open}`, {
+			sentry: { type: 'sentry', template: 'sentry', secretEnv: 'SENTRY_SECRET' }
+		});
+		const stop = new AbortController();
+		const env = { PATH: process.env.PATH, SENTRY_SECRET: SENTRY_CLIENT_SECRET };
+		const done = runNightjar(['intake', '--port', '0'], { ...host(stop.signal), env });
+		await vi.waitFor(() => expect(out.join('\n')).toContain('Source sentry: POST '));
+		const port = Number(/127\.0\.0\.1:(\d+)/.exec(out.join('\n'))?.[1]);
+		const body = JSON.stringify(SENTRY_EVENT_ALERT);
+		const res = await fetch(`http://127.0.0.1:${String(port)}/sources/sentry`, {
+			method: 'POST',
+			headers: sentryHeaders(body),
+			body
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ outcome: 'again', feature: '9' });
+		stop.abort();
+		expect(await done).toBe(0);
+	});
+
+	it('refuses to start while a sentry Source has no client secret', async () => {
+		repo(`${WRITES} ${FINDS}`, {
+			sentry: { type: 'sentry', template: 'sentry', secretEnv: 'SENTRY_SECRET' }
+		});
+		expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
+		expect(err.join('\n')).toContain('Source sentry: SENTRY_SECRET is not set');
 	});
 
 	it('refuses to start with no Source', async () => {
