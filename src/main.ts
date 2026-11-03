@@ -13,6 +13,7 @@ import { codingAgent } from './coding-agent.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import type { GhRunner } from './github/api.js';
 import type { Ask } from './ask.js';
+import type { Prompter } from './prompter.js';
 import { runDoctor } from './doctor.js';
 import { runInitCommand } from './init.js';
 import { runContractCommand } from './contract/command.js';
@@ -92,6 +93,8 @@ export interface Host {
 	readonly gh?: GhRunner;
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
+	// select and multi-select prompts for init; a terminal gets them unless a spec passes its own
+	readonly prompter?: Prompter;
 	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
 }

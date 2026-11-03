@@ -7,17 +7,20 @@ import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
-import { detectChecks, detectTools } from './detect-check.js';
+import { detectChecks, detectTools, type Detected } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
 import { dryRun } from './queue.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
+import { clackPrompter, type Prompter } from './prompter.js';
 import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
 
 // How each question is answered: by its flag, else by its default under --yes, else by asking.
 interface Answering {
 	readonly ask: Ask;
+	// a terminal's select and multi-select prompts; without it every question is a line to ask
+	readonly prompter?: Prompter;
 	readonly yes: boolean;
 	// each flag's value, by its name without the dashes, such as `check` or `tracker-repo`
 	readonly flags: ReadonlyMap<string, string>;
@@ -79,9 +82,18 @@ async function answer(
 		if (problem !== null) throw new Refusal(`--yes: ${fallback} will not do: ${problem}`);
 		return fallback;
 	}
-	const { ask } = o;
-	printHelp(help.short.split('\n'));
+	const { ask, prompter } = o;
 	const hint = help.long === undefined ? '' : ' (? for more)';
+	if (prompter !== undefined) {
+		prompter.note(help.short);
+		// clack shows a refusal under the prompt, so `?` answers with the longer help there
+		const got = await prompter.text(`${question}${hint}`, fallback, (t) =>
+			t === '?' && help.long !== undefined ? help.long.join('\n') : accept(t)
+		);
+		const text = orCancel(got, question);
+		return text === '' ? (fallback ?? '') : text;
+	}
+	printHelp(help.short.split('\n'));
 	for (;;) {
 		const got = await ask(
 			fallback === undefined ? `${question}${hint}: ` : `${question}${hint} [${fallback}]: `
@@ -130,14 +142,49 @@ const kindOf = (text: string): string | null =>
 
 type Section = Record<string, unknown>;
 
+// A cancelled prompt (null) ends init, naming the question it was cancelled at.
+function orCancel<T>(got: T | null, at: string): T {
+	if (got === null) throw new Refusal(`cancelled at: ${at}`);
+	return got;
+}
+
+// The Tracker or Code host kind: picked from a list on a terminal, else asked as a line.
+async function chooseKind(
+	o: Answering,
+	prefix: string,
+	label: string,
+	guess: Kind,
+	help: string
+): Promise<string> {
+	const { prompter } = o;
+	if (prompter === undefined || o.yes || o.flags.has(prefix))
+		return answer(o, prefix, `${label}: ${KINDS.join(', ')}`, guess, kindOf, { short: help });
+	prompter.note(help);
+	const got = await prompter.select(
+		label,
+		KINDS.map((k) => ({ value: k, label: k })),
+		guess
+	);
+	return orCancel(got, label);
+}
+
 // The type of a Ticket may be left out, so --yes leaves it out.
 async function askTicketType(o: Answering): Promise<string> {
 	const given = o.flags.get('tracker-ticket-type');
 	if (given !== undefined) return given.trim();
 	if (o.yes) return '';
-	printHelp([
-		'Only `nightjar create` needs this: the type it gives the Tickets it makes, such as User Story.'
-	]);
+	const help =
+		'Only `nightjar create` needs this: the type it gives the Tickets it makes, such as User Story.';
+	if (o.prompter !== undefined) {
+		o.prompter.note(help);
+		const got = await o.prompter.text(
+			'Work item type of a Ticket, for `nightjar create` (empty to leave out)',
+			undefined,
+			() => null
+		);
+		return orCancel(got, 'the Ticket type');
+	}
+	printHelp([help]);
 	const ticket = await o.ask(
 		'Work item type of a Ticket, for `nightjar create` (empty to leave out): '
 	);
@@ -156,12 +203,11 @@ async function section(
 	const schema = ConfigSchema.shape[which];
 	const label = which === 'tracker' ? 'Tracker' : 'Code host';
 	const prefix = which === 'tracker' ? 'tracker' : 'code-host';
-	const kind = (await answer(o, prefix, `${label}: ${KINDS.join(', ')}`, guess.kind, kindOf, {
-		short:
-			which === 'tracker'
-				? 'The Tracker is where your Features and Tickets live (issues or work items).'
-				: 'The Code host is where Nightjar pushes the branch and opens the draft pull request.'
-	})) as Kind;
+	const kindHelp =
+		which === 'tracker'
+			? 'The Tracker is where your Features and Tickets live (issues or work items).'
+			: 'The Code host is where Nightjar pushes the branch and opens the draft pull request.';
+	const kind = (await chooseKind(o, prefix, label, guess.kind, kindHelp)) as Kind;
 	if (kind === 'github') {
 		const ask1 = probing(o, prefix, schema, { type: 'github' });
 		const where = which === 'tracker' ? 'whose issues are the Features' : 'the branch is pushed to';
@@ -269,25 +315,19 @@ async function askCheck(o: InitOptions): Promise<string> {
 	if (found.length === 0 || named) {
 		const hint = o.yes ? '' : '; try a placeholder such as `make check`';
 		if (!named) say(`no check command detected in this repo${hint}`);
-		return answer(
-			o,
-			'check',
-			question,
-			undefined,
-			(text) =>
-				/\S/.test(text) ? warnIfNeverFails(text) : 'name the command that checks the work',
-			CHECK_HELP
-		);
+		return answer(o, 'check', question, undefined, checkProblem, CHECK_HELP);
 	}
 	if (found.length === 1) {
 		const [only] = found;
 		say(`detected \`${only?.command ?? ''}\` from ${only?.source ?? ''}`);
 	} else if (o.yes) {
 		say(`detected several check commands; taking the first, \`${found[0]?.command ?? ''}\``);
+	} else if (o.prompter !== undefined) {
+		return pickCheck(o.prompter, found, o, question);
 	} else {
-		say('detected several check commands; type a number, or your own:');
+		say('detected several check commands; pick one number, or type your own command:');
 		found.forEach((d, i) => {
-			say(`  ${String(i + 1)}. ${d.command}  (from ${d.source})`);
+			printHelp([`${String(i + 1)}. ${d.command}  (from ${d.source})`]);
 		});
 	}
 	const text = await answer(
@@ -296,26 +336,100 @@ async function askCheck(o: InitOptions): Promise<string> {
 		question,
 		found[0]?.command,
 		(t) => {
+			// A list such as `1,2` is not a command; the check is one command.
+			if (/^[\d\s,]+$/.test(t) && !/^\d+$/.test(t))
+				return `pick one number from 1 to ${String(found.length)}; the check is a single command`;
 			if (/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length))
-				return `choose 1 to ${String(found.length)}, or type a command`;
-			return t === '' ? 'name the command that checks the work' : warnIfNeverFails(t);
+				return `pick one number from 1 to ${String(found.length)}, or type a command`;
+			return checkProblem(t);
 		},
 		CHECK_HELP
 	);
 	return /^\d+$/.test(text) ? (found[Number(text) - 1]?.command ?? text) : text;
 }
 
+// The "Type my own command" pick; no command holds a NUL, so it never clashes with a detected one.
+const OWN_CHECK = '\0own';
+
+// Several checks detected: one is picked from a list, or the person types their own.
+async function pickCheck(
+	prompter: Prompter,
+	found: readonly Detected[],
+	o: Answering,
+	question: string
+): Promise<string> {
+	prompter.note(CHECK_HELP.short);
+	const got = await prompter.select(
+		question,
+		[
+			...found.map((d) => ({ value: d.command, label: d.command, hint: `from ${d.source}` })),
+			{ value: OWN_CHECK, label: 'Type my own command' }
+		],
+		found[0]?.command
+	);
+	const picked = orCancel(got, question);
+	if (picked !== OWN_CHECK) return picked;
+	return answer(o, 'check', 'Command that checks the work', undefined, checkProblem, CHECK_HELP);
+}
+
+// A typed check command, or why it will not do; a list such as `1,2` is not one command.
+function checkProblem(text: string): string | null {
+	if (!/\S/.test(text)) return 'name the command that checks the work';
+	if (/^[\d\s,]+$/.test(text) && !/^\d+$/.test(text))
+		return 'the check is a single command, not a list of numbers';
+	return null;
+}
+
 // `true` and `:` always exit zero; the warning is printed, and the command is still taken.
-function warnIfNeverFails(command: string): null {
+function warnIfNeverFails(command: string): void {
 	if (command === 'true' || command === ':')
 		say(`warning: \`${command}\` can never fail, so nothing will verify the work`);
-	return null;
 }
 
 // The answers as factory.json is written, and as the schema reads them.
 interface Answers {
 	readonly written: Record<string, unknown>;
 	readonly parsed: Config;
+}
+
+const splitCommands = (listed: string) =>
+	listed === 'none'
+		? []
+		: listed
+				.split(',')
+				.map((c) => c.trim())
+				.filter((c) => c !== '');
+
+// The commands the Coding agent may run: ticked from a list on a terminal, else one comma separated line.
+async function askAllowed(o: Answering, suggested: readonly string[]): Promise<string[]> {
+	const { prompter } = o;
+	if (prompter === undefined || o.yes || o.flags.has('allowed-commands')) {
+		const listed = await answer(
+			o,
+			'allowed-commands',
+			'Commands the Coding agent may run, separated by commas, or none',
+			suggested.join(', '),
+			() => null,
+			ALLOWED_HELP
+		);
+		return splitCommands(listed);
+	}
+	prompter.note(ALLOWED_HELP.short);
+	const ticked =
+		suggested.length === 0
+			? []
+			: await prompter.multiselect(
+					'Commands the Coding agent may run',
+					suggested.map((c) => ({ value: c, label: c })),
+					suggested
+				);
+	const at = 'the commands the Coding agent may run';
+	const picked = orCancel(ticked, at);
+	const more = orCancel(
+		await prompter.text('Others, separated by commas (empty for none)', '', () => null),
+		at
+	);
+	return [...new Set([...picked, ...splitCommands(more)])];
 }
 
 async function interview(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
@@ -327,22 +441,9 @@ async function interview(o: InitOptions, fromOrigin: string | null): Promise<Ans
 		...(tracker.project === undefined ? {} : { project: tracker.project })
 	});
 	const check = await askCheck(o);
+	warnIfNeverFails(check);
 	const suggested = [...new Set([check, ...detectTools(o.root).map((d) => d.command)])];
-	const listed = await answer(
-		o,
-		'allowed-commands',
-		'Commands the Coding agent may run, separated by commas, or none',
-		suggested.join(', '),
-		() => null,
-		ALLOWED_HELP
-	);
-	const allowedCommands =
-		listed === 'none'
-			? []
-			: listed
-					.split(',')
-					.map((c) => c.trim())
-					.filter((c) => c !== '');
+	const allowedCommands = await askAllowed(o, suggested);
 	const config = {
 		$schema: SCHEMA_URL,
 		tracker: tracker.section,
@@ -505,6 +606,15 @@ export async function runInit(o: InitOptions): Promise<number> {
 
 // Whether to run doctor now; an empty answer is yes, and an input that has ended is no.
 async function offerDoctor(o: InitOptions): Promise<boolean> {
+	if (o.prompter !== undefined) {
+		o.prompter.note(
+			'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
+		);
+		const question = 'Run `nightjar doctor` now?';
+		const run = await o.prompter.confirm(question, true);
+		if (run === null) say(`cancelled at: ${question}`);
+		return run ?? false;
+	}
 	printHelp([
 		'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
 	]);
@@ -523,6 +633,7 @@ export interface InitHost {
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
 	readonly ask?: Ask;
+	readonly prompter?: Prompter;
 }
 
 const INIT_USAGE = `usage: nightjar init [--yes] [--use-api-key] [--profile NAME] [--check CMD] [--allowed-commands LIST]
@@ -590,7 +701,12 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 	const profile = flags.get('profile');
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	// --yes asks nothing, so it leaves standard input alone
-	const asker = host.ask === undefined && !yes ? askOnStdin() : null;
+	const prompter =
+		host.prompter ??
+		(host.ask === undefined && !yes && process.stdin.isTTY && process.stdout.isTTY
+			? clackPrompter()
+			: undefined);
+	const asker = host.ask === undefined && !yes && prompter === undefined ? askOnStdin() : null;
 	try {
 		const top = await run('git', ['rev-parse', '--show-toplevel'], host.cwd, env);
 		if (!top.ok) {
@@ -605,6 +721,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			yes,
 			flags,
 			ask: host.ask ?? asker?.ask ?? (() => Promise.resolve(null)),
+			...(prompter === undefined ? {} : { prompter }),
 			...(host.request === undefined ? {} : { request: host.request }),
 			...(host.gh === undefined ? {} : { gh: host.gh })
 		});
