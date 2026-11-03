@@ -60,12 +60,16 @@ _Avoid_: board, backlog, issue system
 The system the Feature's branch is pushed to and its draft pull request opened on, such as GitHub or Azure Repos. Set independently of the Tracker.
 _Avoid_: repo host, forge, remote
 
+**Pull checks**:
+The checks the Code host runs on a draft pull request's head commit, in its own environment, apart from the repo's check. They can fail where the repo's check passed.
+_Avoid_: CI, pipeline, status, build
+
 **Coding agent**:
 The program that builds one Ticket in the Feature's worktree, in a Session Nightjar starts and ends; today only Claude Code. It edits files and runs the commands it is allowed, and never commits, pushes or touches the Tracker: Nightjar does that.
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes.
+One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
 **Adapter**:
