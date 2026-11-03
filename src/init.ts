@@ -13,11 +13,14 @@ import { dryRun } from './queue.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
+import { clackPrompter, type Prompter } from './prompter.js';
 import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
 
 // How each question is answered: by its flag, else by its default under --yes, else by asking.
 interface Answering {
 	readonly ask: Ask;
+	// a terminal's select and multi-select prompts; without it every question is a line to ask
+	readonly ui?: Prompter;
 	readonly yes: boolean;
 	// each flag's value, by its name without the dashes, such as `check` or `tracker-repo`
 	readonly flags: ReadonlyMap<string, string>;
@@ -79,7 +82,13 @@ async function answer(
 		if (problem !== null) throw new Refusal(`--yes: ${fallback} will not do: ${problem}`);
 		return fallback;
 	}
-	const { ask } = o;
+	const { ask, ui } = o;
+	if (ui !== undefined) {
+		for (const line of help.short.split('\n')) ui.note(line);
+		const got = await ui.text(question, fallback, accept);
+		if (got === null) throw new Refusal(`cancelled at: ${question}`);
+		return got === '' ? (fallback ?? '') : got;
+	}
 	printHelp(help.short.split('\n'));
 	const hint = help.long === undefined ? '' : ' (? for more)';
 	for (;;) {
@@ -130,14 +139,45 @@ const kindOf = (text: string): string | null =>
 
 type Section = Record<string, unknown>;
 
+// The Tracker or Code host kind: picked from a list on a terminal, else asked as a line.
+async function chooseKind(
+	o: Answering,
+	prefix: string,
+	label: string,
+	guess: Kind,
+	help: string
+): Promise<string> {
+	const { ui } = o;
+	if (ui === undefined || o.yes || o.flags.has(prefix))
+		return answer(o, prefix, `${label}: ${KINDS.join(', ')}`, guess, kindOf, { short: help });
+	ui.note(help);
+	const got = await ui.select(
+		label,
+		KINDS.map((k) => ({ value: k, label: k })),
+		guess
+	);
+	if (got === null) throw new Refusal(`cancelled at: ${label}`);
+	return got;
+}
+
 // The type of a Ticket may be left out, so --yes leaves it out.
 async function askTicketType(o: Answering): Promise<string> {
 	const given = o.flags.get('tracker-ticket-type');
 	if (given !== undefined) return given.trim();
 	if (o.yes) return '';
-	printHelp([
-		'Only `nightjar create` needs this: the type it gives the Tickets it makes, such as User Story.'
-	]);
+	const help =
+		'Only `nightjar create` needs this: the type it gives the Tickets it makes, such as User Story.';
+	if (o.ui !== undefined) {
+		o.ui.note(help);
+		const got = await o.ui.text(
+			'Work item type of a Ticket, for `nightjar create` (empty to leave out)',
+			undefined,
+			() => null
+		);
+		if (got === null) throw new Refusal('cancelled at: the Ticket type');
+		return got;
+	}
+	printHelp([help]);
 	const ticket = await o.ask(
 		'Work item type of a Ticket, for `nightjar create` (empty to leave out): '
 	);
@@ -156,12 +196,11 @@ async function section(
 	const schema = ConfigSchema.shape[which];
 	const label = which === 'tracker' ? 'Tracker' : 'Code host';
 	const prefix = which === 'tracker' ? 'tracker' : 'code-host';
-	const kind = (await answer(o, prefix, `${label}: ${KINDS.join(', ')}`, guess.kind, kindOf, {
-		short:
-			which === 'tracker'
-				? 'The Tracker is where your Features and Tickets live (issues or work items).'
-				: 'The Code host is where Nightjar pushes the branch and opens the draft pull request.'
-	})) as Kind;
+	const kindHelp =
+		which === 'tracker'
+			? 'The Tracker is where your Features and Tickets live (issues or work items).'
+			: 'The Code host is where Nightjar pushes the branch and opens the draft pull request.';
+	const kind = (await chooseKind(o, prefix, label, guess.kind, kindHelp)) as Kind;
 	if (kind === 'github') {
 		const ask1 = probing(o, prefix, schema, { type: 'github' });
 		const where = which === 'tracker' ? 'whose issues are the Features' : 'the branch is pushed to';
@@ -284,10 +323,12 @@ async function askCheck(o: InitOptions): Promise<string> {
 		say(`detected \`${only?.command ?? ''}\` from ${only?.source ?? ''}`);
 	} else if (o.yes) {
 		say(`detected several check commands; taking the first, \`${found[0]?.command ?? ''}\``);
+	} else if (o.ui !== undefined) {
+		return pickCheck(o.ui, found, o, question);
 	} else {
-		say('detected several check commands; type a number, or your own:');
+		say('detected several check commands; pick one number, or type your own command:');
 		found.forEach((d, i) => {
-			say(`  ${String(i + 1)}. ${d.command}  (from ${d.source})`);
+			printHelp([`${String(i + 1)}. ${d.command}  (from ${d.source})`]);
 		});
 	}
 	const text = await answer(
@@ -296,13 +337,47 @@ async function askCheck(o: InitOptions): Promise<string> {
 		question,
 		found[0]?.command,
 		(t) => {
+			// A list such as `1,2` is not a command; the check is one command.
+			if (/^[\d\s,]+$/.test(t) && !/^\d+$/.test(t))
+				return `pick one number from 1 to ${String(found.length)}; the check is a single command`;
 			if (/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length))
-				return `choose 1 to ${String(found.length)}, or type a command`;
+				return `pick one number from 1 to ${String(found.length)}, or type a command`;
 			return t === '' ? 'name the command that checks the work' : warnIfNeverFails(t);
 		},
 		CHECK_HELP
 	);
 	return /^\d+$/.test(text) ? (found[Number(text) - 1]?.command ?? text) : text;
+}
+
+// Several checks detected: one is picked from a list, or the person types their own.
+async function pickCheck(
+	ui: Prompter,
+	found: ReturnType<typeof detectChecks>,
+	o: Answering,
+	question: string
+): Promise<string> {
+	ui.note(
+		'Runs after every Ticket; a non-zero exit means the work failed and the Coding agent retries.'
+	);
+	const own = '\0own';
+	const got = await ui.select(
+		question,
+		[
+			...found.map((d) => ({ value: d.command, label: d.command, hint: `from ${d.source}` })),
+			{ value: own, label: 'Type my own command' }
+		],
+		found[0]?.command
+	);
+	if (got === null) throw new Refusal(`cancelled at: ${question}`);
+	if (got !== own) return got;
+	return answer(
+		o,
+		'check-own',
+		'Command that checks the work',
+		undefined,
+		(t) => (t === '' ? 'name the command that checks the work' : warnIfNeverFails(t)),
+		CHECK_HELP
+	);
 }
 
 // `true` and `:` always exit zero; the warning is printed, and the command is still taken.
@@ -318,6 +393,43 @@ interface Answers {
 	readonly parsed: Config;
 }
 
+const splitCommands = (listed: string) =>
+	listed === 'none'
+		? []
+		: listed
+				.split(',')
+				.map((c) => c.trim())
+				.filter((c) => c !== '');
+
+// The commands the Coding agent may run: ticked from a list on a terminal, else one comma separated line.
+async function askAllowed(o: Answering, suggested: readonly string[]): Promise<string[]> {
+	const { ui } = o;
+	if (ui === undefined || o.yes || o.flags.has('allowed-commands')) {
+		const listed = await answer(
+			o,
+			'allowed-commands',
+			'Commands the Coding agent may run, separated by commas, or none',
+			suggested.join(', '),
+			() => null,
+			ALLOWED_HELP
+		);
+		return splitCommands(listed);
+	}
+	for (const line of ALLOWED_HELP.short.split('\n')) ui.note(line);
+	const ticked =
+		suggested.length === 0
+			? []
+			: await ui.multiselect(
+					'Commands the Coding agent may run',
+					suggested.map((c) => ({ value: c, label: c })),
+					suggested
+				);
+	if (ticked === null) throw new Refusal('cancelled at: the commands the Coding agent may run');
+	const more = await ui.text('Others, separated by commas (empty for none)', '', () => null);
+	if (more === null) throw new Refusal('cancelled at: the commands the Coding agent may run');
+	return [...new Set([...ticked, ...splitCommands(more)])];
+}
+
 async function interview(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
 	const tracker = await section(o, 'tracker', fromOrigin, { kind: 'github' });
 	const kind = tracker.section.type as Kind;
@@ -328,21 +440,7 @@ async function interview(o: InitOptions, fromOrigin: string | null): Promise<Ans
 	});
 	const check = await askCheck(o);
 	const suggested = [...new Set([check, ...detectTools(o.root).map((d) => d.command)])];
-	const listed = await answer(
-		o,
-		'allowed-commands',
-		'Commands the Coding agent may run, separated by commas, or none',
-		suggested.join(', '),
-		() => null,
-		ALLOWED_HELP
-	);
-	const allowedCommands =
-		listed === 'none'
-			? []
-			: listed
-					.split(',')
-					.map((c) => c.trim())
-					.filter((c) => c !== '');
+	const allowedCommands = await askAllowed(o, suggested);
 	const config = {
 		$schema: SCHEMA_URL,
 		tracker: tracker.section,
@@ -505,6 +603,12 @@ export async function runInit(o: InitOptions): Promise<number> {
 
 // Whether to run doctor now; an empty answer is yes, and an input that has ended is no.
 async function offerDoctor(o: InitOptions): Promise<boolean> {
+	if (o.ui !== undefined) {
+		o.ui.note(
+			'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
+		);
+		return (await o.ui.confirm('Run `nightjar doctor` now?', true)) ?? false;
+	}
 	printHelp([
 		'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
 	]);
@@ -523,6 +627,7 @@ export interface InitHost {
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
 	readonly ask?: Ask;
+	readonly ui?: Prompter;
 }
 
 const INIT_USAGE = `usage: nightjar init [--yes] [--use-api-key] [--profile NAME] [--check CMD] [--allowed-commands LIST]
@@ -590,7 +695,12 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 	const profile = flags.get('profile');
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	// --yes asks nothing, so it leaves standard input alone
-	const asker = host.ask === undefined && !yes ? askOnStdin() : null;
+	const ui =
+		host.ui ??
+		(host.ask === undefined && !yes && process.stdin.isTTY && process.stdout.isTTY
+			? clackPrompter()
+			: undefined);
+	const asker = host.ask === undefined && !yes && ui === undefined ? askOnStdin() : null;
 	try {
 		const top = await run('git', ['rev-parse', '--show-toplevel'], host.cwd, env);
 		if (!top.ok) {
@@ -605,6 +715,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			yes,
 			flags,
 			ask: host.ask ?? asker?.ask ?? (() => Promise.resolve(null)),
+			...(ui === undefined ? {} : { ui }),
 			...(host.request === undefined ? {} : { request: host.request }),
 			...(host.gh === undefined ? {} : { gh: host.gh })
 		});

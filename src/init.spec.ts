@@ -8,6 +8,7 @@ import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
 import { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
+import type { Prompter } from './prompter.js';
 
 let out: string[];
 let err: string[];
@@ -195,6 +196,15 @@ describe('nightjar init asks, never guesses', () => {
 		await init(['github', '', 'github', '', '2', '', '']);
 		expect(out.join('\n')).toContain('1. make test  (from Makefile "test")');
 		expect(out.join('\n')).toContain('2. go test ./...  (from go.mod)');
+		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
+	});
+
+	it('refuses a list of numbers as the check command, and lists the choices indented', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		await init(['github', '', 'github', '', '1,2', '2', '', '']);
+		expect(out.join('\n')).toContain('pick one number');
+		expect(out).toContain('  1. make test  (from Makefile "test")');
 		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
 	});
 
@@ -654,5 +664,69 @@ describe('nightjar init with --yes and flags', () => {
 			tracker: { repo: 'acme/widgets' },
 			check: 'make check'
 		});
+	});
+});
+
+describe('nightjar init on a terminal, with select prompts', () => {
+	// scripted picks; a pick is a value, or a list of values for a multi-select
+	function withUi(picks: (string | string[] | boolean)[]): Prompter {
+		const left = [...picks];
+		const next = (message: string) => {
+			transcript.push(message);
+			return left.shift();
+		};
+		return {
+			text: (message, fallback) => Promise.resolve((next(message) as string) || (fallback ?? '')),
+			select: (message) => Promise.resolve(next(message) as string),
+			multiselect: (message, choices) => {
+				transcript.push(`${message} [${choices.map((c) => c.value).join(' | ')}]`);
+				return Promise.resolve(left.shift() as string[]);
+			},
+			confirm: (message) => Promise.resolve(next(message) as boolean),
+			note: () => undefined
+		};
+	}
+	const initUi = (picks: (string | string[] | boolean)[]) =>
+		runNightjar(['init'], {
+			platform: 'linux',
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			ui: withUi(picks)
+		});
+
+	it('takes a picked check and the ticked allowed commands', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		const code = await initUi([
+			'github',
+			'',
+			'github',
+			'',
+			'go test ./...',
+			['make test'],
+			'make lint',
+			false
+		]);
+		expect(code).toBe(0);
+		expect(m.readConfig()).toMatchObject({
+			check: 'go test ./...',
+			allowedCommands: ['make test', 'make lint']
+		});
+		expect(transcript.join('\n')).toMatch(/Commands the Coding agent may run \[.*make test/);
+	});
+
+	it('writes nothing when the person cancels', async () => {
+		const ui = withUi([]);
+		const code = await runNightjar(['init'], {
+			platform: 'linux',
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			ui: { ...ui, select: () => Promise.resolve(null) }
+		});
+		expect(code).toBe(2);
+		expect(err.join('\n')).toContain('cancelled');
+		expect(existsSync(written())).toBe(false);
 	});
 });
