@@ -53,7 +53,9 @@ const written = () => join(m.root, 'factory.json');
 
 describe('nightjar init on GitHub', () => {
 	it('writes a factory.json that passes the schema, from the answers', async () => {
-		expect(await init(['github', '', 'github', '', 'make check', 'make check, make test'])).toBe(0);
+		expect(
+			await init(['github', '', 'github', '', 'make check', 'make check, make test', ''])
+		).toBe(0);
 		expect(m.readConfig()).toEqual({
 			$schema: 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json',
 			tracker: { type: 'github' },
@@ -66,7 +68,7 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('offers the repo origin names, and writes a repo only when it is another', async () => {
-		await init(['github', 'acme/widgets', 'github', '', 'make check', '']);
+		await init(['github', 'acme/widgets', 'github', '', 'make check', '', '']);
 		expect(asked[1]).toContain('[o/r]');
 		expect(m.readConfig()).toMatchObject({
 			tracker: { type: 'github', repo: 'acme/widgets' },
@@ -75,7 +77,7 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('creates the Signal labels and says so', async () => {
-		await init(['github', '', 'github', '', 'make check', '']);
+		await init(['github', '', 'github', '', 'make check', '', '']);
 		for (const name of [
 			'factory-go',
 			'ready-for-agent',
@@ -89,7 +91,7 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('leaves a label that exists, and says so', async () => {
-		await init(['github', '', 'github', '', 'make check', ''], {
+		await init(['github', '', 'github', '', 'make check', '', ''], {
 			FAKE_GH_EXISTING: 'factory-go,needs-info'
 		});
 		expect(out).toContain('nightjar: the label factory-go exists already');
@@ -97,7 +99,7 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('checks every login, listing what it found', async () => {
-		await init(['github', '', 'github', '', 'make check', '']);
+		await init(['github', '', 'github', '', 'make check', '', '']);
 		expect(out).toContain('  ok    Tracker: gh as ann on o/r');
 		expect(out).toContain(
 			`  ok    claude: 2.1.314 (Claude Code), ann@x.io, Acme, max plan, claude.ai login, config ${m.env.HOME}/.claude`
@@ -105,7 +107,7 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('says how to fix a login that is missing, and creates no label with it', async () => {
-		const code = await init(['github', '', 'github', '', 'make check', ''], {
+		const code = await init(['github', '', 'github', '', 'make check', '', ''], {
 			FAKE_GH_SIGNED_OUT: '1',
 			FAKE_CLAUDE_SIGNED_OUT: '1'
 		});
@@ -121,7 +123,7 @@ describe('nightjar init on GitHub', () => {
 	});
 
 	it('says what to do when the labels cannot be created', async () => {
-		const code = await init(['github', '', 'github', '', 'make check', ''], {
+		const code = await init(['github', '', 'github', '', 'make check', '', ''], {
 			FAKE_GH_NO_LABELS: '1'
 		});
 		expect(code).toBe(2);
@@ -131,7 +133,7 @@ describe('nightjar init on GitHub', () => {
 
 describe('nightjar init asks, never guesses', () => {
 	it('asks for the check command with no default, and asks again when it is left empty', async () => {
-		expect(await init(['github', '', 'github', '', '', '  ', 'make check', ''])).toBe(0);
+		expect(await init(['github', '', 'github', '', '', '  ', 'make check', '', ''])).toBe(0);
 		const check = asked.filter((q) => q.includes('checks the work'));
 		expect(check).toHaveLength(3);
 		expect(check.every((q) => !q.includes('['))).toBe(true);
@@ -141,13 +143,13 @@ describe('nightjar init asks, never guesses', () => {
 
 	it('warns about a check that can never fail, and reports that it passes on the clean tree', async () => {
 		// the machine's PATH holds no sh, which the check runs through
-		await init(['github', '', 'github', '', 'true', ''], { PATH: `${m.env.PATH ?? ''}:/bin` });
+		await init(['github', '', 'github', '', 'true', '', ''], { PATH: `${m.env.PATH ?? ''}:/bin` });
 		expect(out.join('\n')).toContain('`true` can never fail');
 		expect(out.join('\n')).toContain('the check passes');
 	});
 
 	it('warns about `:` and reports a check that fails right now', async () => {
-		await init(['github', '', 'github', '', ':', '']);
+		await init(['github', '', 'github', '', ':', '', '']);
 		expect(out.join('\n')).toContain('`:` can never fail');
 		out.length = 0;
 		m.writeConfig({ ...loadConfig(m.root), check: 'false' });
@@ -156,14 +158,14 @@ describe('nightjar init asks, never guesses', () => {
 	});
 
 	it('says so and suggests a placeholder when no check command is detected', async () => {
-		await init(['github', '', 'github', '', 'make check', '']);
+		await init(['github', '', 'github', '', 'make check', '', '']);
 		expect(out.join('\n')).toContain('no check command detected');
 		expect(out.join('\n')).toContain('`make check`');
 	});
 
 	it('offers make check from a Makefile, naming where it came from', async () => {
 		writeFileSync(join(m.root, 'Makefile'), 'check:\n\techo ok\n');
-		await init(['github', '', 'github', '', '', '']);
+		await init(['github', '', 'github', '', '', '', '']);
 		expect(out.join('\n')).toContain('detected `make check` from Makefile "check"');
 		expect(asked.find((q) => q.includes('checks the work'))).toContain('[make check]');
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
@@ -172,7 +174,7 @@ describe('nightjar init asks, never guesses', () => {
 	it('reads package.json scripts and picks the package manager from the lockfile', async () => {
 		writeFileSync(join(m.root, 'package.json'), '{"scripts":{"test":"vitest"}}');
 		writeFileSync(join(m.root, 'pnpm-lock.yaml'), '');
-		await init(['github', '', 'github', '', '', '']);
+		await init(['github', '', 'github', '', '', '', '']);
 		expect(out.join('\n')).toContain('detected `pnpm test` from package.json "test"');
 		expect(m.readConfig()).toMatchObject({ check: 'pnpm test' });
 	});
@@ -180,7 +182,7 @@ describe('nightjar init asks, never guesses', () => {
 	it('lists several matches numbered, and takes a number', async () => {
 		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
 		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
-		await init(['github', '', 'github', '', '2', '']);
+		await init(['github', '', 'github', '', '2', '', '']);
 		expect(out.join('\n')).toContain('1. make test  (from Makefile "test")');
 		expect(out.join('\n')).toContain('2. go test ./...  (from go.mod)');
 		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
@@ -193,20 +195,20 @@ describe('nightjar init asks, never guesses', () => {
 	});
 
 	it('asks again for a Tracker it does not know, and a repo that is not owner/name', async () => {
-		await init(['svn', 'github', 'nope', 'acme/widgets', 'github', '', 'make check', '']);
+		await init(['svn', 'github', 'nope', 'acme/widgets', 'github', '', 'make check', '', '']);
 		expect(out.join('\n')).toContain('  choose github, azure-devops or module');
 		expect(out.join('\n')).toContain('  must be owner/name');
 		expect(m.readConfig()).toMatchObject({ tracker: { repo: 'acme/widgets' } });
 	});
 
 	it('takes none for an empty list of commands the agent may run', async () => {
-		await init(['github', '', 'github', '', 'make check', 'none']);
+		await init(['github', '', 'github', '', 'make check', 'none', '']);
 		expect(m.readConfig()).toMatchObject({ allowedCommands: [] });
 	});
 
 	it('offers detected test and lint commands besides the check command, and says what stays denied', async () => {
 		writeFileSync(join(m.root, 'package.json'), '{"scripts":{"check":"x","test":"x","lint":"x"}}');
-		await init(['github', '', 'github', '', '', '']);
+		await init(['github', '', 'github', '', '', '', '']);
 		expect(asked.find((q) => q.includes('Commands the agent may run'))).toContain(
 			'[npm run check, npm test, npm run lint]'
 		);
@@ -218,7 +220,7 @@ describe('nightjar init asks, never guesses', () => {
 	});
 
 	it('offers the check command as the command the agent may run', async () => {
-		await init(['github', '', 'github', '', 'make check', '']);
+		await init(['github', '', 'github', '', 'make check', '', '']);
 		expect(m.readConfig()).toMatchObject({ allowedCommands: ['make check'] });
 	});
 });
@@ -235,6 +237,7 @@ describe('nightjar init on Azure DevOps', () => {
 		'',
 		'fabrikam-app',
 		'make check',
+		'',
 		''
 	];
 
@@ -300,7 +303,7 @@ describe('nightjar init with a module', () => {
 			.map((name) => (name === 'me' ? "me: async () => 'zed'" : `${name}: () => {}`))
 			.join(', ');
 		writeFileSync(join(m.root, 'tracker.mjs'), `export const createTracker = () => ({ ${body} });`);
-		await init(['module', './tracker.mjs', 'github', '', 'make check', '']);
+		await init(['module', './tracker.mjs', 'github', '', 'make check', '', '']);
 		expect(m.readConfig()).toMatchObject({ tracker: { type: 'module', path: './tracker.mjs' } });
 		expect(out).toContain(
 			'nightjar: ./tracker.mjs shows Signals its own way: Nightjar creates nothing for it.'
@@ -310,12 +313,12 @@ describe('nightjar init with a module', () => {
 
 describe('nightjar init explains each prompt', () => {
 	const promptsOnly = () => {
-		const end = transcript.findIndex((line) => line.includes('wrote '));
+		const end = transcript.findIndex((line) => line.includes('this is what init will do'));
 		return transcript.slice(0, end);
 	};
 
 	it('prints help before every prompt on GitHub, and shows longer help on ?', async () => {
-		await init(['github', '', 'github', '', '?', 'make check', '?', '']);
+		await init(['github', '', 'github', '', '?', 'make check', '?', '', '']);
 		expect(promptsOnly().join('\n')).toMatchSnapshot();
 	});
 
@@ -331,6 +334,7 @@ describe('nightjar init explains each prompt', () => {
 			'',
 			'fabrikam-app',
 			'make check',
+			'',
 			''
 		]);
 		expect(promptsOnly().join('\n')).toMatchSnapshot();
@@ -338,14 +342,86 @@ describe('nightjar init explains each prompt', () => {
 
 	it('prints help before the module path prompt', async () => {
 		writeFileSync(join(m.root, 'tracker.mjs'), 'export const createTracker = () => ({});');
-		await init(['module', './tracker.mjs', 'github', '', 'make check', '']);
+		await init(['module', './tracker.mjs', 'github', '', 'make check', '', '']);
 		expect(promptsOnly().join('\n')).toMatchSnapshot();
 	});
 
 	it('takes ? as a request for help, not as an answer', async () => {
-		await init(['github', '', 'github', '', '?', 'make check', '']);
+		await init(['github', '', 'github', '', '?', 'make check', '', '']);
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 		expect(out.join('\n')).toContain('No deploys and no network');
+	});
+});
+
+describe('nightjar init shows what it will do, and asks before it writes', () => {
+	const summary = () => {
+		const start = transcript.findIndex((line) => line.includes('this is what init will do'));
+		const end = transcript.findIndex((line) => line.startsWith('Write factory.json and go on'));
+		return transcript.slice(start, end + 1).join('\n');
+	};
+
+	it('shows the factory.json, the Signal labels and the logins before it writes', async () => {
+		await init(['github', 'acme/widgets', 'github', '', 'make check', '', '']);
+		const shown = summary();
+		expect(shown).toContain('  write factory.json:');
+		expect(shown).toContain('    \t"check": "make check",');
+		expect(shown).toContain('    \t\t"repo": "acme/widgets"');
+		expect(shown).toContain(
+			'  create the Signal labels on acme/widgets: factory-go, ready-for-agent, agent-working, needs-info, ready-for-human'
+		);
+		expect(shown).toContain('    GitHub CLI for the Tracker, on acme/widgets');
+		expect(shown).toContain('    GitHub CLI for the Code host, on o/r');
+		expect(shown).toContain('    claude, signed in to your Claude plan');
+		expect(shown).toContain('  Any answer can be edited later in factory.json.');
+		expect(asked.at(-1)).toBe('Write factory.json and go on, y or n [y]: ');
+		expect(transcript.indexOf('nightjar: wrote factory.json')).toBeGreaterThan(
+			transcript.findIndex((line) => line.startsWith('Write factory.json and go on'))
+		);
+	});
+
+	it('says Azure DevOps needs no labels, and names the projects and the API key', async () => {
+		await init(
+			[
+				'azure-devops',
+				'contoso',
+				'Fabrikam',
+				'',
+				'',
+				'azure-devops',
+				'',
+				'',
+				'fabrikam-app',
+				'make check',
+				'',
+				'y'
+			],
+			{ ANTHROPIC_API_KEY: 'sk-x' },
+			['init', '--use-api-key']
+		);
+		const shown = summary();
+		expect(shown).toContain('create no Signal labels: Azure DevOps shows Signals as tags');
+		expect(shown).toContain('    Azure CLI for the Tracker, on contoso/Fabrikam');
+		expect(shown).toContain('    Azure CLI for the Code host, on contoso/Fabrikam/fabrikam-app');
+		expect(shown).toContain('    claude, billing ANTHROPIC_API_KEY');
+	});
+
+	it('writes nothing, creates no label and checks no login on no', async () => {
+		expect(await init(['github', '', 'github', '', 'make check', '', 'n'])).toBe(1);
+		expect(existsSync(written())).toBe(false);
+		expect(m.calls('gh')).not.toContain('POST');
+		expect(out).toContain('nightjar: wrote nothing; run `nightjar init` again to start over');
+		expect(out.join('\n')).not.toContain('Tracker: gh as');
+	});
+
+	it('asks again for an answer that is neither yes nor no', async () => {
+		expect(await init(['github', '', 'github', '', 'make check', '', 'maybe', 'yes'])).toBe(0);
+		expect(out).toContain('  answer y or n');
+		expect(existsSync(written())).toBe(true);
+	});
+
+	it('writes nothing when the input ends at the confirmation', async () => {
+		expect(await init(['github', '', 'github', '', 'make check', ''])).toBe(2);
+		expect(existsSync(written())).toBe(false);
 	});
 });
 

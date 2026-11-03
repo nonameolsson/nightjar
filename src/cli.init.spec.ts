@@ -25,7 +25,7 @@ const nightjar = (input: string) =>
 describe('nightjar init with answers on standard input', () => {
 	it('asks each question, writes factory.json and creates the labels', () => {
 		m = machine();
-		const run = nightjar('github\n\ngithub\n\nmake check\n\n');
+		const run = nightjar('github\n\ngithub\n\nmake check\n\n\n');
 		expect(run.stderr).toBe('');
 		expect(run.status).toBe(0);
 		expect(run.stdout).toContain(

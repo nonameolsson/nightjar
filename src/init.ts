@@ -1,4 +1,5 @@
 // `nightjar init`: a repo with a factory.json is not asked again, and the check command is offered from what the repo holds, and asked for when nothing is found.
+// Before it writes, init shows what it is about to do and asks to go on.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -12,6 +13,7 @@ import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote } from './github/api.js';
 import { say, why } from './say.js';
+import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
 
 export interface InitOptions {
 	readonly root: string;
@@ -261,8 +263,13 @@ function warnIfNeverFails(command: string): null {
 	return null;
 }
 
-async function interview(o: InitOptions): Promise<Record<string, unknown>> {
-	const fromOrigin = await origin(o.root, o.env);
+// The answers as factory.json is written, and as the schema reads them.
+interface Answers {
+	readonly written: Record<string, unknown>;
+	readonly parsed: Config;
+}
+
+async function interview(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
 	const tracker = await section(o, 'tracker', fromOrigin, { kind: 'github' });
 	const kind = tracker.section.type as Kind;
 	const codeHost = await section(o, 'codeHost', fromOrigin, {
@@ -286,13 +293,75 @@ async function interview(o: InitOptions): Promise<Record<string, unknown>> {
 					.split(',')
 					.map((c) => c.trim())
 					.filter((c) => c !== '');
-	return {
+	const config = {
 		$schema: SCHEMA_URL,
 		tracker: tracker.section,
 		codeHost: codeHost.section,
 		check,
 		allowedCommands
 	};
+	const checked = ConfigSchema.safeParse(config);
+	if (!checked.success) {
+		throw new ConfigError(
+			checked.error.issues
+				.map((i) => `${CONFIG_FILE}: ${i.path.join('.')}: ${i.message}`)
+				.join('\n')
+		);
+	}
+	return { written: config, parsed: checked.data };
+}
+
+// Where a section of factory.json is: the repo on GitHub, the project on Azure DevOps, the path of a module.
+function place(section: Config['tracker'] | Config['codeHost'], fromOrigin: string | null): string {
+	if (section.type === 'github') return section.repo ?? fromOrigin ?? 'the repo of your git origin';
+	if (section.type === 'module') return section.path;
+	const repo = 'repo' in section ? `/${section.repo}` : '';
+	return `${section.organization}/${section.project}${repo}`;
+}
+
+const LOGIN_TOOL: Record<Kind, string> = {
+	github: 'GitHub CLI',
+	'azure-devops': 'Azure CLI',
+	module: 'the module'
+};
+
+// What init is about to do with the answers: the file it writes, the labels it creates, the logins it checks.
+function printSummary(o: InitOptions, answers: Answers, fromOrigin: string | null): void {
+	say('this is what init will do:');
+	console.log(`  write ${CONFIG_FILE}:`);
+	for (const line of JSON.stringify(answers.written, null, '\t').split('\n'))
+		console.log(`    ${line}`);
+	const { tracker, codeHost } = answers.parsed;
+	if (tracker.type === 'github') {
+		const names = SIGNALS.map((s) => DEFAULT_SIGNAL_NAMES[s]).join(', ');
+		console.log(`  create the Signal labels on ${place(tracker, fromOrigin)}: ${names}`);
+	} else if (tracker.type === 'azure-devops') {
+		console.log('  create no Signal labels: Azure DevOps shows Signals as tags on first use');
+	} else {
+		console.log(`  create no Signal labels: ${tracker.path} shows Signals its own way`);
+	}
+	console.log('  check the logins:');
+	console.log(`    ${LOGIN_TOOL[tracker.type]} for the Tracker, on ${place(tracker, fromOrigin)}`);
+	console.log(
+		`    ${LOGIN_TOOL[codeHost.type]} for the Code host, on ${place(codeHost, fromOrigin)}`
+	);
+	const profile = o.profile === undefined ? '' : ` under the profile ${o.profile}`;
+	console.log(
+		o.useApiKey
+			? '    claude, billing ANTHROPIC_API_KEY'
+			: `    claude, signed in to your Claude plan${profile}`
+	);
+}
+
+const yesOrNo = (text: string): string | null =>
+	/^(y|yes|n|no)$/i.test(text) ? null : 'answer y or n';
+
+// Whether to go on with what the summary shows; an empty answer is yes.
+async function confirm(o: InitOptions): Promise<boolean> {
+	const got = await answer(o.ask, `Write ${CONFIG_FILE} and go on, y or n`, 'y', yesOrNo, {
+		short: `Any answer can be edited later in ${CONFIG_FILE}.`
+	});
+	return /^y/i.test(got);
 }
 
 function ignoresFactory(root: string): boolean {
@@ -319,16 +388,14 @@ export async function runInit(o: InitOptions): Promise<number> {
 		loadConfig(o.root);
 		say(`${CONFIG_FILE} is there already; keeping it`);
 	} else {
-		const config = await interview(o);
-		const checked = ConfigSchema.safeParse(config);
-		if (!checked.success) {
-			throw new ConfigError(
-				checked.error.issues
-					.map((i) => `${CONFIG_FILE}: ${i.path.join('.')}: ${i.message}`)
-					.join('\n')
-			);
+		const fromOrigin = await origin(o.root, o.env);
+		const answers = await interview(o, fromOrigin);
+		printSummary(o, answers, fromOrigin);
+		if (!(await confirm(o))) {
+			say(`wrote nothing; run \`nightjar init\` again to start over`);
+			return 1;
 		}
-		writeFileSync(file, `${JSON.stringify(config, null, '\t')}\n`);
+		writeFileSync(file, `${JSON.stringify(answers.written, null, '\t')}\n`);
 		say(`wrote ${CONFIG_FILE}`);
 	}
 	if (!ignoresFactory(o.root))
