@@ -56,6 +56,18 @@ describe('startStale from an installed Nightjar', () => {
 	});
 });
 
+describe('a call that hangs', () => {
+	it('gives up and says nothing newer, so a watch is never stalled', async () => {
+		const w = world({ linked: false });
+		const hung: StaleSeams = {
+			...w.seams,
+			timeoutMs: 10,
+			run: () => new Promise<Run>(() => undefined)
+		};
+		expect(await (await startStale(hung))()).toBeNull();
+	});
+});
+
 describe('startStale from a linked checkout', () => {
 	const rev = 'git rev-parse HEAD';
 	it('names origin/main when it is ahead of the commit that started', async () => {

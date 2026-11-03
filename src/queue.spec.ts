@@ -126,8 +126,7 @@ describe('queue --watch', () => {
 describe('queue --watch with newer Nightjar code', () => {
 	it('says so once per version while idle, in the output and the status file', async () => {
 		const w = world();
-		let newer: string | null = '0.3.0';
-		w.deps = { ...w.deps, newer: () => Promise.resolve(newer) };
+		w.deps = { ...w.deps, newer: () => Promise.resolve('0.3.0') };
 		await queue(w.deps, false);
 		// the sleep stops the second idle: one say for two checks
 		expect(w.lines.filter((l) => l.includes('0.3.0'))).toHaveLength(1);
@@ -136,7 +135,6 @@ describe('queue --watch with newer Nightjar code', () => {
 			{ kind: 'stale', commit: '0.3.0' }
 		]);
 		expect(w.moved).toEqual(['0.3.0']);
-		newer = null;
 	});
 
 	it('says again for a still newer version', async () => {

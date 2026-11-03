@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, type Env, type Run } from './git.js';
 
+const TIMEOUT_MS = 30_000;
+
 export const PACKAGE_NAME = '@nonameolsson/nightjar';
 
 // The newer version or commit, or null; never throws.
@@ -15,6 +17,8 @@ export interface StaleSeams {
 	// a linked checkout (built from source) rather than an installed package
 	readonly isCheckout: () => boolean;
 	readonly installedVersion: () => string | null;
+	// how long one git or npm call may take; a watch never waits longer on the network
+	readonly timeoutMs?: number;
 	readonly run: (command: string, args: readonly string[], cwd: string, env: Env) => Promise<Run>;
 }
 
@@ -50,11 +54,17 @@ function isNewer(candidate: string, than: string): boolean {
 }
 
 async function out(seams: StaleSeams, command: string, args: string[]): Promise<string | null> {
+	let timer: NodeJS.Timeout | undefined;
+	const gaveUp = new Promise<null>((done) => {
+		timer = setTimeout(() => done(null), seams.timeoutMs ?? TIMEOUT_MS);
+	});
 	try {
-		const got = await seams.run(command, args, seams.packageDir, seams.env);
-		return got.ok ? got.out.trim() : null;
+		const got = await Promise.race([seams.run(command, args, seams.packageDir, seams.env), gaveUp]);
+		return got?.ok === true ? got.out.trim() : null;
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
