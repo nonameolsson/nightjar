@@ -23,7 +23,7 @@ From a green `main`:
 2. The `release` workflow runs on the published release: sets `package.json` (and the lockfile) to the tag's version, runs `npm run check`, runs `npm publish --provenance` with `NPM_TOKEN`, then commits `Release X.Y.Z` to `main` with the bumped version.
 3. In an empty folder: `npx @nonameolsson/nightjar --help` prints the usage.
 
-Nobody runs `npm version` or `npm publish` by hand, and `package.json` on `main` only changes through that bump commit. If `main` is branch-protected, let `github-actions[bot]` bypass the rule, or the last step fails (the package is already published by then; bump the version in a pull request).
+Nobody runs `npm version` or `npm publish` by hand, and `package.json` on `main` only changes through that bump commit. If `main` is branch-protected, the last step pushes with the `RELEASE_DEPLOY_KEY` secret, a write deploy key on the ruleset's bypass list (`github-actions[bot]` cannot be added to it). Without that, the step fails (the package is already published by then; bump the version in a pull request).
 
 A failed run that did not reach `npm publish` can be re-run from the Actions tab. One that did needs a new version: delete the release and tag, and publish the next one. If a published version is bad, `npm deprecate @nonameolsson/nightjar@X.Y.Z "reason"` and release a fix; `npm unpublish` is only allowed for a short time after publishing.
 
