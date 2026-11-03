@@ -1,4 +1,4 @@
-// `nightjar init`: a repo with a factory.json is not asked again, and the check command is always asked for, never guessed.
+// `nightjar init`: a repo with a factory.json is not asked again, and the check command is offered from what the repo holds, and asked for when nothing is found.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -6,6 +6,7 @@ import { askOnStdin, type Ask } from './ask.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
+import { detectChecks } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote } from './github/api.js';
@@ -150,6 +151,33 @@ async function section(
 	};
 }
 
+// The check command: offered from what the repo holds, else asked for with a placeholder to go by.
+async function askCheck(o: InitOptions): Promise<string> {
+	const found = detectChecks(o.root);
+	const question = 'Command that checks the work, run after each Ticket';
+	if (found.length === 0) {
+		say('no check command detected in this repo; try a placeholder such as `make check`');
+		return answer(o.ask, question, undefined, (text) =>
+			/\S/.test(text) ? null : 'name the command that checks the work'
+		);
+	}
+	if (found.length === 1) {
+		const [only] = found;
+		say(`detected \`${only?.command ?? ''}\` from ${only?.source ?? ''}`);
+	} else {
+		say('detected several check commands; type a number, or your own:');
+		found.forEach((d, i) => {
+			say(`  ${String(i + 1)}. ${d.command}  (from ${d.source})`);
+		});
+	}
+	const text = await answer(o.ask, question, found[0]?.command, (t) =>
+		/^\d+$/.test(t) && (Number(t) < 1 || Number(t) > found.length)
+			? `choose 1 to ${String(found.length)}, or type a command`
+			: null
+	);
+	return /^\d+$/.test(text) ? (found[Number(text) - 1]?.command ?? text) : text;
+}
+
 async function interview(o: InitOptions): Promise<Record<string, unknown>> {
 	const fromOrigin = await origin(o.root, o.env);
 	const tracker = await section(o, 'tracker', fromOrigin, { kind: 'github' });
@@ -159,12 +187,7 @@ async function interview(o: InitOptions): Promise<Record<string, unknown>> {
 		...(tracker.organization === undefined ? {} : { organization: tracker.organization }),
 		...(tracker.project === undefined ? {} : { project: tracker.project })
 	});
-	const check = await answer(
-		o.ask,
-		'Command that checks the work, run after each Ticket (no default)',
-		undefined,
-		(text) => (/\S/.test(text) ? null : 'name the command that checks the work')
-	);
+	const check = await askCheck(o);
 	const listed = await answer(
 		o.ask,
 		'Commands the agent may run, separated by commas, or none',

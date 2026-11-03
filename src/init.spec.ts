@@ -131,6 +131,37 @@ describe('nightjar init asks, never guesses', () => {
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
+	it('says so and suggests a placeholder when no check command is detected', async () => {
+		await init(['github', '', 'github', '', 'make check', '']);
+		expect(out.join('\n')).toContain('no check command detected');
+		expect(out.join('\n')).toContain('`make check`');
+	});
+
+	it('offers make check from a Makefile, naming where it came from', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'check:\n\techo ok\n');
+		await init(['github', '', 'github', '', '', '']);
+		expect(out.join('\n')).toContain('detected `make check` from Makefile "check"');
+		expect(asked.find((q) => q.includes('checks the work'))).toContain('[make check]');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
+	});
+
+	it('reads package.json scripts and picks the package manager from the lockfile', async () => {
+		writeFileSync(join(m.root, 'package.json'), '{"scripts":{"test":"vitest"}}');
+		writeFileSync(join(m.root, 'pnpm-lock.yaml'), '');
+		await init(['github', '', 'github', '', '', '']);
+		expect(out.join('\n')).toContain('detected `pnpm test` from package.json "test"');
+		expect(m.readConfig()).toMatchObject({ check: 'pnpm test' });
+	});
+
+	it('lists several matches numbered, and takes a number', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		await init(['github', '', 'github', '', '2', '']);
+		expect(out.join('\n')).toContain('1. make test  (from Makefile "test")');
+		expect(out.join('\n')).toContain('2. go test ./...  (from go.mod)');
+		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
+	});
+
 	it('writes nothing when the input ends before the check command is given', async () => {
 		expect(await init(['github', '', 'github', ''])).toBe(2);
 		expect(err.join('\n')).toContain('the input ended before this was answered');
