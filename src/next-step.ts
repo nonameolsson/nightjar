@@ -1,58 +1,65 @@
 import type { SignalNames } from './signals.js';
 
-// The "Next step" every Nightjar comment ends with: what a person does, by the Signal names factory.json sets.
 const tag = (name: string) => `\`${name}\``;
 
 const steps = (lines: readonly string[]) =>
 	`**Next step**\n\n${lines.map((l, i) => `${String(i + 1)}. ${l}`).join('\n')}`;
 
+const KEEP = '(keep it assigned to you)';
+
+// A handed-back Ticket leaves its Feature carrying needs-info, which only a person takes off.
 const giveGo = (n: SignalNames) =>
-	`On its Feature, add ${tag(n.go)} (keep it assigned to you). Nightjar goes on from the branch.`;
+	`On its Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}. Nightjar goes on from the branch.`;
 
 const handBack = (n: SignalNames, from: string) =>
 	`On this Ticket, remove ${tag(from)} and add ${tag(n.ready)}.`;
 
-export const ticketAnswerStep = (n: SignalNames) =>
-	steps(['Answer in a comment here.', handBack(n, n.needsInfo), giveGo(n)]);
+export type TicketHandBack = 'answer' | 'retry' | 'human';
 
-export const ticketRetryStep = (n: SignalNames) =>
-	steps([
-		'Read the reason above and fix what it names, or edit the Ticket.',
-		handBack(n, n.needsInfo),
-		giveGo(n)
-	]);
-
-export const ticketHumanStep = (n: SignalNames) =>
-	steps([
-		'Build it yourself, or answer the questions above and make the Ticket clear.',
-		`To hand it back to Nightjar, remove ${tag(n.human)} and add ${tag(n.ready)} on this Ticket.`,
-		giveGo(n)
-	]);
+export function ticketStep(n: SignalNames, kind: TicketHandBack): string {
+	switch (kind) {
+		case 'answer':
+			return steps(['Answer in a comment here.', handBack(n, n.needsInfo), giveGo(n)]);
+		case 'retry':
+			return steps([
+				'Read the reason above and fix what it names, or edit the Ticket.',
+				handBack(n, n.needsInfo),
+				giveGo(n)
+			]);
+		case 'human':
+			return steps([
+				'Build it yourself, or answer the questions above and make the Ticket clear.',
+				`To hand it back to Nightjar, remove ${tag(n.human)} and add ${tag(n.ready)} on this Ticket.`,
+				giveGo(n)
+			]);
+	}
+}
 
 const featureGo = (n: SignalNames) =>
-	`On this Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} (keep it assigned to you).`;
+	`On this Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}.`;
 
 export const featureStopStep = (n: SignalNames) =>
 	steps(['Fix the cause named above.', featureGo(n), 'Nightjar builds the Feature again.']);
 
-export const featureWaitingStep = (n: SignalNames) =>
-	steps([
-		`Deal with the waiting Tickets above: answer their comments, then on each remove ${tag(n.needsInfo)} or ${tag(n.human)} and add ${tag(n.ready)}.`,
-		featureGo(n),
-		'Nightjar goes on from the branch and updates the same draft pull request.'
-	]);
+export function featureAfterRunStep(
+	n: SignalNames,
+	why: { readonly waiting: boolean; readonly red: boolean }
+): string {
+	const todo = [
+		...(why.red ? ['Fix the failing check on the branch.'] : []),
+		...(why.waiting
+			? [
+					`Deal with the waiting Tickets above: answer their comments, then on each remove ${tag(n.needsInfo)} or ${tag(n.human)} and add ${tag(n.ready)}.`
+				]
+			: [])
+	];
+	if (todo.length === 0) {
+		return steps(['Add a Ticket to the Feature, or close the Feature if it is done.']);
+	}
+	return steps([...todo, featureGo(n), 'Nightjar goes on from the branch.']);
+}
 
 export const stoppedStep = (n: SignalNames) =>
 	steps([
-		`To run this Feature again, add ${tag(n.go)} to it (keep it assigned to you). Nightjar goes on from the branch.`
+		`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
 	]);
-
-export const reviewStep = (verdict: 'approve' | 'changes') =>
-	verdict === 'approve'
-		? steps([
-				'Nothing is waiting on you here. Read the diff, mark the pull request ready and merge.'
-			])
-		: steps([
-				'Fix the issues above on the branch, or decide they can stay.',
-				'Then mark the pull request ready and merge. Nightjar does not answer this comment.'
-			]);

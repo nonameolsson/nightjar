@@ -1347,14 +1347,16 @@ describe('the cost split in the pull request', () => {
 });
 
 describe('the next step in each comment', () => {
+	const said = (world: World, id: string) => world.tracker.said(id)[0] ?? '';
+
 	it('tells a person how to answer a Ticket back to Nightjar', async () => {
 		const world = makeWorld();
 		world.acts['2'] = 'ask';
 		await buildFeature(deps(world), setup(world), '1');
-		expect(world.tracker.said('2')[0]).toContain('**Next step**');
-		expect(world.tracker.said('2')[0]).toContain('add `ready-for-agent`');
-		expect(world.tracker.said('2')[0]).toContain('add `factory-go`');
-		expect(world.tracker.said('2')[0]).toMatch(/\n\n---\n_Built by Nightjar\._$/);
+		expect(said(world, '2')).toContain('**Next step**');
+		expect(said(world, '2')).toContain('add `ready-for-agent`');
+		expect(said(world, '2')).toContain('On its Feature, remove `needs-info` and add `factory-go`');
+		expect(said(world, '2')).toMatch(/\n\n---\n_Built by Nightjar\._$/);
 	});
 
 	it('uses the Signal names factory.json sets', async () => {
@@ -1362,15 +1364,15 @@ describe('the next step in each comment', () => {
 		world.acts['2'] = 'ask';
 		const signals = { ...DEFAULT_SIGNAL_NAMES, go: 'run-it' };
 		await buildFeature(deps(world), setup(world, { signals }), '1');
-		expect(world.tracker.said('2')[0]).toContain('add `run-it`');
-		expect(world.tracker.said('2')[0]).not.toContain('factory-go');
+		expect(said(world, '2')).toContain('add `run-it`');
+		expect(said(world, '2')).not.toContain('factory-go');
 	});
 
 	it('tells a person what to fix when a Session failed', async () => {
 		const world = makeWorld();
 		world.acts['2'] = 'fail';
 		await buildFeature(deps(world), setup(world), '1');
-		expect(world.tracker.said('2')[0]).toContain('Read the reason above');
+		expect(said(world, '2')).toContain('Read the reason above');
 	});
 
 	it('tells a person to build it when the question rounds are used up', async () => {
@@ -1386,21 +1388,28 @@ describe('the next step in each comment', () => {
 		const world = makeWorld();
 		world.setupOk = false;
 		await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), '1');
-		expect(world.tracker.said('1')[0]).toContain(
-			'On this Feature, remove `needs-info` and add `factory-go`'
-		);
+		expect(said(world, '1')).toContain('On this Feature, remove `needs-info` and add `factory-go`');
 	});
 
 	it('sends a person from a Feature that built nothing to its waiting Tickets', async () => {
 		const world = makeWorld();
 		world.acts['2'] = 'ask';
 		await buildFeature(deps(world), setup(world), '1');
-		expect(world.tracker.said('1')[0]).toContain('waiting Tickets');
+		expect(said(world, '1')).toContain('waiting Tickets');
 	});
 
-	it('ends the review comment with what a person does next', async () => {
+	it('sends a person from a red check to the branch, not to a waiting Ticket', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+		expect(said(world, '1')).toContain('Fix the failing check on the branch');
+		expect(said(world, '1')).toContain('The check fails after #2');
+	});
+
+	it('leaves a Next step off the review comment, which hands nothing to a person', async () => {
 		const world = makeWorld();
 		await buildFeature(deps(world), setup(world), '1');
-		expect(world.host.pulls[0]?.comments[0]).toContain('**Next step**');
+		expect(world.host.pulls[0]?.comments[0]).toContain('Nightjar review');
+		expect(world.host.pulls[0]?.comments[0]).not.toContain('Next step');
 	});
 });

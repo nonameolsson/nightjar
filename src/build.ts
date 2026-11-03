@@ -8,13 +8,11 @@ import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
 import {
+	featureAfterRunStep,
 	featureStopStep,
-	featureWaitingStep,
-	reviewStep,
 	stoppedStep,
-	ticketAnswerStep,
-	ticketHumanStep,
-	ticketRetryStep
+	ticketStep,
+	type TicketHandBack
 } from './next-step.js';
 import type { Signal, SignalNames } from './signals.js';
 import type { Entry, Spend } from './spend.js';
@@ -100,7 +98,6 @@ export interface Setup extends WorkflowSettings {
 		readonly model?: string;
 		readonly effort?: string;
 	};
-	// the names the Signals go by, for the next step each comment names
 	readonly signals: SignalNames;
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
@@ -119,6 +116,9 @@ export type FeatureOutcome =
 	| { readonly kind: 'stopped' };
 
 export const FOOTER = '\n\n---\n_Built by Nightjar._';
+
+// A comment for a person: what happened, then what they do next.
+const withNext = (body: string, step: string) => `${body}\n\n${step}${FOOTER}`;
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
@@ -217,7 +217,7 @@ async function needsInfoStop(
 	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
 	await deps.tracker.removeSignal(id, 'working');
 	await deps.tracker.addSignal(id, 'needsInfo');
-	await deps.tracker.comment(id, `${comment}\n\n${featureStopStep(signals)}${FOOTER}`);
+	await deps.tracker.comment(id, withNext(comment, featureStopStep(signals)));
 	return { kind: 'nothing', waiting: left };
 }
 
@@ -337,10 +337,10 @@ class FeatureRun {
 		ticket: Ticket,
 		before: string,
 		body: string,
-		signal: Signal,
-		why: string,
-		next: string
+		kind: TicketHandBack,
+		why: string
 	) {
+		const signal: Signal = kind === 'human' ? 'human' : 'needsInfo';
 		const { tracker } = this.deps;
 		this.deps.status.happened({
 			kind: 'needs-info',
@@ -350,7 +350,10 @@ class FeatureRun {
 		});
 		const side = await this.tree.discard(before, ticket.id);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
-		await tracker.comment(ticket.id, `${body}${kept}\n\n${next}${FOOTER}`);
+		await tracker.comment(
+			ticket.id,
+			withNext(`${body}${kept}`, ticketStep(this.setup.signals, kind))
+		);
 		await tracker.removeSignal(ticket.id, 'ready');
 		await tracker.addSignal(ticket.id, signal);
 		const i = this.tickets.indexOf(ticket);
@@ -402,9 +405,8 @@ class FeatureRun {
 					ticket,
 					before,
 					`Nightjar could not build this Ticket: ${got.why}.\n\nSession: \`claude --resume ${sessionId}\``,
-					'needsInfo',
-					got.why,
-					ticketRetryStep(this.setup.signals)
+					'retry',
+					got.why
 				);
 				return NEXT;
 			case 'questions': {
@@ -428,14 +430,7 @@ class FeatureRun {
 		const limit = this.setup.limits.questionRounds;
 		if (round <= limit) {
 			const asked = `it asked ${String(questions.length)} question${questions.length === 1 ? '' : 's'}, round ${String(round)}`;
-			await this.handBack(
-				ticket,
-				before,
-				questionsComment(questions, round),
-				'needsInfo',
-				asked,
-				ticketAnswerStep(this.setup.signals)
-			);
+			await this.handBack(ticket, before, questionsComment(questions, round), 'answer', asked);
 			return;
 		}
 		const asked = questions.map((q, i) => `${String(i + 1)}. ${q.question}`).join('\n');
@@ -444,8 +439,7 @@ class FeatureRun {
 			before,
 			`Nightjar asked about this Ticket ${String(limit)} times and still has questions, so it needs a person:\n\n${asked}`,
 			'human',
-			`still unclear after ${String(limit)} question rounds, so a person builds it`,
-			ticketHumanStep(this.setup.signals)
+			`still unclear after ${String(limit)} question rounds, so a person builds it`
 		);
 	}
 
@@ -479,9 +473,8 @@ class FeatureRun {
 				ticket,
 				before,
 				`Nightjar's session said it built this Ticket but changed no file.\n\nSession: \`claude --resume ${sessionId}\``,
-				'needsInfo',
-				'it said it built the Ticket but changed no file',
-				ticketRetryStep(this.setup.signals)
+				'retry',
+				'it said it built the Ticket but changed no file'
 			);
 			return NEXT;
 		}
@@ -574,7 +567,7 @@ class FeatureRun {
 		if (this.aborted || last.kind === 'aborted') {
 			await tracker.comment(
 				id,
-				`The Nightjar run was stopped by a person.\n\n${stoppedStep(this.setup.signals)}${FOOTER}`
+				withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
 			);
 			return { kind: 'stopped' };
 		}
@@ -590,7 +583,10 @@ class FeatureRun {
 			await tracker.addSignal(id, 'needsInfo');
 			await tracker.comment(
 				id,
-				`Nightjar built nothing for this Feature.\n\n${waitingList(left)}\n\n${featureWaitingStep(this.setup.signals)}${FOOTER}`
+				withNext(
+					`Nightjar built nothing for this Feature.\n\n${waitingList(left)}`,
+					featureAfterRunStep(this.setup.signals, { waiting: left.length > 0, red: false })
+				)
 			);
 			return { kind: 'nothing', waiting: left };
 		}
@@ -670,7 +666,10 @@ class FeatureRun {
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
 			await tracker.comment(
 				id,
-				`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}\n\n${featureWaitingStep(this.setup.signals)}${FOOTER}`
+				withNext(
+					`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}`,
+					featureAfterRunStep(this.setup.signals, { waiting: left.length > 0, red: red !== null })
+				)
 			);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
@@ -825,5 +824,5 @@ function reviewComment(review: Review): string {
 	const issues = review.issues
 		.map((i) => `- \`${i.file}${i.line ? `:${String(i.line)}` : ''}\`: ${i.problem}`)
 		.join('\n');
-	return `**Nightjar review: ${review.verdict === 'approve' ? 'approve' : 'changes'}**\n\n${review.summary}${issues ? `\n\n${issues}` : ''}\n\n${reviewStep(review.verdict)}${FOOTER}`;
+	return `**Nightjar review: ${review.verdict === 'approve' ? 'approve' : 'changes'}**\n\n${review.summary}${issues ? `\n\n${issues}` : ''}${FOOTER}`;
 }
