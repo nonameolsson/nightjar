@@ -22,6 +22,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          # A deploy key on the Main ruleset's bypass list lets the last step push to main; GITHUB_TOKEN cannot bypass it.
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -37,7 +39,7 @@ jobs:
           if [[ "$TAG" == *-* ]]; then npm publish --provenance --tag next; else npm publish --provenance; fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      # Record the released version on main (needs main to accept pushes from github-actions).
+      # Record the released version on main (pushes with the RELEASE_DEPLOY_KEY deploy key, which the Main ruleset lets bypass).
       - name: Bump package.json on main
         run: |
           cp package.json package-lock.json "$RUNNER_TEMP/"
