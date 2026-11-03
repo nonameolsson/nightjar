@@ -91,6 +91,29 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('<export>');
 	});
 
+	it('shows a queued Feature with its Ticket count, 0 of N and a bar', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed(
+			[
+				{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed: 1 } },
+				{ id: '281', title: 'Exports', ticketCounts: null },
+				{ id: '290', title: 'Reports' }
+			],
+			{ items: [], trackerCannotList: false }
+		);
+		await open();
+		const board = (await get('/')).text.split('<div class="overview">')[0] ?? '';
+		const card = (title: string) => board.split('<article').find((a) => a.includes(title)) ?? '';
+		expect(card('Saved filters')).toContain('4 Tickets');
+		expect(card('Saved filters')).toContain('0 of 4 built');
+		expect(card('Saved filters')).toContain('class="bar"');
+		expect(card('Exports')).toContain('? Tickets');
+		expect(card('Exports')).not.toContain('class="bar"');
+		expect(card('Reports')).not.toContain('Tickets');
+		expect(card('Reports')).not.toContain('class="bar"');
+	});
+
 	it('says stopped when the pid is gone, and shows no Queue then, only history', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });

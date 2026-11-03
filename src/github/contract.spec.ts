@@ -10,6 +10,7 @@ import {
 	GitHubTracker,
 	codeHostContract,
 	featureWriterContract,
+	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
 	type Pull,
@@ -164,6 +165,11 @@ describe('GitHubTracker meets the waitingOn contract', () => {
 			for (const c of waitingOnContract) it(c.name, () => c.run(harness));
 		});
 	}
+});
+
+describe('GitHubTracker meets the ticketCounts contract', () => {
+	const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
+	for (const c of ticketCountsContract) it(c.name, () => c.run(harness));
 });
 
 // real git on a busy machine is slow

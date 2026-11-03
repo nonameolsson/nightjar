@@ -314,7 +314,10 @@ export class FakeGitHub {
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },
-			sub_issues_summary: { total: issue.subIssues.length },
+			sub_issues_summary: {
+				total: issue.subIssues.length,
+				completed: issue.subIssues.filter((n) => this.issues.get(n)?.state === 'closed').length
+			},
 			...(issue.pull ? { pull_request: { html_url: this.url(issue.number) } } : {})
 		};
 	}

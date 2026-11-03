@@ -22,6 +22,7 @@ export type {
 	Named,
 	Queued,
 	Status,
+	TicketCounts,
 	TicketProgress,
 	WaitingItem,
 	WaitingOnYou

@@ -25,7 +25,7 @@ export const IssueSchema = z.looseObject({
 		.nullable()
 		.optional(),
 	user: z.looseObject({ login: z.string() }).nullable(),
-	sub_issues_summary: z.looseObject({ total: z.int() }).optional(),
+	sub_issues_summary: z.looseObject({ total: z.int(), completed: z.int().optional() }).optional(),
 	// the issues list also returns pull requests, which carry this
 	pull_request: z.unknown().optional()
 });

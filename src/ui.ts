@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import { ledgerPath } from './build.js';
 import { lastRepo } from './ledger.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
-import type { Doing, Named, WaitingItem } from './status-shape.js';
+import type { Doing, Named, Queued, TicketCounts, WaitingItem } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -158,6 +158,8 @@ interface FeatureCard {
 }
 interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
+	// null when the count could not be read; undefined when the Tracker cannot count
+	readonly ticketCounts: TicketCounts | null | undefined;
 }
 interface BuildingCard extends FeatureCard {
 	readonly state: 'building';
@@ -238,11 +240,12 @@ function features(view: FactoryView): Features {
 				});
 		}
 	}
-	const queued = (q: Named): QueuedCard => ({
+	const queued = (q: Queued): QueuedCard => ({
 		state: 'queue',
 		id: q.id,
 		title: q.title,
-		waitingTickets: []
+		waitingTickets: [],
+		ticketCounts: q.ticketCounts
 	});
 	const queue = on ? status?.queue?.map(queued) : undefined;
 	return {
@@ -288,6 +291,18 @@ function buildingCard(card: BuildingCard, view: FactoryView): string {
 	);
 }
 
+// A Feature not yet started: its Ticket count, `0 of N` and a bar; "?" and no bar when the count failed; nothing when the Tracker cannot count.
+function queuedCard(card: QueuedCard): string {
+	const counts = card.ticketCounts;
+	let count = '';
+	if (counts === null) count = '<p class="meta count">? Tickets</p>';
+	else if (counts !== undefined) {
+		const n = String(counts.total);
+		count = `<p class="meta count">${n} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p><div class="bar"><i style="width:0%"></i></div><p class="meta">0 of ${n} built</p>`;
+	}
+	return `<article class="fcard">${feature(card)}${count}</article>`;
+}
+
 function completedCard(card: CompletedCard): string {
 	const { event, costUsd } = card.done;
 	const outcome =
@@ -315,7 +330,7 @@ function board(view: FactoryView): string {
 			? none('not read yet')
 			: all.queue.length === 0
 				? none('empty')
-				: all.queue.map((c) => `<article class="fcard">${feature(c)}</article>`).join('');
+				: all.queue.map(queuedCard).join('');
 	const building =
 		all.building === null ? none('nothing is being built') : buildingCard(all.building, view);
 	let waiting: string;
@@ -421,6 +436,8 @@ pre { border: 1px solid var(--line); border-radius: 6px; font-size: 12px; margin
 .column { min-width: 0; }
 .fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; overflow-wrap: anywhere; padding: 10px 12px; }
 .fcard p { margin: 4px 0; }
+.bar { background: var(--line); border-radius: 4px; height: 6px; overflow: hidden; }
+.bar > i { background: var(--accent); display: block; height: 100%; }
 .fcard.building { border-color: var(--accent); }
 .fcard.failed { border-color: var(--bad); color: var(--bad); }
 .fcard.pulled a { color: var(--good); }

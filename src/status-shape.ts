@@ -13,13 +13,22 @@ export interface TicketProgress extends Named {
 	readonly why?: string;
 }
 
-// A Feature in the Queue: id and title only, as a Ticket count would cost a Tracker call each.
-export type Queued = Named;
+// How many Tickets a Feature has and how many are closed.
+export interface TicketCounts {
+	readonly total: number;
+	readonly closed: number;
+}
 
-// A Feature or Ticket that carries needs info or needs a person.
+// A Feature in the Queue. `ticketCounts` is null when the Tracker could not read them, and absent when it cannot count or the file is older.
+export interface Queued extends Named {
+	readonly ticketCounts?: TicketCounts | null;
+}
+
+// A Feature or Ticket that carries needs info or needs a person; counts only on a Feature.
 export interface WaitingItem extends Named {
 	readonly kind: 'feature' | 'ticket';
 	readonly why: string;
+	readonly ticketCounts?: TicketCounts | null;
 }
 
 export interface WaitingOnYou {

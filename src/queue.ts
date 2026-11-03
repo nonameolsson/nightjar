@@ -1,7 +1,13 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
 import { FOOTER, type FeatureOutcome } from './build.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
-import { waitingTickets, type Named, type StatusReport, type WaitingItem } from './status.js';
+import {
+	waitingTickets,
+	type Named,
+	type StatusReport,
+	type TicketCounts,
+	type WaitingItem
+} from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 import type { Newer } from './stale.js';
@@ -92,9 +98,27 @@ async function readWaitingFeatures(
 function waitingOnYou(deps: QueueDeps) {
 	const canList = deps.tracker.waitingOn !== undefined;
 	let features: WaitingItem[] = [];
+	// null for a Feature whose count could not be read; empty when the Tracker cannot count
+	let counts = new Map<ItemId, TicketCounts | null>();
+	// the counts of the Features in the Queue and in Waiting on you; a fault leaves every one unread, never the refresh broken
+	const readCounts = async (queue: readonly Named[]) => {
+		const count = deps.tracker.ticketCounts?.bind(deps.tracker);
+		if (count === undefined) return;
+		const ids = [...new Set([...queue, ...features].map((f) => f.id))];
+		try {
+			const got = await count(ids);
+			counts = new Map(ids.map((id) => [id, got.get(id) ?? null]));
+		} catch (fault) {
+			deps.say(`could not count the Tickets of the Features: ${why(fault)}`);
+			counts = new Map(ids.map((id) => [id, null]));
+		}
+	};
+	const withCount = <T extends Named>(item: T): T =>
+		counts.has(item.id) ? { ...item, ticketCounts: counts.get(item.id) ?? null } : item;
 	return {
-		read: async () => {
+		read: async (queue: readonly Named[]) => {
 			if (canList) features = await readWaitingFeatures(deps, features);
+			await readCounts(queue);
 		},
 		// `tickets` are the current Feature's, which only a Feature that ended well says
 		tell: (queue: Named[], outcome: FeatureOutcome | null = null) => {
@@ -102,8 +126,8 @@ function waitingOnYou(deps: QueueDeps) {
 				outcome?.kind === 'pull' || outcome?.kind === 'nothing'
 					? waitingTickets(outcome.waiting)
 					: [];
-			deps.status.refreshed(queue, {
-				items: [...features, ...tickets],
+			deps.status.refreshed(queue.map(withCount), {
+				items: [...features.map(withCount), ...tickets],
 				trackerCannotList: !canList
 			});
 		}
@@ -148,9 +172,9 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const next = features[0];
-		await waiting.read();
 		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
 		const rest = features.slice(1).map(named);
+		await waiting.read(rest);
 		waiting.tell(rest);
 		if (next === undefined && once) {
 			deps.say(none(deps));
@@ -179,7 +203,7 @@ export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOu
 	const rest = (await deps.tracker.assignedFeatures(deps.person))
 		.filter((f) => f.id !== id)
 		.map(named);
-	await waiting.read();
+	await waiting.read(rest);
 	waiting.tell(rest);
 	const outcome = await buildOne(deps, { id, title });
 	waiting.tell(rest, outcome);

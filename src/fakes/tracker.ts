@@ -8,6 +8,7 @@ import type {
 	ItemText,
 	Standing,
 	Ticket,
+	TicketCount,
 	TicketReference,
 	Tracker
 } from '../tracker.js';
@@ -105,6 +106,18 @@ export class FakeTracker implements Tracker, FeatureWriter {
 							i.signals.includes(signal)
 					)
 					.map(({ id, title, body }) => ({ id, title, body }))
+			)
+		);
+
+	ticketCounts = (ids: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>> =>
+		Promise.resolve(
+			new Map(
+				ids.map((id) => {
+					const item = this.items.get(id);
+					if (item === undefined) return [id, null];
+					const closed = item.children.filter((c) => this.items.get(c)?.open === false).length;
+					return [id, { total: item.children.length, closed }];
+				})
 			)
 		);
 

@@ -120,6 +120,27 @@ describe('StatusFile', () => {
 		expect(off?.refreshedAt).toBeUndefined();
 	});
 
+	it('writes optional Ticket counts with the Queue and Waiting on you, and a file without them still reads', () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const counts = { total: 3, closed: 1 };
+		status.refreshed([{ id: '7', title: 'Saved filters', ticketCounts: counts }], {
+			items: [
+				{ kind: 'feature', id: '8', title: 'Exports', why: 'needs info', ticketCounts: null }
+			],
+			trackerCannotList: false
+		});
+		const read = readStatus(path);
+		expect(read?.queue?.[0]?.ticketCounts).toEqual(counts);
+		expect(read?.waitingOnYou?.items[0]?.ticketCounts).toBeNull();
+		status.refreshed([{ id: '7', title: 'Saved filters' }], {
+			items: [],
+			trackerCannotList: false
+		});
+		expect(readStatus(path)?.queue).toEqual([{ id: '7', title: 'Saved filters' }]);
+	});
+
 	it("lists the building Feature's Tickets that need info or a person in Waiting on you as the build runs, and drops them with the Feature", () => {
 		const path = join(dir, 'status.json');
 		const status = file(path);

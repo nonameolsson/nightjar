@@ -158,9 +158,56 @@ describe('the Queue in the status file', () => {
 	it('is the Features after the one taken, written before it builds', async () => {
 		const w = world();
 		await queue(w.deps, true);
-		expect(w.refreshes[0]?.queue).toEqual([{ id: '4', title: 'Later' }]);
+		expect(w.refreshes[0]?.queue).toEqual([
+			{ id: '4', title: 'Later', ticketCounts: { total: 1, closed: 0 } }
+		]);
 		// and again once it ended, for what its Tickets left
 		expect(w.trail).toEqual(['refresh 4', 'build 2', 'refresh 4']);
+	});
+
+	it('carries the Ticket counts of the Queue and of Waiting on you', async () => {
+		const w = world();
+		w.tracker.add({
+			id: '10',
+			title: 'Asks',
+			assignees: ['ann'],
+			signals: ['needsInfo'],
+			children: ['11', '12']
+		});
+		w.tracker.add({ id: '11', title: 'Ticket 11', open: false });
+		w.tracker.add({ id: '12', title: 'Ticket 12' });
+		await queue(w.deps, true);
+		expect(w.refreshes[0]?.waitingOnYou.items).toEqual([
+			{
+				kind: 'feature',
+				id: '10',
+				title: 'Asks',
+				why: 'needs info',
+				ticketCounts: { total: 2, closed: 1 }
+			}
+		]);
+	});
+
+	it('marks a Feature whose count fails and still refreshes', async () => {
+		const w = world();
+		w.tracker.ticketCounts = () => Promise.resolve(new Map([['4', null]]));
+		await queue(w.deps, true);
+		expect(w.refreshes[0]?.queue).toEqual([{ id: '4', title: 'Later', ticketCounts: null }]);
+	});
+
+	it('marks every Feature unread and still refreshes when counting throws', async () => {
+		const w = world();
+		w.tracker.ticketCounts = () => Promise.reject(new Error('the network went away'));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.refreshes[0]?.queue).toEqual([{ id: '4', title: 'Later', ticketCounts: null }]);
+		expect(w.lines.some((l) => l.includes('could not count'))).toBe(true);
+	});
+
+	it('writes no count for a Tracker without ticketCounts', async () => {
+		const w = world();
+		Object.assign(w.tracker, { ticketCounts: undefined });
+		await queue(w.deps, true);
+		expect(w.refreshes[0]?.queue).toEqual([{ id: '4', title: 'Later' }]);
 	});
 
 	it('is refreshed between Features and on each idle poll, never mid-build', async () => {
@@ -269,13 +316,16 @@ describe('Waiting on you from a Tracker that has waitingOn', () => {
 		return w;
 	}
 
+	const asks = { kind: 'feature', id: '10', title: 'Asks', why: 'needs info' } as const;
+	const stuck = { kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' } as const;
+
 	it('lists the Features assigned to the person that carry needs info or needs a person, and no longer says the Tracker cannot list', async () => {
 		const w = withWaiting();
 		await queue(w.deps, true);
 		expect(w.refreshes[0]?.waitingOnYou).toEqual({
 			items: [
-				{ kind: 'feature', id: '10', title: 'Asks', why: 'needs info' },
-				{ kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' }
+				{ ...asks, ticketCounts: { total: 1, closed: 0 } },
+				{ ...stuck, ticketCounts: { total: 1, closed: 0 } }
 			],
 			trackerCannotList: false
 		});
@@ -287,8 +337,8 @@ describe('Waiting on you from a Tracker that has waitingOn', () => {
 		await queue(w.deps, false);
 		expect(w.refreshes[1]?.waitingOnYou).toEqual({
 			items: [
-				{ kind: 'feature', id: '10', title: 'Asks', why: 'needs info' },
-				{ kind: 'feature', id: '12', title: 'Stuck', why: 'needs a person' },
+				{ ...asks, ticketCounts: { total: 1, closed: 0 } },
+				{ ...stuck, ticketCounts: { total: 1, closed: 0 } },
 				{ kind: 'ticket', id: '3', title: 'Ticket 3', why: 'needs info' }
 			],
 			trackerCannotList: false

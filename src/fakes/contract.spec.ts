@@ -3,6 +3,7 @@ import { describe, it } from 'vitest';
 import {
 	codeHostContract,
 	featureWriterContract,
+	ticketCountsContract,
 	trackerContract,
 	waitingOnContract
 } from '../index.js';
@@ -20,9 +21,18 @@ describe('FakeTracker meets the waitingOn contract', () => {
 	for (const c of waitingOnContract) it(c.name, () => c.run(fakeTrackerHarness));
 });
 
-describe('FakeTracker keyed as PROJ-N meets the Tracker, creation and waitingOn contracts', () => {
+describe('FakeTracker meets the ticketCounts contract', () => {
+	for (const c of ticketCountsContract) it(c.name, () => c.run(fakeTrackerHarness));
+});
+
+describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn and ticketCounts contracts', () => {
 	const keyed = keyedTrackerHarness('PROJ-');
-	for (const c of [...trackerContract, ...featureWriterContract, ...waitingOnContract]) {
+	for (const c of [
+		...trackerContract,
+		...featureWriterContract,
+		...waitingOnContract,
+		...ticketCountsContract
+	]) {
 		it(c.name, () => c.run(keyed));
 	}
 });

@@ -140,6 +140,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `ticketCountsContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

@@ -65,6 +65,38 @@ describe('GitHubTracker', () => {
 		});
 	});
 
+	it('counts the Tickets of a Feature it has listed from the sub-issue summary, with no further call', async () => {
+		const { gh, calls } = fakeGh(
+			on(
+				'GET',
+				'repos/o/r/issues',
+				ok([
+					rawIssue(1, { sub_issues_summary: { total: 5, completed: 2 } }),
+					rawIssue(2, { sub_issues_summary: { total: 1 } })
+				])
+			)
+		);
+		const t = tracker(gh);
+		await t.assignedFeatures('ann');
+		const before = calls.length;
+		const got = await t.ticketCounts(['1']);
+		expect(got.get('1')).toEqual({ total: 5, closed: 2 });
+		expect(calls).toHaveLength(before);
+	});
+
+	it('gives no count for a Feature whose summary lacks the closed count, or that cannot be read', async () => {
+		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/issues/1', ok(rawIssue(1, { sub_issues_summary: { total: 1 } }))),
+			on('GET', 'repos/o/r/issues/2', failed('HTTP 404'))
+		);
+		const got = await tracker(gh).ticketCounts(['1', '2', 'x']);
+		expect([...got]).toEqual([
+			['1', null],
+			['2', null],
+			['x', null]
+		]);
+	});
+
 	it('reads a Feature', async () => {
 		const { gh } = fakeGh(on('GET', 'repos/o/r/issues/1', ok(rawIssue(1, { body: null }))));
 		expect(await tracker(gh).feature('1')).toEqual({ id: '1', title: 'Issue 1', body: '' });
