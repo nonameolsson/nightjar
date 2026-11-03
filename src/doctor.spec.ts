@@ -2,16 +2,20 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { oneEscape } from './fakes/github.js';
 import { machine, type Machine, type Tool } from './fakes/machine.js';
 import { checkMachine } from './checks.js';
+import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
 
 let out: string[];
 let err: string[];
 let m: Machine;
+let github: FakeGitHub;
 beforeEach(() => {
 	out = [];
 	err = [];
+	github = oneEscape();
 	vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void out.push(a.join(' ')));
 	vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => void err.push(a.join(' ')));
 });
@@ -32,14 +36,16 @@ async function doctor(
 ) {
 	m = machine(over.without);
 	m.writeConfig(GITHUB);
-	return start(over);
+	// a machine without gh has none to answer, whatever a fake GitHub would say
+	return start({ ...over, realGh: over.without?.includes('gh') ?? false });
 }
 
-function start(over: { env?: Record<string, string>; argv?: string[] } = {}) {
+function start(over: { env?: Record<string, string>; argv?: string[]; realGh?: boolean } = {}) {
 	return runNightjar(over.argv ?? ['doctor'], {
 		platform: 'linux',
 		cwd: m.root,
-		env: { ...m.env, ...over.env }
+		env: { ...m.env, ...over.env },
+		...(over.realGh === true ? {} : { gh: github.gh })
 	});
 }
 
@@ -60,7 +66,7 @@ describe('nightjar doctor', () => {
 				'nightjar: would build #1 One escape'
 			])
 		);
-		expect(m.calls('gh')).not.toMatch(/-X (POST|PATCH|DELETE)/);
+		expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
 	});
 
 	it('is what --dry-run does', async () => {
@@ -69,9 +75,8 @@ describe('nightjar doctor', () => {
 	});
 
 	it('runs every check when gh and claude are both signed out, and says how to fix each', async () => {
-		const code = await doctor({
-			env: { FAKE_GH_SIGNED_OUT: '1', FAKE_CLAUDE_SIGNED_OUT: '1' }
-		});
+		github.signOut();
+		const code = await doctor({ env: { FAKE_CLAUDE_SIGNED_OUT: '1' } });
 		expect(code).toBe(2);
 		const said = err.join('\n');
 		expect(said).toMatch(/FAIL {2}Tracker: .*run `gh auth login`/);
@@ -140,7 +145,7 @@ describe('nightjar doctor', () => {
 			'FAIL  factory.json: check: missing: name the command that checks the work'
 		);
 		expect(out.join('\n')).toContain('  skip  Tracker: needs a usable factory.json');
-		expect(m.calls('gh')).toBe('');
+		expect(github.calls).toEqual([]);
 	});
 
 	it('says to run init when there is no factory.json', async () => {
@@ -205,6 +210,7 @@ describe('nightjar doctor over Workflows', () => {
 			env: m.env,
 			cwd: m.root,
 			failFast: true,
+			gh: github.gh,
 			skills
 		});
 		expect(asked).toEqual([[join(m.root, '.claude')]]);
@@ -231,7 +237,13 @@ describe('nightjar doctor over Workflows', () => {
 
 	it('does not stop a build: only a Feature that picks the broken Workflow is refused', async () => {
 		const env = withWorkflows('tdd');
-		const checked = await checkMachine({ useApiKey: false, env, cwd: m.root, failFast: true });
+		const checked = await checkMachine({
+			useApiKey: false,
+			env,
+			cwd: m.root,
+			failFast: true,
+			gh: github.gh
+		});
 		expect(checked.ready?.workflowProblems).toEqual({
 			'design-review': expect.stringContaining('/design-critic') as string
 		});

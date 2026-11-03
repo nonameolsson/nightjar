@@ -1,6 +1,6 @@
 ---
 name: nightjar-feature
-description: Write an agreed idea onto the repo's Tracker as a Nightjar Feature and its Tickets, through `nightjar create`. Use when a spec, plan or grilled idea is ready to become a Feature for Nightjar to build.
+description: Write an idea onto the repo's Tracker as a Nightjar Feature and its Tickets, through `nightjar create`. Use when a spec, plan or grilled idea should become a Feature, or when asked to spec, file or ticket work for Nightjar to build.
 ---
 
 # Write a Feature and its Tickets
@@ -9,7 +9,7 @@ Turn the idea agreed in this conversation into one Feature file and make it on t
 
 ## 1. Read the repo's setup
 
-Read `factory.json` at the repo's root. Note the Tracker, and on Azure DevOps whether `tracker.ticketType` is set: without it `nightjar create` refuses, so ask the person which work item type a Ticket is (such as `User Story`) and add it to `factory.json` before step 4. Read the repo's `CLAUDE.md` or `AGENTS.md` and its glossary, if any, so titles use the repo's own words.
+Read `factory.json` at the repo's root. Note the Tracker, and on Azure DevOps whether `tracker.ticketType` is set: without it `nightjar create` refuses, so ask the person which work item type a Ticket is (such as `User Story`) and add it to `factory.json` before step 5. Read the repo's `CLAUDE.md` or `AGENTS.md` and its glossary, if any, so titles use the repo's own words.
 
 Done when you know the Tracker and that it can make Tickets.
 
@@ -25,7 +25,19 @@ Each Ticket is a **vertical slice**: one change that builds, passes the repo's c
 
 Done when every part of the agreed idea lands in exactly one Ticket, and every Ticket has acceptance criteria.
 
-## 3. Write the Feature file
+## 3. Verify the Tickets against the code
+
+An agent builds each Ticket with no one to ask, so a claim about the code that is wrong becomes a wrong commit. For each Ticket, open the code it names and verify:
+
+- every file, function, type, command and setting it names exists as written, or the Ticket says it is new;
+- every behaviour it relies on (when a status, label or flag is set or cleared, who is trusted, what a command already does) is what the code does today, read from the code rather than the docs;
+- its own output cannot come back as its input, such as a comment the agent posts being read later as a request from a person.
+
+Then list the decisions the Tickets leave open: anything two careful builders could do differently. Put each to the person with your recommended answer, and write the answers into the spec.
+
+Done when every name in every Ticket is checked or marked new, and no open decision is left unanswered.
+
+## 4. Write the Feature file
 
 Write it to `.factory/plans/<short-name>.md`, in exactly this shape:
 
@@ -58,13 +70,13 @@ Write it to `.factory/plans/<short-name>.md`, in exactly this shape:
 
 Number the Tickets 1, 2, 3 in build order. `**Blocked by:**` names Tickets above it by number, comma separated.
 
-## 4. Check it
+## 5. Check it
 
 Run `nightjar create --dry-run .factory/plans/<short-name>.md`. It names every fault with its line; fix them and run it again until it exits 0. Show the person what it says it would make.
 
 Done when the dry run exits 0 and the person says to make it.
 
-## 5. Make it
+## 6. Make it
 
 Run `nightjar create .factory/plans/<short-name>.md`. It makes the Feature with no Signal and each Ticket ready, linked to its blockers, and prints each reference.
 

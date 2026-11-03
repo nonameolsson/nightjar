@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { record } from './ledger.js';
+import { memorySpend } from './fakes/spend.js';
 import { readStatus, StatusFile, type Doing, type TicketProgress } from './status.js';
 
 let dir: string;
@@ -12,8 +12,9 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const at = new Date(2026, 9, 30, 9, 0);
+const spend = memorySpend();
 const file = (path: string, now = () => at) =>
-	new StatusFile({ path, ledger: join(dir, 'runs.jsonl'), now, pid: 42, dailyUsd: 60 });
+	new StatusFile({ path, spend, now, pid: 42, dailyUsd: 60 });
 
 describe('StatusFile', () => {
 	it('flags newer code in codeMoved, and keeps it on later writes', () => {
@@ -27,7 +28,7 @@ describe('StatusFile', () => {
 
 	it('writes what Nightjar does now, with the day spent so far', () => {
 		const path = join(dir, 'nested', 'status.json');
-		record(join(dir, 'runs.jsonl'), {
+		spend.record({
 			at: new Date(2026, 9, 30, 8).toISOString(),
 			repo: 'o/r',
 			feature: '1',
@@ -212,7 +213,7 @@ describe('StatusFile', () => {
 		const path = join(dir, 'status.json');
 		const file = new StatusFile({
 			path,
-			ledger: join(dir, 'runs.jsonl'),
+			spend,
 			now: () => new Date(2026, 9, 30, 9),
 			pid: 42,
 			dailyUsd: 60,

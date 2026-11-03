@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeAdapters } from './adapters.js';
 import type { Config } from './config.js';
+import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
+import { FakeGitHub } from './github/fake-github.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 
 let m: Machine;
@@ -22,19 +24,23 @@ const config = (over: Partial<Config>): Config => ({
 describe('Adapters.prepareSignals', () => {
 	it('creates the labels on the GitHub repo the Tracker names, which origin gives when it names none', async () => {
 		m = machine();
-		const adapters = await makeAdapters(config({}), m.root, m.env);
+		const github = oneEscape();
+		const adapters = await makeAdapters(config({}), m.root, m.env, { gh: github.gh });
 		const said = await adapters.prepareSignals();
 		expect(said).toContain('created the label factory-go');
-		expect(m.calls('gh')).toMatch(/-X POST repos\/o\/r\/labels -f name=factory-go /);
+		expect(github.repoLabelNames()).toContain('factory-go');
 	});
 
 	it('creates them under the names factory.json gives', async () => {
 		m = machine();
 		const signals = { ...DEFAULT_SIGNAL_NAMES, go: 'ship-it' };
 		const tracker = { type: 'github' as const, repo: 'acme/widgets' };
-		const adapters = await makeAdapters(config({ signals, tracker }), m.root, m.env);
+		const github = new FakeGitHub('acme/widgets', 'ann');
+		const adapters = await makeAdapters(config({ signals, tracker }), m.root, m.env, {
+			gh: github.gh
+		});
 		await adapters.prepareSignals();
-		expect(m.calls('gh')).toMatch(/-X POST repos\/acme\/widgets\/labels -f name=ship-it /);
+		expect(github.repoLabelNames()).toContain('ship-it');
 	});
 
 	it('says tags appear on first use on Azure DevOps, and creates nothing', async () => {
@@ -45,11 +51,12 @@ describe('Adapters.prepareSignals', () => {
 			project: 'Fabrikam',
 			featureType: 'Feature'
 		};
-		const adapters = await makeAdapters(config({ tracker }), m.root, m.env);
+		const github = oneEscape();
+		const adapters = await makeAdapters(config({ tracker }), m.root, m.env, { gh: github.gh });
 		expect(await adapters.prepareSignals()).toEqual([
 			'Azure DevOps shows Signals as tags, which appear on first use: there is nothing to create.'
 		]);
-		expect(m.calls('gh')).toBe('');
+		expect(github.calls).toEqual([]);
 		expect(m.calls('az')).toBe('');
 	});
 

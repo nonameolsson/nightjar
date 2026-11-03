@@ -1,7 +1,10 @@
-// .factory/runs.jsonl: one line per session with its cost, from which the day's spend is added up.
+// .factory/runs.jsonl, the Spend module's file adapter: one line per session with its cost.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { localDay, spendOver, type Entry, type Spend } from './spend.js';
+
+export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
 
 const EntrySchema = z.looseObject({
 	at: z.string(),
@@ -18,37 +21,20 @@ const EntrySchema = z.looseObject({
 	durationMs: z.number().optional()
 });
 
-export interface Entry {
-	readonly at: string;
-	readonly repo: string;
-	readonly feature: string;
-	readonly ticket: string | null;
-	readonly branch: string;
-	readonly step: 'build' | 'fix' | 'review' | 'step';
-	readonly session: string;
-	readonly costUsd: number;
-	readonly outcome: string;
-	// how long the session ran, in milliseconds
-	readonly durationMs?: number;
-}
-
 export function record(path: string, entry: Entry): void {
 	mkdirSync(dirname(path), { recursive: true });
 	appendFileSync(path, `${JSON.stringify(entry)}\n`);
 }
 
-const localDay = (d: Date) =>
-	`${String(d.getFullYear())}-${String(d.getMonth() + 1)}-${String(d.getDate())}`;
-
 // The lines of the ledger that parse; a line that does not, or the missing file, gives none.
-function readEntries(path: string) {
+export function readEntries(path: string): Entry[] {
 	let text: string;
 	try {
 		text = readFileSync(path, 'utf8');
 	} catch {
 		return [];
 	}
-	const entries: z.infer<typeof EntrySchema>[] = [];
+	const entries: Entry[] = [];
 	for (const line of text.split('\n')) {
 		if (line.trim() === '') continue;
 		let value: unknown;
@@ -57,21 +43,22 @@ function readEntries(path: string) {
 		} catch {
 			continue;
 		}
-		const entry = EntrySchema.safeParse(value);
-		if (entry.success) entries.push(entry.data);
+		const parsed = EntrySchema.safeParse(value);
+		if (parsed.success) {
+			const { feature, ticket } = parsed.data;
+			entries.push({
+				...parsed.data,
+				feature: String(feature),
+				ticket: ticket === null ? null : String(ticket)
+			});
+		}
 	}
 	return entries;
 }
 
-// The estimated dollars spent on the local day of `now`. A line that does not parse counts nothing.
-export function spentOn(path: string, now: Date): number {
-	const day = localDay(now);
-	let sum = 0;
-	for (const entry of readEntries(path)) {
-		if (localDay(new Date(entry.at)) === day) sum += entry.costUsd;
-	}
-	return sum;
-}
+// The Spend module over the ledger file.
+export const fileSpend = (path: string): Spend =>
+	spendOver({ append: (entry) => record(path, entry), read: () => readEntries(path) });
 
 // How many Tickets were built on the local day of `now`.
 export function builtOn(path: string, now: Date): number {
@@ -86,7 +73,7 @@ export function lastRepo(path: string): string | null {
 	return readEntries(path).at(-1)?.repo ?? null;
 }
 
-export interface Spend {
+export interface Spent {
 	readonly feature: string;
 	readonly branch: string;
 	// the Ticket the session worked on; null for one over the whole Feature, such as the review
@@ -101,9 +88,9 @@ export interface Spend {
 
 // The median time a built Ticket took, or null with none recorded: its build, fix and Step sessions,
 // plus an even share of its Feature's sessions over all Tickets (the review, Steps after all Tickets).
-export function medianTicketMs(all: readonly Spend[]): number | null {
-	const key = (s: Spend) => `${s.feature}\n${s.branch}`;
-	const ms = (s: Spend) => s.durationMs ?? 0;
+export function medianTicketMs(all: readonly Spent[]): number | null {
+	const key = (s: Spent) => `${s.feature}\n${s.branch}`;
+	const ms = (s: Spent) => s.durationMs ?? 0;
 	const timed = new Set(
 		all
 			.filter((s) => s.built && s.durationMs !== undefined)
@@ -134,11 +121,11 @@ export function medianTicketMs(all: readonly Spend[]): number | null {
 }
 
 // Each session's cost, by Feature id and the time it was recorded.
-export function spends(path: string): Spend[] {
+export function spends(path: string): Spent[] {
 	return readEntries(path).map((e) => ({
-		feature: String(e.feature),
+		feature: e.feature,
 		branch: e.branch,
-		ticket: e.ticket === null ? null : String(e.ticket),
+		ticket: e.ticket,
 		at: Date.parse(e.at),
 		costUsd: e.costUsd,
 		built: e.step === 'build' && e.outcome === 'built',
@@ -148,7 +135,7 @@ export function spends(path: string): Spend[] {
 
 // How many Tickets of a Feature were built after `after` (exclusive) and up to `until` (inclusive), either open.
 export function builtOnFeature(
-	all: readonly Spend[],
+	all: readonly Spent[],
 	feature: string,
 	after: number | null,
 	until: number | null
@@ -163,7 +150,7 @@ export function builtOnFeature(
 
 // The dollars spent on a Feature after `after` (exclusive) and up to `until` (inclusive), either open.
 export function spentOnFeature(
-	all: readonly Spend[],
+	all: readonly Spent[],
 	feature: string,
 	after: number | null,
 	until: number | null

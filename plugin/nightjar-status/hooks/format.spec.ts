@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { fileSpend } from '../../../src/ledger.js';
 import type { Status } from '../../../src/status-shape.js';
 import { StatusFile } from '../../../src/status.js';
 import { line, toast } from './format';
@@ -109,7 +110,7 @@ describe('the file the writer makes', () => {
 		const now = new Date(NOW);
 		const file = new StatusFile({
 			path,
-			ledger: join(dir, 'runs.jsonl'),
+			spend: fileSpend(join(dir, 'runs.jsonl')),
 			now: () => now,
 			pid: 7,
 			dailyUsd: 60

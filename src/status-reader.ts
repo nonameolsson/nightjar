@@ -2,9 +2,15 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { ledgerPath } from './build.js';
 import { logsPath } from './coding-agent.js';
-import { builtOn, builtOnFeature, medianTicketMs, spends, spentOnFeature } from './ledger.js';
+import {
+	builtOn,
+	builtOnFeature,
+	ledgerPath,
+	medianTicketMs,
+	spends,
+	spentOnFeature
+} from './ledger.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;

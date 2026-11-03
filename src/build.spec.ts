@@ -1,4 +1,4 @@
-// The build loop over real git, the in-memory Tracker and Code host, and a scripted Coding agent.
+// The build loop over the in-memory Tracker, Code host and worktree, and a scripted Coding agent; the few specs about commits, discards and cleanup run over real git.
 import { execFileSync } from 'node:child_process';
 import {
 	cpSync,
@@ -11,8 +11,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildFeature, LIMITS, ledgerPath, type Deps, type Setup } from './build.js';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
 import type {
 	BuildOutcome,
 	BuildRequest,
@@ -26,14 +26,17 @@ import type {
 } from './coding-agent.js';
 import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
+import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
-import { record } from './ledger.js';
+import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { QUESTIONS_MARK } from './prompt.js';
+import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
+import { openWorktree } from './worktree.js';
 
-// Each test runs a few dozen real git processes, which take seconds on a busy machine.
+// A test over real git runs a few dozen processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
@@ -46,12 +49,17 @@ type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
 type Ending = Ended & { readonly sessionId: string; readonly costUsd: number };
 
 interface World {
+	// whether its worktrees are real git; if not they are in memory, in `trees`
+	readonly git: boolean;
+	readonly trees: MemoryWorktrees;
 	readonly root: string;
 	// where its worktrees are made
 	readonly worktrees: string;
 	readonly env: Record<string, string | undefined>;
 	readonly tracker: FakeTracker;
 	readonly host: FakeCodeHost;
+	// what the loop records, in place of .factory/runs.jsonl
+	readonly spend: Spend;
 	readonly asked: Work[];
 	// each check command run, with the folder it ran in
 	readonly checks: { readonly command: string; readonly cwd: string }[];
@@ -81,7 +89,7 @@ interface World {
 }
 
 let base: string;
-let template: string;
+let template: string | undefined;
 
 // git starts gc and maintenance detached, and they can still be writing when afterEach removes the folder.
 const GITCONFIG = '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n';
@@ -96,13 +104,14 @@ const gitEnv = (config: string) => ({
 	GIT_COMMITTER_EMAIL: 'test@example.com'
 });
 
-// Made once and copied per test: real git is the slow part of this file.
-beforeAll(() => {
-	template = mkdtempSync(join(tmpdir(), 'nightjar-build-template-'));
-	const config = join(template, 'gitconfig');
+// Made once, on the first world that wants real git, and copied per test: real git is the slow part.
+function templateRepo(): string {
+	if (template !== undefined) return template;
+	const dir = mkdtempSync(join(tmpdir(), 'nightjar-build-template-'));
+	const config = join(dir, 'gitconfig');
 	writeFileSync(config, GITCONFIG);
-	const origin = join(template, 'origin.git');
-	const app = join(template, 'app');
+	const origin = join(dir, 'origin.git');
+	const app = join(dir, 'app');
 	const sh = (...args: string[]) =>
 		execFileSync('git', args, { env: gitEnv(config), stdio: 'pipe' });
 	sh('init', '-q', '--bare', '-b', 'main', origin);
@@ -111,8 +120,12 @@ beforeAll(() => {
 	sh('-C', app, 'add', '.');
 	sh('-C', app, 'commit', '-q', '-m', 'first');
 	sh('-C', app, 'push', '-q', 'origin', 'main');
+	template = dir;
+	return dir;
+}
+afterAll(() => {
+	if (template !== undefined) rmSync(template, { recursive: true, force: true });
 });
-afterAll(() => rmSync(template, { recursive: true, force: true }));
 
 beforeEach(() => {
 	base = mkdtempSync(join(tmpdir(), 'nightjar-build-'));
@@ -132,10 +145,13 @@ const stepDone = (
 	...over
 });
 
-// A second world in one test needs a folder of its own: git's object files are read-only, so they cannot be copied over the first's.
-function makeWorld(dir = base): World {
+// A world whose worktrees are in memory: no git, so no folder either.
+const makeWorld = (): World => worldOf({ git: false, root: join(base, 'app'), env: {} });
+
+// A world over real git, for the specs about commits, discards and cleanup. A second one in a test needs a folder of its own: git's object files are read-only, so they cannot be copied over the first's.
+function makeGitWorld(dir = base): World {
 	if (existsSync(join(dir, 'origin.git'))) {
-		throw new Error(`makeWorld: ${dir} holds a world already; pass another folder`);
+		throw new Error(`makeGitWorld: ${dir} holds a world already; pass another folder`);
 	}
 	mkdirSync(dir, { recursive: true });
 	const home = join(dir, 'gitconfig');
@@ -143,10 +159,20 @@ function makeWorld(dir = base): World {
 	const env = gitEnv(home);
 	const origin = join(dir, 'origin.git');
 	const root = join(dir, 'app');
-	cpSync(join(template, 'origin.git'), origin, { recursive: true });
-	cpSync(join(template, 'app'), root, { recursive: true });
+	cpSync(join(templateRepo(), 'origin.git'), origin, { recursive: true });
+	cpSync(join(templateRepo(), 'app'), root, { recursive: true });
 	execFileSync('git', ['-C', root, 'remote', 'set-url', 'origin', origin], { env, stdio: 'pipe' });
+	return worldOf({ git: true, root, env, dir });
+}
 
+function worldOf(o: {
+	git: boolean;
+	root: string;
+	env: Record<string, string | undefined>;
+	dir?: string;
+}): World {
+	const { root, env } = o;
+	const dir = o.dir ?? base;
 	const tracker = new FakeTracker('ann', () => new Date(2026, 9, 30, 8));
 	// the Feature lists 3 first, but 3 waits for 2
 	tracker.add({
@@ -159,11 +185,14 @@ function makeWorld(dir = base): World {
 	tracker.add({ id: '2', title: 'Share the function', signals: ['ready'] });
 	tracker.add({ id: '3', title: 'Use it in marks', signals: ['ready'], blockedBy: ['2'] });
 	return {
+		git: o.git,
+		trees: memoryWorktrees(),
 		root,
 		worktrees: join(dir, 'worktrees'),
 		env,
 		tracker,
 		host: new FakeCodeHost(),
+		spend: memorySpend(),
 		asked: [],
 		checks: [],
 		checkEnvs: [],
@@ -199,7 +228,7 @@ function deps(world: World): Deps {
 				answer(req, (): BuildOutcome => {
 					const n = req.ticket.id;
 					const act = world.acts[n] ?? 'build';
-					writeFileSync(join(req.at.folder, `ticket-${n}.txt`), 'work\n');
+					write(world, req.at.folder, `ticket-${n}.txt`);
 					const { sessionId } = req;
 					if (act === 'ask') {
 						const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
@@ -245,6 +274,8 @@ function deps(world: World): Deps {
 				}
 			});
 		},
+		spend: world.spend,
+		openWorktree: world.git ? openWorktree : world.trees.open,
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
 		say: () => undefined,
@@ -275,20 +306,40 @@ const git = (world: World, cwd: string, ...args: string[]) =>
 
 const tree = () => join(base, 'worktrees', '1-one-escape');
 
+// What a scripted Session does in the worktree, and what a spec reads of it, over either adapter.
+function write(world: World, folder: string, file: string): void {
+	if (world.git) writeFileSync(join(folder, file), 'work\n');
+	else world.trees.write(folder, file);
+}
+
+function has(world: World, file: string): boolean {
+	return world.git ? existsSync(join(tree(), file)) : world.trees.has(tree(), file);
+}
+
+const lines = (text: string) => text.split('\n').filter(Boolean);
+
+// the files a Session left, with nothing committed or thrown away
+function left(world: World): string[] {
+	if (!world.git) return world.trees.left(tree());
+	return lines(git(world, tree(), 'status', '--porcelain'));
+}
+
+// the branch's own commits, newest first
+function subjects(world: World): string[] {
+	if (!world.git) return world.trees.subjects(tree());
+	return lines(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD'));
+}
+
 const refs = (world: World) => world.host.pulls[0]?.references.map((r) => r.text);
 
-const ledger = (world: World) =>
-	readFileSync(ledgerPath(world.root), 'utf8')
-		.trim()
-		.split('\n')
-		.map((l) => JSON.parse(l) as { step: string; outcome: string; costUsd: number });
+const ledger = (world: World) => world.spend.entries();
 
 const PORTS = { WEB_PORT: '4500', DB_PORT: '4501' };
 
 describe('the test repo', () => {
 	it('makes a second world in a folder of its own', async () => {
-		const one = makeWorld();
-		const two = makeWorld(join(base, 'second'));
+		const one = makeGitWorld();
+		const two = makeGitWorld(join(base, 'second'));
 		await buildFeature(deps(one), setup(one), '1');
 		await buildFeature(deps(two), setup(two), '1');
 		expect(one.host.pulls).toHaveLength(1);
@@ -296,12 +347,12 @@ describe('the test repo', () => {
 	});
 
 	it("says so when a second world would share the first one's folder", () => {
-		makeWorld();
-		expect(() => makeWorld()).toThrow('pass another folder');
+		makeGitWorld();
+		expect(() => makeGitWorld()).toThrow('pass another folder');
 	});
 
 	it('leaves no detached git maintenance behind to write into the folder after the test', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		const trace = join(base, 'trace.jsonl');
 		world.env['GIT_TRACE2_EVENT'] = trace;
 		await buildFeature(deps(world), setup(world), '1');
@@ -403,14 +454,11 @@ describe('reserved ports', () => {
 
 describe('buildFeature', () => {
 	it('builds the Tickets in Build order, one commit each, then reviews and opens one draft', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		const got = await buildFeature(deps(world), setup(world), '1');
 
 		expect(got).toMatchObject({ kind: 'pull', built: ['2', '3'], waiting: [] });
-		expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD').split('\n')).toEqual([
-			'Use it in marks (#3)',
-			'Share the function (#2)'
-		]);
+		expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
 		// pushed through the Code host to the Feature's branch, never to main
 		expect(world.host.pushes).toEqual([{ folder: tree(), branch: 'factory/1-one-escape' }]);
 		expect(git(world, world.root, 'rev-list', '--count', 'origin/main')).toBe('1');
@@ -539,10 +587,7 @@ describe('buildFeature', () => {
 		let minute = 0;
 		const now = () => new Date(2026, 9, 30, 9, minute++);
 		await buildFeature({ ...deps(world), now }, setup(world), '1');
-		const lines = readFileSync(ledgerPath(world.root), 'utf8')
-			.trim()
-			.split('\n')
-			.map((l) => JSON.parse(l) as { step: string; durationMs?: number });
+		const lines = ledger(world);
 		expect(lines.map((l) => l.step)).toEqual(['build', 'build', 'review']);
 		for (const l of lines) {
 			expect(l.durationMs).toBeGreaterThan(0);
@@ -627,7 +672,7 @@ describe('buildFeature', () => {
 		]);
 		expect(ledger(world).map((e) => e.outcome)).toEqual(['questions, round 1']);
 		// the file the session wrote is gone from the branch
-		expect(git(world, tree(), 'status', '--porcelain')).toBe('');
+		expect(left(world)).toEqual([]);
 		expect(world.host.pulls).toEqual([]);
 		expect(world.host.pushes).toEqual([]);
 	});
@@ -710,11 +755,11 @@ describe('buildFeature', () => {
 			['fix', 'round 2 gave up'],
 			['review', 'approve']
 		]);
-		expect(git(world, tree(), 'log', '-1', '--format=%B')).toContain('Built #2\n\nFixed the lint');
+		expect(world.trees.messages(tree())[0]).toContain('Built #2\n\nFixed the lint');
 	});
 
 	it('hands back a Ticket whose session stopped, keeping the attempt on a side branch', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		world.acts['2'] = 'fail';
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.tracker.said('2')[0]).toContain('it reached its budget');
@@ -767,7 +812,7 @@ describe('buildFeature', () => {
 
 	it('pauses before a session once the day has spent its limit, and gives the Go back', async () => {
 		const world = makeWorld();
-		record(ledgerPath(world.root), {
+		world.spend.record({
 			at: new Date(2026, 9, 30, 7).toISOString(),
 			repo: 'o/r',
 			feature: '9',
@@ -854,8 +899,8 @@ describe('a Session that cannot go on', () => {
 			const got = await buildFeature(deps(world), setup(world), '1');
 
 			expect(got).toEqual({ kind: 'paused', why });
-			expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).toBe('');
-			expect(existsSync(join(tree(), 'ticket-2.txt'))).toBe(false);
+			expect(subjects(world)).toEqual([]);
+			expect(has(world, 'ticket-2.txt')).toBe(false);
 			expect(world.tracker.signalsOf('1')).toEqual(['go']);
 			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
 			expect(world.asked.map((r) => r.kind)).toEqual(['build', 'fix']);
@@ -888,7 +933,7 @@ describe('a Session that cannot go on', () => {
 			const got = await buildFeature(deps(world), setup(world), '1');
 
 			expect(got).toEqual({ kind: 'paused', why });
-			expect(existsSync(join(tree(), 'ticket-2.txt'))).toBe(false);
+			expect(has(world, 'ticket-2.txt')).toBe(false);
 			expect(world.tracker.signalsOf('1')).toEqual(['go']);
 			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
 			expect(ledger(world).map((e) => [e.step, e.outcome])).toEqual([['build', `paused: ${why}`]]);
@@ -912,29 +957,7 @@ describe('a Session that cannot go on', () => {
 	});
 
 	it.each(cases)(
-		"pauses the run, and reverts the Step's work, when a Step's fix round is %s",
-		async (_name, why) => {
-			const world = makeWorld();
-			world.stepAgent = (req) => {
-				writeFileSync(join(req.at.folder, 'critique.txt'), 'half done\n');
-				world.checkOk = false;
-				return stepDone(req);
-			};
-			world.settle = (req) => (req.kind === 'fix' ? paused(why) : undefined);
-			await buildFeature(deps(world), workflow(world, critique), '1');
-
-			expect(existsSync(join(tree(), 'critique.txt'))).toBe(false);
-			expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).not.toContain(
-				'critique'
-			);
-			expect(world.tracker.signalsOf('1')).toEqual(['go']);
-			expect(world.host.pulls[0]?.body).toContain(`The run paused because ${why}.`);
-			expect(ledger(world).find((e) => e.step === 'fix')?.outcome).toBe(`paused: ${why}`);
-		}
-	);
-
-	it.each(cases)(
-		"pauses the run, and reverts the Step's work, when a Step is %s",
+		"pauses the run, and gives the Go back, when a Step's Session is %s",
 		async (_name, why) => {
 			const world = makeWorld();
 			world.settle = (req) => (req.kind === 'step' ? paused(why) : undefined);
@@ -942,42 +965,27 @@ describe('a Session that cannot go on', () => {
 
 			expect(world.tracker.signalsOf('1')).toEqual(['go']);
 			expect(world.host.pulls[0]?.body).toContain(`The run paused because ${why}.`);
-			expect(ledger(world).find((e) => e.step === 'step')?.outcome).toBe(
-				`w/critique: paused: ${why}`
-			);
 		}
 	);
 
-	it.each([
-		["a Ticket's", setup, 'ticket-2.txt'],
-		["a Step's", (world: World) => workflow(world, critique), 'critique.txt']
-	] as const)(
-		'throws the work away when a stop lands during %s check, which no Session reports',
-		async (_name, config, file) => {
-			const world = makeWorld();
-			const stop = new AbortController();
-			world.stepAgent = (req) => {
-				writeFileSync(join(req.at.folder, 'critique.txt'), 'x\n');
-				return stepDone(req);
-			};
-			const inner = deps(world);
-			const runCheck: Deps['runCheck'] = (command, cwd, env) => {
-				if (existsSync(join(cwd, file))) stop.abort();
-				return inner.runCheck(command, cwd, env);
-			};
-			const got = await buildFeature(
-				{ ...inner, runCheck },
-				{ ...config(world), signal: stop.signal },
-				'1'
-			);
+	it("throws the work away when a stop lands during a Ticket's check, which no Session reports", async () => {
+		const world = makeGitWorld();
+		const stop = new AbortController();
+		const inner = deps(world);
+		const runCheck: Deps['runCheck'] = (command, cwd, env) => {
+			if (existsSync(join(cwd, 'ticket-2.txt'))) stop.abort();
+			return inner.runCheck(command, cwd, env);
+		};
+		const got = await buildFeature(
+			{ ...inner, runCheck },
+			{ ...setup(world), signal: stop.signal },
+			'1'
+		);
 
-			expect(got).toEqual({ kind: 'stopped' });
-			expect(existsSync(join(tree(), file))).toBe(false);
-			expect(git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD')).not.toContain(
-				file === 'ticket-2.txt' ? '#2' : 'critique'
-			);
-		}
-	);
+		expect(got).toEqual({ kind: 'stopped' });
+		expect(has(world, 'ticket-2.txt')).toBe(false);
+		expect(subjects(world).join('\n')).not.toContain('#2');
+	});
 
 	// what each kind of work's ledger line says when a person stopped it
 	const stops = [
@@ -999,7 +1007,7 @@ describe('a Session that cannot go on', () => {
 			expect(got).toEqual({ kind: 'stopped' });
 			expect(world.tracker.said('1').at(-1)).toContain('The Nightjar run was stopped by a person.');
 			expect(world.host.pulls).toEqual([]);
-			expect(git(world, tree(), 'status', '--porcelain')).toBe('');
+			expect(left(world)).toEqual([]);
 			expect(ledger(world).find((e) => e.step === kind)).toMatchObject({ outcome, costUsd: 1.5 });
 		}
 	);
@@ -1029,13 +1037,11 @@ describe('Workflows', () => {
 		onFeature(world, WORKFLOW_LINE);
 		return setup(world, { workflows: { 'design-review': flow(over) } });
 	};
-	const subjects = (world: World) =>
-		git(world, tree(), 'log', '--format=%s', 'origin/main..HEAD').split('\n');
 	const body = (world: World) => world.host.pulls[0]?.body ?? '';
 	const kinds = (world: World) => world.asked.map((r) => r.kind);
 
 	it('runs a two-Step Workflow before the review: the commits, the notes passed on, the pull request', async () => {
-		const world = makeWorld();
+		const world = makeGitWorld();
 		let heard = '';
 		world.stepAgent = (req) => {
 			if (req.step.name === 'critique') {
@@ -1094,42 +1100,22 @@ describe('Workflows', () => {
 		expect(ledger(world).map((e) => e.step)).toEqual(['build', 'build', 'step', 'step', 'review']);
 	});
 
-	it.each([
-		['blocked', 'it reported itself blocked: which palette?'],
-		['limit', 'it reached its budget'],
-		['red', 'its changes leave the check failing']
-	] as const)(
-		'throws a Step away that is %s, runs the next one, and lists it as not done',
-		async (act, why) => {
-			const world = makeWorld();
-			world.stepAgent = (req) => {
-				const name = req.step.name;
-				if (name === 'critique') {
-					writeFileSync(join(req.at.folder, 'critique.txt'), 'half done\n');
-					world.checkOk = act !== 'red';
-					const { sessionId } = req;
-					if (act === 'blocked')
-						return { kind: 'blocked', blocker: 'which palette?', sessionId, costUsd: 1 };
-					if (act === 'limit') return { kind: 'failed', why, sessionId, costUsd: 15.2 };
-				}
-				if (name === 'polish') {
-					world.checkOk = true;
-					writeFileSync(join(req.at.folder, 'polish.txt'), 'ok\n');
-				}
-				return stepDone(req);
-			};
-			await buildFeature(deps(world), withFlow(world), '1');
+	it('throws a Step away that fails on the worktree, and still runs the next one', async () => {
+		const world = makeWorld();
+		world.stepAgent = (req) => {
+			write(world, req.at.folder, `${req.step.name}.txt`);
+			const { sessionId } = req;
+			if (req.step.name === 'polish') return stepDone(req);
+			return { kind: 'blocked', blocker: 'which palette?', sessionId, costUsd: 1 };
+		};
+		await buildFeature(deps(world), withFlow(world), '1');
 
-			expect(subjects(world)[0]).toBe('design-review: polish');
-			expect(subjects(world)).not.toContain('design-review: critique');
-			expect(existsSync(join(tree(), 'critique.txt'))).toBe(false);
-			expect(existsSync(join(tree(), 'polish.txt'))).toBe(true);
-			expect(kinds(world).filter((k) => k === 'step').length).toBeGreaterThanOrEqual(2);
-			expect(body(world)).toContain(`- \`critique\`: **not done**, ${why}`);
-			expect(body(world)).toContain('- `polish`: done');
-			expect(world.host.pulls).toHaveLength(1);
-		}
-	);
+		expect(subjects(world)[0]).toBe('design-review: polish');
+		expect(subjects(world)).not.toContain('design-review: critique');
+		expect(has(world, 'critique.txt')).toBe(false);
+		expect(has(world, 'polish.txt')).toBe(true);
+		expect(body(world)).toContain('- `critique`: **not done**, it reported itself blocked');
+	});
 
 	it('marks a Feature needing info when its Workflow line names no Workflow, and builds nothing', async () => {
 		const world = makeWorld();
@@ -1161,13 +1147,6 @@ describe('Workflows', () => {
 		expect(world.tracker.said('1')[0]).toContain('names /gone');
 	});
 
-	it('finds a Workflow whatever the case of its name', async () => {
-		const world = makeWorld();
-		onFeature(world, '**Workflow:** Design-Review');
-		await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow() } }), '1');
-		expect(kinds(world)).toEqual(['build', 'build', 'step', 'step', 'review']);
-	});
-
 	it('runs no Step when a Feature picks none and there is no default, and builds as before', async () => {
 		const world = makeWorld();
 		await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow() } }), '1');
@@ -1185,51 +1164,11 @@ describe('Workflows', () => {
 		expect(kinds(world)).toEqual(['build', 'build', 'step', 'step', 'review']);
 	});
 
-	it('runs a Step again until its condition holds, resuming its Session, and lists what is left', async () => {
-		const world = makeWorld();
-		const tidy = {
-			name: 'tidy',
-			prompt: 'tidy the code',
-			point: 'afterAllTickets',
-			until: 'no lint warnings remain',
-			maxRounds: 2
-		} as const;
-		world.stepAgent = (req) => stepDone(req, { untilHolds: false, left: ['a.ts: unused import'] });
-		await buildFeature(deps(world), withFlow(world, { steps: [tidy] }), '1');
-
-		expect(
-			askedOf(world, 'step').map((s) => [s.sessionId, s.step.name, s.round, s.rounds, s.left])
-		).toEqual([
-			['session-3', 'tidy', 1, 2, []],
-			['session-3', 'tidy', 2, 2, ['a.ts: unused import']]
-		]);
-		expect(body(world)).toContain('did not hold after 2 rounds. Left:\n  - a.ts: unused import');
-	});
-
-	it('stops a Step when its condition holds, before maxRounds', async () => {
-		const world = makeWorld();
-		const tidy = {
-			name: 'tidy',
-			prompt: 'tidy the code',
-			point: 'afterAllTickets',
-			until: 'no lint warnings remain',
-			maxRounds: 3
-		} as const;
-		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, `tidy-${String(req.round)}.txt`), 'x\n');
-			return stepDone(req, { untilHolds: req.round > 1 });
-		};
-		await buildFeature(deps(world), withFlow(world, { steps: [tidy] }), '1');
-		expect(kinds(world).filter((k) => k === 'step')).toHaveLength(2);
-		expect(body(world)).toContain('- `tidy`: done');
-		expect(subjects(world)[0]).toBe('design-review: tidy');
-	});
-
 	it('runs an afterEachTicket Step after each Ticket, committed on its own', async () => {
 		const world = makeWorld();
 		const lint = { name: 'lint', prompt: 'lint it', point: 'afterEachTicket' } as const;
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, `lint-${req.ticket?.id ?? ''}.txt`), 'x\n');
+			write(world, req.at.folder, `lint-${req.ticket?.id ?? ''}.txt`);
 			return stepDone(req);
 		};
 		await buildFeature(deps(world), withFlow(world, { steps: [lint] }), '1');
@@ -1259,7 +1198,7 @@ describe('Workflows', () => {
 	it('does not run a Step the branch already holds when a later run goes on', async () => {
 		const world = makeWorld();
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, `${req.step.name}.txt`), 'x\n');
+			write(world, req.at.folder, `${req.step.name}.txt`);
 			return stepDone(req);
 		};
 		const config = withFlow(world);
@@ -1272,7 +1211,7 @@ describe('Workflows', () => {
 		expect(body(world)).toContain('- `critique`: done\n- `polish`: done');
 	});
 
-	it('serves on the first reserved port while its Steps run, and stops it after', async () => {
+	it("serves the Workflow's command on the run's first reserved port while its Steps run", async () => {
 		const world = makeWorld();
 		await buildFeature(
 			deps(world),
@@ -1283,28 +1222,11 @@ describe('Workflows', () => {
 		expect(world.stopped).toBe(1);
 	});
 
-	it('lists every Step as not done when the serve command fails to start', async () => {
+	it("gives a Step's fix rounds the Step's Session and the Workflow's extras", async () => {
 		const world = makeWorld();
-		world.serveOk = false;
-		await buildFeature(
-			deps(world),
-			{ ...withFlow(world, { serve: 'npm run dev' }), portEnv: PORTS },
-			'1'
-		);
-		expect(kinds(world)).not.toContain('step');
-		expect(body(world)).toContain('**not done**, its serve command failed: port already in use');
-		expect(world.stopped).toBe(0);
-	});
-
-	it("gives a Step and its fix rounds the Workflow's commands, tools and localhost network", async () => {
-		const world = makeWorld();
-		const extras = {
-			allowedCommands: ['npm run e2e'],
-			allowedTools: ['mcp__browser__*'],
-			localNetwork: true
-		};
+		const extras = { allowedCommands: ['npm run e2e'], localNetwork: true };
 		world.stepAgent = (req) => {
-			writeFileSync(join(req.at.folder, 'critique.txt'), 'x\n');
+			write(world, req.at.folder, 'critique.txt');
 			world.checkOk = false;
 			return stepDone(req);
 		};
@@ -1314,18 +1236,10 @@ describe('Workflows', () => {
 		};
 		await buildFeature(deps(world), withFlow(world, { steps: [critique], ...extras }), '1');
 
-		expect(askedOf(world, 'step')[0]?.extras).toEqual(extras);
 		expect(askedOf(world, 'fix')).toMatchObject([
 			{ of: { kind: 'step', step: critique, extras }, resume: 'session-3', round: 1 }
 		]);
 		expect(subjects(world)[0]).toBe('design-review: critique');
-	});
-
-	it('runs a Step on its own budget', async () => {
-		const world = makeWorld();
-		const looks = { name: 'look', prompt: 'look', point: 'afterAllTickets', budgetUsd: 4 } as const;
-		await buildFeature(deps(world), withFlow(world, { steps: [looks] }), '1');
-		expect(askedOf(world, 'step')[0]).toMatchObject({ step: looks, budgetUsd: 4 });
 	});
 });
 

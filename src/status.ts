@@ -2,8 +2,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { spentOn } from './ledger.js';
 import { needsAPerson } from './plan.js';
+import type { Spend } from './spend.js';
 import type {
 	Doing,
 	Event,
@@ -81,7 +81,7 @@ export class StatusFile implements StatusReport {
 	constructor(
 		private readonly o: {
 			readonly path: string;
-			readonly ledger: string;
+			readonly spend: Spend;
 			readonly now: () => Date;
 			readonly pid: number;
 			readonly dailyUsd: number;
@@ -129,7 +129,7 @@ export class StatusFile implements StatusReport {
 		const status: Status = {
 			at: now.toISOString(),
 			pid: this.o.pid,
-			spentTodayUsd: spentOn(this.o.ledger, now),
+			spentTodayUsd: this.o.spend.today(now),
 			dailyUsd: this.o.dailyUsd,
 			doing: this.now,
 			...(this.o.watching === true ? { watching: true } : {}),

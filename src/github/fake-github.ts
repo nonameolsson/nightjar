@@ -59,6 +59,11 @@ export class FakeGitHub {
 	private readonly issues = new Map<number, Issue>();
 	private readonly comments = new Map<number, IssueComment[]>();
 	private readonly permissions = new Map<string, string>();
+	private readonly repoLabels = new Set<string>();
+	private signedOut = false;
+	private labelsRefused = false;
+	// every call gh was asked, in order
+	readonly calls: GhCall[] = [];
 
 	constructor(
 		readonly repo: string,
@@ -107,12 +112,44 @@ export class FakeGitHub {
 		return (this.comments.get(number) ?? []).map((c) => c.body);
 	}
 
-	readonly gh: GhRunner = (args) => Promise.resolve(this.answer(readCall(args)));
+	// A label the repo has, as one a team made itself.
+	addRepoLabel(name: string): void {
+		this.repoLabels.add(name);
+	}
+
+	// The names of the labels the repo has.
+	repoLabelNames(): string[] {
+		return [...this.repoLabels];
+	}
+
+	// From now on every call fails as gh does when it is not signed in.
+	signOut(): void {
+		this.signedOut = true;
+	}
+
+	// From now on the repo refuses new labels, as a token without the right to write them does.
+	refuseLabels(): void {
+		this.labelsRefused = true;
+	}
+
+	readonly gh: GhRunner = (args) => {
+		const call = readCall(args);
+		this.calls.push(call);
+		return Promise.resolve(this.answer(call));
+	};
 
 	private answer(call: GhCall): Run {
 		const { method, path } = call;
 		const repo = `repos/${this.repo}`;
+		if (this.signedOut) {
+			return failed('To get started with GitHub CLI, please run:  gh auth login');
+		}
 		if (method === 'GET' && path === 'user') return ok({ login: this.person });
+		if (method === 'POST' && path === `${repo}/labels`) return this.createLabel(call);
+		const named = new RegExp(`^${repo}/labels/([^/]+)$`).exec(path);
+		if (method === 'GET' && named) {
+			return this.repoLabels.has(decodeURIComponent(named[1] ?? '')) ? ok({}) : NOT_FOUND;
+		}
 		if (method === 'GET' && path === `${repo}/issues`) return ok(this.list(call.query));
 		if (method === 'POST' && path === `${repo}/issues`) return this.openIssue(call);
 		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
@@ -150,6 +187,23 @@ export class FakeGitHub {
 		if (method === 'DELETE' && label)
 			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
 		return NOT_FOUND;
+	}
+
+	// GitHub answers 422 for a name the repo has, in the body as well as on stderr.
+	private createLabel(call: GhCall): Run {
+		const name = call.fields.name;
+		if (typeof name !== 'string' || name === '') return INVALID('name is missing');
+		if (this.repoLabels.has(name)) {
+			return {
+				...failed('gh: Validation Failed (HTTP 422)'),
+				out: '{"message":"Validation Failed","errors":[{"code":"already_exists"}]}'
+			};
+		}
+		if (this.labelsRefused) {
+			return failed('gh: Resource not accessible by integration (HTTP 403)');
+		}
+		this.repoLabels.add(name);
+		return ok({ name });
 	}
 
 	private openIssue(call: GhCall): Run {

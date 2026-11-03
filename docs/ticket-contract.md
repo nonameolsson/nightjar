@@ -27,6 +27,25 @@ A Ticket is one child of a Feature, built as one commit. It holds:
 
 A Ticket is built only while it carries the ready Signal (`ready-for-agent` by default). Its Feature carries no Signal until a person assigns it to themselves and gives it the Go (`factory-go` by default).
 
+## Signals through a build
+
+Which Signal each item carries, and when it changes, under the default names:
+
+| When                                                             | The Feature                                         | Each Ticket                                                  |
+| ---------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
+| `nightjar create` makes it                                       | none                                                | `ready-for-agent`                                            |
+| A person assigns the Feature and gives the Go                    | `factory-go` on                                     | no change                                                    |
+| Nightjar claims it                                               | `agent-working` on, `factory-go` off                | no change                                                    |
+| A Ticket is being built                                          | no change                                           | no change: only the Feature shows the work                   |
+| A Ticket is built (its commit lands, even when the check is red) | no change                                           | keeps `ready-for-agent`; the branch's `Factory-Ticket` trailer is the only record, and the Ticket closes when the pull request merges |
+| A Ticket is handed back (its Session failed, it asked questions, it changed no file) | no change                       | `ready-for-agent` off, `needs-info` on; `ready-for-human` instead once its question rounds run out |
+| The run pauses (the daily limit, the plan's usage limit)         | `factory-go` back on, `agent-working` off           | no change                                                    |
+| A person stops the run                                           | `agent-working` off                                 | no change                                                    |
+| The run ends with a draft pull request                           | `agent-working` off; `needs-info` on while a Ticket waits or the check is red | no change                          |
+| The run builds nothing, its Workflow is refused, its setup fails, or a fault stops it | `agent-working` off, `needs-info` on | no change                                               |
+
+Nightjar never takes `needs-info` or `ready-for-human` off: the person does, and gives the Go again. It never sets a tracker state or a GitHub Project's Status field ([docs/adr/0002](adr/0002-signals-are-labels-or-tags-never-states.md)).
+
 ## A Feature's Workflow
 
 A Feature may carry a **`**Workflow:**`** line anywhere in its body, on a line of its own, to add the Steps of a Workflow from `factory.json` to its build:
