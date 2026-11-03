@@ -1294,3 +1294,104 @@ describe('Workflows', () => {
 		expect(askedOf(world, 'step')[0]).toMatchObject({ step: looks, budgetUsd: 4 });
 	});
 });
+
+describe('the cost split in the pull request', () => {
+	const body = (world: World) => world.host.pulls[0]?.body ?? '';
+	const feature = (world: World, text: string) => {
+		const item = world.tracker.items.get('1');
+		if (item) world.tracker.items.set('1', { ...item, body: text });
+	};
+
+	it('splits a Ticket into its build and its fix rounds, and the review apart', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(body(world)).toContain(
+			[
+				'## Cost',
+				'',
+				'Estimated cost of this run: $6.50.',
+				'',
+				'- #2 Share the function: build $3.00, fix $3.00',
+				'- Review: $0.50'
+			].join('\n')
+		);
+	});
+
+	it('lists a Ticket by its build alone, and leaves out one that had no Session', async () => {
+		const world = makeWorld();
+		// #4 waits for #3, which asks a question, so #4 never gets a Session
+		world.tracker.add({ id: '4', title: 'Document it', signals: ['ready'], blockedBy: ['3'] });
+		const item = world.tracker.items.get('1');
+		if (item) world.tracker.items.set('1', { ...item, children: ['3', '2', '4'] });
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(body(world)).toContain(
+			'- #2 Share the function: build $3.00\n- #3 Use it in marks: build $2.00\n'
+		);
+		expect(body(world)).not.toContain('#4 Document it: build');
+	});
+
+	it("counts a Step's fix rounds under Steps, not under the Ticket's fix", async () => {
+		const world = makeWorld();
+		const lint = { name: 'lint', prompt: 'lint it', point: 'afterEachTicket' } as const;
+		const critique = { name: 'critique', prompt: 'look', point: 'afterAllTickets' } as const;
+		feature(world, '**Workflow:** w');
+		// the Step breaks the check, except after #3; its fix round puts it right
+		world.stepAgent = (req) => {
+			world.checkOk = req.ticket?.id === '3';
+			return stepDone(req);
+		};
+		world.fixAgent = (req) => {
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 };
+		};
+		await buildFeature(
+			deps(world),
+			setup(world, { workflows: { w: { steps: [lint, critique] } } }),
+			'1'
+		);
+
+		expect(body(world)).toContain(
+			[
+				'Estimated cost of this run: $11.50.',
+				'',
+				'- #2 Share the function: build $3.00, Steps $2.00',
+				'- #3 Use it in marks: build $3.00, Steps $1.00',
+				'- Steps after all Tickets: $2.00',
+				'- Review: $0.50'
+			].join('\n')
+		);
+	});
+
+	it('leaves the review out when it is off', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world, { review: { enabled: false } }), '1');
+
+		expect(body(world)).toContain(
+			'Estimated cost of this run: $6.00.\n\n- #2 Share the function: build $3.00\n- #3 Use it in marks: build $3.00\n\n'
+		);
+		expect(body(world)).not.toContain('- Review:');
+	});
+
+	it('shows the split of a paused run for the Sessions it ran', async () => {
+		const world = makeWorld();
+		world.settle = (req) =>
+			req.kind === 'build' && req.ticket.id === '3'
+				? { kind: 'paused', why: 'the limit', sessionId: req.sessionId, costUsd: 1.5 }
+				: undefined;
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(body(world)).toContain(
+			[
+				'Estimated cost of this run: $5.00.',
+				'',
+				'- #2 Share the function: build $3.00',
+				'- #3 Use it in marks: build $1.50',
+				'- Review: $0.50'
+			].join('\n')
+		);
+	});
+});

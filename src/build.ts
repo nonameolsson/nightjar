@@ -114,6 +114,18 @@ const hash = (id: ItemId) => `#${id}`;
 
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
+// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps'.
+type Work = 'build' | 'fix' | 'steps' | 'review';
+
+// What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
+interface Cost {
+	readonly ticket: ItemId | null;
+	readonly work: Work;
+	readonly usd: number;
+}
+
+const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
+
 // What building one Ticket left the run to do next.
 type Step =
 	| { readonly kind: 'next' }
@@ -226,6 +238,7 @@ function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
 
 class FeatureRun {
 	private spent = 0;
+	private readonly costs: Cost[] = [];
 	private featureComments: Comment[] = [];
 	// the Steps the branch holds already, by their trailers
 	private stepsDone = new Set<string>();
@@ -281,8 +294,9 @@ class FeatureRun {
 		return (await this.deps.tracker.comments(id)).filter((c) => c.trusted);
 	}
 
-	private log(entry: LogEntry) {
+	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
 		this.spent += entry.costUsd;
+		this.costs.push({ ticket: entry.ticket, work, usd: entry.costUsd });
 		record(ledgerPath(this.setup.root), {
 			at: this.deps.now().toISOString(),
 			repo: this.setup.repo,
@@ -464,6 +478,7 @@ class FeatureRun {
 	}): Promise<{ check: CheckResult; spent: number; summaries: string[]; halt?: Halt }> {
 		const { limits, check: command } = this.setup;
 		const summaries: string[] = [];
+		const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
 		let { check, spent } = o;
 		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
 			const budget = o.cap - spent;
@@ -482,16 +497,19 @@ class FeatureRun {
 			spent += got.costUsd;
 			const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
 			if (got.kind === 'paused') {
-				this.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` });
+				this.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
 				return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
 			}
 			// the ledger names a fix round that failed or was stopped as one that gave up
 			const gaveUp = got.kind !== 'fixed';
-			this.log({
-				...entry,
-				costUsd: got.costUsd,
-				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`
-			});
+			this.log(
+				{
+					...entry,
+					costUsd: got.costUsd,
+					outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`
+				},
+				work
+			);
 			if (got.kind === 'aborted') return { check, spent, summaries, halt: { kind: 'aborted' } };
 			if (got.kind !== 'fixed') break;
 			summaries.push(got.summary);
@@ -750,6 +768,8 @@ class FeatureRun {
 			red,
 			review,
 			spent: this.spent,
+			costs: this.costs,
+			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,
 			workflow
 		});
@@ -893,6 +913,8 @@ function pullBody(p: {
 	red: { ticket: ItemId; tail: string } | null;
 	review: Review | 'off' | null;
 	spent: number;
+	costs: readonly Cost[];
+	titleOf: (id: ItemId) => string | undefined;
 	paused: string | null;
 	// the Workflow's section, when it ran or left a Step
 	workflow: string | null;
@@ -917,8 +939,39 @@ function pullBody(p: {
 		parts.push(
 			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
 		);
-	parts.push(`Estimated cost of this run: ${dollars(p.spent)}.`);
+	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	return `${parts.join('\n\n')}${FOOTER}`;
+}
+
+// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, and the review; a kind with no Session is left out.
+function costSection(
+	spent: number,
+	costs: readonly Cost[],
+	ref: (id: ItemId) => string,
+	titleOf: (id: ItemId) => string | undefined
+): string {
+	const sum = (ticket: ItemId | null, work: Work) =>
+		costs.filter((c) => c.ticket === ticket && c.work === work).reduce((n, c) => n + c.usd, 0);
+	const has = (ticket: ItemId | null, work: Work) =>
+		costs.some((c) => c.ticket === ticket && c.work === work);
+	// a Ticket's Steps are the ones after it; the ones after all Tickets log no Ticket
+	const tickets = [...new Set(costs.flatMap((c) => (c.ticket === null ? [] : [c.ticket])))];
+	const lines = tickets.map((id) => {
+		const kinds: [string, Work][] = [
+			['build', 'build'],
+			['fix', 'fix'],
+			['Steps', 'steps']
+		];
+		const parts = kinds
+			.filter(([, w]) => has(id, w))
+			.map(([name, w]) => `${name} ${dollars(sum(id, w))}`);
+		const title = titleOf(id);
+		return `- ${ref(id)}${title === undefined ? '' : ` ${title}`}: ${parts.join(', ')}`;
+	});
+	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
+	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
+	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
+	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
 }
 
 function reviewComment(review: Review): string {
