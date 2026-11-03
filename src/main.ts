@@ -70,9 +70,9 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 	const { ready, lines } = checked;
 	const { adapters, me, assignee, person } = ready;
 	say(`${adapters.repo}, as ${me}, on ${ready.login ?? 'ANTHROPIC_API_KEY'}`);
-	// with the build ready, a line that failed is a Workflow's own
+	// with the build ready, a line that failed is a Workflow's own; a Source's is for `nightjar intake`, which may run on another machine
 	for (const l of lines) {
-		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
+		if (l.status === 'fail' && l.source === undefined) say(`${l.name} cannot run: ${l.detail}`);
 	}
 	const found = lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);

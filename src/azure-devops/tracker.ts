@@ -13,7 +13,8 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { waitingFrom, type WaitingFeature } from '../tracker.js';
+import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
+import { markerSearch } from '../template.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
 
@@ -254,6 +255,37 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			)
 			.sort((a, b) => a.id - b.id)
 			.map((i) => this.toFeature(i));
+	}
+
+	// The Features of the Source's marker, open or closed, oldest first: WIQL finds the descriptions that hold it, and the marker itself is read from each.
+	async featuresFrom(source: string): Promise<SourcedFeature[]> {
+		const query =
+			'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project' +
+			` AND [System.WorkItemType] = ${quoted(this.settings.featureType)}` +
+			` AND [System.Description] CONTAINS ${quoted(markerSearch(source))}` +
+			' ORDER BY [System.Id]';
+		const found = await this.api.parse(
+			`find the Features of Source ${source}`,
+			{
+				method: 'POST',
+				url: this.api.at(`${this.project}/_apis/wit/wiql?${API}`),
+				body: { query }
+			},
+			WiqlSchema
+		);
+		const items = await this.items(
+			found.workItems.map((w) => w.id),
+			true
+		);
+		return sourcedFrom(
+			source,
+			items.map((i) => ({
+				id: String(i.id),
+				body: this.body(i),
+				open: i.fields[CLOSED_DATE] === undefined,
+				at: text(i.fields['System.CreatedDate'])
+			}))
+		);
 	}
 
 	async feature(id: ItemId): Promise<Feature> {

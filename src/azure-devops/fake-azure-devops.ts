@@ -551,6 +551,14 @@ export class FakeAzureDevOps {
 		if (op === 'CONTAINS' && field === 'System.Tags') {
 			return (item) => tagList(item.fields['System.Tags']).some((t) => t.toLowerCase() === value);
 		}
+		// Contains on a Description finds the text anywhere in it, as stored
+		if (op === 'CONTAINS' && field === 'System.Description') {
+			return (item) => {
+				const stored = item.fields['System.Description'];
+				const shown = typeof stored === 'string' ? stored : '';
+				return shown.replace(/&lt;/g, '<').replace(/&gt;/g, '>').toLowerCase().includes(value);
+			};
+		}
 		if (op === '=' && ['System.WorkItemType', 'System.AssignedTo'].includes(field)) {
 			return (item) => text(item) === value;
 		}

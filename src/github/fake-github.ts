@@ -151,6 +151,7 @@ export class FakeGitHub {
 			return this.repoLabels.has(decodeURIComponent(named[1] ?? '')) ? ok({}) : NOT_FOUND;
 		}
 		if (method === 'GET' && path === `${repo}/issues`) return ok(this.list(call.query));
+		if (method === 'GET' && path === 'search/issues') return this.search(call.query);
 		if (method === 'POST' && path === `${repo}/issues`) return this.openIssue(call);
 		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
 		if (method === 'POST' && path === `${repo}/pulls`) return this.openPull(call);
@@ -341,6 +342,34 @@ export class FakeGitHub {
 		return found.map((i) => this.render(i));
 	}
 
+	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, and quoted phrases that must all be in it.
+	private search(query: URLSearchParams): Run {
+		const phrases: string[] = [];
+		for (const term of (query.get('q') ?? '').match(/"[^"]*"|\S+/g) ?? []) {
+			if (term.startsWith('"')) phrases.push(term.slice(1, -1).toLowerCase());
+			else if (![`repo:${this.repo}`, 'is:issue', 'in:body'].includes(term)) {
+				return INVALID(`the fake GitHub search does not know ${term}`);
+			}
+		}
+		const found = [...this.issues.values()].filter((i) => {
+			const body = (i.body ?? '').toLowerCase();
+			return i.pull === undefined && phrases.every((p) => body.includes(p));
+		});
+		if (query.get('order') !== 'asc') found.reverse();
+		const size = Number(query.get('per_page') ?? '30');
+		const from = (Number(query.get('page') ?? '1') - 1) * size;
+		return ok({
+			total_count: found.length,
+			incomplete_results: false,
+			items: found.slice(from, from + size).map((i) => this.render(i))
+		});
+	}
+
+	// each issue is made a minute after the one before
+	private createdAt(number: number): string {
+		return new Date(Date.UTC(2026, 9, 30, 8, number)).toISOString();
+	}
+
 	private renderComment(comment: IssueComment) {
 		const permission = this.permissions.get(comment.login) ?? 'none';
 		return {
@@ -365,6 +394,7 @@ export class FakeGitHub {
 			title: issue.title,
 			body: issue.body,
 			state: issue.state,
+			created_at: this.createdAt(issue.number),
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },

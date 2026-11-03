@@ -11,7 +11,7 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { waitingFrom, type WaitingFeature } from '../tracker.js';
+import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
 
 export interface FakeItem {
 	readonly id: ItemId;
@@ -24,6 +24,8 @@ export interface FakeItem {
 	readonly children: readonly ItemId[];
 	readonly blockedBy: readonly ItemId[];
 	readonly comments: readonly Comment[];
+	// when it was made, as an ISO date; left out, the order it was added in says
+	readonly at?: string;
 }
 
 export type NewItem = Pick<FakeItem, 'id' | 'title'> & Partial<FakeItem>;
@@ -105,6 +107,20 @@ export class FakeTracker implements Tracker, FeatureWriter {
 							i.signals.includes(signal)
 					)
 					.map(({ id, title, body }) => ({ id, title, body }))
+			)
+		);
+
+	// each item is taken as made a minute after the one added before it, unless it says when
+	featuresFrom = (source: string): Promise<SourcedFeature[]> =>
+		Promise.resolve(
+			sourcedFrom(
+				source,
+				[...this.items.values()].map((item, i) => ({
+					id: item.id,
+					body: item.body,
+					open: item.open,
+					at: item.at ?? new Date(Date.UTC(2026, 9, 30, 8, i + 1)).toISOString()
+				}))
 			)
 		);
 

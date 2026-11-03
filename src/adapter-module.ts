@@ -23,7 +23,7 @@ export type TrackerFactory = (context: AdapterContext) => Tracker | Promise<Trac
 export type CodeHostFactory = (context: AdapterContext) => CodeHost | Promise<CodeHost>;
 
 // Typed as records, so a method added to an interface fails to compile until it is listed here.
-const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn'>, true> = {
+const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn' | 'featuresFrom'>, true> = {
 	me: true,
 	assignedFeatures: true,
 	feature: true,
@@ -35,6 +35,9 @@ const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn'>, true> = {
 	comment: true,
 	reference: true
 };
+
+// The Tracker methods that stand alone: each may be left out, and is a function when it is there.
+const LONE_METHODS = ['waitingOn', 'featuresFrom'] as const satisfies readonly (keyof Tracker)[];
 
 const CODE_HOST_METHODS: Record<keyof CodeHost, true> = {
 	push: true,
@@ -118,10 +121,12 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 		);
 	}
 	// a lone optional method, left out or a function
-	if (kind === TRACKER && have.waitingOn !== undefined && typeof have.waitingOn !== 'function') {
-		throw new ConfigError(
-			`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose waitingOn is not a function`
-		);
+	for (const name of LONE_METHODS) {
+		if (kind === TRACKER && have[name] !== undefined && typeof have[name] !== 'function') {
+			throw new ConfigError(
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${name} is not a function`
+			);
+		}
 	}
 	return built;
 }

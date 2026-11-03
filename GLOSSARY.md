@@ -36,6 +36,10 @@ _Avoid_: Flow, pipeline, process
 One instruction in a Workflow, given to the Coding agent at a fixed point in a build: after each Ticket, or after all Tickets.
 _Avoid_: Stage, phase, hook, task
 
+**Source**:
+A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule or a signed webhook. `nightjar intake` runs it; it makes no Signal and builds nothing. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
+_Avoid_: trigger, hook, feed
+
 ### Steering
 
 **Signal**:

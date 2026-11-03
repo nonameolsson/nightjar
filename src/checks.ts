@@ -10,6 +10,7 @@ import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
+import { templateFaults } from './template.js';
 import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
@@ -305,6 +306,37 @@ const workflowsCheck = check({
 	}
 });
 
+// A Source's fault does not stop a build, which never reads Sources: each says a line of its own, as a Workflow does.
+const sourcesCheck = check({
+	name: 'Sources',
+	needs: ['root', 'loaded'],
+	run: ({ root, loaded }, o) => {
+		const lines = Object.entries(loaded.config.sources ?? {}).map(([name, source]): Line => {
+			const said = { name: `Source ${name}`, summary: null, source: name };
+			const faults = templateFaults(root, source.template).map(
+				(f) => `template ${source.template}: ${f}`
+			);
+			if (source.type !== 'schedule') {
+				if (source.secretEnv === undefined) {
+					faults.push('name the variable that holds its webhook secret, as secretEnv');
+				} else if ((o.env[source.secretEnv] ?? '') === '') {
+					faults.push(
+						`${source.secretEnv} is not set; put the webhook secret in that variable, never in factory.json`
+					);
+				}
+			}
+			if (faults.length > 0) return { ...said, status: 'fail', detail: faults.join('\n') };
+			const when = source.type === 'schedule' ? ` ${source.cron ?? ''}` : '';
+			return {
+				...said,
+				status: 'ok',
+				detail: `${source.type}${when}, template ${source.template} is in shape`
+			};
+		});
+		return { lines };
+	}
+});
+
 // In the order doctor lists them.
 export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	apiKeyCheck,
@@ -317,7 +349,8 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	codeHostCheck,
 	claudeCheck,
 	signingCheck,
-	workflowsCheck
+	workflowsCheck,
+	sourcesCheck
 ];
 
 export async function checkMachine(o: CheckOptions): Promise<Checked> {

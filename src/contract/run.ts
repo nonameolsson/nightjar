@@ -4,6 +4,7 @@ import { codeHostContract } from './code-host.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { sourcesContract } from './sources.js';
 import { waitingOnContract } from './waiting-on.js';
 import { why } from '../say.js';
 
@@ -60,24 +61,25 @@ function harnessOf(exports: Record<string, unknown>, name: string): unknown {
 // What the Tracker can do beyond the interface's required methods. A harness that cannot build a Tracker over an empty world has failed every case already, so it is asked nothing more.
 async function optionalSuites(
 	harness: TrackerHarness
-): Promise<{ creates: boolean; waitsOn: boolean }> {
+): Promise<{ creates: boolean; waitsOn: boolean; finds: boolean }> {
 	let subject: TrackerSubject;
 	try {
 		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
 	} catch {
-		return { creates: false, waitsOn: false };
+		return { creates: false, waitsOn: false, finds: false };
 	}
 	try {
 		return {
 			creates: canCreate(subject.tracker),
-			waitsOn: typeof subject.tracker.waitingOn === 'function'
+			waitsOn: typeof subject.tracker.waitingOn === 'function',
+			finds: typeof subject.tracker.featuresFrom === 'function'
 		};
 	} finally {
 		await subject.close?.();
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, and the waitingOn suite when it has waitingOn.
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, and the sources suite when it has featuresFrom.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -93,6 +95,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		}
 		if (has.waitsOn) {
 			suites.push(await runSuite('Tracker waiting on', waitingOnContract, tracker as never));
+		}
+		if (has.finds) {
+			suites.push(await runSuite('Tracker sources', sourcesContract, tracker as never));
 		}
 	}
 	if (codeHost !== undefined) {

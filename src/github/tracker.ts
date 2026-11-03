@@ -13,7 +13,8 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { waitingFrom, type WaitingFeature } from '../tracker.js';
+import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
+import { markerSearch } from '../template.js';
 import {
 	GitHubApi,
 	GitHubFailure,
@@ -29,6 +30,13 @@ const CommentSchema = z.looseObject({
 	created_at: z.string(),
 	author_association: z.string().optional()
 });
+
+const SearchSchema = z.looseObject({
+	items: z.array(IssueSchema.extend({ created_at: z.string() }))
+});
+
+// GitHub's search pages hold 100 at most and reach no further than 1,000 results.
+const SEARCH_PAGES = 10;
 
 // Stand in for write access when the permission call is refused; a COLLABORATOR may hold only read.
 const TIED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
@@ -82,6 +90,39 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 	// labels in one query must all be there, so each Signal is asked for alone
 	waitingOn(person: string): Promise<WaitingFeature[]> {
 		return waitingFrom((signal) => this.featuresWith(person, this.names[signal]));
+	}
+
+	// the issues whose body holds the Source's marker, open or closed, oldest first
+	async featuresFrom(source: string): Promise<SourcedFeature[]> {
+		const q = `repo:${this.repo} is:issue in:body "${markerSearch(source)}"`;
+		const found: z.infer<typeof SearchSchema>['items'] = [];
+		for (let page = 1; page <= SEARCH_PAGES; page += 1) {
+			const query = new URLSearchParams({
+				q,
+				sort: 'created',
+				order: 'asc',
+				per_page: '100',
+				page: String(page)
+			});
+			const got = await this.api.parse(
+				`search the issues of Source ${source}`,
+				[`search/issues?${query.toString()}`],
+				SearchSchema
+			);
+			found.push(...got.items);
+			if (got.items.length < 100) break;
+		}
+		return sourcedFrom(
+			source,
+			found
+				.filter((i) => i.pull_request === undefined)
+				.map((i) => ({
+					id: String(i.number),
+					body: i.body ?? '',
+					open: i.state === 'open',
+					at: i.created_at
+				}))
+		);
 	}
 
 	// the open Features assigned to `person` that carry the label, oldest first

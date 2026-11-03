@@ -5,6 +5,7 @@ import { codeHostContract } from './code-host.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
+import { sourcesContract } from './sources.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
 import type { FakeTracker } from '../fakes/tracker.js';
@@ -25,6 +26,7 @@ describe('runContract', () => {
 			'Tracker',
 			'Tracker creation',
 			'Tracker waiting on',
+			'Tracker sources',
 			'Code host'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
@@ -37,6 +39,9 @@ describe('runContract', () => {
 			waitingOnContract.map((c) => c.name)
 		);
 		expect(report.suites[3]?.results.map((r) => r.name)).toEqual(
+			sourcesContract.map((c) => c.name)
+		);
+		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
@@ -50,6 +55,7 @@ describe('runContract', () => {
 				createTicket: _b,
 				block: _c,
 				waitingOn: _d,
+				featuresFrom: _e,
 				...only
 			} = tracker as FakeTracker;
 			return { ...rest, tracker: only };
@@ -66,8 +72,43 @@ describe('runContract', () => {
 			return { ...rest, tracker: without };
 		};
 		const report = await runContract({ trackerHarness: lacks });
-		expect(report.suites.map((s) => s.title)).toEqual(['Tracker', 'Tracker creation']);
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Tracker',
+			'Tracker creation',
+			'Tracker sources'
+		]);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no sources suite over a Tracker without featuresFrom', async () => {
+		const lacks: TrackerHarness = async (world) => {
+			const { tracker, ...rest } = await fakeTrackerHarness(world);
+			const { featuresFrom: _gone, ...without } = tracker as FakeTracker;
+			return { ...rest, tracker: without };
+		};
+		const report = await runContract({ trackerHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Tracker',
+			'Tracker creation',
+			'Tracker waiting on'
+		]);
+		expect(report.failed).toBe(0);
+	});
+
+	it('names a featuresFrom that is wrong', async () => {
+		const wrong: TrackerHarness = async (world) => {
+			const subject = await fakeTrackerHarness(world);
+			return {
+				...subject,
+				tracker: Object.assign(subject.tracker, { featuresFrom: () => Promise.resolve([]) })
+			};
+		};
+		const report = await runContract({ trackerHarness: wrong });
+		const failing = report.suites.find((s) => s.title === 'Tracker sources')?.results ?? [];
+		expect(failing.filter((r) => !r.ok).map((r) => r.name)).toEqual([
+			sourcesContract[0]?.name,
+			sourcesContract[2]?.name
+		]);
 	});
 
 	it('names a waitingOn that is wrong', async () => {
@@ -100,7 +141,10 @@ describe('runContract', () => {
 		expect(failing[0]?.error).toContain('Expected values to be strictly equal');
 		expect(report.failed).toBe(2);
 		expect(report.total).toBe(
-			trackerContract.length + featureWriterContract.length + waitingOnContract.length
+			trackerContract.length +
+				featureWriterContract.length +
+				waitingOnContract.length +
+				sourcesContract.length
 		);
 		const text = formatReport(report);
 		expect(text).toContain('FAIL  names the signed-in person');

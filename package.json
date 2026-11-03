@@ -37,6 +37,7 @@
 		"!dist/**/*.spec.*",
 		"schema",
 		"skills",
+		"templates",
 		"docs/ticket-contract.md",
 		"plugin/nightjar-status",
 		"!plugin/**/*.spec.ts",
