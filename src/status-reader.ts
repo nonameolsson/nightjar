@@ -3,14 +3,14 @@ import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { ledgerPath, logsPath } from './build.js';
-import { builtOn, costByFeature } from './ledger.js';
-import { readStatus, statusPath, type Event, type Status } from './status.js';
+import { builtOn, spends, spentOnFeature } from './ledger.js';
+import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;
 
 export interface Completed {
 	readonly event: Done;
-	// what the Feature's sessions cost, over the whole ledger
+	// what this build's sessions cost: those after the Feature's previous outcome, up to this one
 	readonly costUsd: number;
 }
 
@@ -22,7 +22,7 @@ export interface FactoryView {
 	readonly tail: readonly string[];
 	// the pull and failed events in `recent`, oldest first
 	readonly completed: readonly Completed[];
-	// what the current Feature's sessions cost; 0 when nothing is building
+	// what the current build's sessions cost since it started; 0 when nothing is building
 	readonly featureCostUsd: number;
 	// Tickets built on the local day
 	readonly builtToday: number;
@@ -119,16 +119,26 @@ const isDone = (event: Event): event is Done => event.kind === 'pull' || event.k
 export function readFactory(root: string, options: ReadOptions = {}): FactoryView {
 	const status = readStatus(statusPath(root));
 	const alive = options.alive ?? pidAlive;
-	const costs = costByFeature(ledgerPath(root));
+	const spent = spends(ledgerPath(root));
 	const doing = status?.doing;
+	const done = (status?.recent ?? []).filter(isDone);
 	return {
 		status,
-		featureCostUsd: doing?.kind === 'building' ? (costs.get(doing.feature) ?? 0) : 0,
+		featureCostUsd:
+			doing?.kind === 'building'
+				? // a session recorded the moment the build starts is its own
+					spentOnFeature(spent, doing.feature, Date.parse(featureStart(doing)) - 1, null)
+				: 0,
 		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
-		completed: (status?.recent ?? [])
-			.filter(isDone)
-			.map((event) => ({ event, costUsd: costs.get(event.feature) ?? 0 }))
+		completed: done.map((event, i) => {
+			const before = done.slice(0, i).findLast((e) => e.feature === event.feature);
+			const after = before === undefined ? null : Date.parse(before.at);
+			return {
+				event,
+				costUsd: spentOnFeature(spent, event.feature, after, Date.parse(event.at))
+			};
+		})
 	};
 }

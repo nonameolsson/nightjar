@@ -1,13 +1,13 @@
 // The waitingOn contract (docs/custom-adapters.md): run over a Tracker that has the optional method.
 import assert from 'node:assert/strict';
-import type { Feature, Tracker } from '../tracker.js';
+import type { Tracker, WaitingFeature } from '../tracker.js';
 import type { ContractCase } from './case.js';
 import type { TrackerHarness, TrackerSubject, TrackerWorld } from './tracker.js';
 
 const ANN = 'ann';
 
 type Listing = Omit<TrackerSubject, 'tracker'> & {
-	readonly tracker: Tracker & { waitingOn: (person: string) => Promise<Feature[]> };
+	readonly tracker: Tracker & { waitingOn: (person: string) => Promise<WaitingFeature[]> };
 };
 
 function waitingCase(
@@ -74,9 +74,10 @@ export const waitingOnContract: readonly ContractCase<TrackerHarness>[] = [
 		],
 		async ({ tracker, id }) => {
 			assert.deepEqual(await tracker.waitingOn(ANN), [
-				{ id: id('asks'), title: 'Asks', body: '' },
-				{ id: id('both'), title: 'Both', body: 'The spec.' },
-				{ id: id('person'), title: 'Person', body: '' }
+				{ id: id('asks'), title: 'Asks', body: '', signal: 'needsInfo' },
+				// with both Signals needs info wins: the person has a question to answer
+				{ id: id('both'), title: 'Both', body: 'The spec.', signal: 'needsInfo' },
+				{ id: id('person'), title: 'Person', body: '', signal: 'human' }
 			]);
 			assert.deepEqual(
 				(await tracker.waitingOn('bob')).map((f) => f.id),

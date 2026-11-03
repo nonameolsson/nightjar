@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { record } from './ledger.js';
 import { StatusFile } from './status.js';
@@ -20,13 +21,14 @@ afterEach(async () => {
 
 const at = new Date(2026, 9, 30, 9, 0);
 const ledgerFile = () => join(root, '.factory', 'runs.jsonl');
-const status = () =>
+const status = (watching = false) =>
 	new StatusFile({
 		path: join(root, '.factory', 'status.json'),
 		ledger: ledgerFile(),
 		now: () => at,
-		pid: process.pid,
-		dailyUsd: 8
+		pid: 42,
+		dailyUsd: 8,
+		watching
 	});
 
 let alive = true;
@@ -157,6 +159,61 @@ describe('nightjar ui page', () => {
 		expect(page).toContain('line 25');
 		expect(page).toContain('line 6\n');
 		expect(page).not.toContain('line 5\n');
+	});
+
+	it("counts the Feature's elapsed time from its start, not the step's", async () => {
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			ticket: null,
+			step: 'review',
+			round: null,
+			rounds: null,
+			session: null,
+			featureStartedAt: '2026-10-30T06:00:00.000Z',
+			startedAt: '2026-10-30T06:40:00.000Z'
+		});
+		await open();
+		expect((await get('/')).text).toContain('data-since="2026-10-30T06:00:00.000Z"');
+	});
+
+	it('says under --watch that the next poll comes after the Feature being built', async () => {
+		const building = {
+			kind: 'building',
+			feature: '272',
+			ticket: null,
+			step: 'setup',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString()
+		} as const;
+		status(true).doing(building);
+		await open();
+		expect((await get('/')).text).toContain('next poll after #272');
+		status(false).doing(building);
+		expect((await get('/')).text).not.toContain('next poll');
+	});
+
+	it("counts its own clocks in the browser with the terminal's formatting", async () => {
+		await open();
+		const page = (await get('/')).text;
+		const script = page.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const now = Date.parse('2026-10-30T08:00:00.000Z');
+		const since = { dataset: { since: '2026-10-30T06:57:55.000Z' }, textContent: '' };
+		const until = { dataset: { until: '2026-10-30T08:01:12.000Z' }, textContent: '' };
+		runInNewContext(script, {
+			document: {
+				getElementById: () => ({}),
+				querySelectorAll: (q: string) => (q.includes('since') ? [since] : [until])
+			},
+			EventSource: function EventSource() {
+				return {};
+			},
+			setInterval: () => 0,
+			Date: { now: () => now, parse: Date.parse }
+		});
+		expect([since.textContent, until.textContent]).toEqual(['1h 02m', '1:12']);
 	});
 
 	it('lists what waits on you, and says so when the Tracker cannot list Features', async () => {

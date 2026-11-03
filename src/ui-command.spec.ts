@@ -49,13 +49,14 @@ describe('nightjar ui', () => {
 		writeFileSync(
 			join(dir, '.factory', 'status.json'),
 			JSON.stringify({
-				at: new Date().toISOString(),
-				pid: process.pid,
+				at: '2026-10-30T08:00:00.000Z',
+				// the page lists what completed whether or not this pid is alive
+				pid: 42,
 				spentTodayUsd: 0,
 				dailyUsd: 8,
-				doing: { kind: 'idle', nextPollAt: new Date().toISOString() },
+				doing: { kind: 'idle', nextPollAt: '2026-10-30T08:02:00.000Z' },
 				recent: [
-					{ seq: 1, at: new Date().toISOString(), kind: 'failed', feature: '77', why: 'nope' }
+					{ seq: 1, at: '2026-10-30T07:50:00.000Z', kind: 'failed', feature: '77', why: 'nope' }
 				]
 			})
 		);

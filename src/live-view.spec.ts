@@ -146,6 +146,20 @@ describe('renderBlock', () => {
 		}
 	});
 
+	it("counts the Feature's elapsed time from its start, not the step's", () => {
+		const lines = render(
+			view(status(building({ featureStartedAt: iso(9, 0), startedAt: iso(9, 29) })))
+		);
+		expect(lines[2]).toMatch(/30m 00s/);
+	});
+
+	it('says under --watch that the next poll comes after the Feature being built', () => {
+		expect(render(view(status(building(), { watching: true })))[0]).toBe(
+			'nightjar  o/app  ·  watching  ·  next poll after #272'
+		);
+		expect(render(view(status(building())))[0]).toBe('nightjar  o/app  ·  watching');
+	});
+
 	it('says what an older status.json or a Tracker without waitingOn cannot show', () => {
 		const old = render(view(status({ kind: 'idle', nextPollAt: iso(9, 31) })));
 		expect(old).toContain('Queue           not read yet');

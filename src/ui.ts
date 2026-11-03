@@ -6,6 +6,17 @@ import { basename, join } from 'node:path';
 import { ledgerPath } from './build.js';
 import { lastRepo } from './ledger.js';
 import { readFactory, type FactoryView } from './status-reader.js';
+import { featureStart } from './status.js';
+import {
+	countdown,
+	dollars,
+	elapsed,
+	idText,
+	pollAfter,
+	running,
+	runState,
+	two
+} from './view-text.js';
 
 export const UI_PORT = 4545;
 const HOST = '127.0.0.1';
@@ -27,38 +38,21 @@ export interface UiOptions {
 
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
 
-const money = (usd: number) => `$${usd.toFixed(2)}`;
-// a numeric id reads as #42; another Tracker's (PROJ-123) as it is
-const idText = (id: string) => escape(/^\d+$/.test(id) ? `#${id}` : id);
+const idHtml = (id: string) => escape(idText(id));
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function runState(view: FactoryView): string {
-	if (view.status === null) return 'off';
-	if (view.stopped) return 'stopped';
-	switch (view.status.doing.kind) {
-		case 'off':
-			return 'off';
-		case 'idle':
-			return 'idle';
-		case 'building':
-			return 'watching';
-		case 'paused':
-			return 'paused';
-	}
-}
-
-// With no run going there is no Queue to show, only history.
-const running = (view: FactoryView) => runState(view) !== 'off' && runState(view) !== 'stopped';
-
 function header(repo: string, view: FactoryView): string {
 	const doing = view.status?.doing;
+	const after = pollAfter(view);
 	const poll =
-		doing?.kind === 'idle' && running(view)
-			? ` <span>next poll <time data-until="${escape(doing.nextPollAt)}"></time></span>`
-			: doing?.kind === 'paused' && running(view)
-				? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
-				: '';
+		after !== null
+			? ` <span>next poll after ${escape(after)}</span>`
+			: doing?.kind === 'idle' && running(view)
+				? ` <span>next poll <time data-until="${escape(doing.nextPollAt)}"></time></span>`
+				: doing?.kind === 'paused' && running(view)
+					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
+					: '';
 	return `<header><h1>nightjar</h1> <span class="repo">${escape(repo)}</span> <span class="state">${runState(view)}</span>${poll}</header>`;
 }
 
@@ -67,7 +61,7 @@ function cards(view: FactoryView): string {
 	const spent =
 		status === null
 			? 'no spend recorded'
-			: `${money(status.spentTodayUsd)} of ${money(status.dailyUsd)}`;
+			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
 	const waiting = status?.waitingOnYou?.items.length;
 	return `<section id="cards"><div class="card"><span>spent today</span> ${spent}</div><div class="card"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="card"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
@@ -79,7 +73,7 @@ function queue(view: FactoryView): string {
 	else if (status?.queue === undefined) body = '<p class="empty">not read yet</p>';
 	else if (status.queue.length === 0) body = '<p class="empty">empty</p>';
 	else
-		body = `<ul>${status.queue.map((q) => `<li>${idText(q.id)} ${escape(q.title)}</li>`).join('')}</ul>`;
+		body = `<ul>${status.queue.map((q) => `<li>${idHtml(q.id)} ${escape(q.title)}</li>`).join('')}</ul>`;
 	const refreshed =
 		running(view) && status?.refreshedAt !== undefined
 			? ` <small>refreshed ${clock(status.refreshedAt)}</small>`
@@ -101,12 +95,12 @@ function current(view: FactoryView): string {
 		const progress = tickets
 			.map(
 				(t) =>
-					`<li class="${t.state}">${idText(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+					`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
 			)
 			.join('');
 		const tail = view.tail.map(escape).join('\n');
 		body =
-			`<p>${idText(doing.feature)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(doing.startedAt)}"></time> ${money(view.featureCostUsd)}</p>` +
+			`<p>${idHtml(doing.feature)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
 			`<p>${where}${doing.step}${round}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
 			(tail === '' ? '' : `<pre>${tail}</pre>`);
@@ -126,7 +120,7 @@ function waiting(view: FactoryView): string {
 				? '<p class="empty">nothing</p>'
 				: '';
 		const items = found.items
-			.map((i) => `<li>${idText(i.id)} ${escape(i.title)}: ${escape(i.why)}</li>`)
+			.map((i) => `<li>${idHtml(i.id)} ${escape(i.title)}: ${escape(i.why)}</li>`)
 			.join('');
 		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
 	}
@@ -145,7 +139,7 @@ function completed(view: FactoryView): string {
 						? `<a href="${escape(event.url)}">draft pull request</a>`
 						: escape(event.url)
 					: `failed: ${escape(event.why)}`;
-			return `<li>${idText(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcome} ${money(costUsd)}</li>`;
+			return `<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcome} ${dollars(costUsd)}</li>`;
 		})
 		.reverse()
 		.join('');
@@ -182,19 +176,13 @@ const PAGE = (panels: string) => `<!doctype html>
 // The browser replaces the panels with each event and counts the clocks itself, so the server pushes only on a change.
 const SCRIPT = `
 const panels = document.getElementById('panels');
-const two = (n) => String(n).padStart(2, '0');
+const two = ${String(two)};
+const elapsed = ${String(elapsed)};
+const countdown = ${String(countdown)};
 function tick() {
 	const now = Date.now();
-	for (const t of document.querySelectorAll('time[data-since]')) {
-		const s = Math.max(0, Math.floor((now - Date.parse(t.dataset.since)) / 1000));
-		t.textContent = s >= 3600
-			? Math.floor(s / 3600) + 'h ' + two(Math.floor((s % 3600) / 60)) + 'm'
-			: Math.floor(s / 60) + 'm ' + two(s % 60) + 's';
-	}
-	for (const t of document.querySelectorAll('time[data-until]')) {
-		const s = Math.max(0, Math.ceil((Date.parse(t.dataset.until) - now) / 1000));
-		t.textContent = Math.floor(s / 60) + ':' + two(s % 60);
-	}
+	for (const t of document.querySelectorAll('time[data-since]')) t.textContent = elapsed(now - Date.parse(t.dataset.since));
+	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
 	panels.innerHTML = JSON.parse(e.data);

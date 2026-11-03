@@ -157,18 +157,16 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
 	await tracker.addSignal(id, 'working');
 	await tracker.removeSignal(id, 'go');
-	const settingUp = (tickets?: TicketProgress[]): Doing => ({
-		kind: 'building',
-		feature: id,
-		title: feature.title,
-		ticket: null,
-		step: 'setup',
-		round: null,
-		rounds: null,
-		session: null,
-		startedAt: deps.now().toISOString(),
-		...(tickets === undefined ? {} : { tickets })
-	});
+	const show = buildingOf(feature, deps.now);
+	const settingUp = (tickets?: TicketProgress[]): Doing =>
+		show({
+			ticket: null,
+			step: 'setup',
+			round: null,
+			rounds: null,
+			session: null,
+			...(tickets === undefined ? {} : { tickets })
+		});
 	deps.status.doing(settingUp());
 	const tickets = await tracker.tickets(id);
 	const chosen = chooseWorkflow(setup, feature.body);
@@ -203,7 +201,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 		await tree.markSetUp();
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow);
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show);
 	return run.build();
 }
 
@@ -232,6 +230,24 @@ type StepEnd =
 // The most of a Feature's diff a Step's prompt carries; the rest is in git.
 const DIFF_CHARS = 60_000;
 
+type Building = Extract<Doing, { kind: 'building' }>;
+type ShowBuilding = (
+	at: Pick<Building, 'ticket' | 'step' | 'round' | 'rounds' | 'session' | 'tickets'>
+) => Building;
+
+// One Feature's building states: the Feature's start in every one, and a fresh start for each step.
+function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
+	const featureStartedAt = now().toISOString();
+	return (at) => ({
+		kind: 'building',
+		feature: feature.id,
+		title: feature.title,
+		featureStartedAt,
+		startedAt: now().toISOString(),
+		...at
+	});
+}
+
 class FeatureRun {
 	private spent = 0;
 	private featureComments: Comment[] = [];
@@ -248,7 +264,8 @@ class FeatureRun {
 		private readonly tree: Worktree,
 		private readonly tickets: Ticket[],
 		private readonly built: Set<ItemId>,
-		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null
+		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
+		private readonly show: ShowBuilding
 	) {}
 
 	private get aborted() {
@@ -542,17 +559,13 @@ class FeatureRun {
 		session: string,
 		rounds: { readonly round: number; readonly rounds: number }
 	) {
-		this.shown = {
-			kind: 'building',
-			feature: this.feature.id,
-			title: this.feature.title,
+		this.shown = this.show({
 			ticket,
 			step,
 			...rounds,
 			session,
-			startedAt: this.deps.now().toISOString(),
 			tickets: progress(this.tickets, this.built, ticket)
-		};
+		});
 		this.deps.status.doing(this.shown);
 	}
 
@@ -788,6 +801,7 @@ class FeatureRun {
 						this.feature,
 						done,
 						progress(this.tickets, this.built, null),
+						this.show,
 						(e) => this.log(e)
 					);
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
@@ -892,22 +906,14 @@ async function reviewFeature(
 	feature: Feature,
 	built: readonly Ticket[],
 	tickets: TicketProgress[],
+	show: ShowBuilding,
 	log: (entry: LogEntry) => void
 ): Promise<Review | null> {
 	const sessionId = deps.newId();
 	deps.say(`${hash(feature.id)}: review, session ${sessionId}`);
-	deps.status.doing({
-		kind: 'building',
-		feature: feature.id,
-		title: feature.title,
-		ticket: null,
-		step: 'review',
-		round: null,
-		rounds: null,
-		session: sessionId,
-		startedAt: deps.now().toISOString(),
-		tickets
-	});
+	deps.status.doing(
+		show({ ticket: null, step: 'review', round: null, rounds: null, session: sessionId, tickets })
+	);
 	const result = await deps.session({
 		cwd: tree.at.folder,
 		prompt: reviewPrompt(feature, tree.at.base, built, setup.rules),

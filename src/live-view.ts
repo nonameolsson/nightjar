@@ -1,6 +1,16 @@
 // The live terminal view's block: a pure function from what the reader found, the clock and a width to lines.
 import type { FactoryView } from './status-reader.js';
-import type { Doing, Status, TicketProgress } from './status.js';
+import { featureStart, type Doing, type Status, type TicketProgress } from './status.js';
+import {
+	countdown,
+	dollars,
+	elapsed,
+	idText,
+	pollAfter,
+	running,
+	runState,
+	two
+} from './view-text.js';
 
 export interface BlockOptions {
 	readonly repo: string;
@@ -21,22 +31,6 @@ const fit = (text: string, width: number) => {
 	return chars.length <= width ? text : `${chars.slice(0, Math.max(0, width - 1)).join('')}…`;
 };
 
-const two = (n: number) => String(n).padStart(2, '0');
-
-// 1:12, or 30:00
-const countdown = (ms: number) => {
-	const s = Math.max(0, Math.ceil(ms / 1000));
-	return `${String(Math.floor(s / 60))}:${two(s % 60)}`;
-};
-
-// 12m 04s, or 1h 02m
-const elapsed = (ms: number) => {
-	const s = Math.max(0, Math.floor(ms / 1000));
-	if (s >= 3600) return `${String(Math.floor(s / 3600))}h ${two(Math.floor((s % 3600) / 60))}m`;
-	return `${String(Math.floor(s / 60))}m ${two(s % 60)}s`;
-};
-
-const dollars = (usd: number) => `$${usd.toFixed(2)}`;
 const limit = (usd: number) => `$${Number.isInteger(usd) ? String(usd) : usd.toFixed(2)}`;
 
 const bar = (done: number, of: number, width: number) => {
@@ -48,13 +42,16 @@ function header(o: BlockOptions, view: FactoryView): string {
 	const head = `nightjar  ${o.repo}`;
 	const { status } = view;
 	if (status === null) return `${head}${SEP}no run yet`;
-	if (view.stopped || status.doing.kind === 'off') return `${head}${SEP}stopped`;
+	// the block ends on stopped when the run ends, as well as when its process died
+	const state = runState(view);
+	if (state === 'off' || state === 'stopped') return `${head}${SEP}stopped`;
 	const doing = status.doing;
 	const until = (at: string | null) =>
 		at === null ? '' : `${SEP}next poll ${countdown(new Date(at).getTime() - o.now.getTime())}`;
 	if (doing.kind === 'idle') return `${head}${SEP}idle${until(doing.nextPollAt)}`;
 	if (doing.kind === 'paused') return `${head}${SEP}paused: ${doing.why}${until(doing.until)}`;
-	return `${head}${SEP}watching`;
+	const after = pollAfter(view);
+	return `${head}${SEP}watching${after === null ? '' : `${SEP}next poll after ${after}`}`;
 }
 
 type Building = Extract<Doing, { kind: 'building' }>;
@@ -74,8 +71,8 @@ function progressText(doing: Building, tickets: readonly TicketProgress[] | unde
 }
 
 function current(o: BlockOptions, view: FactoryView, doing: Building): string[] {
-	const label = `● #${doing.feature}${doing.title === undefined ? '' : ` ${doing.title}`}`;
-	const right = `${elapsed(o.now.getTime() - new Date(doing.startedAt).getTime())}   ${dollars(view.featureCostUsd)}`;
+	const label = `● ${idText(doing.feature)}${doing.title === undefined ? '' : ` ${doing.title}`}`;
+	const right = `${elapsed(o.now.getTime() - new Date(featureStart(doing)).getTime())}   ${dollars(view.featureCostUsd)}`;
 	const room = Math.max(1, o.width - Array.from(right).length - 1);
 	const left = fit(label, room);
 	const gap = ' '.repeat(Math.max(1, o.width - Array.from(left).length - Array.from(right).length));
@@ -96,8 +93,6 @@ function today(status: Status, built: number): string {
 	return `Today   ${spent}  ${meter}  ${String(built)} Tickets built`;
 }
 
-const hash = (id: string) => `#${id}`;
-
 function listed(status: Status): string[] {
 	const names = (row: string, text: string) => `${row.padEnd(16)}${text}`;
 	const queue =
@@ -105,9 +100,9 @@ function listed(status: Status): string[] {
 			? 'not read yet'
 			: status.queue.length === 0
 				? 'empty'
-				: status.queue.map((f) => `${hash(f.id)} ${f.title}`).join('   ');
+				: status.queue.map((f) => `${idText(f.id)} ${f.title}`).join('   ');
 	const waiting = status.waitingOnYou;
-	const items = waiting?.items.map((i) => `${hash(i.id)} ${i.title}: ${i.why}`) ?? [];
+	const items = waiting?.items.map((i) => `${idText(i.id)} ${i.title}: ${i.why}`) ?? [];
 	if (waiting?.trackerCannotList === true) items.push('not available from this Tracker');
 	const waits =
 		waiting === undefined ? 'not read yet' : items.length > 0 ? items.join('   ') : 'nothing';
@@ -118,7 +113,7 @@ function recent(view: FactoryView): string[] {
 	const rows = view.completed.slice(-RECENT).reverse();
 	if (rows.length === 0) return [];
 	const labels = rows.map(
-		({ event }) => `${hash(event.feature)}${event.title === undefined ? '' : ` ${event.title}`}`
+		({ event }) => `${idText(event.feature)}${event.title === undefined ? '' : ` ${event.title}`}`
 	);
 	const wide = Math.max(...labels.map((l) => Array.from(l).length));
 	return [
@@ -138,11 +133,10 @@ export function renderBlock(view: FactoryView, o: BlockOptions): string[] {
 	const out: string[] = [header(o, view)];
 	const { status } = view;
 	if (status !== null) {
-		const running = !view.stopped && status.doing.kind === 'building' ? status.doing : null;
-		if (running !== null) out.push('', ...current(o, view, running));
+		const building = running(view) && status.doing.kind === 'building' ? status.doing : null;
+		if (building !== null) out.push('', ...current(o, view, building));
 		out.push('', today(status, view.builtToday));
-		// a stopped or off run has no Queue to show, only history
-		if (!view.stopped && status.doing.kind !== 'off') out.push('', ...listed(status));
+		if (running(view)) out.push('', ...listed(status));
 		const done = recent(view);
 		if (done.length > 0) out.push('', ...done);
 	}

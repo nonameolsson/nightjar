@@ -47,9 +47,9 @@ const log = (session: string, lines: readonly unknown[]) =>
 
 const assistant = (...content: unknown[]) => ({ type: 'assistant', message: { content } });
 
-const ledger = (feature: string | number, costUsd: number) =>
+const ledger = (feature: string | number, costUsd: number, when = at) =>
 	record(join(root, '.factory', 'runs.jsonl'), {
-		at: at.toISOString(),
+		at: when.toISOString(),
 		repo: 'o/r',
 		feature: feature as string,
 		ticket: null,
@@ -183,7 +183,7 @@ describe('readFactory', () => {
 		expect(readFactory(root, { alive: live }).tail).toEqual([]);
 	});
 
-	it('lists what completed, the pull and failed events, each with its Feature cost summed', () => {
+	it('lists what completed, the pull and failed events, each with the cost of its own build', () => {
 		ledger('1', 1.5);
 		ledger('1', 0.5);
 		ledger('2', 3);
@@ -203,5 +203,50 @@ describe('readFactory', () => {
 			['pull', '4', 0.25],
 			['pull', '5', 0]
 		]);
+	});
+});
+
+describe('the cost of each build', () => {
+	const time = (m: number) => new Date(2026, 9, 30, 9, m);
+
+	it('gives each Completed row only its own build, when a Feature is built again', () => {
+		let now = time(0);
+		const file = new StatusFile({
+			path: join(root, '.factory', 'status.json'),
+			ledger: join(root, '.factory', 'runs.jsonl'),
+			now: () => now,
+			pid: 42,
+			dailyUsd: 60
+		});
+		ledger('1', 1, time(5));
+		now = time(10);
+		file.happened({ kind: 'failed', feature: '1', why: 'check red' });
+		ledger('1', 2, time(20));
+		now = time(30);
+		file.happened({ kind: 'pull', feature: '1', url: 'https://pr/1' });
+		const { completed } = readFactory(root, { alive: live });
+		expect(completed.map((c) => [c.event.kind, c.costUsd])).toEqual([
+			['failed', 1],
+			['pull', 2]
+		]);
+	});
+
+	it('gives the current build only what it spent since it started', () => {
+		ledger('1', 1, time(5));
+		ledger('1', 2, time(20));
+		status().doing({ ...building(null), startedAt: time(15).toISOString() });
+		expect(readFactory(root, { alive: live }).featureCostUsd).toBe(2);
+	});
+
+	it("counts from the Feature's start, not the step's", () => {
+		ledger('1', 1, time(5));
+		ledger('1', 2, time(20));
+		ledger('1', 4, time(40));
+		status().doing({
+			...building(null),
+			featureStartedAt: time(15).toISOString(),
+			startedAt: time(30).toISOString()
+		});
+		expect(readFactory(root, { alive: live }).featureCostUsd).toBe(6);
 	});
 });

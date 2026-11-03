@@ -8,6 +8,7 @@ import type {
 	Doing,
 	Event,
 	Happened,
+	Named,
 	Queued,
 	Status,
 	WaitingItem,
@@ -18,12 +19,23 @@ export type {
 	Doing,
 	Event,
 	Happened,
+	Named,
 	Queued,
 	Status,
 	TicketProgress,
 	WaitingItem,
 	WaitingOnYou
 } from './status-shape.js';
+
+// The Tickets among `tickets` that need info or a person, as Waiting on you lists them.
+export const waitingTickets = (tickets: readonly (Named & { readonly why?: string })[]) =>
+	tickets
+		.filter(needsAPerson)
+		.map((t): WaitingItem => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' }));
+
+// When the Feature being built began; a file older than featureStartedAt has only the step's start.
+export const featureStart = (doing: Extract<Doing, { kind: 'building' }>) =>
+	doing.featureStartedAt ?? doing.startedAt;
 
 export const statusPath = (root: string) => join(root, '.factory', 'status.json');
 
@@ -62,6 +74,8 @@ export class StatusFile implements StatusReport {
 			readonly now: () => Date;
 			readonly pid: number;
 			readonly dailyUsd: number;
+			// under --watch
+			readonly watching?: boolean;
 		}
 	) {
 		// the events go on from the last run's, so a reader that saw them does not toast them again
@@ -90,12 +104,7 @@ export class StatusFile implements StatusReport {
 	// While a Feature builds, its own Tickets that need info or a person stand in place of the last Feature's
 	private waitingOnYou(found: WaitingOnYou): WaitingOnYou {
 		if (this.now.kind !== 'building') return found;
-		const tickets = (this.now.tickets ?? []).filter(needsAPerson).map((t): WaitingItem => ({
-			kind: 'ticket',
-			id: t.id,
-			title: t.title,
-			why: t.why ?? ''
-		}));
+		const tickets = waitingTickets(this.now.tickets ?? []);
 		return { ...found, items: [...found.items.filter((i) => i.kind === 'feature'), ...tickets] };
 	}
 
@@ -107,6 +116,7 @@ export class StatusFile implements StatusReport {
 			spentTodayUsd: spentOn(this.o.ledger, now),
 			dailyUsd: this.o.dailyUsd,
 			doing: this.now,
+			...(this.o.watching === true ? { watching: true } : {}),
 			recent: this.recent,
 			codeMoved: null,
 			...(this.refresh === null

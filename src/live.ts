@@ -14,6 +14,8 @@ export interface LiveOptions {
 	readonly repo: string;
 	readonly out: { write: (text: string) => unknown; columns?: number };
 	readonly now: () => Date;
+	// whether a pid is alive; the machine's own answer unless a spec passes one
+	readonly alive?: (pid: number) => boolean;
 	// calls `redraw` every second until the returned function is called
 	readonly every?: (redraw: () => void) => () => void;
 }
@@ -37,12 +39,15 @@ export function startLive(o: LiveOptions): Live {
 	let stopped = false;
 
 	const draw = () => {
-		const lines = renderBlock(readFactory(o.root, { now: o.now }), {
-			repo: o.repo,
-			width: o.out.columns ?? 80,
-			now: o.now(),
-			line: newest
-		});
+		const lines = renderBlock(
+			readFactory(o.root, { now: o.now, ...(o.alive === undefined ? {} : { alive: o.alive }) }),
+			{
+				repo: o.repo,
+				width: o.out.columns ?? 80,
+				now: o.now(),
+				line: newest
+			}
+		);
 		// back over the last block, then each line over the old one, then clear what a shorter block leaves
 		const up = height > 0 ? `\x1b[${String(height)}A\r` : '';
 		o.out.write(`${up}${lines.map((l) => `${ERASE_LINE}${l}\n`).join('')}${ERASE_BELOW}`);

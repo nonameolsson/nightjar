@@ -13,6 +13,7 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
+import { waitingFrom, type WaitingFeature } from '../tracker.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
 
@@ -217,12 +218,8 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	}
 
 	// The WIQL here joins its clauses by AND only, so each Signal is asked for alone.
-	async waitingOn(person: string): Promise<Feature[]> {
-		const found = new Map<string, Feature>();
-		for (const signal of ['needsInfo', 'human'] as const) {
-			for (const f of await this.featuresWith(person, signal)) found.set(f.id, f);
-		}
-		return [...found.values()].sort((a, b) => Number(a.id) - Number(b.id));
+	waitingOn(person: string): Promise<WaitingFeature[]> {
+		return waitingFrom((signal) => this.featuresWith(person, signal));
 	}
 
 	// The open Features assigned to `person` that carry the Signal, oldest first.

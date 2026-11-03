@@ -80,7 +80,8 @@ To let Waiting on you in the live views list Features, give the Tracker one more
 
 ```js
 		// the open Features assigned to a person that carry the needs info or needs a person Signal,
-		// oldest first; read the Signal names from `signals`, never a tracker state
+		// oldest first, each with `signal: 'needsInfo'` or `'human'` (needsInfo when it carries both);
+		// read the Signal names from `signals`, never a tracker state
 		waitingOn: todo('waitingOn'),
 ```
 

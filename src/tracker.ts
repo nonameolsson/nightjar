@@ -10,6 +10,23 @@ export interface Feature {
 	readonly body: string;
 }
 
+// A Feature that waits on a person, with the Signal it carries; needs info when it carries both.
+export interface WaitingFeature extends Feature {
+	readonly signal: Extract<Signal, 'needsInfo' | 'human'>;
+}
+
+// waitingOn from a lookup of one Signal at a time, as a Tracker query cannot ask for either of two.
+export async function waitingFrom(
+	featuresWith: (signal: WaitingFeature['signal']) => Promise<Feature[]>
+): Promise<WaitingFeature[]> {
+	const found = new Map<ItemId, WaitingFeature>();
+	// needs info is read last, so it wins on a Feature that carries both
+	for (const signal of ['human', 'needsInfo'] as const) {
+		for (const f of await featuresWith(signal)) found.set(f.id, { ...f, signal });
+	}
+	return [...found.values()].sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }));
+}
+
 export interface Ticket {
 	readonly id: ItemId;
 	readonly title: string;
@@ -63,7 +80,7 @@ export interface Tracker {
 	comment(id: ItemId, body: string): Promise<void>;
 	reference(id: ItemId): TicketReference;
 	// optional, so a Tracker module written before it still loads: the open Features assigned to `person` that carry needs info or needs a person, oldest first
-	waitingOn?(person: string): Promise<Feature[]>;
+	waitingOn?(person: string): Promise<WaitingFeature[]>;
 }
 
 // The title and body of a Feature or Ticket to be made.

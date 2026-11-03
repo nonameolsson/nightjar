@@ -177,4 +177,18 @@ describe('StatusFile', () => {
 		expect(readStatus(broken)).toBeNull();
 		expect(file(broken)).toBeInstanceOf(StatusFile);
 	});
+
+	it('says whether the run is --watch, so a view can tell when the next poll comes', () => {
+		const path = join(dir, 'status.json');
+		const file = new StatusFile({
+			path,
+			ledger: join(dir, 'runs.jsonl'),
+			now: () => new Date(2026, 9, 30, 9),
+			pid: 42,
+			dailyUsd: 60,
+			watching: true
+		});
+		file.doing({ kind: 'off' });
+		expect(readStatus(path)?.watching).toBe(true);
+	});
 });

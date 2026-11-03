@@ -15,11 +15,11 @@ import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildOne, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
+import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { startServe } from './serve.js';
-import { StatusFile, statusPath } from './status.js';
+import { StatusFile, statusPath, type Named } from './status.js';
 import { worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
 import { startLive } from './live.js';
@@ -149,7 +149,8 @@ export async function runNightjar(
 	const live = process.stdout.isTTY
 		? startLive({ root, repo: adapters.repo, out: process.stdout, now: () => new Date() })
 		: null;
-	const speak = live?.say ?? say;
+	// the run's own lines: into the block on a terminal, else printed as say prints them
+	const runSay = live?.say ?? say;
 	const deps: Deps = {
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
@@ -159,7 +160,7 @@ export async function runNightjar(
 		serve: startServe,
 		now: () => new Date(),
 		newId: () => randomUUID(),
-		say: speak,
+		say: runSay,
 		status
 	};
 	const setup: Setup = {
@@ -187,21 +188,21 @@ export async function runNightjar(
 		signal: stop.signal
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: string | null = null;
+	let building: Named | null = null;
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
-		build: async (id) => {
-			building = id;
+		build: async (feature) => {
+			building = feature;
 			try {
-				return await buildFeature(deps, setup, id);
+				return await buildFeature(deps, setup, feature.id);
 			} finally {
 				building = null;
 			}
 		},
 		status,
 		now: () => new Date(),
-		say: speak,
+		say: runSay,
 		sleep,
 		signal: stop.signal
 	};
@@ -215,7 +216,7 @@ export async function runNightjar(
 	}
 	process.on('SIGINT', () => {
 		if (stop.signal.aborted) process.exit(130);
-		speak(
+		runSay(
 			'stopping: the running session ends and its Ticket goes back; Ctrl-C again to quit at once'
 		);
 		stop.abort();
@@ -241,7 +242,14 @@ export async function runNightjar(
 				console.error(`nightjar: ${refusal}`);
 				return 2;
 			}
-			const outcome = await buildOne(queueDeps, args.feature);
+			let outcome;
+			try {
+				outcome = await buildNamed(queueDeps, args.feature);
+			} catch (fault) {
+				live?.stop();
+				console.error(`nightjar: ${why(fault)}`);
+				return 2;
+			}
 			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
 		}
 		return await queue(queueDeps, args.mode === 'once');

@@ -480,6 +480,17 @@ describe('buildFeature', () => {
 		]);
 	});
 
+	it("keeps the Feature's start through every step, while each step starts its own clock", async () => {
+		const world = makeWorld();
+		let minute = 0;
+		const now = () => new Date(2026, 9, 30, 9, minute++);
+		await buildFeature({ ...deps(world), now }, setup(world), '1');
+		const building = world.doing.flatMap((d) => (d.kind === 'building' ? [d] : []));
+		const starts = new Set(building.map((d) => d.featureStartedAt));
+		expect(starts).toEqual(new Set([new Date(2026, 9, 30, 9, 0).toISOString()]));
+		expect(new Set(building.map((d) => d.startedAt)).size).toBeGreaterThan(1);
+	});
+
 	it('tells the status file each Ticket as built, building or waiting, and why it waits', async () => {
 		const world = makeWorld();
 		await buildFeature(deps(world), setup(world), '1');

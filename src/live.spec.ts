@@ -23,6 +23,7 @@ function world() {
 		repo: 'o/r',
 		out: { write: (s) => void written.push(s), columns: 60 },
 		now: () => at,
+		alive: () => true,
 		every: (fn) => {
 			tick = fn;
 			return () => {
@@ -53,7 +54,7 @@ describe('startLive', () => {
 			path: join(root, '.factory', 'status.json'),
 			ledger: join(root, '.factory', 'runs.jsonl'),
 			now: () => at,
-			pid: process.pid,
+			pid: 42,
 			dailyUsd: 8
 		}).doing({ kind: 'idle', nextPollAt: new Date(2026, 9, 30, 9, 1, 12).toISOString() });
 		const before = w.written.length;

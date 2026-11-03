@@ -82,12 +82,32 @@ export function lastRepo(path: string): string | null {
 	return readEntries(path).at(-1)?.repo ?? null;
 }
 
-// The estimated dollars spent on each Feature over the whole ledger, by Feature id.
-export function costByFeature(path: string): Map<string, number> {
-	const costs = new Map<string, number>();
-	for (const entry of readEntries(path)) {
-		const feature = String(entry.feature);
-		costs.set(feature, (costs.get(feature) ?? 0) + entry.costUsd);
+export interface Spend {
+	readonly feature: string;
+	readonly at: number;
+	readonly costUsd: number;
+}
+
+// Each session's cost, by Feature id and the time it was recorded.
+export function spends(path: string): Spend[] {
+	return readEntries(path).map((e) => ({
+		feature: String(e.feature),
+		at: Date.parse(e.at),
+		costUsd: e.costUsd
+	}));
+}
+
+// The dollars spent on a Feature after `after` (exclusive) and up to `until` (inclusive), either open.
+export function spentOnFeature(
+	all: readonly Spend[],
+	feature: string,
+	after: number | null,
+	until: number | null
+): number {
+	let sum = 0;
+	for (const s of all) {
+		if (s.feature !== feature) continue;
+		if ((after === null || s.at > after) && (until === null || s.at <= until)) sum += s.costUsd;
 	}
-	return costs;
+	return sum;
 }
