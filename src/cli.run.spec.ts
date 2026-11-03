@@ -186,6 +186,23 @@ describe('nightjar FEATURE', () => {
 		expect(pull).not.toContain('\u001b');
 	}, 30_000);
 
+	it('names every failing test in the pull request when the check stays red', () => {
+		// the stage log holds two failing tests a hundred lines apart; the note is built in two pieces so the command's own text cannot match
+		const check = String.raw`mkdir -p logs; { echo ' FAIL  a.spec > one'; i=0; while [ $i -lt 100 ]; do echo noise; i=$((i+1)); done; echo ' FAIL  b.spec > two'; } > logs/unit.log; printf 'types  green\n'; printf 'unit   \033[31mred\033[0m\n'; printf 'bud%s\n' 'get: slow'; echo 'check: red'; exit 1`;
+		const { nightjar, calls } = world(true, {
+			check,
+			gate: { stages: { red: '^(\\S+)\\s+red\\b', log: 'logs/{stage}.log' }, ignore: '^budget: ' }
+		});
+		expect(nightjar(['1']).status).toBe(0);
+		const pull = calls().slice(calls().indexOf('-X POST repos/o/r/pulls '));
+		expect(pull).toContain('Red: unit');
+		expect(pull).toContain('Failing tests (2):');
+		expect(pull).toContain('- a.spec > one');
+		expect(pull).toContain('- b.spec > two');
+		expect(pull).not.toContain('budget: slow');
+		expect(pull).not.toContain('\u001b');
+	}, 30_000);
+
 	it('hands the Feature back, claim off and reason said, when a step fails', () => {
 		const { root, nightjar, calls } = world();
 		const run = nightjar(['1'], { FAKE_GH_FAIL_TICKETS: '1' });
