@@ -66,6 +66,14 @@ export class GitHubApi {
 	}
 }
 
+const GH_INSTALL = 'https://cli.github.com/';
+
+// A failed call said with how to install gh or sign it in, whichever it may need.
+export const ghFix = (message: string): string =>
+	message.includes('is not on the PATH')
+		? `${message} Install it from ${GH_INSTALL}, then run \`gh auth login\`.`
+		: `${message} If gh is not signed in, run \`gh auth login\`.`;
+
 // owner/name from an origin such as git@github.com:o/r.git or https://github.com/o/r
 export function repoFromRemote(url: string): string | null {
 	const match = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url.trim());

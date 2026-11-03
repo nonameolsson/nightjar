@@ -65,20 +65,19 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 		...(host.request === undefined ? {} : { request: host.request }),
 		...(host.gh === undefined ? {} : { gh: host.gh })
 	});
-	const failed = checked.lines.find((l) => l.status === 'fail' && l.only === undefined);
-	if (failed !== undefined) throw new Refusal(failed.detail);
-	if (checked.ready === null) throw new Refusal('the checks did not finish');
-	const { adapters, me } = checked.ready;
-	say(`${adapters.repo}, as ${me}, on ${checked.ready.login ?? 'ANTHROPIC_API_KEY'}`);
-	for (const l of checked.lines) {
+	if (checked.refusal !== null) throw new Refusal(checked.refusal);
+	const { ready, lines } = checked;
+	const { adapters, me, assignee, person } = ready;
+	say(`${adapters.repo}, as ${me}, on ${ready.login ?? 'ANTHROPIC_API_KEY'}`);
+	// with the build ready, a line that failed is a Workflow's own
+	for (const l of lines) {
 		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
 	}
-	const found = checked.lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
+	const found = lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
-	const { assignee, person } = checked.ready;
 	if (assignee !== me) say(`building the Features assigned to ${assignee}`);
 	if (person.dailyUsd !== LIMITS.dailyUsd) say(`daily limit $${String(person.dailyUsd)}`);
-	return checked.ready;
+	return ready;
 }
 
 // What the command reads of the machine it runs on; a spec passes its own.

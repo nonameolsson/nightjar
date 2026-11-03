@@ -70,6 +70,18 @@ describe('makeAdapters', () => {
 		await expect(adapters.tracker.me()).rejects.toThrow(
 			/cannot sign in to Azure DevOps: run `az login`, or set AZURE_DEVOPS_EXT_PAT/
 		);
+		// which needs no fix said beside it
+		expect(adapters.trackerFix('cannot sign in.')).toBe('cannot sign in.');
+	});
+
+	it('says how to install gh or sign it in beside a GitHub failure', async () => {
+		const adapters = await makeAdapters(config({}), dir, env());
+		expect(adapters.trackerFix('gh is not on the PATH.')).toBe(
+			'gh is not on the PATH. Install it from https://cli.github.com/, then run `gh auth login`.'
+		);
+		expect(adapters.codeHostFix('gh could not read the signed-in user: HTTP 401')).toBe(
+			'gh could not read the signed-in user: HTTP 401 If gh is not signed in, run `gh auth login`.'
+		);
 	});
 });
 

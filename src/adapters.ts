@@ -15,7 +15,7 @@ import {
 import type { CodeHost } from './code-host.js';
 import { CONFIG_FILE, ConfigError, type Config } from './config.js';
 import { run, type Env } from './git.js';
-import { GitHubApi, ghRunner, repoFromRemote, type GhRunner } from './github/api.js';
+import { GitHubApi, ghFix, ghRunner, repoFromRemote, type GhRunner } from './github/api.js';
 import { GitHubCodeHost } from './github/code-host.js';
 import { createSignalLabels } from './github/labels.js';
 import { GitHubTracker } from './github/tracker.js';
@@ -34,13 +34,22 @@ export interface Adapters {
 	readonly repo: string;
 	// how the preflight line names the Tracker it reached, as `person`, and the Code host
 	readonly checked: (person: string) => string;
+	// a failed `tracker.me` said with how to fix it on this Tracker
+	readonly trackerFix: Fix;
 	// reaches the Code host, so a run that cannot push stops before it builds anything
 	readonly reachCodeHost: () => Promise<void>;
+	// a failed `reachCodeHost` said with how to fix it on this Code host
+	readonly codeHostFix: Fix;
 	// makes the Tracker show the Signals (labels on GitHub), and says what it did
 	readonly prepareSignals: () => Promise<readonly string[]>;
 	// the Tracker as one that makes Features and Tickets, or why it cannot
 	readonly writer: (Tracker & FeatureWriter) | string;
 }
+
+// How a check's failure is said with its fix; one whose message says it already is kept as it is.
+export type Fix = (message: string) => string;
+
+const asSaid: Fix = (message) => message;
 
 const WRITER_LIST = `${FEATURE_WRITER_METHODS.slice(0, -1).join(', ')} and ${FEATURE_WRITER_METHODS.at(-1) ?? ''}`;
 
@@ -78,6 +87,7 @@ interface Machine {
 interface TrackerBundle {
 	readonly tracker: Tracker;
 	readonly checked: (person: string) => string;
+	readonly fix: Fix;
 	readonly prepareSignals: () => Promise<readonly string[]>;
 	// why this Tracker makes no Features though it may have the methods; null when it may
 	readonly cannotCreate: string | null;
@@ -98,6 +108,7 @@ const TRACKERS: {
 		return {
 			tracker,
 			checked: (person) => `${spec.path} as ${person}`,
+			fix: asSaid,
 			prepareSignals: () =>
 				Promise.resolve([
 					`${spec.path} shows Signals its own way: Nightjar creates nothing for it.`
@@ -114,6 +125,8 @@ const TRACKERS: {
 		return Promise.resolve({
 			tracker: new AzureBoardsTracker(api, spec, m.config.signals, m.config.trusted),
 			checked: (person) => `Azure DevOps as ${person} on ${organization}/${project}`,
+			// the sign-in's own refusal names `az login` and the token
+			fix: asSaid,
 			prepareSignals: () =>
 				Promise.resolve([
 					'Azure DevOps shows Signals as tags, which appear on first use: there is nothing to create.'
@@ -131,6 +144,7 @@ const TRACKERS: {
 		return {
 			tracker: new GitHubTracker(named, m.gh, m.config.signals, m.config.trusted),
 			checked: (person) => `gh as ${person} on ${named}`,
+			fix: ghFix,
 			prepareSignals: () => createSignalLabels(m.gh, named, m.config.signals),
 			cannotCreate: null,
 			page: (id) => `[issue ${id}](https://github.com/${named}/issues/${id})`
@@ -138,7 +152,7 @@ const TRACKERS: {
 	}
 };
 
-type HostBundle = Pick<Adapters, 'codeHost' | 'repo' | 'reachCodeHost'> & {
+type HostBundle = Pick<Adapters, 'codeHost' | 'repo' | 'reachCodeHost' | 'codeHostFix'> & {
 	// what the preflight line adds after the Tracker
 	readonly checkedTail: string;
 	// how a Ticket's reference is rewritten for this Code host; null keeps the Tracker's own
@@ -159,6 +173,7 @@ const CODE_HOSTS: {
 		codeHost: await codeHostFromModule(spec, m.context),
 		repo: spec.path,
 		reachCodeHost: () => Promise.resolve(),
+		codeHostFix: asSaid,
 		checkedTail: '',
 		fit: null
 	}),
@@ -171,6 +186,7 @@ const CODE_HOSTS: {
 			reachCodeHost: async () => {
 				await new GitHubApi(repo, m.gh).call('read the signed-in user', ['user']);
 			},
+			codeHostFix: ghFix,
 			checkedTail: '',
 			fit: null
 		};
@@ -195,6 +211,7 @@ const CODE_HOSTS: {
 			codeHost,
 			repo: `${organization}/${project}/${repo}`,
 			reachCodeHost: () => codeHost.check(),
+			codeHostFix: asSaid,
 			checkedTail: `, Azure Repos ${organization}/${project}/${repo}`,
 			fit
 		});
@@ -270,7 +287,9 @@ export async function makeAdapters(
 		codeHost: host.codeHost,
 		repo: host.repo,
 		checked: (person) => `${t.checked(person)}${host.checkedTail}`,
+		trackerFix: t.fix,
 		reachCodeHost: host.reachCodeHost,
+		codeHostFix: host.codeHostFix,
 		prepareSignals: t.prepareSignals,
 		writer
 	};
