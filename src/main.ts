@@ -17,6 +17,7 @@ import { runDoctor } from './doctor.js';
 import { runInitCommand } from './init.js';
 import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
+import { runIntakeCommand } from './intake.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
@@ -92,7 +93,7 @@ export interface Host {
 	readonly gh?: GhRunner;
 	// where init's questions are put; standard input unless a spec passes its own
 	readonly ask?: Ask;
-	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
+	// ends `nightjar ui` and `nightjar intake`; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
 }
 
@@ -123,6 +124,7 @@ export async function runNightjar(
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
+	if (argv[0] === 'intake') return runIntakeCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);

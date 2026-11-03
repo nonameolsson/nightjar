@@ -176,7 +176,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		let n = this.items.size + 1;
 		while (this.items.has(`${this.prefix}${String(n)}`)) n += 1;
 		const id = `${this.prefix}${String(n)}`;
-		this.add({ id, title, body });
+		this.add({ id, title, body, at: this.now().toISOString() });
 		return Promise.resolve(id);
 	};
 

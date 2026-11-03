@@ -18,7 +18,42 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--u
        nightjar init [--yes] [--check CMD] ...   ask for the Tracker and Code host, write factory.json, create the Signal labels, check the logins; --yes asks nothing
        nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
        nightjar ui [--port PORT]  serve a read-only page about this repo's builds on http://127.0.0.1:4545 (127.0.0.1 only), read from .factory/
+       nightjar intake [--port PORT] [--host HOST]  take the webhooks of factory.json's Sources on http://127.0.0.1:4546/sources/NAME and make each Feature on the Tracker; it builds nothing
        nightjar contract MODULE   check a module's own Tracker or Code host against the contract suites`;
+
+export const INTAKE_USAGE = `usage: nightjar intake [--port PORT] [--host HOST]
+
+  --port PORT  the port to listen on, 4546 by default
+  --host HOST  the address to listen on, 127.0.0.1 by default; set it for a reverse proxy on another machine`;
+
+export const INTAKE_PORT = 4546;
+export const INTAKE_HOST = '127.0.0.1';
+
+export interface IntakeArgs {
+	readonly port: number;
+	readonly host: string;
+}
+
+// The address intake listens on, or the line that says what is wrong with the arguments.
+export function parseIntakeArgs(argv: readonly string[]): IntakeArgs | string {
+	let port = INTAKE_PORT;
+	let host = INTAKE_HOST;
+	for (let i = 0; i < argv.length; i += 1) {
+		const a = argv[i] ?? '';
+		if (a !== '--port' && a !== '--host') return `unknown argument ${a}`;
+		const value = argv[i + 1];
+		if (value === undefined || value.startsWith('--') || value.trim() === '')
+			return `${a} needs a value`;
+		i += 1;
+		if (a === '--host') host = value;
+		else {
+			const n = /^\d+$/.test(value) ? Number(value) : NaN;
+			if (!(n <= 65535)) return `--port needs a number from 0 to 65535, not ${value}`;
+			port = n;
+		}
+	}
+	return { port, host };
+}
 
 export interface Args {
 	readonly mode: 'watch' | 'once' | 'feature' | 'doctor';

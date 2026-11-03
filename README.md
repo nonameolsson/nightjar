@@ -152,6 +152,7 @@ A full one:
 | `model`, `effort` | no       | The default model and effort of every session.                                                                                                                                                                      |
 | `review`          | no       | The read-only review of the whole diff, run before the draft pull request opens. `enabled: false` switches it off (on by default); `model` and `effort` are the review's own, else the defaults above.            |
 | `workflows`, `defaultWorkflow` | no | Work the repo adds to the build loop: see [Workflows](#workflows). A Feature picks a Workflow with a `**Workflow:**` line; `defaultWorkflow` is the one a Feature without the line gets. Left out, a build runs no Step. |
+| `sources`         | no       | What makes Features with nobody writing them, run by `nightjar intake`: see [Make Features from Sources](#make-features-from-sources). |
 
 Model and effort are chosen, strongest first: the `--model` / `--effort` option, the Ticket's own `**Model:**` / `**Effort:**` line, then `factory.json`.
 
@@ -346,6 +347,58 @@ cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-feature" .claude/sk
 
 With Nightjar as a dev dependency, the package is at `node_modules/@nonameolsson/nightjar` instead, here and below.
 
+## Make Features from Sources
+
+Some work starts outside a person's head: an alert, a message from a script or from a tool such as Zapier or n8n. A **Source** makes a Feature from such an event with nobody writing it, from a template. Sources live under `sources` in `factory.json`:
+
+```json
+"sources": {
+	"alerts": {
+		"type": "webhook",
+		"template": ".nightjar/alerts.md",
+		"key": "data.alert.id",
+		"secretEnv": "ALERTS_HOOK_SECRET",
+		"maxPerDay": 3
+	}
+}
+```
+
+| Field       | What it does |
+| ----------- | ------------ |
+| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. |
+| `template`  | A Feature file, in the shape of [Write a Feature](#write-a-feature), as a path from the repo's root, or the name of a template Nightjar ships (`sentry`, `weekly-deps`). Placeholders are plain paths into the payload, as `{{ data.alert.title }}`, plus `{{ date }}` and `{{ source }}`; there is no logic. |
+| `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one. |
+| `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64). The secret is never in `factory.json`. |
+| `maxPerDay` | The most Features the Source makes in a day; 3 when left out. |
+
+The payload is untrusted. Each value a placeholder takes is cut to one line of at most 200 characters, with Markdown and HTML escaped, and the whole payload, cut to 8 KB, is added to the Feature in a block headed "Event payload (untrusted data)". Each Feature carries a `**Source:** <name>` line and a hidden marker, by which Nightjar finds it on the Tracker again. A Source makes its Features with no Signal: as with `nightjar create`, a person gives the Go.
+
+Run the Sources with `nightjar intake`, from anywhere inside the repo, on a machine signed in to the Tracker:
+
+```bash
+ALERTS_HOOK_SECRET=whsec_... nightjar intake            # http://127.0.0.1:4546
+nightjar intake --port 8080 --host 0.0.0.0              # for a reverse proxy on another machine
+```
+
+Each webhook Source is served at `POST /sources/<name>`. Intake makes Features and never builds: `--watch` builds them as always, beside it or on another machine. It refuses to start when the Tracker cannot make Features (`createFeature`) or find a Source's Features (`featuresFrom`), or when a Source's secret is not set; `nightjar doctor` checks each Source too.
+
+Intake answers a delivery only after the Tracker has:
+
+| Answer | When |
+| ------ | ---- |
+| 201    | the Feature was made |
+| 200    | a Feature with the same key is open, or the Source has made `maxPerDay` Features today; nothing is made. On the open Feature, intake comments "happened again" at most once a day. |
+| 401    | the signature is wrong, or its timestamp is more than 5 minutes off |
+| 413    | the body is over 256 KB |
+| 429    | the Source has had 20 bad signatures in the last minute |
+| 503    | the Tracker failed; the sender retries, and the key keeps a retry from making a second Feature |
+
+The open Features and the day's count are read from the Tracker, so two intakes on two machines share them. Each delivery is logged to `.factory/intake.log` with the Source, the delivery id, the answer and the Feature, never with the payload.
+
+**Public HTTPS.** Intake listens on 127.0.0.1 and speaks plain HTTP. A sender on the internet needs a public HTTPS address: put a tunnel (such as Cloudflare Tunnel or ngrok) or a reverse proxy (such as Caddy or nginx) in front of it, pointed at `http://127.0.0.1:4546`. Use `--host` only when the proxy runs on another machine, and never expose the port without TLS in front of it.
+
+**Deliveries while intake is down are lost**, unless the sender retries them. Run intake on a machine that stays on, under a service manager such as systemd or launchd, and pick a sender that retries a failed delivery.
+
 ## The Ticket contract
 
 Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it.
@@ -400,7 +453,7 @@ nightjar doctor
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them; `--poll` only with `--watch`. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone.
+Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them; `--poll` only with `--watch`. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone. `nightjar intake [--port PORT] [--host HOST]` runs the Sources ([Make Features from Sources](#make-features-from-sources)).
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 

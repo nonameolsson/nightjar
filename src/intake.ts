@@ -1,0 +1,501 @@
+// `nightjar intake`: takes the deliveries of factory.json's webhook Sources and makes their Features on the Tracker; it never builds.
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import {
+	createServer,
+	type IncomingHttpHeaders,
+	type IncomingMessage,
+	type ServerResponse
+} from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { dirname, join } from 'node:path';
+import { makeAdapters, type Adapters, type Seams } from './adapters.js';
+import { INTAKE_USAGE, parseIntakeArgs } from './args.js';
+import { ConfigError, DEFAULT_MAX_PER_DAY, loadConfig, type Config } from './config.js';
+import { makeFeature } from './create.js';
+import { FeatureFileError } from './feature-file.js';
+import { run, type Env } from './git.js';
+import { say as sayLine, why } from './say.js';
+import { fillTemplate, readTemplate, templateFaults } from './template.js';
+import type { FeatureWriter, ItemId, SourcedFeature, Tracker } from './tracker.js';
+
+// the largest body a delivery may have
+export const BODY_LIMIT = 256 * 1024;
+
+// how far a delivery's timestamp may be from this machine's clock, either way
+export const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
+
+// failed signatures a Source takes in a minute before it answers 429 to everything
+export const FAILED_SIGNATURES = 20;
+const FAILED_WINDOW_MS = 60 * 1000;
+
+// the hidden mark on the "happened again" comment, by which the next delivery finds when the last one was
+export const AGAIN_MARKER = '<!-- nightjar:again -->';
+
+export const intakeLogPath = (root: string) => join(root, '.factory', 'intake.log');
+
+// A Tracker that makes Features and finds again those a Source made.
+export type IntakeTracker = Tracker & FeatureWriter & Required<Pick<Tracker, 'featuresFrom'>>;
+
+const findsSources = (tracker: Tracker & FeatureWriter): tracker is IntakeTracker =>
+	typeof tracker.featuresFrom === 'function';
+
+// A webhook Source as intake serves it: its template read, its secret taken from the environment.
+export interface ServedSource {
+	// the template's text, a Feature file with placeholders
+	readonly template: string;
+	// the Standard Webhooks secret, `whsec_` and base64 as the sender gives it
+	readonly secret: string;
+	readonly key?: string;
+	readonly maxPerDay: number;
+}
+
+export interface IntakeOptions {
+	readonly tracker: IntakeTracker;
+	readonly sources: ReadonlyMap<string, ServedSource>;
+	readonly host: string;
+	readonly port: number;
+	// .factory/intake.log
+	readonly log: string;
+	readonly now?: () => Date;
+	readonly say?: (line: string) => void;
+}
+
+export interface IntakeServer {
+	readonly address: string;
+	readonly port: number;
+	readonly close: () => Promise<void>;
+}
+
+type Outcome =
+	| 'made'
+	| 'again'
+	| 'day limit'
+	| 'bad signature'
+	| 'too many bad signatures'
+	| 'too large'
+	| 'not json'
+	| 'template failed'
+	| 'tracker failed'
+	| 'not post';
+
+interface Answer {
+	readonly status: number;
+	readonly outcome: Outcome;
+	readonly feature?: ItemId;
+	// whether intake commented "happened again" on the open Feature
+	readonly commented?: boolean;
+}
+
+// One line of .factory/intake.log: never anything of the payload.
+interface LogEntry {
+	readonly at: string;
+	readonly source: string;
+	readonly delivery: string;
+	readonly answer: number;
+	readonly outcome: Outcome;
+	readonly feature?: ItemId;
+	readonly commented?: boolean;
+}
+
+const header = (headers: IncomingHttpHeaders, name: string): string | undefined => {
+	const value = headers[name];
+	return typeof value === 'string' ? value : undefined;
+};
+
+// the sender's id of a delivery, kept to the characters an id has, so the log holds nothing else
+const deliveryId = (headers: IncomingHttpHeaders): string =>
+	(header(headers, 'webhook-id') ?? '').replace(/[^\w.:-]/g, '').slice(0, 100);
+
+// Standard Webhooks gives the secret as `whsec_` and the key in base64.
+const secretKey = (secret: string): Buffer =>
+	Buffer.from(secret.startsWith('whsec_') ? secret.slice('whsec_'.length) : secret, 'base64');
+
+// Whether a delivery is signed with the secret by the Standard Webhooks scheme, and sent within 5 minutes of now.
+export function signedRight(
+	secret: string,
+	headers: IncomingHttpHeaders,
+	body: Buffer,
+	now: Date
+): boolean {
+	const id = header(headers, 'webhook-id');
+	const timestamp = header(headers, 'webhook-timestamp');
+	const signatures = header(headers, 'webhook-signature');
+	if (id === undefined || timestamp === undefined || signatures === undefined) return false;
+	if (!/^\d{1,12}$/.test(timestamp)) return false;
+	if (Math.abs(now.getTime() - Number(timestamp) * 1000) > TIMESTAMP_TOLERANCE_MS) return false;
+	const expected = createHmac('sha256', secretKey(secret))
+		.update(`${id}.${timestamp}.`)
+		.update(body)
+		.digest();
+	// the header may carry several signatures, as while a secret is rotated
+	return signatures.split(' ').some((signature) => {
+		if (!signature.startsWith('v1,')) return false;
+		const given = Buffer.from(signature.slice('v1,'.length), 'base64');
+		return given.length === expected.length && timingSafeEqual(given, expected);
+	});
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+// the day as the machine's calendar has it, as maxPerDay counts days
+const day = (at: Date) =>
+	`${String(at.getFullYear())}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+
+const minute = (at: Date) => `${day(at)} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+
+// The deliveries of `source` that found `feature` open since `since`, by this machine's log, leaving out the one that commented.
+function repeatsSince(log: string, source: string, feature: ItemId, since: string): number {
+	let text: string;
+	try {
+		text = readFileSync(log, 'utf8');
+	} catch {
+		return 0;
+	}
+	let count = 0;
+	for (const line of text.split('\n')) {
+		let entry: Partial<LogEntry>;
+		try {
+			entry = JSON.parse(line) as Partial<LogEntry>;
+		} catch {
+			continue;
+		}
+		if (
+			entry.source === source &&
+			entry.feature === feature &&
+			entry.outcome === 'again' &&
+			entry.commented !== true &&
+			typeof entry.at === 'string' &&
+			Date.parse(entry.at) >= Date.parse(since)
+		)
+			count += 1;
+	}
+	return count;
+}
+
+// The body, or null once it is over the limit.
+function readBody(req: IncomingMessage): Promise<Buffer | null> {
+	return new Promise((done, fail) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let over = false;
+		req.on('data', (chunk: Buffer) => {
+			size += chunk.length;
+			if (size > BODY_LIMIT) over = true;
+			if (!over) chunks.push(chunk);
+		});
+		req.on('end', () => done(over ? null : Buffer.concat(chunks)));
+		req.on('error', fail);
+	});
+}
+
+export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
+	const now = o.now ?? (() => new Date());
+	const say = o.say ?? sayLine;
+	const { tracker } = o;
+	const failed = new Map<string, number[]>();
+	// one delivery of a Source at a time, so two of the same key never make two Features
+	const queues = new Map<string, Promise<unknown>>();
+
+	const failedRecently = (name: string): number[] => {
+		const at = now().getTime();
+		const kept = (failed.get(name) ?? []).filter((t) => at - t < FAILED_WINDOW_MS);
+		failed.set(name, kept);
+		return kept;
+	};
+
+	const inTurn = <T>(name: string, work: () => Promise<T>): Promise<T> => {
+		const turn = (queues.get(name) ?? Promise.resolve()).then(work, work);
+		queues.set(
+			name,
+			turn.catch(() => undefined)
+		);
+		return turn;
+	};
+
+	const record = (name: string, delivery: string, answer: Answer) => {
+		const entry: LogEntry = {
+			at: now().toISOString(),
+			source: name,
+			delivery,
+			answer: answer.status,
+			outcome: answer.outcome,
+			...(answer.feature === undefined ? {} : { feature: answer.feature }),
+			...(answer.commented === undefined ? {} : { commented: answer.commented })
+		};
+		mkdirSync(dirname(o.log), { recursive: true });
+		appendFileSync(o.log, `${JSON.stringify(entry)}\n`);
+		const ref = answer.feature === undefined ? '' : ` ${tracker.reference(answer.feature).text}`;
+		say(
+			`Source ${name}, delivery ${delivery || '(no id)'}: ${String(answer.status)} ${answer.outcome}${ref}`
+		);
+	};
+
+	// "happened again" on the open Feature, unless it was said there today
+	const again = async (name: string, open: SourcedFeature): Promise<boolean> => {
+		const said = (await tracker.comments(open.id)).filter((c) => c.body.includes(AGAIN_MARKER));
+		const last = said.at(-1);
+		if (last !== undefined && day(new Date(last.at)) === day(now())) return false;
+		const since = last?.at ?? open.at;
+		const times = repeatsSince(o.log, name, open.id, since) + 1;
+		await tracker.comment(
+			open.id,
+			`Happened again, ${String(times)} ${times === 1 ? 'time' : 'times'} since ${minute(new Date(since))}.\n\n${AGAIN_MARKER}`
+		);
+		return true;
+	};
+
+	const make = async (name: string, source: ServedSource, payload: unknown): Promise<Answer> => {
+		let filled;
+		try {
+			filled = fillTemplate({
+				template: source.template,
+				source: name,
+				payload,
+				key: source.key,
+				now: now()
+			});
+		} catch (fault) {
+			if (!(fault instanceof FeatureFileError)) throw fault;
+			say(`Source ${name}: the payload does not fill the template: ${why(fault)}`);
+			return { status: 400, outcome: 'template failed' };
+		}
+		try {
+			const found = await tracker.featuresFrom(name);
+			const open = found.filter((f) => f.open && f.key === filled.key).at(-1);
+			if (filled.key !== '' && open !== undefined) {
+				const commented = await again(name, open);
+				return { status: 200, outcome: 'again', feature: open.id, commented };
+			}
+			const today = day(now());
+			const madeToday = found.filter((f) => day(new Date(f.at)) === today).length;
+			if (madeToday >= source.maxPerDay) return { status: 200, outcome: 'day limit' };
+			const made = await makeFeature(tracker, filled.plan, () => undefined);
+			return { status: 201, outcome: 'made', feature: made.feature };
+		} catch (fault) {
+			// the sender retries a 503; the key keeps a retry from making a second Feature
+			say(`Source ${name}: the Tracker failed: ${why(fault)}`);
+			return { status: 503, outcome: 'tracker failed' };
+		}
+	};
+
+	const take = async (
+		name: string,
+		source: ServedSource,
+		req: IncomingMessage
+	): Promise<Answer> => {
+		if (req.method !== 'POST') return { status: 405, outcome: 'not post' };
+		// a sender guessing the secret is stopped before its body is read
+		if (failedRecently(name).length >= FAILED_SIGNATURES) {
+			req.resume();
+			return { status: 429, outcome: 'too many bad signatures' };
+		}
+		const length = Number(header(req.headers, 'content-length') ?? 0);
+		const body = length > BODY_LIMIT ? null : await readBody(req);
+		if (body === null) {
+			req.resume();
+			return { status: 413, outcome: 'too large' };
+		}
+		if (!signedRight(source.secret, req.headers, body, now())) {
+			failedRecently(name).push(now().getTime());
+			return { status: 401, outcome: 'bad signature' };
+		}
+		let payload: unknown;
+		try {
+			payload = JSON.parse(body.toString('utf8'));
+		} catch {
+			return { status: 400, outcome: 'not json' };
+		}
+		return inTurn(name, () => make(name, source, payload));
+	};
+
+	const answer = (res: ServerResponse, a: Answer) => {
+		res.writeHead(a.status, {
+			'content-type': 'application/json',
+			...(a.status === 405 ? { allow: 'POST' } : {}),
+			...(a.status === 413 ? { connection: 'close' } : {})
+		});
+		const said = {
+			outcome: a.outcome,
+			...(a.feature === undefined ? {} : { feature: a.feature })
+		};
+		res.end(JSON.stringify(said));
+	};
+
+	const server = createServer((req, res) => {
+		const path = (req.url ?? '').split('?')[0] ?? '';
+		const name = /^\/sources\/([\w.-]+)$/.exec(path)?.[1];
+		const source = name === undefined ? undefined : o.sources.get(name);
+		if (name === undefined || source === undefined) {
+			req.resume();
+			res.writeHead(404).end();
+			return;
+		}
+		const delivery = deliveryId(req.headers);
+		take(name, source, req).then(
+			(a) => {
+				record(name, delivery, a);
+				answer(res, a);
+			},
+			(fault: unknown) => {
+				say(`Source ${name}: ${why(fault)}`);
+				if (!res.headersSent) res.writeHead(500).end();
+			}
+		);
+	});
+
+	return new Promise((done, fail) => {
+		server.once('error', fail);
+		server.listen(o.port, o.host, () => {
+			const { address, port } = server.address() as AddressInfo;
+			done({
+				address,
+				port,
+				close: () =>
+					new Promise<void>((closed) => {
+						server.closeAllConnections();
+						server.close(() => closed());
+					})
+			});
+		});
+	});
+}
+
+// What the command reads of the machine it runs on; a spec passes its own.
+export interface IntakeHost extends Seams {
+	readonly cwd: string;
+	readonly env: Env;
+	// ends intake; Ctrl-C or SIGTERM unless a spec passes its own
+	readonly stop?: AbortSignal;
+}
+
+const refuse = (text: string) => {
+	console.error(`nightjar: ${text}`);
+	return 2;
+};
+
+function onSignals(): AbortSignal {
+	const stop = new AbortController();
+	process.once('SIGINT', () => stop.abort());
+	process.once('SIGTERM', () => stop.abort());
+	return stop.signal;
+}
+
+interface Served {
+	readonly sources: Map<string, ServedSource>;
+	// why intake cannot start
+	readonly faults: string[];
+	// what intake leaves out
+	readonly notes: string[];
+}
+
+// The webhook Sources intake serves, with their templates read and their secrets taken.
+function served(config: Config, root: string, env: Env): Served {
+	const sources = new Map<string, ServedSource>();
+	const faults: string[] = [];
+	const notes: string[] = [];
+	for (const [name, source] of Object.entries(config.sources ?? {})) {
+		if (source.type !== 'webhook') {
+			notes.push(`Source ${name}: intake takes no ${source.type} Source; it is left out`);
+			continue;
+		}
+		const own: string[] = templateFaults(root, source.template).map(
+			(f) => `template ${source.template}: ${f}`
+		);
+		const secret = source.secretEnv === undefined ? '' : (env[source.secretEnv] ?? '');
+		if (source.secretEnv === undefined) {
+			own.push('name the variable that holds its webhook secret, as secretEnv');
+		} else if (secret === '') {
+			own.push(`${source.secretEnv} is not set; put the webhook secret in that variable`);
+		}
+		if (own.length > 0) {
+			faults.push(...own.map((f) => `Source ${name}: ${f}`));
+			continue;
+		}
+		if (source.go === true) {
+			notes.push(`Source ${name}: intake gives no Go; its Features wait for a person to give it`);
+		}
+		sources.set(name, {
+			template: readTemplate(root, source.template),
+			secret,
+			...(source.key === undefined ? {} : { key: source.key }),
+			maxPerDay: source.maxPerDay ?? DEFAULT_MAX_PER_DAY
+		});
+	}
+	return { sources, faults, notes };
+}
+
+// 0 once it is told to stop, 2 when it cannot start.
+export async function runIntakeCommand(argv: readonly string[], host: IntakeHost): Promise<number> {
+	const args = parseIntakeArgs(argv);
+	if (typeof args === 'string') return refuse(`${args}\n\n${INTAKE_USAGE}`);
+	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
+	const top = await run('git', ['rev-parse', '--show-toplevel'], host.cwd, env);
+	if (!top.ok) return refuse('not inside a git checkout; run intake in the repo.');
+	const root = top.out.trim();
+	let config: Config;
+	let adapters: Adapters;
+	try {
+		config = loadConfig(root);
+		const seams = {
+			...(host.request === undefined ? {} : { request: host.request }),
+			...(host.gh === undefined ? {} : { gh: host.gh })
+		};
+		adapters = await makeAdapters(config, root, env, seams);
+	} catch (fault) {
+		if (fault instanceof ConfigError) return refuse(fault.message);
+		throw fault;
+	}
+	if (Object.keys(config.sources ?? {}).length === 0) {
+		return refuse('factory.json names no sources for intake to run.');
+	}
+	const { writer } = adapters;
+	const missing: string[] = [];
+	if (typeof writer === 'string') {
+		missing.push(`intake makes Features through createFeature: ${writer}`);
+	}
+	// the Tracker as the Code host wraps it keeps featuresFrom when it has one
+	if (adapters.tracker.featuresFrom === undefined) {
+		missing.push(
+			'intake finds the Features a Source made through featuresFrom, which this Tracker lacks (docs/custom-adapters.md)'
+		);
+	}
+	if (typeof writer === 'string' || !findsSources(writer) || missing.length > 0) {
+		return refuse(missing.join('\nnightjar: '));
+	}
+	const { sources, faults, notes } = served(config, root, env);
+	if (faults.length > 0) return refuse(faults.join('\nnightjar: '));
+	if (sources.size === 0) {
+		return refuse('factory.json names no webhook Source for intake to take.');
+	}
+	let server: IntakeServer;
+	try {
+		server = await startIntake({
+			tracker: writer,
+			sources,
+			host: args.host,
+			port: args.port,
+			log: intakeLogPath(root)
+		});
+	} catch (fault) {
+		if ((fault as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+			return refuse(
+				`port ${String(args.port)} is taken; stop what uses it or pick another with --port.`
+			);
+		}
+		return refuse(`cannot listen on ${args.host}: ${why(fault)}`);
+	}
+	// an IPv6 address is written in brackets in a URL
+	const address = server.address.includes(':') ? `[${server.address}]` : server.address;
+	const base = `http://${address}:${String(server.port)}`;
+	sayLine(`intake on ${base}  (Ctrl-C to stop)`);
+	for (const name of sources.keys()) sayLine(`Source ${name}: POST ${base}/sources/${name}`);
+	for (const note of notes) sayLine(note);
+	const stop = host.stop ?? onSignals();
+	await new Promise<void>((done) => {
+		if (stop.aborted) done();
+		stop.addEventListener('abort', () => done(), { once: true });
+	});
+	await server.close();
+	return 0;
+}
