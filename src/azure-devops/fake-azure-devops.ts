@@ -54,9 +54,77 @@ export interface FakePullRequest {
 	readonly title: string;
 	readonly description: string;
 	readonly isDraft: boolean;
-	readonly status: 'active';
+	readonly status: 'active' | 'abandoned' | 'completed';
 	// the first comment of each thread, oldest first
 	readonly comments: readonly string[];
+}
+
+// A status another service posts to a pull request.
+export interface NewPullStatus {
+	readonly name: string;
+	readonly genre?: string;
+	// notSet, pending, succeeded, failed, error or notApplicable
+	readonly state: string;
+	readonly description?: string;
+	// the push it is for: the latest unless named; null posts it to the pull request itself
+	readonly iteration?: number | null;
+}
+
+// A policy's evaluation on a pull request: a build validation policy, or one about reviewers.
+export interface NewPolicy {
+	readonly type: 'build' | 'reviewers';
+	// queued, running, approved, rejected, notApplicable or broken
+	readonly status: string;
+	readonly displayName?: string;
+	readonly definition?: string;
+	readonly buildId?: number;
+	readonly isExpired?: boolean;
+	readonly preview?: {
+		readonly jobName?: string;
+		readonly taskName?: string;
+		readonly errors?: readonly string[];
+	};
+}
+
+interface NewTask {
+	readonly name: string;
+	// succeeded, failed, canceled, skipped or succeededWithIssues
+	readonly result: string;
+	readonly log?: string;
+	readonly errors?: readonly string[];
+}
+
+// A Pipelines job and the tasks it ran, in order.
+export interface NewJob extends NewTask {
+	readonly steps: readonly NewTask[];
+}
+
+interface PullThread {
+	readonly author: Person;
+	readonly content: string;
+	// written by Azure Repos itself, such as a vote or a push
+	readonly system: boolean;
+}
+
+interface StoredStatus extends Omit<NewPullStatus, 'iteration'> {
+	readonly id: number;
+	readonly iterationId: number | null;
+}
+
+interface StoredRecord {
+	readonly id: string;
+	readonly parentId: string | null;
+	readonly type: 'Stage' | 'Job' | 'Task';
+	readonly name: string;
+	readonly result: string;
+	readonly order: number;
+	readonly logId: number | null;
+	readonly errors: readonly string[];
+}
+
+interface StoredBuild {
+	readonly records: readonly StoredRecord[];
+	readonly logs: ReadonlyMap<number, string>;
 }
 
 interface Repository {
@@ -106,6 +174,16 @@ export class FakeAzureDevOps {
 	private readonly pulls: FakePullRequest[] = [];
 	// the artifact links on each work item, such as one to a pull request
 	private readonly artifacts = new Map<number, string[]>();
+	// the commit each pushed branch points at
+	private readonly heads = new Map<string, string>();
+	// the commit of each push to a pull request: iteration n is at n - 1
+	private readonly iterations = new Map<number, string[]>();
+	private readonly threads = new Map<number, PullThread[]>();
+	// each pull request's reviewers by id, with their vote
+	private readonly votes = new Map<number, Map<string, { person: Person; vote: number }>>();
+	private readonly statuses = new Map<number, StoredStatus[]>();
+	private readonly policies = new Map<number, NewPolicy[]>();
+	private readonly builds = new Map<number, StoredBuild>();
 
 	constructor(
 		readonly organization: string,
@@ -200,6 +278,106 @@ export class FakeAzureDevOps {
 			.sort((a, b) => a - b);
 	}
 
+	// Azure Repos learns of a push: each active pull request from `branch` gains an iteration.
+	pushed(branch: string, commit: string): void {
+		this.heads.set(branch, commit);
+		for (const p of this.pulls) {
+			if (p.status !== 'active' || p.sourceRefName !== `refs/heads/${branch}`) continue;
+			this.iterations.set(p.pullRequestId, [...this.pushesTo(p.pullRequestId), commit]);
+		}
+	}
+
+	// The commit a pull request's latest push is at.
+	headOf(id: number): string {
+		const head = this.pushesTo(id).at(-1);
+		if (head === undefined) throw fault(`no push to pull request ${String(id)}`);
+		return head;
+	}
+
+	// A person publishes the draft, abandons it, or completes it.
+	markReady(id: number): void {
+		this.replacePull({ ...this.pullRequestAt(id), isDraft: false });
+	}
+
+	abandon(id: number): void {
+		this.replacePull({ ...this.pullRequestAt(id), status: 'abandoned' });
+	}
+
+	complete(id: number): void {
+		this.replacePull({ ...this.pullRequestAt(id), status: 'completed', isDraft: false });
+	}
+
+	// A person comments on a pull request; `system` is a note Azure Repos writes for their action.
+	sayOnPull(id: number, author: string, text: string, { system = false } = {}): void {
+		const pull = this.pullRequestAt(id);
+		this.threadsOf(id).push({ author: this.who(author), content: text, system });
+		this.replacePull({ ...pull, comments: [...pull.comments, text] });
+	}
+
+	// A reviewer is added (vote 0), or votes: 10 approves, 5 with suggestions, -5 waits, -10 rejects.
+	vote(id: number, reviewer: string, vote: number): void {
+		this.pullRequestAt(id);
+		const person = this.who(reviewer);
+		const reviewers = this.votes.get(id) ?? new Map<string, { person: Person; vote: number }>();
+		reviewers.set(person.id, { person, vote });
+		this.votes.set(id, reviewers);
+	}
+
+	status(id: number, status: NewPullStatus): void {
+		this.pullRequestAt(id);
+		const { iteration, ...rest } = status;
+		const list = this.statuses.get(id) ?? [];
+		list.push({
+			...rest,
+			id: list.length + 1,
+			iterationId: iteration === undefined ? this.pushesTo(id).length : iteration
+		});
+		this.statuses.set(id, list);
+	}
+
+	policy(id: number, policy: NewPolicy): void {
+		this.pullRequestAt(id);
+		this.policies.set(id, [...(this.policies.get(id) ?? []), policy]);
+	}
+
+	// Takes away every status and policy evaluation on a pull request.
+	clearChecks(id: number): void {
+		this.statuses.delete(id);
+		this.policies.delete(id);
+	}
+
+	// A finished Pipelines build of one stage; gives back its id.
+	build(jobs: readonly NewJob[]): number {
+		const id = 900 + this.builds.size + 1;
+		const logs = new Map<number, string>();
+		const records: StoredRecord[] = [];
+		let n = 0;
+		const record = (type: StoredRecord['type'], parentId: string | null, task: NewTask) => {
+			n += 1;
+			if (task.log !== undefined) logs.set(n, task.log);
+			const made: StoredRecord = {
+				id: guid(7000 + n),
+				parentId,
+				type,
+				name: task.name,
+				result: task.result,
+				order: n,
+				logId: task.log === undefined ? null : n,
+				errors: task.errors ?? []
+			};
+			records.push(made);
+			return made.id;
+		};
+		const failed = jobs.some((j) => j.result !== 'succeeded');
+		const stage = record('Stage', null, { name: 'Build', result: failed ? 'failed' : 'succeeded' });
+		for (const job of jobs) {
+			const jobId = record('Job', stage, job);
+			for (const step of job.steps) record('Task', jobId, step);
+		}
+		this.builds.set(id, { records, logs });
+		return id;
+	}
+
 	// The next call whose address `match` finds answers `status` and changes nothing.
 	failNext(match: RegExp, status: number): void {
 		this.faults.push({ match, status });
@@ -281,6 +459,16 @@ export class FakeAzureDevOps {
 		}
 		const repos = this.reposAnswer(url, call, body, project);
 		if (repos !== null) return repos;
+		if (call.method === 'GET' && path === `${project}/_apis/policy/evaluations`) {
+			this.query(url, { 'api-version': '7.1-preview.1' }, ['artifactId']);
+			return this.evaluations(url.searchParams.get('artifactId') ?? '');
+		}
+		const builds = `${project}/_apis/build/builds`;
+		const build = new RegExp(`^${builds}/(\\d+)/(timeline|logs/(\\d+))$`).exec(path);
+		if (call.method === 'GET' && build) {
+			this.query(url, { 'api-version': API });
+			return this.buildAnswer(Number(build[1]), build[3] === undefined ? null : Number(build[3]));
+		}
 		const linking = new RegExp(`^${org}/_apis/wit/workitems/(\\d+)$`, 'i').exec(path);
 		if (call.method === 'PATCH' && linking) {
 			this.query(url, { 'api-version': API });
@@ -300,13 +488,15 @@ export class FakeAzureDevOps {
 		project: string
 	): AzureDevOpsReply | null {
 		const shape = new RegExp(
-			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads))?)?)?$`,
+			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads|statuses|iterations))?)?)?$`,
 			'i'
 		).exec(url.pathname);
 		if (!shape) return null;
 		this.query(url, { 'api-version': API }, [
 			'searchCriteria.sourceRefName',
-			'searchCriteria.status'
+			'searchCriteria.status',
+			'$top',
+			'$skip'
 		]);
 		const repo = this.repositories.get(decodeURIComponent(shape[1] ?? '').toLowerCase());
 		if (repo === undefined) {
@@ -344,19 +534,128 @@ export class FakeAzureDevOps {
 			const content = (body as { comments?: { content?: unknown }[] } | null)?.comments?.[0]
 				?.content;
 			if (typeof content !== 'string') throw fault('a thread carries { comments: [{ content }] }');
-			this.replacePull({ ...pull, comments: [...pull.comments, content] });
+			this.sayOnPull(pull.pullRequestId, this.person, content);
 			return json(200, { id: pull.comments.length + 1, comments: [{ id: 1, content }] });
+		} else if (part.toLowerCase() === 'threads' && call.method === 'GET') {
+			return this.renderThreads(pull.pullRequestId);
+		} else if (part.toLowerCase() === 'statuses' && call.method === 'GET') {
+			const value = (this.statuses.get(pull.pullRequestId) ?? []).map((s) => ({
+				id: s.id,
+				state: s.state,
+				...(s.description === undefined ? {} : { description: s.description }),
+				context: { name: s.name, ...(s.genre === undefined ? {} : { genre: s.genre }) },
+				...(s.iterationId === null ? {} : { iterationId: s.iterationId }),
+				createdBy: this.identity(this.person)
+			}));
+			return json(200, { count: value.length, value });
+		} else if (part.toLowerCase() === 'iterations' && call.method === 'GET') {
+			const value = this.pushesTo(pull.pullRequestId).map((commitId, i) => ({
+				id: i + 1,
+				sourceRefCommit: { commitId }
+			}));
+			return json(200, { count: value.length, value });
 		}
 		throw fault(`no route answers ${call.method} ${url.href}`);
+	}
+
+	private renderThreads(id: number): AzureDevOpsReply {
+		const value = this.threadsOf(id).map((t, i) => ({
+			id: i + 1,
+			isDeleted: false,
+			comments: [
+				{
+					id: 1,
+					parentCommentId: 0,
+					author: this.identity(t.author.uniqueName),
+					content: t.content,
+					commentType: t.system ? 'system' : 'text',
+					isDeleted: false
+				}
+			]
+		}));
+		return json(200, { count: value.length, value });
+	}
+
+	// The policy evaluations on a pull request, named as Azure Repos names its code review.
+	private evaluations(artifactId: string): AzureDevOpsReply {
+		const shape = /^vstfs:\/\/\/CodeReview\/CodeReviewId\/([^/]+)\/(\d+)$/.exec(artifactId);
+		if (shape?.[1] !== PROJECT_ID) throw fault(`artifactId=${artifactId}`);
+		const value = (this.policies.get(Number(shape[2])) ?? []).map((p, i) => ({
+			evaluationId: guid(8000 + i),
+			artifactId,
+			status: p.status,
+			configuration: {
+				id: i + 1,
+				isEnabled: true,
+				isBlocking: true,
+				type: { id: POLICY_TYPES[p.type] },
+				settings: { ...(p.displayName === undefined ? {} : { displayName: p.displayName }) }
+			},
+			...(p.type === 'build' ? { context: this.buildContext(p) } : {})
+		}));
+		return json(200, { count: value.length, value });
+	}
+
+	// What a build validation policy says of its build.
+	private buildContext(p: NewPolicy) {
+		const errors = (p.preview?.errors ?? []).map((message) => ({ message }));
+		return {
+			buildDefinitionName: p.definition ?? 'app-ci',
+			isExpired: p.isExpired === true,
+			...(p.buildId === undefined ? {} : { buildId: p.buildId }),
+			...(p.preview === undefined ? {} : { buildOutputPreview: { ...p.preview, errors } })
+		};
+	}
+
+	// A build's timeline, or one of its logs as Azure DevOps answers it to Accept: application/json, its lines.
+	private buildAnswer(id: number, logId: number | null): AzureDevOpsReply {
+		const build = this.builds.get(id);
+		if (build === undefined) {
+			return refusal(404, `The requested build ${String(id)} could not be found.`);
+		}
+		if (logId !== null) {
+			const log = build.logs.get(logId);
+			if (log === undefined) return refusal(404, `Build log ${String(logId)} could not be found.`);
+			const value = log.split('\n');
+			return json(200, { count: value.length, value });
+		}
+		const records = build.records.map((r) => ({
+			id: r.id,
+			parentId: r.parentId,
+			type: r.type,
+			name: r.name,
+			state: 'completed',
+			result: r.result,
+			order: r.order,
+			log: r.logId === null ? null : { id: r.logId, type: 'Container' },
+			issues: r.errors.map((message) => ({ type: 'error', category: 'General', message }))
+		}));
+		return json(200, { id: guid(6000 + id), records });
+	}
+
+	private pushesTo(id: number): string[] {
+		return this.iterations.get(id) ?? [];
+	}
+
+	private threadsOf(id: number): PullThread[] {
+		const list = this.threads.get(id) ?? [];
+		this.threads.set(id, list);
+		return list;
 	}
 
 	private listPulls(repo: Repository, search: URLSearchParams): AzureDevOpsReply {
 		const source = search.get('searchCriteria.sourceRefName');
 		const status = search.get('searchCriteria.status') ?? 'active';
 		if (status !== 'active') throw fault(`searchCriteria.status=${status}`);
-		const value = this.pulls
-			.filter((p) => p.repository === repo.id && (source === null || p.sourceRefName === source))
-			.map((p) => this.renderPull(p));
+		// newest first, a page at a time; Azure Repos cuts a listed description short
+		const skip = Number(search.get('$skip') ?? '0');
+		const top = Number(search.get('$top') ?? '101');
+		const shown = this.pulls.filter((p) => p.repository === repo.id && p.status === status);
+		const value = shown
+			.filter((p) => source === null || p.sourceRefName === source)
+			.reverse()
+			.slice(skip, skip + top)
+			.map((p) => ({ ...this.renderPull(p), description: p.description.slice(0, 400) }));
 		return json(200, { count: value.length, value });
 	}
 
@@ -381,6 +680,7 @@ export class FakeAzureDevOps {
 			this.pulls.some(
 				(p) =>
 					p.repository === repo.id &&
+					p.status === 'active' &&
 					p.sourceRefName === sourceRefName &&
 					p.targetRefName === targetRefName
 			)
@@ -402,6 +702,8 @@ export class FakeAzureDevOps {
 			comments: []
 		};
 		this.pulls.push(made);
+		const head = this.heads.get(sourceRefName.replace(/^refs\/heads\//, ''));
+		this.iterations.set(made.pullRequestId, head === undefined ? [] : [head]);
 		return json(201, this.renderPull(made));
 	}
 
@@ -484,6 +786,8 @@ export class FakeAzureDevOps {
 	private renderPull(pull: FakePullRequest) {
 		const repo = [...this.repositories.values()].find((r) => r.id === pull.repository);
 		if (repo === undefined) throw fault('a pull request without its repo');
+		const head = this.pushesTo(pull.pullRequestId).at(-1);
+		const reviewers = [...(this.votes.get(pull.pullRequestId)?.values() ?? [])];
 		return {
 			pullRequestId: pull.pullRequestId,
 			repository: this.renderRepository(repo),
@@ -493,6 +797,9 @@ export class FakeAzureDevOps {
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
 			isDraft: pull.isDraft,
+			...(head === undefined ? {} : { lastMergeSourceCommit: { commitId: head } }),
+			reviewers: reviewers.map((r) => ({ ...this.identity(r.person.uniqueName), vote: r.vote })),
+			createdBy: this.identity(this.person),
 			artifactId: this.artifactOf(pull),
 			url: `https://dev.azure.com/${encodeURIComponent(this.organization)}/_apis/git/repositories/${repo.id}/pullRequests/${String(pull.pullRequestId)}`
 		};
@@ -816,6 +1123,11 @@ const CONTRIBUTORS = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-1-contr
 const TEAM = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-2-team';
 const READERS = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-3-readers';
 const PROJECT_ID = guid(4000);
+// the policy types, the same in every organization
+const POLICY_TYPES = {
+	build: '0609b952-1397-4640-95ec-e00a01b2c241',
+	reviewers: 'fa4e907d-c16b-4a4c-9dfa-4906e5d171dd'
+};
 // the most characters Azure Repos keeps in a pull request's description
 const DESCRIPTION_LIMIT = 4000;
 

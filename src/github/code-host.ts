@@ -9,6 +9,7 @@ import type {
 	PullChecks
 } from '../code-host.js';
 import { firstLine, type Run } from '../git.js';
+import { logTail } from '../log-tail.js';
 import type { TicketReference } from '../tracker.js';
 import { BRANCH_PREFIX } from '../worktree.js';
 import { GitHubApi, GitHubFailure, PAGE, type GhRunner } from './api.js';
@@ -86,18 +87,6 @@ const RED = new Set(['failure', 'timed_out', 'cancelled', 'startup_failure', 'ac
 
 // The app that runs GitHub Actions; its check run's id is the job's id.
 const ACTIONS = 'github-actions';
-
-// What a failed job's log keeps; the gate report cuts it further.
-const LOG_LINES = 100;
-
-// Each line of an Actions log starts with its time, such as `2026-11-04T06:53:39.1234567Z `.
-const STAMP = /^\uFEFF?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
-
-const unstamped = (line: string) => line.replace(/\r$/, '').replace(STAMP, '');
-
-function logTail(log: string): string {
-	return log.trimEnd().split('\n').slice(-LOG_LINES).map(unstamped).join('\n');
-}
 
 const lines = (...texts: (string | null | undefined)[]) =>
 	texts.filter((t): t is string => typeof t === 'string' && t.trim() !== '').join('\n');
