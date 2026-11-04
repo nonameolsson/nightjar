@@ -1,5 +1,5 @@
-// What this machine can sandbox: a Workflow with `localNetwork` promises its Steps reach localhost and nothing else,
-// and Claude Code keeps that promise only inside its sandbox (see LOCAL_ONLY in settings.ts).
+// Whether this machine can sandbox: every Session runs in Claude Code's sandbox and fails closed (see SANDBOX in settings.ts),
+// so a machine that cannot gets no build.
 import { readFileSync } from 'node:fs';
 import { run, type Env } from './git.js';
 

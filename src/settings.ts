@@ -62,23 +62,36 @@ export interface StepExtras {
 	readonly localNetwork?: boolean;
 }
 
-// The sandbox keeps a Step's commands to localhost; it auto-allows nothing, so the allow list still decides.
+// Every Session's commands run in the sandbox, which reaches no network and auto-allows nothing, so the allow list still decides.
 // Claude Code runs commands unsandboxed where the sandbox cannot start, and may retry a failed command outside it,
-// unless told not to: failIfUnavailable and allowUnsandboxedCommands make the promise hold.
-const LOCAL_ONLY = {
+// unless told not to: failIfUnavailable and allowUnsandboxedCommands make the promise hold. Like DENY, no Workflow loosens it.
+const SANDBOX = {
 	enabled: true,
 	failIfUnavailable: true,
 	allowUnsandboxedCommands: false,
 	autoAllowBashIfSandboxed: false,
+	network: { allowedDomains: [] as string[] }
+};
+
+// A localNetwork Step's commands reach localhost and nothing else.
+const LOCAL_ONLY = {
+	...SANDBOX,
 	network: { allowedDomains: ['localhost', '127.0.0.1'], allowLocalBinding: true }
 };
+
+// The one place every Session's settings come from; hooks run outside the sandbox, so none run.
+const sessionSettings = (permissions: object, localNetwork = false): object => ({
+	permissions,
+	sandbox: localNetwork ? LOCAL_ONLY : SANDBOX,
+	disableAllHooks: true
+});
 
 export const stepTools = (extras: StepExtras) => [...BUILD_TOOLS, ...(extras.allowedTools ?? [])];
 
 // `allowed` are factory.json's allowedCommands, as Bash permission patterns.
 export function buildSettings(allowed: readonly string[], extras: StepExtras = {}): object {
-	return {
-		permissions: {
+	return sessionSettings(
+		{
 			defaultMode: 'dontAsk',
 			allow: [
 				'Read',
@@ -95,16 +108,14 @@ export function buildSettings(allowed: readonly string[], extras: StepExtras = {
 			],
 			deny: DENY
 		},
-		...(extras.localNetwork === true ? { sandbox: LOCAL_ONLY } : {})
-	};
+		extras.localNetwork === true
+	);
 }
 
 export function reviewSettings(): object {
-	return {
-		permissions: {
-			defaultMode: 'dontAsk',
-			allow: ['Read', 'Glob', 'Grep', ...READ_GIT],
-			deny: [...DENY, 'Edit', 'Write']
-		}
-	};
+	return sessionSettings({
+		defaultMode: 'dontAsk',
+		allow: ['Read', 'Glob', 'Grep', ...READ_GIT],
+		deny: [...DENY, 'Edit', 'Write']
+	});
 }

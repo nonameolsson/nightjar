@@ -14,7 +14,7 @@ import { firstLine, run, type Env } from './git.js';
 import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
-import { readKernel, sandboxFinding } from './sandbox.js';
+import { readKernel, sandboxFinding, type SandboxFinding } from './sandbox.js';
 import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
@@ -87,6 +87,7 @@ export interface Found {
 	readonly claude: { readonly version: string; readonly login: string | null };
 	readonly signs: 'signs' | 'unsigned';
 	readonly workflowProblems: Readonly<Record<string, string>>;
+	readonly sandbox: SandboxFinding;
 }
 
 const CLAUDE_INSTALL = 'https://claude.com/claude-code';
@@ -156,6 +157,19 @@ const nodeCheck = check({
 			throw new Refusal(`Node 24 or later is needed, and this is ${node}.`);
 		}
 		return { detail: node, summary: `Node ${node}` };
+	}
+});
+
+// Every Session runs in the sandbox and fails closed, so a machine that cannot sandbox gets no build at all.
+const sandboxCheck = check({
+	name: 'sandbox',
+	needs: [],
+	run: async (_found, o) => {
+		const platform = o.platform ?? process.platform;
+		const sandbox = await sandboxFinding(platform, o.env, o.kernel ?? readKernel(), o.cwd);
+		if (sandbox.fault !== null) throw new Refusal(sandbox.fault);
+		const by = platform === 'darwin' ? 'Seatbelt' : 'bubblewrap and socat';
+		return { found: { sandbox }, detail: `${by}, no network`, summary: null };
 	}
 });
 
@@ -327,17 +341,13 @@ const signingCheck = check({
 const workflowsCheck = check({
 	name: 'Workflows',
 	needs: ['root', 'claude'],
-	run: async ({ root, loaded }, o) => {
+	run: async ({ root, loaded, sandbox }, o) => {
 		const named = Object.entries(loaded?.config.workflows ?? {}).map(([name, w]) => ({
 			name,
 			localNetwork: w.localNetwork === true,
 			steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
 		}));
 		if (named.length === 0) return { found: { workflowProblems: {} } };
-		// only a Workflow with localNetwork needs the sandbox, so the machine is asked only then
-		const sandbox = named.some((w) => w.localNetwork)
-			? await sandboxFinding(o.platform ?? process.platform, o.env, o.kernel ?? readKernel(), root)
-			: { fault: null, caution: null };
 		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
 		const skills = wanted
 			? await (o.skills ?? loadedSkills)(
@@ -366,10 +376,6 @@ const workflowsCheck = check({
 					`${missing.join(' and ')}, which a headless claude session does not load. Sessions load no skill from the repo's own .claude/skills; add the folder that holds it to "plugins" in factory.json (for example [".claude"]), then run \`nightjar doctor\` again.`
 				);
 			}
-			// a Step with localNetwork must not run unsandboxed, so a machine that cannot sandbox refuses the Workflow
-			if (w.localNetwork && sandbox.fault !== null) {
-				faults.push(`localNetwork needs the sandbox, and ${sandbox.fault}`);
-			}
 			if (faults.length > 0) {
 				const detail = faults.join('\n');
 				workflowProblems[w.name] = detail;
@@ -377,7 +383,7 @@ const workflowsCheck = check({
 			}
 			const count = `${String(w.steps.length)} Step${w.steps.length === 1 ? '' : 's'}`;
 			const detail = `${count}${used.length > 0 ? `, skills found: ${used.map((k) => `/${k}`).join(', ')}` : ''}`;
-			if (w.localNetwork && sandbox.caution !== null) {
+			if (w.localNetwork && sandbox !== undefined && sandbox.caution !== null) {
 				return { ...said, status: 'warn', detail: `${detail}\nlocalNetwork: ${sandbox.caution}` };
 			}
 			return { ...said, status: 'ok', detail };
@@ -450,6 +456,7 @@ function sourceLine(
 export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	apiKeyCheck,
 	nodeCheck,
+	sandboxCheck,
 	checkoutCheck,
 	factoryCheck,
 	personCheck,

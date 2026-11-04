@@ -596,6 +596,20 @@ describe('workflows', () => {
 		expect(refusal()).toContain(said);
 	});
 
+	// the sandbox is fixed like the deny rules: no key opens the network or turns it off
+	it.each([
+		[
+			{ workflows: { w: { steps: [step], allowedDomains: ['registry.npmjs.org'] } } },
+			'allowedDomains'
+		],
+		[{ workflows: { w: { steps: [step], sandbox: { enabled: false } } } }, 'sandbox'],
+		[{ allowedDomains: ['registry.npmjs.org'] }, 'allowedDomains'],
+		[{ sandbox: { network: { allowedDomains: ['*'] } } }, 'sandbox']
+	])('refuses a key that would loosen the sandbox: %j', (over, said) => {
+		write({ ...VALID, ...over });
+		expect(refusal()).toContain(said);
+	});
+
 	it('refuses a default that names no Workflow', () => {
 		write({ ...VALID, workflows: WORKFLOWS, defaultWorkflow: 'nope' });
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');

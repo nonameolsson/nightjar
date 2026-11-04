@@ -1,4 +1,4 @@
-// Stand-ins for gh, az and claude on a PATH that holds nothing else, so no spec reaches the real ones.
+// Stand-ins for gh, az, claude, bwrap and socat on a PATH that holds nothing else, so no spec reaches the real ones.
 // A stand-in may use shell builtins only: sed, grep, awk and the rest are not on that PATH.
 import { spawnSync } from 'node:child_process';
 import {
@@ -77,6 +77,10 @@ export type Tool = 'gh' | 'az' | 'claude';
 
 export const STAND_INS: Record<Tool, string> = { gh: GH, az: AZ, claude: CLAUDE };
 
+// What Claude Code's sandbox needs on Linux; only that they are on the PATH matters.
+export type SandboxTool = 'bwrap' | 'socat';
+const SANDBOX_TOOLS: readonly SandboxTool[] = ['bwrap', 'socat'];
+
 export interface Machine {
 	// the folder that holds the whole machine: its checkout, its home and its stand-ins
 	readonly base: string;
@@ -98,7 +102,7 @@ function script(dir: string, name: string, body: string) {
 }
 
 // `without` leaves a tool off the PATH altogether, as a machine that never installed it.
-export function machine(without: readonly Tool[] = []): Machine {
+export function machine(without: readonly (Tool | SandboxTool)[] = []): Machine {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), 'nightjar-machine-')));
 	const bin = join(base, 'bin');
 	mkdirSync(bin);
@@ -106,6 +110,9 @@ export function machine(without: readonly Tool[] = []): Machine {
 	symlinkSync(realpathSync(git), join(bin, 'git'));
 	for (const tool of Object.keys(STAND_INS) as Tool[]) {
 		if (!without.includes(tool)) script(bin, tool, STAND_INS[tool]);
+	}
+	for (const tool of SANDBOX_TOOLS) {
+		if (!without.includes(tool)) script(bin, tool, '#!/bin/bash\nexit 0');
 	}
 	const gitconfig = join(base, 'gitconfig');
 	writeFileSync(gitconfig, '');
