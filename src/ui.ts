@@ -714,6 +714,8 @@ for (const b of document.querySelectorAll('button[data-view]')) {
 	};
 }
 // the status region speaks only when the count of Features waiting on a person, or failed, rises
+// inner scrollers a swap would reset, matched by position
+const SCROLLERS = ['.detail', '.scroll', 'pre'];
 let seen = null;
 function announce() {
 	const waiting = document.querySelectorAll('tr[data-state="waiting"]').length;
@@ -721,7 +723,11 @@ function announce() {
 	const said = [];
 	if (seen && waiting > seen.waiting) said.push(waiting + ' waiting on a person');
 	if (seen && failed > seen.failed) said.push(failed + ' failed');
-	if (said.length) live.textContent = said.join(', ');
+	if (said.length) {
+		// clear first so an identical message is read again
+		live.textContent = '';
+		requestAnimationFrame(() => { live.textContent = said.join(', '); });
+	}
 	seen = { waiting, failed };
 }
 function tick() {
@@ -734,7 +740,15 @@ new EventSource('/events').onmessage = (e) => {
 	const was = document.activeElement && document.activeElement.dataset;
 	const key = was && (was.sort ? 'sort' : was.chip ? 'chip' : null);
 	const value = key && was[key];
+	const kept = [];
+	for (const sel of SCROLLERS) {
+		document.querySelectorAll(sel).forEach((n, i) => kept.push([sel, i, n.scrollTop, n.scrollLeft]));
+	}
 	panels.innerHTML = JSON.parse(e.data);
+	for (const [sel, i, top, left] of kept) {
+		const n = document.querySelectorAll(sel)[i];
+		if (n) { n.scrollTop = top; n.scrollLeft = left; }
+	}
 	if (key) {
 		const back = document.querySelector('[data-' + key + '="' + value + '"]');
 		if (back) back.focus();
@@ -783,7 +797,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .egg { background: radial-gradient(circle at 28% 26%, var(--shade-mid) 0 1.4px, transparent 2.4px), radial-gradient(circle at 66% 58%, var(--shade-soft) 0 1.8px, transparent 2.8px), var(--teal2); border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%; box-shadow: inset -3px -3px 0 var(--shade-soft); display: inline-block; flex: none; height: 1.2rem; position: relative; width: 0.95rem; }
 .egg.building { background: var(--teal); outline: 2px solid var(--teal); outline-offset: 3px; animation: incubate 2.4s ease-in-out infinite; }
 .egg.need { background: var(--amber); box-shadow: inset -3px -3px 0 var(--shade-soft); margin: 0 0.65rem; }
-.egg.need::before, .egg.need::after { background: var(--amber); border-radius: 2px; content: ""; height: 3px; position: absolute; top: 0.45rem; width: 0.5rem; }
+.egg.need::before, .egg.need::after { background: var(--amber); content: ""; height: 3px; position: absolute; top: 0.45rem; width: 0.5rem; }
 .egg.need::before { left: -0.65rem; transform: rotate(-20deg); }
 .egg.need::after { right: -0.65rem; transform: rotate(20deg); }
 .egg.waiting { background: none; border: 2px dashed var(--socket-dash); box-shadow: none; }
@@ -886,7 +900,7 @@ td.progress .eggs { margin-bottom: 4px; }
 .overview h2 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; text-transform: uppercase; }
 .overview li { padding: 3px 0; }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
-@media (max-width: 1400px) {
+@media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
 	.cols.has-detail .head { display: none; }
 }

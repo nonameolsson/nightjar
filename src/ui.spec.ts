@@ -1016,7 +1016,10 @@ describe('nightjar ui audit fixes', () => {
 		const panels = { dataset: {} as Record<string, string>, innerHTML: '' };
 		const counts = { waiting: 1, failed: 0 };
 		let message: ((e: { data: string }) => void) | undefined;
+		const frames: Array<() => void> = [];
+		const flush = () => frames.splice(0).forEach((f) => f());
 		runInNewContext(script, {
+			requestAnimationFrame: (f: () => void) => frames.push(f),
 			document: {
 				getElementById: (id: string) => (id === 'live' ? live : panels),
 				querySelectorAll: (sel: string) =>
@@ -1039,19 +1042,29 @@ describe('nightjar ui audit fixes', () => {
 			},
 			setInterval: () => 0
 		});
-		const push = () => message?.({ data: JSON.stringify('') });
+		const push = () => {
+			message?.({ data: JSON.stringify('') });
+			flush();
+		};
 		expect(live.textContent).toBe('');
 		push();
 		expect(live.textContent).toBe('');
 		counts.waiting = 2;
 		push();
 		expect(live.textContent).toBe('2 waiting on a person');
-		live.textContent = '';
 		counts.waiting = 1;
 		push();
-		expect(live.textContent).toBe('');
+		expect(live.textContent).toBe('2 waiting on a person');
 		counts.failed = 1;
 		push();
+		expect(live.textContent).toBe('1 failed');
+		// a repeat of the same text is cleared first, so assistive tech reads it again
+		counts.failed = 0;
+		push();
+		counts.failed = 1;
+		message?.({ data: JSON.stringify('') });
+		expect(live.textContent).toBe('');
+		flush();
 		expect(live.textContent).toBe('1 failed');
 	});
 
@@ -1073,11 +1086,57 @@ describe('nightjar ui audit fixes', () => {
 		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
 	});
 
-	it('collapses entries to one column beside the detail panel below 1400px', async () => {
+	it('collapses entries beside the detail panel only between 1261px and 1400px', async () => {
 		const { style } = await css();
-		const block = style.split('@media (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
+		expect(style).not.toContain('@media (max-width: 1400px)');
+		const block =
+			style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
 		expect(block).toContain('.cols.has-detail .entry');
 		expect(block).toContain('.cols.has-detail .head');
+	});
+
+	it('keeps the inner scroll of the log, detail panel and Table across a live swap', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const el = (scrollTop: number, scrollLeft = 0) => ({ scrollTop, scrollLeft });
+		let found: Record<string, Array<{ scrollTop: number; scrollLeft: number }>> = {
+			pre: [el(90)],
+			'.scroll': [el(0, 40)],
+			'.detail': [el(12)]
+		};
+		const live = { textContent: '' };
+		const panels = {
+			dataset: {} as Record<string, string>,
+			set innerHTML(_: string) {
+				found = { pre: [el(0)], '.scroll': [el(0)], '.detail': [el(0)] };
+			}
+		};
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				getElementById: (id: string) => (id === 'live' ? live : panels),
+				querySelectorAll: (sel: string) => found[sel] ?? []
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		message?.({ data: JSON.stringify('') });
+		expect(found.pre?.[0]?.scrollTop).toBe(90);
+		expect(found['.scroll']?.[0]?.scrollLeft).toBe(40);
+		expect(found['.detail']?.[0]?.scrollTop).toBe(12);
+	});
+
+	it('draws the egg wings square, on DESIGN.md radius scale', async () => {
+		const { style } = await css();
+		expect(rule(style, '.egg.need::before, .egg.need::after')).not.toContain('border-radius');
 	});
 
 	it('draws colours from tokens: no literals outside :root', async () => {
