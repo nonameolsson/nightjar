@@ -1,6 +1,6 @@
 // The Code host contract (docs/adr/0001): what every Code host Adapter must do, fake, built in or a repo's own.
 import assert from 'node:assert/strict';
-import type { CodeHost, Pull } from '../code-host.js';
+import type { CodeHost, Pull, PullChecks } from '../code-host.js';
 import type { ContractCase } from './case.js';
 
 // A pull request as the host shows it to a person.
@@ -60,10 +60,24 @@ export interface CodeHostSubject {
 	// the commit `branch` points at on the host, else null
 	readonly branch: (name: string) => Promise<string | null>;
 	readonly pull: (pull: Pull) => Promise<PullView>;
+	// what the Code host's own runs and a person do to a pull request; the nightjarDrafts suite needs it
+	readonly drafts?: DraftsWorld;
 	// needed when the Code host has `feedback` and `reply`
 	readonly bench?: FeedbackBench;
 	// called after the case, pass or fail
 	readonly close?: () => Promise<void>;
+}
+
+// What happens to a pull request outside Nightjar, which a Code host Adapter only reads back.
+export interface DraftsWorld {
+	// the Pull checks on the pull request's head commit: still running, or finished with these failed
+	readonly checks: (pull: Pull, checks: PullChecks) => Promise<void>;
+	// an account other than the one the Adapter is signed in as reviews or comments on it
+	readonly engage: (pull: Pull) => Promise<void>;
+	// a person marks it ready for review
+	readonly ready: (pull: Pull) => Promise<void>;
+	// a person closes it
+	readonly closePull: (pull: Pull) => Promise<void>;
 }
 
 // Makes a Code host with an empty repo that has only its base branch.

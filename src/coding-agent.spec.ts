@@ -185,6 +185,78 @@ describe('a fix round', () => {
 		expect(req?.schema).toHaveProperty('properties.untilHolds');
 	});
 
+	describe('of the Pull checks', () => {
+		const report = 'CI / test: failed\n\njob test, step Run npm test\n\nError: TZ is not set';
+		const diff = { text: 'diff --git a/ci.ts b/ci.ts\n+tz', truncated: false };
+		const pullChecks = (over: Partial<FixRequest> = {}): FixRequest => ({
+			...fixRequest({ kind: 'pullChecks' }),
+			tail: report,
+			...over
+		});
+		const freshRequest = (truncated = false): FixRequest =>
+			pullChecks({
+				of: { kind: 'pullChecks', fresh: { feature, diff: { ...diff, truncated } } },
+				resume: 'new-1'
+			});
+		const answer = done({ outcome: 'built', summary: 'Set TZ' });
+
+		it('resumes the Session of the head commit, with the failures', async () => {
+			const { sent, session } = fakeSession(answer);
+			await codingAgent(SETUP, session).fix(pullChecks());
+			const req = sent[0];
+			expect(req?.resume).toBe('s-1');
+			expect(req?.prompt).toContain('its Pull checks fail');
+			expect(req?.prompt).toContain(report);
+			expect(req?.prompt).not.toContain('# The Feature');
+		});
+
+		it("starts a new Session when the head commit's is gone, with the Feature, the branch's diff and each failure", async () => {
+			const { sent, session } = fakeSession(answer);
+			const got = await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).fix(freshRequest());
+			const req = sent[0];
+			expect(req?.resume).toBeUndefined();
+			expect(req?.sessionId).toBe('new-1');
+			expect(req?.log).toBe('/repo/.factory/logs/new-1.jsonl');
+			expect(req?.prompt).toContain('# The Feature: #1 One escape\n\nEscape once.');
+			expect(req?.prompt).toContain("# The branch's diff against origin/main");
+			expect(req?.prompt).toContain('```diff\ndiff --git a/ci.ts b/ci.ts\n+tz\n```');
+			expect(req?.prompt).toContain(report);
+			expect(req?.prompt).toContain('its Pull checks fail');
+			expect(req?.prompt).toContain('# Rules of this repo\n\nTabs.');
+			expect(req?.prompt).toContain('`make test`');
+			expect(got).toEqual({ kind: 'fixed', summary: 'Set TZ', sessionId: 'new-1', costUsd: 2.5 });
+		});
+
+		it('keeps the deny rules and the build tools in a new Session', async () => {
+			const { sent, session } = fakeSession(answer);
+			await codingAgent({ ...SETUP, allowedCommands: ['make test', 'git push *'] }, session).fix(
+				freshRequest()
+			);
+			const { allow, deny } = permissions(sent[0]);
+			expect(allow).toContain('Bash(make test)');
+			expect(deny).toEqual(expect.arrayContaining(['Bash(git push *)', 'Bash(git commit *)']));
+			expect(sent[0]?.tools).toContain('Edit');
+		});
+
+		it("says when the diff is cut, and runs a new Session on the repo's defaults", async () => {
+			const { sent, session } = fakeSession(answer);
+			await codingAgent({ ...SETUP, defaults: { model: 'sonnet', effort: 'high' } }, session).fix(
+				freshRequest(true)
+			);
+			expect(sent[0]?.prompt).toContain('It is cut here; the rest is in git.');
+			expect(sent[0]?.model).toBe('sonnet');
+			expect(sent[0]?.effort).toBe('high');
+		});
+
+		it('leaves the model of a resumed Session alone', async () => {
+			const { sent, session } = fakeSession(answer);
+			await codingAgent({ ...SETUP, defaults: { model: 'sonnet', effort: 'high' } }, session).fix(
+				pullChecks()
+			);
+			expect(sent[0]?.model).toBeUndefined();
+		});
+	});
+
 	it('reads a fix that finished', async () => {
 		const { session } = fakeSession(done({ outcome: 'built', summary: 'Fixed it' }));
 		expect(await codingAgent(SETUP, session).fix(fixRequest())).toEqual({

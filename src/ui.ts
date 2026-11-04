@@ -19,6 +19,7 @@ import {
 	pollAfter,
 	running,
 	runState,
+	stepText,
 	two
 } from './view-text.js';
 
@@ -103,7 +104,7 @@ function stepLine(doing: Building): string {
 		doing.round === null || doing.rounds === null
 			? ''
 			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-	return `${where}${doing.step}${round}`;
+	return `${where}${stepText(doing.step)}${round}`;
 }
 
 // One `<li>` per Ticket, in order, with its state and why.

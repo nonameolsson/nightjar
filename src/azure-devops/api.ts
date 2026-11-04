@@ -75,6 +75,17 @@ export class AzureDevOpsApi {
 
 	// The JSON Azure DevOps answers, or null for an empty answer.
 	async call(what: string, sending: Sending): Promise<unknown> {
+		const text = await this.text(what, sending);
+		if (text.trim() === '') return null;
+		try {
+			return JSON.parse(text) as unknown;
+		} catch {
+			throw new AzureDevOpsFailure(`Azure DevOps answered no JSON when asked to ${what}.`);
+		}
+	}
+
+	// What Azure DevOps answers, as it sent it, such as a build log.
+	async text(what: string, sending: Sending): Promise<string> {
 		let reply = await this.send(what, sending);
 		if (reply.status === 401) {
 			await this.signIn.refresh();
@@ -94,12 +105,7 @@ export class AzureDevOpsApi {
 				reply.status
 			);
 		}
-		if (reply.text.trim() === '') return null;
-		try {
-			return JSON.parse(reply.text) as unknown;
-		} catch {
-			throw new AzureDevOpsFailure(`Azure DevOps answered no JSON when asked to ${what}.`);
-		}
+		return reply.text;
 	}
 
 	async parse<T>(what: string, sending: Sending, schema: z.ZodType<T>): Promise<T> {

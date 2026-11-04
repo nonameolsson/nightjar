@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { NightjarDraft, Pull } from '../code-host.js';
 import { run, type Env, type Run } from '../git.js';
 import { AzureDevOpsApi, AzureDevOpsFailure } from './api.js';
 import {
@@ -208,5 +209,195 @@ describe('AzureReposCodeHost', () => {
 		await expect(
 			new AzureReposCodeHost(api, { ...settings, repo: 'gone' }, noGit).check()
 		).rejects.toThrow(/could not read the repo gone: HTTP 404/);
+	});
+});
+
+// A Code host over the fake, where opening a draft pushes its branch first.
+function drafting() {
+	const ado = world();
+	const api = new AzureDevOpsApi('contoso', ado.signIn(), ado.request);
+	const host = new AzureReposCodeHost(
+		api,
+		{ project: 'Fabrikam', repo: 'app', referencesAs: 'text' },
+		noGit
+	);
+	let pushes = 0;
+	const push = (branch: string) => {
+		pushes += 1;
+		const sha = String(pushes).padStart(40, 'a');
+		ado.pushed(branch, sha);
+		return sha;
+	};
+	const open = async (branch: string, body = `Body of ${branch}`) => {
+		push(branch);
+		return host.createDraft({ title: branch, head: branch, base: 'main', body });
+	};
+	const one = async (pull: Pull): Promise<NightjarDraft> => {
+		const found = (await host.nightjarDrafts()).find((d) => d.pull.id === pull.id);
+		if (found === undefined) throw new Error(`pull request ${String(pull.id)} is not listed`);
+		return found;
+	};
+	return { ado, host, open, push, one };
+}
+
+const stamped = (line: string) => `2026-11-04T06:53:39.1234567Z ${line}`;
+
+describe('AzureReposCodeHost.nightjarDrafts', () => {
+	it("lists the open drafts on Nightjar's branches oldest first, each with its whole description and head", async () => {
+		const { ado, host, open } = drafting();
+		const marker = '<!-- nightjar-feature: 1 -->';
+		const first = await open('factory/1-a', `${'Nightjar built it. '.repeat(30)}\n\n${marker}`);
+		await open('person/fix-typo');
+		const second = await open('factory/2-b');
+		const ready = await open('factory/3-c');
+		const abandoned = await open('factory/4-d');
+		const completed = await open('factory/5-e');
+		ado.markReady(ready.id);
+		ado.abandon(abandoned.id);
+		ado.complete(completed.id);
+		const drafts = await host.nightjarDrafts();
+		expect(drafts.map((d) => [d.pull, d.branch])).toEqual([
+			[first, 'factory/1-a'],
+			[second, 'factory/2-b']
+		]);
+		expect(drafts[0]?.body).toContain(marker);
+		expect(drafts[0]?.headCommit).toBe(ado.headOf(first.id));
+		expect(drafts[0]?.checks).toEqual({ pending: false, failed: [] });
+		expect(drafts[0]?.personEngaged).toBe(false);
+	});
+
+	it('reads the pull requests a page at a time', async () => {
+		const { host, open } = drafting();
+		for (let n = 1; n <= 102; n += 1) await open(`factory/${String(n)}-x`);
+		const drafts = await host.nightjarDrafts();
+		expect(drafts).toHaveLength(102);
+		expect(drafts.at(-1)?.branch).toBe('factory/102-x');
+	});
+
+	it('is pending while a build policy or a status runs on the head push', async () => {
+		const { ado, open, push, one } = drafting();
+		const pull = await open('factory/1-a');
+		ado.policy(pull.id, { type: 'build', status: 'running', buildId: 1 });
+		expect((await one(pull)).checks).toEqual({ pending: true, failed: [] });
+
+		ado.clearChecks(pull.id);
+		ado.policy(pull.id, { type: 'build', status: 'queued' });
+		expect((await one(pull)).checks.pending).toBe(true);
+
+		ado.clearChecks(pull.id);
+		ado.status(pull.id, { name: 'deploy-preview', state: 'pending' });
+		expect((await one(pull)).checks.pending).toBe(true);
+
+		// a status on the push before the head says nothing of the head
+		ado.status(pull.id, { name: 'lint', state: 'failed' });
+		push('factory/1-a');
+		expect((await one(pull)).checks).toEqual({ pending: false, failed: [] });
+
+		ado.status(pull.id, { name: 'deploy-preview', state: 'pending', iteration: null });
+		expect((await one(pull)).checks.pending).toBe(true);
+
+		// nor does a build of an earlier push
+		ado.clearChecks(pull.id);
+		ado.policy(pull.id, { type: 'build', status: 'rejected', isExpired: true });
+		expect((await one(pull)).checks).toEqual({ pending: true, failed: [] });
+	});
+
+	it("names a failed build's check, job, step and log tail, and a status's check alone", async () => {
+		const { ado, open, one } = drafting();
+		const pull = await open('factory/1-a');
+		const log = Array.from({ length: 150 }, (_, i) => stamped(`line ${String(i + 1)}`)).join('\n');
+		const buildId = ado.build([
+			{ name: 'Lint', result: 'succeeded', steps: [{ name: 'Lint', result: 'succeeded' }] },
+			{
+				name: 'Test',
+				result: 'failed',
+				steps: [
+					{ name: 'Checkout', result: 'succeeded', log: stamped('Syncing repository') },
+					{ name: 'npm test', result: 'failed', log },
+					{ name: 'Publish', result: 'canceled' }
+				]
+			}
+		]);
+		ado.policy(pull.id, { type: 'build', status: 'rejected', displayName: 'CI', buildId });
+		ado.status(pull.id, { name: 'lint', state: 'failed', description: 'stale' });
+		ado.status(pull.id, { name: 'lint', state: 'succeeded' });
+		ado.status(pull.id, {
+			genre: 'sonar',
+			name: 'quality-gate',
+			state: 'error',
+			description: 'Coverage is 40%'
+		});
+		// a policy about reviewers is no Pull check
+		ado.policy(pull.id, { type: 'reviewers', status: 'rejected' });
+		const tail = Array.from({ length: 100 }, (_, i) => `line ${String(i + 51)}`).join('\n');
+		expect((await one(pull)).checks).toEqual({
+			pending: false,
+			failed: [
+				{ check: 'CI', job: 'Test', step: 'npm test', logTail: tail },
+				{ check: 'sonar/quality-gate', job: '', step: '', logTail: 'Coverage is 40%' }
+			]
+		});
+	});
+
+	it('names a build by its pipeline, and keeps what the build or policy says when the log cannot be read', async () => {
+		const { ado, open, one } = drafting();
+		const pull = await open('factory/1-a');
+		const buildId = ado.build([
+			{
+				name: 'Job',
+				result: 'failed',
+				steps: [{ name: 'Bash', result: 'failed', errors: ['Bash exited with code 1.'] }]
+			}
+		]);
+		ado.policy(pull.id, { type: 'build', status: 'rejected', definition: 'app-ci', buildId });
+		ado.policy(pull.id, {
+			type: 'build',
+			status: 'broken',
+			definition: 'nightly',
+			buildId: 404,
+			preview: { jobName: 'Build', taskName: 'Restore', errors: ['No feed found.'] }
+		});
+		expect((await one(pull)).checks.failed).toEqual([
+			{ check: 'app-ci', job: 'Job', step: 'Bash', logTail: 'Bash exited with code 1.' },
+			{ check: 'nightly', job: 'Build', step: 'Restore', logTail: 'No feed found.' }
+		]);
+	});
+
+	it('reads a failed build once', async () => {
+		const { ado, host, open } = drafting();
+		const pull = await open('factory/1-a');
+		const buildId = ado.build([
+			{ name: 'Test', result: 'failed', steps: [{ name: 'Test', result: 'failed', log: 'x' }] }
+		]);
+		ado.policy(pull.id, { type: 'build', status: 'rejected', buildId });
+		await host.nightjarDrafts();
+		await host.nightjarDrafts();
+		expect(ado.asked.filter((a) => /\/_apis\/build\/builds\//.test(a.url))).toHaveLength(2);
+	});
+
+	it('counts a comment or vote by another identity as a person engaging, not its own nor what Azure Repos writes', async () => {
+		const { ado, host, open, one } = drafting();
+		const pull = await open('factory/1-a');
+		await host.comment(pull, '**Nightjar review: approve**\n\nReads well.');
+		ado.vote(pull.id, 'ann@contoso.com', 10);
+		// a reviewer a policy added, who has not voted
+		ado.vote(pull.id, 'bea@contoso.com', 0);
+		ado.sayOnPull(pull.id, 'bea@contoso.com', 'Bea joined as a reviewer', { system: true });
+		expect((await one(pull)).personEngaged).toBe(false);
+
+		ado.vote(pull.id, 'bea@contoso.com', -5);
+		expect((await one(pull)).personEngaged).toBe(true);
+
+		const other = await open('factory/2-b');
+		ado.sayOnPull(other.id, 'cal@contoso.com', 'Why this change?');
+		expect((await one(other)).personEngaged).toBe(true);
+		expect(ado.asked.filter((a) => a.url.includes('connectionData'))).toHaveLength(1);
+	});
+
+	it('stops when Azure DevOps cannot list the pull requests', async () => {
+		const { ado, host, open } = drafting();
+		await open('factory/1-a');
+		ado.failNext(/pullrequests\?/, 503);
+		await expect(host.nightjarDrafts()).rejects.toThrow(AzureDevOpsFailure);
 	});
 });

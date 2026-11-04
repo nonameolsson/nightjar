@@ -319,6 +319,37 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('line 5\n');
 	});
 
+	it('shows a Pull-check fix round while it runs, and what it has cost so far', async () => {
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature: '272',
+			ticket: null,
+			branch: 'b',
+			step: 'pullChecks',
+			session: 'sess',
+			costUsd: 1.5,
+			outcome: 'pull checks 1'
+		});
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: null,
+			step: 'pullChecks',
+			round: 1,
+			rounds: 2,
+			session: 'sess',
+			startedAt: '2026-10-30T06:48:00.000Z'
+		});
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('<span class="state">watching</span>');
+		expect(page).toContain('Pull-check fix, round 1 of 2');
+		expect(page).not.toContain('pullChecks');
+		expect(page).toContain('$1.50');
+	});
+
 	it("counts the Feature's elapsed time from its start, not the step's", async () => {
 		status().doing({
 			kind: 'building',

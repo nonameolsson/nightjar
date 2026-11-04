@@ -4,6 +4,7 @@ import { fakeCodeHostHarness, fakeTrackerHarness } from '../fakes/harness.js';
 import { assignContract } from './assign.js';
 import { codeHostContract, type CodeHostHarness } from './code-host.js';
 import { feedbackContract } from './feedback.js';
+import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
@@ -34,6 +35,7 @@ describe('runContract', () => {
 			'Tracker assign',
 			'Tracker ticket counts',
 			'Code host',
+			'Code host Nightjar drafts',
 			'Code host feedback'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
@@ -56,6 +58,9 @@ describe('runContract', () => {
 			codeHostContract.map((c) => c.name)
 		);
 		expect(report.suites[7]?.results.map((r) => r.name)).toEqual(
+			nightjarDraftsContract.map((c) => c.name)
+		);
+		expect(report.suites[8]?.results.map((r) => r.name)).toEqual(
 			feedbackContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
@@ -68,8 +73,33 @@ describe('runContract', () => {
 			return { ...rest, codeHost: only };
 		};
 		const report = await runContract({ codeHostHarness: reads });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host Nightjar drafts']);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no nightjarDrafts suite over a Code host without the method, as a module written before it', async () => {
+		const lacks: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			const { nightjarDrafts: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			return { ...subject, codeHost: without };
+		};
+		const report = await runContract({ codeHostHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host feedback']);
+		expect(report.failed).toBe(0);
+	});
+
+	it('names a nightjarDrafts that is wrong', async () => {
+		const wrong: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			return {
+				...subject,
+				codeHost: Object.assign(subject.codeHost, { nightjarDrafts: () => Promise.resolve([]) })
+			};
+		};
+		const report = await runContract({ codeHostHarness: wrong });
+		const suite = report.suites.find((s) => s.title === 'Code host Nightjar drafts')?.results ?? [];
+		expect(suite).toHaveLength(nightjarDraftsContract.length);
+		expect(suite.every((r) => !r.ok)).toBe(true);
 	});
 
 	it('fails the feedback suite for a harness without a bench', async () => {
@@ -221,7 +251,11 @@ describe('runContract', () => {
 
 	it('runs only the suite whose harness the module exports', async () => {
 		const report = await runContract({ codeHostHarness: fakeCodeHostHarness });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host feedback']);
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Code host',
+			'Code host Nightjar drafts',
+			'Code host feedback'
+		]);
 	});
 
 	it('names each behaviour that fails, with why, and keeps going', async () => {

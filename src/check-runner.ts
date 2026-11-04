@@ -3,7 +3,7 @@ import { why } from './say.js';
 
 export interface Line {
 	readonly name: string;
-	readonly status: 'ok' | 'fail' | 'skip';
+	readonly status: 'ok' | 'fail' | 'skip' | 'warn';
 	// what was found, or why it failed and how to fix it
 	readonly detail: string;
 	// the check as the one-line `checked:` of a build names it; none when it is left out

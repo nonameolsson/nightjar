@@ -45,7 +45,10 @@ const TRACKER_METHODS: Record<Exclude<keyof Tracker, (typeof LONE_METHODS)[numbe
 	reference: true
 };
 
-const CODE_HOST_METHODS: Record<Exclude<keyof CodeHost, 'feedback' | 'reply'>, true> = {
+const CODE_HOST_METHODS: Record<
+	Exclude<keyof CodeHost, 'nightjarDrafts' | 'feedback' | 'reply'>,
+	true
+> = {
 	push: true,
 	openPull: true,
 	createDraft: true,
@@ -69,6 +72,8 @@ interface Kind {
 	readonly methods: readonly string[];
 	// methods an adapter may leave out, but only all of them
 	readonly optional?: readonly string[];
+	// methods an adapter may leave out one by one
+	readonly lone: readonly string[];
 }
 
 const TRACKER: Kind = {
@@ -76,14 +81,16 @@ const TRACKER: Kind = {
 	noun: 'Tracker',
 	factory: 'createTracker',
 	methods: Object.keys(TRACKER_METHODS),
-	optional: FEATURE_WRITER_METHODS
+	optional: FEATURE_WRITER_METHODS,
+	lone: LONE_METHODS
 };
 
 const CODE_HOST: Kind = {
 	field: 'codeHost',
 	noun: 'Code host',
 	factory: 'createCodeHost',
-	methods: Object.keys(CODE_HOST_METHODS)
+	methods: Object.keys(CODE_HOST_METHODS),
+	lone: ['nightjarDrafts']
 };
 
 export async function importModule(path: string, base: string): Promise<Record<string, unknown>> {
@@ -129,10 +136,10 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 		);
 	}
 	// a lone optional method, left out or a function
-	for (const name of LONE_METHODS) {
-		if (kind === TRACKER && have[name] !== undefined && typeof have[name] !== 'function') {
+	for (const lone of kind.lone) {
+		if (have[lone] !== undefined && typeof have[lone] !== 'function') {
 			throw new ConfigError(
-				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${name} is not a function`
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${lone} is not a function`
 			);
 		}
 	}

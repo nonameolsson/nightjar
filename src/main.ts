@@ -6,7 +6,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
-import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
+import {
+	buildFeature,
+	fixPullChecks,
+	LIMITS,
+	pullFixLimits,
+	type Deps,
+	type Setup
+} from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
@@ -24,8 +31,17 @@ import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
-import { runSession } from './session.js';
+import {
+	buildNamed,
+	cannotClaim,
+	fixNamed,
+	handBack,
+	pullChecksPass,
+	pullFixExit,
+	queue,
+	type QueueDeps
+} from './queue.js';
+import { runSession, sessionExists } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -215,7 +231,11 @@ export async function runNightjar(
 		env: ready.env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
-		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
+		limits: {
+			...LIMITS,
+			dailyUsd: ready.person.dailyUsd,
+			...pullFixLimits(config.pullChecks)
+		},
 		signal: stop.signal
 	};
 	const deps: Deps = {
@@ -229,11 +249,15 @@ export async function runNightjar(
 		openWorktree,
 		now: () => new Date(),
 		newId: () => randomUUID(),
+		sessionExists: (id) => sessionExists(id, ready.env),
 		say: runSay,
 		status
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: Named | null = null;
+	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
+		fixPullChecks(deps, setup, red)
+	);
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
@@ -250,6 +274,7 @@ export async function runNightjar(
 		say: runSay,
 		sleep,
 		signal: stop.signal,
+		...(pullChecks === null ? {} : { pullChecks }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
@@ -278,6 +303,9 @@ export async function runNightjar(
 
 	try {
 		if (args.mode === 'feature' && args.feature !== undefined) {
+			// a Feature with a red draft is fixed, not built: it holds no Go by now
+			const fixed = await fixNamed(queueDeps, args.feature);
+			if (fixed !== null) return pullFixExit(fixed);
 			let refusal: string | null;
 			try {
 				refusal = await cannotClaim(queueDeps, args.feature);

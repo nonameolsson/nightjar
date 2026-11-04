@@ -11,13 +11,16 @@ import {
 	assignContract,
 	codeHostContract,
 	featureWriterContract,
+	nightjarDraftsContract,
 	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
+	type DraftsWorld,
 	type Given,
 	type Pull,
+	type PullChecks,
 	type SignalNames,
 	type TrackerWorld
 } from '../index.js';
@@ -82,6 +85,46 @@ function gitHubWorld(world: TrackerWorld, names: SignalNames) {
 // GitHub links a pull request to each issue named after one of its closing keywords.
 const CLOSING = /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(\S+)\s*$/gim;
 
+// each line stamped with its time, as GitHub writes an Actions log
+const stamp = (line: string) => `2026-11-04T06:53:39.1234567Z ${line}`;
+
+// Each Pull check as GitHub reports it: one with a job as an Actions job of its workflow (`CI / test` is workflow CI, job test), one without as a commit status.
+function setChecks(github: FakeGitHub, pull: Pull, checks: PullChecks): void {
+	const head = github.headOf(pull.id);
+	github.clearChecks(head);
+	if (checks.pending) github.checkRun(head, { name: 'lint', status: 'in_progress' });
+	for (const f of checks.failed) {
+		if (f.job === '') {
+			github.commitStatus(head, { context: f.check, state: 'failure', description: f.logTail });
+			continue;
+		}
+		const suffix = ` / ${f.job}`;
+		github.actionsJob(head, {
+			workflow: f.check.endsWith(suffix) ? f.check.slice(0, -suffix.length) : f.check,
+			name: f.job,
+			conclusion: 'failure',
+			steps: [
+				{ name: 'Set up job', conclusion: 'success' },
+				...(f.step === '' ? [] : [{ name: f.step, conclusion: 'failure' }])
+			],
+			log: f.logTail.split('\n').map(stamp).join('\n')
+		});
+	}
+}
+
+function gitHubDrafts(github: FakeGitHub): DraftsWorld {
+	const done = (act: () => void) => {
+		act();
+		return Promise.resolve();
+	};
+	return {
+		checks: (pull, checks) => done(() => setChecks(github, pull, checks)),
+		engage: (pull) => done(() => github.say(pull.id, 'bea', 'Why this change?')),
+		ready: (pull) => done(() => github.markReady(pull.id)),
+		closePull: (pull) => done(() => github.close(pull.id))
+	};
+}
+
 // Real git pushes to a bare origin in a temporary folder; the pull requests live in the fake GitHub.
 async function gitHubCodeHost() {
 	const base = await mkdtemp(join(tmpdir(), 'nightjar-contract-'));
@@ -117,8 +160,18 @@ async function gitHubCodeHost() {
 	await git(['push', '-q', 'origin', 'main'], folder);
 
 	const github = new FakeGitHub('o/r', 'ann');
+	// GitHub learns of each push, so a pull request's head commit follows its branch
+	const pushing = async (args: readonly string[], cwd: string) => {
+		const got = await run('git', args, cwd, env);
+		const ref = /^HEAD:refs\/heads\/(.+)$/.exec(args.at(-1) ?? '');
+		if (got.ok && args[0] === 'push' && ref) {
+			github.pushed(ref[1] ?? '', await git(['rev-parse', 'HEAD'], cwd));
+		}
+		return got;
+	};
 	return {
-		codeHost: new GitHubCodeHost('o/r', github.gh, (args, cwd) => run('git', args, cwd, env)),
+		codeHost: new GitHubCodeHost('o/r', github.gh, pushing),
+		drafts: gitHubDrafts(github),
 		base: 'main',
 		commit,
 		branch: async (name: string) => {
@@ -226,6 +279,10 @@ describe('GitHubTracker meets the ticketCounts contract', () => {
 // real git on a busy machine is slow
 describe('GitHubCodeHost meets the Code host contract', { timeout: 30_000 }, () => {
 	for (const c of codeHostContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the nightjarDrafts contract', { timeout: 30_000 }, () => {
+	for (const c of nightjarDraftsContract) it(c.name, () => c.run(gitHubCodeHost));
 });
 
 describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () => {

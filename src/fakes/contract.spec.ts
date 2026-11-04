@@ -4,6 +4,7 @@ import {
 	assignContract,
 	codeHostContract,
 	featureWriterContract,
+	nightjarDraftsContract,
 	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
@@ -52,6 +53,10 @@ describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, fe
 
 describe('FakeCodeHost meets the Code host contract', () => {
 	for (const c of codeHostContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the nightjarDrafts contract', () => {
+	for (const c of nightjarDraftsContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });
 
 describe('FakeCodeHost meets the feedback contract', () => {

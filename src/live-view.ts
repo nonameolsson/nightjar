@@ -9,6 +9,7 @@ import {
 	pollAfter,
 	running,
 	runState,
+	stepText,
 	two
 } from './view-text.js';
 
@@ -59,7 +60,7 @@ type Building = Extract<Doing, { kind: 'building' }>;
 function progressText(doing: Building, tickets: readonly TicketProgress[] | undefined): string {
 	const round =
 		doing.round === null ? '' : `, round ${String(doing.round)}/${String(doing.rounds)}`;
-	const step = `${doing.step}${round}`;
+	const step = `${stepText(doing.step)}${round}`;
 	if (tickets === undefined) return step;
 	const built = tickets.filter((t) => t.state === 'built').length;
 	const at = tickets.findIndex((t) => t.id === doing.ticket);

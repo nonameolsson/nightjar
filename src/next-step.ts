@@ -59,6 +59,13 @@ export function featureAfterRunStep(
 	return steps([...todo, featureGo(n), 'Nightjar goes on from the branch.']);
 }
 
+// A draft pull request whose Pull checks Nightjar could not make green: the person's now, and its fix rounds still count.
+export const pullChecksStep = (n: SignalNames) =>
+	steps([
+		'Read the failing Pull checks above and fix them on the branch, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.',
+		`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
+	]);
+
 export const stoppedStep = (n: SignalNames) =>
 	steps([
 		`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`

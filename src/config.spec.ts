@@ -89,6 +89,38 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/off/);
 	});
 
+	it('loads the Pull-check pass, and leaves it out, so off, when not set', () => {
+		write({ ...VALID, pullChecks: { enabled: true } });
+		expect(loadConfig(root)).toMatchObject({ pullChecks: { enabled: true } });
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('pullChecks');
+	});
+
+	it("loads the Pull-check pass's round, dollar and minute limits", () => {
+		write({ ...VALID, pullChecks: { enabled: true, fixRounds: 3, fixUsd: 2.5, fixMinutes: 20 } });
+		expect(loadConfig(root)).toMatchObject({
+			pullChecks: { enabled: true, fixRounds: 3, fixUsd: 2.5, fixMinutes: 20 }
+		});
+	});
+
+	it('refuses Pull-check limits out of range', () => {
+		write({ ...VALID, pullChecks: { fixRounds: 0 } });
+		expect(refusal()).toMatch(/^factory\.json: pullChecks\.fixRounds: /m);
+		write({ ...VALID, pullChecks: { fixRounds: 1.5 } });
+		expect(refusal()).toMatch(/^factory\.json: pullChecks\.fixRounds: /m);
+		write({ ...VALID, pullChecks: { fixUsd: 0 } });
+		expect(refusal()).toMatch(/^factory\.json: pullChecks\.fixUsd: /m);
+		write({ ...VALID, pullChecks: { fixMinutes: -5 } });
+		expect(refusal()).toMatch(/^factory\.json: pullChecks\.fixMinutes: /m);
+	});
+
+	it('refuses a Pull-check setting that is not one it knows', () => {
+		write({ ...VALID, pullChecks: { enabled: 'yes' } });
+		expect(refusal()).toMatch(/^factory\.json: pullChecks\.enabled: /m);
+		write({ ...VALID, pullChecks: { enabled: true, rerun: true } });
+		expect(refusal()).toMatch(/rerun/);
+	});
+
 	it('loads a Tracker and a Code host named as a module path, with their options', () => {
 		const modules = {
 			tracker: { type: 'module', path: './adapters/tracker.js', options: { project: 'x' } },

@@ -536,6 +536,33 @@
 				"env"
 			],
 			"additionalProperties": false
+		},
+		"pullChecks": {
+			"description": "The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request",
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"description": "true has Nightjar fix the failed Pull checks of its own draft pull requests before it takes the next Feature; off by default",
+					"type": "boolean"
+				},
+				"fixRounds": {
+					"description": "How many Pull-check fix rounds one pull request may get, counted from its branch's commits; 2 when left out. After them, the Feature gets the needs-a-person Signal",
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 10
+				},
+				"fixUsd": {
+					"description": "The most one Pull-check fix round may cost in dollars, its check's fix rounds too; 5 when left out",
+					"type": "number",
+					"exclusiveMinimum": 0
+				},
+				"fixMinutes": {
+					"description": "The most minutes one Pull-check fix round may run, its check's fix rounds too; 30 when left out",
+					"type": "number",
+					"exclusiveMinimum": 0
+				}
+			},
+			"additionalProperties": false
 		}
 	},
 	"required": [

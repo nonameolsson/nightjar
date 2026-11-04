@@ -49,6 +49,8 @@ interface Harness {
 	subjects(tree: Worktree): string[];
 	// the files a side branch keeps
 	kept(tree: Worktree, side: string): string[];
+	// a person's own commit of one file on the branch, with no trailer
+	personCommit(tree: Worktree, file: string): void;
 }
 
 // The real adapter runs real git over a repo made once for the file, and each test takes a branch of its own.
@@ -96,7 +98,12 @@ function gitHarness(): Harness {
 		has: (tree, file) => existsSync(join(tree.at.folder, file)),
 		left: (tree) => lines(inTree(tree, 'status', '--porcelain')).map((l) => l.slice(3)),
 		subjects: (tree) => lines(inTree(tree, 'log', '--format=%s', `${tree.at.base}..HEAD`)),
-		kept: (tree, side) => lines(inTree(tree, 'show', '--name-only', '--format=', side))
+		kept: (tree, side) => lines(inTree(tree, 'show', '--name-only', '--format=', side)),
+		personCommit: (tree, file) => {
+			writeFileSync(join(tree.at.folder, file), 'by hand\n');
+			inTree(tree, 'add', '-A');
+			inTree(tree, 'commit', '-q', '-m', 'By hand');
+		}
 	};
 }
 
@@ -109,7 +116,8 @@ function memoryHarness(): Harness {
 		has: (tree, file) => trees.has(tree.at.folder, file),
 		left: (tree) => trees.left(tree.at.folder),
 		subjects: (tree) => trees.subjects(tree.at.folder),
-		kept: (_tree, side) => trees.sides.get(side) ?? []
+		kept: (_tree, side) => trees.sides.get(side) ?? [],
+		personCommit: (tree, file) => trees.commitAsPerson(tree.at.folder, 'By hand', file)
 	};
 }
 
@@ -249,5 +257,103 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(whole.truncated).toBe(false);
 		expect(whole.text).toContain('+++ b/a.txt');
 		expect(await tree.diff(10)).toEqual({ text: whole.text.slice(0, 10), truncated: true });
+	});
+
+	it('commits a Pull-check fix as a new commit with its round, and counts the fixes on the branch', async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		expect(await tree.pullFixes()).toBe(0);
+		expect(await tree.commitPullFix(1, 'Pinned the Node version.', 's1')).toBe(false);
+
+		world.write(tree, 'ci.txt');
+		expect(await tree.commitPullFix(1, 'Pinned the Node version.', 's1')).toBe(true);
+		expect(world.subjects(tree)).toEqual(['Fix the Pull checks, round 1', 'Share it (#2)']);
+		expect(await tree.pullFixes()).toBe(1);
+		expect(await tree.built()).toEqual(new Set(['2']));
+		world.write(tree, 'ci2.txt');
+		await tree.commitPullFix(2, 'Again.', 's1');
+		expect(await tree.pullFixes()).toBe(2);
+		expect(Object.fromEntries(await tree.headTrailers())).toEqual({
+			'Factory-Pull-Fix': '2',
+			'Factory-Session': 's1'
+		});
+	});
+
+	it('counts the Pull-check fixes again in a later run, from the trailers alone', async () => {
+		const { world, branch, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		world.write(tree, 'ci.txt');
+		await tree.commitPullFix(1, 'Pinned the Node version.', 's1');
+		world.write(tree, 'ci2.txt');
+		await tree.commitPullFix(2, 'Set TZ.', 's1');
+
+		const again = await world.open('/unused', world.worktrees, branch, 'main', {});
+		expect(await again.pullFixes()).toBe(2);
+		expect((await again.headTrailers()).get('Factory-Pull-Fix')).toBe('2');
+	});
+
+	it("reads the head commit's trailers, and none from a person's own commit", async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		expect(Object.fromEntries(await tree.headTrailers())).toEqual({
+			'Factory-Ticket': '#2',
+			'Factory-Session': 's1'
+		});
+
+		world.personCommit(tree, 'mine.txt');
+		expect(await tree.headTrailers()).toEqual(new Map());
+	});
+});
+
+describe('the git worktree against its remote', () => {
+	let n = 0;
+	const open = (branch: string) =>
+		openWorktree(join(repo, 'app'), join(repo, 'remote-worktrees'), branch, 'main', env);
+	const pushed = async () => {
+		const branch = `factory/r${String((n += 1))}-feature`;
+		const tree = await open(branch);
+		writeFileSync(join(tree.at.folder, 'a.txt'), 'work\n');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		inTree(tree, 'push', '-q', 'origin', `HEAD:refs/heads/${branch}`);
+		return { branch, tree };
+	};
+
+	it('says so when the remote has no such branch', async () => {
+		expect(await (await open('factory/nowhere')).toRemote()).toBe(false);
+	});
+
+	it('stays where it is when it is at the remote', async () => {
+		const { tree } = await pushed();
+		const head = await tree.head();
+		expect(await tree.toRemote()).toBe(true);
+		expect(await tree.head()).toBe(head);
+	});
+
+	it("moves on to a commit pushed from elsewhere, so the head is the remote's", async () => {
+		const { branch } = await pushed();
+		// another clone pushes on top
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'mine.txt'), 'by hand\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'By hand');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
+		expect(await again.toRemote()).toBe(true);
+		expect(await again.head()).toBe(sh('-C', other, 'rev-parse', 'HEAD'));
+		expect(await again.headTrailers()).toEqual(new Map());
+	});
+
+	it('keeps commits the remote lacks, and says so', async () => {
+		const { tree } = await pushed();
+		writeFileSync(join(tree.at.folder, 'b.txt'), 'work\n');
+		await tree.commitTicket('3', 'Use it', 'Done.', 's2');
+		const head = await tree.head();
+		expect(await tree.toRemote()).toBe(false);
+		expect(await tree.head()).toBe(head);
 	});
 });
