@@ -729,6 +729,12 @@ const PAGE = (panels: string, links: Links) => {
 const SCRIPT = `
 const panels = document.getElementById('panels');
 const live = document.getElementById('live');
+// below the reflow threshold the whole page scrolls, so the region has nothing to scroll and leaves the tab order
+const scroller = document.getElementById('scroll');
+const flow = matchMedia('(max-height: 480px), (max-width: 400px)');
+const place = () => { scroller.tabIndex = flow.matches ? -1 : 0; };
+place();
+flow.addEventListener('change', place);
 const MAIN = '<!' + '--main-->';
 const two = ${String(two)};
 const elapsed = ${String(elapsed)};
@@ -875,6 +881,9 @@ new EventSource('/events').onmessage = (e) => {
 	const data = (was && was.dataset) || {};
 	const key = ['sort', 'chip', 'help', 'copy'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
+	// links can share an href, so remember which of them had focus
+	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
+	const nth = key ? Math.max(0, pool().indexOf(was)) : 0;
 	const kept = [];
 	for (const sel of SCROLLERS) {
 		document.querySelectorAll(sel).forEach((n, i) => kept.push([sel, i, n.scrollTop, n.scrollLeft]));
@@ -887,8 +896,8 @@ new EventSource('/events').onmessage = (e) => {
 		if (n) { n.scrollTop = top; n.scrollLeft = left; }
 	}
 	if (key) {
-		const same = (n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value;
-		const back = Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).find(same);
+		const found = pool();
+		const back = found[nth] || found[0];
 		if (back) back.focus();
 	}
 	applyTable();
