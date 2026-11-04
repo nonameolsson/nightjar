@@ -1,12 +1,13 @@
 // The `nightjar` command's arguments.
 import type { Env } from './git.js';
 
-export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL]
+export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor [FEATURE]> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL]
 
   --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes
   --once         build the oldest Feature assigned to you with the Go, then exit
   FEATURE        build that Feature, by its id (42, #42, PROJ-123), now
   doctor         check this machine and list the Features it would build, building nothing (--dry-run is the old name)
+  doctor FEATURE check that Feature's open Tickets against the Ticket contract, changing nothing; exits 1 when one fails
   --use-api-key  let the sessions bill ANTHROPIC_API_KEY instead of your Claude plan
   --profile NAME run the sessions as the Claude login in ~/.claude-NAME (a path is the folder itself, default is ~/.claude); over config.json's profile
   --model M      the model of every session, over a Ticket's own line and factory.json
@@ -29,15 +30,24 @@ export interface Args {
 
 // The arguments, or the line that says what is wrong with them.
 export function parseArgs(argv: readonly string[]): Args | string {
-	const chosen: { mode: Args['mode'] | null } = { mode: null };
+	// doctor with a Feature checks that Feature, so those two may be said together
+	const chosen: { mode: 'watch' | 'once' | 'build' | null; doctor: boolean } = {
+		mode: null,
+		doctor: false
+	};
 	let feature: string | undefined;
 	let useApiKey = false;
 	let profile: string | undefined;
 	let model: string | undefined;
 	let effort: string | undefined;
-	const pick = (m: Args['mode']) => {
-		if (chosen.mode !== null && chosen.mode !== m)
-			return 'choose one of --watch, --once, a Feature and doctor';
+	const pick = (m: 'watch' | 'once' | 'build' | 'doctor') => {
+		const clash = 'choose one of --watch, --once, a Feature and doctor';
+		if (m === 'doctor') {
+			if (chosen.mode === 'watch' || chosen.mode === 'once') return clash;
+			chosen.doctor = true;
+			return null;
+		}
+		if (chosen.mode !== null || (m !== 'build' && chosen.doctor)) return clash;
 		chosen.mode = m;
 		return null;
 	};
@@ -56,12 +66,16 @@ export function parseArgs(argv: readonly string[]): Args | string {
 			else effort = value;
 			i += 1;
 		} else if (/^#?[A-Za-z0-9][\w.-]*$/.test(a)) {
-			fault = pick('feature');
+			fault = pick('build');
 			feature = a.replace(/^#/, '');
 		} else return `unknown argument ${a}`;
 		if (fault) return fault;
 	}
-	const { mode } = chosen;
+	const mode: Args['mode'] | null = chosen.doctor
+		? 'doctor'
+		: chosen.mode === 'build'
+			? 'feature'
+			: chosen.mode;
 	if (mode === null) return 'say what to build';
 	return {
 		mode,

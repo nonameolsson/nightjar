@@ -10,6 +10,17 @@ describe('parseArgs', () => {
 		expect(parseArgs(['doctor', '--use-api-key'])).toEqual({ mode: 'doctor', useApiKey: true });
 		// --dry-run is the old name of doctor
 		expect(parseArgs(['--dry-run'])).toEqual({ mode: 'doctor', useApiKey: false });
+		// doctor with a Feature checks that Feature, whichever is said first
+		expect(parseArgs(['doctor', '#42'])).toEqual({
+			mode: 'doctor',
+			feature: '42',
+			useApiKey: false
+		});
+		expect(parseArgs(['42', '--dry-run'])).toEqual({
+			mode: 'doctor',
+			feature: '42',
+			useApiKey: false
+		});
 		expect(parseArgs(['#42', '--model', 'opus', '--effort', 'high', '--use-api-key'])).toEqual({
 			mode: 'feature',
 			feature: '42',
@@ -40,6 +51,10 @@ describe('parseArgs', () => {
 		expect(parseArgs(['--watch', '--once'])).toBe(
 			'choose one of --watch, --once, a Feature and doctor'
 		);
+		expect(parseArgs(['doctor', '--once'])).toBe(
+			'choose one of --watch, --once, a Feature and doctor'
+		);
+		expect(parseArgs(['1', '2'])).toBe('choose one of --watch, --once, a Feature and doctor');
 		expect(parseArgs(['--model'])).toBe('--model needs a value');
 		expect(parseArgs(['--effort', '--once'])).toBe('--effort needs a value');
 		expect(parseArgs(['--detach'])).toBe('unknown argument --detach');
