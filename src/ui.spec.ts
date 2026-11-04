@@ -3,7 +3,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileSpend, record } from './ledger.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
@@ -985,7 +985,7 @@ describe('nightjar ui page, more', () => {
 			await open();
 			const page = (await get('/')).text;
 			expect(page).toContain(
-				'<div class="scroll" tabindex="0" role="region" aria-label="Features">'
+				'<div class="scroll" tabindex="0" role="region" aria-label="Feature table">'
 			);
 			expect(page).toContain('<div class="banner" aria-hidden="true">');
 			expect(page).toContain("'aria-pressed'");
@@ -1069,12 +1069,12 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('1 failed');
 	});
 
-	it('gives sort buttons, view tabs and chips a 24px hit area, 44px on touch', async () => {
+	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act'];
+	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
 		const { style } = await css();
-		for (const s of ['th button', '#views button', '.chips button'])
-			expect(rule(style, s), s).toContain('min-height: 24px');
+		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
 		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-		for (const s of ['th button', '#views button', '.chips button']) expect(coarse, s).toContain(s);
+		for (const s of BUTTONS) expect(coarse, s).toContain(s);
 		expect(coarse).toContain('min-height: 44px');
 	});
 
@@ -1157,6 +1157,62 @@ describe('nightjar ui audit fixes', () => {
 		const body = rule(style, 'body');
 		expect(body).not.toContain('background:');
 		expect(body.match(/linear-gradient/g)).toHaveLength(2);
+	});
+
+	it('has no hover tooltip or shadow: the help button opens the panel', async () => {
+		const { style, page } = await css();
+		expect(style).not.toContain('data-tip');
+		expect(style).not.toContain('tip-shadow');
+		expect(style).not.toContain('box-shadow: 0 6px');
+		expect(page).not.toContain('data-tip');
+	});
+
+	it('lets the whole page scroll on a short or narrow viewport', async () => {
+		const { style } = await css();
+		const block =
+			style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
+		expect(block).toContain('height: auto');
+		expect(block).toContain('overflow: visible');
+	});
+
+	it('puts focus back on a copy button or link after a live swap', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const focus = vi.fn();
+		const copy = { dataset: { copy: 'npm test "x"' }, focus, getAttribute: () => null };
+		const link = {
+			dataset: {},
+			tagName: 'A',
+			focus: vi.fn(),
+			getAttribute: () => 'https://x.test/1'
+		};
+		for (const [was, found, sel] of [
+			[copy, [copy], '[data-copy]'],
+			[link, [link], 'a[href]']
+		] as const) {
+			const doc = {
+				activeElement: was,
+				getElementById: () => ({ dataset: {}, innerHTML: '', textContent: '' }),
+				querySelectorAll: (s: string) => (s === sel ? found : [])
+			};
+			let message: ((e: { data: string }) => void) | undefined;
+			runInNewContext(script, {
+				requestAnimationFrame: (f: () => void) => f(),
+				document: doc,
+				localStorage: { getItem: () => null, setItem: () => {} },
+				EventSource: function EventSource() {
+					return {
+						set onmessage(f: (e: { data: string }) => void) {
+							message = f;
+						}
+					};
+				},
+				setInterval: () => 0
+			});
+			message?.({ data: JSON.stringify('') });
+		}
+		expect(focus).toHaveBeenCalledOnce();
+		expect(link.focus).toHaveBeenCalledOnce();
 	});
 
 	it('offers a skip link to the panels', async () => {
