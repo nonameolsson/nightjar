@@ -77,6 +77,7 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 // The checks of a build stop at the first that fails, and the machine's findings are said in one line.
 async function preflight(args: Args, host: Host): Promise<Ready> {
 	const checked = await checkMachine({
+		platform: host.platform,
 		useApiKey: args.useApiKey,
 		...(args.profile === undefined ? {} : { profile: args.profile }),
 		env: host.env,
@@ -163,6 +164,7 @@ export async function runNightjar(
 			});
 		}
 		return runDoctor({
+			platform: host.platform,
 			useApiKey: args.useApiKey,
 			...(args.profile === undefined ? {} : { profile: args.profile }),
 			env,
