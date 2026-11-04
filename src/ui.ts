@@ -910,7 +910,7 @@ body { background-color: var(--void); background-size: 32px 32px; background-ima
 a { color: var(--teal); text-underline-offset: 3px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre { font-variant-numeric: tabular-nums; }
-.banner { background: var(--void) center 40% / cover no-repeat; height: 150px; position: relative; }
+.banner { aspect-ratio: 2.5; background: var(--void) center 40% / cover no-repeat; max-height: 360px; min-height: 150px; position: relative; }
 .banner::after { background: linear-gradient(180deg, transparent 60%, var(--void)); content: ""; inset: 0; position: absolute; }
 .bar { align-items: center; background: var(--void); border-bottom: 1px solid var(--line); display: flex; flex: none; gap: 4px; padding: 10px var(--gut); }
 #top { background: var(--bar-overlay); border-bottom: 1px solid var(--line); flex: none; padding: 0 var(--gut); }
@@ -1088,7 +1088,7 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	h1 { font-size: 1.2rem; }
 	#cards { font-size: 0.75rem; gap: 2px 14px; }
 	.mark { display: none; }
-	.banner { background-position: 25% 40%; height: 100px; }
+	.banner { aspect-ratio: auto; background-position: 25% 40%; height: 100px; min-height: 0; }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }
 	.mat { grid-template-columns: 40px minmax(0, 1fr); }
