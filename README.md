@@ -142,7 +142,7 @@ A full one:
 | ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "azure-devops" }` with `organization` (as in `dev.azure.com/<organization>`), `project`, and `featureType`, the work item type that plays the Feature (`Feature`, `Epic`, `Product Backlog Item`, …): its child work items are its Tickets. `ticketType`, optional, is the work item type `nightjar create` makes each Ticket as (`User Story`, `Product Backlog Item`, `Issue`, …). Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
 | `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or `{ "type": "azure-devops" }` with `organization`, `project` and `repo`, the Git repo on Azure Repos the branch is pushed to and the draft pull request opened on. Or a `module`, as for `tracker`. On GitHub, the optional `trustedChecks` lists the slugs of the GitHub Apps (`["lint-bot"]`) whose failed checks on the pull request count as feedback for the agent; GitHub Actions always counts, and a failed check from any other app is left out. |
-| `check`           | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
+| <a id="factory-check"></a>`check` | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
 | `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list. The list may be empty. |
 | `gate`            | no       | What the report on a red `check` holds, given to the fix rounds and the pull request: the red stages, every failing test once from the whole output, and the last 40 lines without colour codes. `failingTest` is a regular expression whose first group names a failing test (default: a `FAIL name` line). `ignore` matches lines to drop, such as notes about slow tests. `stages` is for a check split into stages: `red` is a regular expression whose first group names a red stage, and `log`, optional, is where a stage leaves its whole log, relative to the worktree, with `{stage}` for its name (`.cache/{stage}.log`); its failing tests join the report. Left out, a red check still gets its failing tests and its plain tail. |
 | `signals`         | no       | The name each Signal has on the Tracker (a label on GitHub, a tag on Azure DevOps). Leave out the ones you do not rename. Defaults are shown above. `needs-triage` and `wontfix` are refused: Nightjar never reads or sets them.          |
@@ -297,6 +297,24 @@ Steps share one notes folder, `.factory/notes/` in the worktree, which is never 
 What a Step changes goes through the check command and its fix rounds, then is committed on its own, with a message naming the Workflow and the Step. Steps count against the daily spend limit and show in the cost of the pull request. A Step that hits its budget or time limit, cannot get the check green, answers in a shape not known, or reports itself blocked has its changes thrown away; the later Steps still run, and the pull request opens with that Step listed as not done. A Step the branch already holds is not run again when a later run goes on.
 
 `nightjar doctor` looks up each `/skill` a Step's prompt names among the skills a headless Claude session loads. A skill that is missing is an error for that Workflow only: a Feature that picks it stops with a comment, and the others build as usual. (A word like `/tmp/notes` is a path, not a skill; a bare `/word` in a prompt is read as one.)
+
+### A scan that must pass
+
+A Step cannot stop a Feature. A Step that fails or reports itself blocked is listed as not done, and the draft pull request still opens. So a security or policy scan that must hold a Feature does not belong in a Step.
+
+Put it in the [`check` command](#factory-check) instead, after the tests:
+
+```json
+{
+	"check": "npm test && npm audit --audit-level=high"
+}
+```
+
+A finding then fails the check like a failing test does. The usual fix rounds work on it, and a check that stays red after them stops the run: the Tickets after it wait, the draft pull request opens, and the Feature gets the needs info Signal with a comment naming the Ticket after which the check fails. A Step's changes go through the same check, so a Step cannot bring in a finding either.
+
+Nightjar runs the check itself, not as the Coding agent, so the agent's deny rules do not hold it: a scanner there may reach the network to fetch its rules or advisories, which the agent's own commands may not.
+
+A Step whose prompt runs a review skill, such as a security review, is advisory. The pull request's Workflow section lists it as done or not done and, with an `until`, what is left; a person reads that, and the Feature is not held.
 
 ## Onboard a repo and its existing issues
 
