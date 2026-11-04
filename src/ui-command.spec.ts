@@ -28,7 +28,7 @@ afterEach(async () => {
 });
 
 const host = (cwd: string) => ({
-	platform: 'linux' as const,
+	os: { platform: 'linux' as const, kernel: '' },
 	env: { PATH: process.env.PATH },
 	cwd
 });

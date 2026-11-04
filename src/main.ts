@@ -48,6 +48,7 @@ import { startServe } from './serve.js';
 import { StatusFile, statusPath, type Named } from './status.js';
 import { openWorktree, worktreesFor } from './worktree.js';
 import { say, why } from './say.js';
+import type { Os } from './sandbox.js';
 import { startLive } from './live.js';
 
 // where this Nightjar is installed or checked out: src/ and dist/ both sit one level down
@@ -77,7 +78,7 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 // The checks of a build stop at the first that fails, and the machine's findings are said in one line.
 async function preflight(args: Args, host: Host): Promise<Ready> {
 	const checked = await checkMachine({
-		platform: host.platform,
+		os: host.os,
 		useApiKey: args.useApiKey,
 		...(args.profile === undefined ? {} : { profile: args.profile }),
 		env: host.env,
@@ -103,7 +104,7 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 
 // What the command reads of the machine it runs on; a spec passes its own.
 export interface Host {
-	readonly platform: NodeJS.Platform;
+	readonly os: Os;
 	readonly env: Env;
 	readonly cwd: string;
 	// answers every Azure DevOps call; a spec passes a fake Azure DevOps
@@ -120,15 +121,14 @@ export interface Host {
 
 export async function runNightjar(
 	argv: readonly string[],
-	given: Partial<Host> = {}
+	given: Partial<Host> & Pick<Host, 'os'>
 ): Promise<number> {
 	const host: Host = {
-		platform: process.platform,
 		env: process.env,
 		cwd: process.cwd(),
 		...given
 	};
-	const unsupported = platformProblem(host.platform);
+	const unsupported = platformProblem(host.os.platform);
 	if (unsupported !== null) {
 		console.error(`nightjar: ${unsupported}`);
 		return 2;
@@ -164,7 +164,7 @@ export async function runNightjar(
 			});
 		}
 		return runDoctor({
-			platform: host.platform,
+			os: host.os,
 			useApiKey: args.useApiKey,
 			...(args.profile === undefined ? {} : { profile: args.profile }),
 			env,

@@ -16,14 +16,14 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('nightjar --help', () => {
 	it.each([['--help'], ['-h'], ['help']])('%s prints the usage and exits 0', async (flag) => {
-		const code = await runNightjar([flag], { platform: 'linux' });
+		const code = await runNightjar([flag], { os: { platform: 'linux', kernel: '' } });
 		expect(code).toBe(0);
 		expect(out).toEqual([USAGE]);
 		expect(err).toEqual([]);
 	});
 
 	it('names doctor with a Feature', async () => {
-		await runNightjar(['--help'], { platform: 'linux' });
+		await runNightjar(['--help'], { os: { platform: 'linux', kernel: '' } });
 		expect(out.join('\n')).toContain('doctor [FEATURE]');
 		expect(out.join('\n')).toContain('doctor FEATURE');
 	});
@@ -34,7 +34,7 @@ describe('nightjar --version', () => {
 		const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
 			version: string;
 		};
-		const code = await runNightjar([flag], { platform: 'linux' });
+		const code = await runNightjar([flag], { os: { platform: 'linux', kernel: '' } });
 		expect(code).toBe(0);
 		expect(out).toEqual([pkg.version]);
 		expect(err).toEqual([]);
