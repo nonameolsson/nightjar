@@ -1,6 +1,6 @@
 {
 	"schemaVersion": 2,
-	"generatedAt": "2026-11-03T22:47:06+00:00",
+	"generatedAt": "2026-11-04T12:55:00+00:00",
 	"title": "Design System: Nightjar UI",
 	"extensions": {
 		"colorMeta": {
@@ -198,6 +198,77 @@
 					"#85b8c1",
 					"#b8d6db"
 				]
+			},
+			"socket-border": {
+				"role": "neutral",
+				"displayName": "Socket Border",
+				"canonical": "#3f7078",
+				"tonalRamp": [
+					"#142226",
+					"#1f373d",
+					"#2b4f57",
+					"#3f7078",
+					"#5b919b",
+					"#82b0b8",
+					"#add0d5",
+					"#d4e6e9"
+				]
+			},
+			"bar-overlay": {
+				"role": "neutral",
+				"displayName": "Bar Overlay",
+				"canonical": "rgba(4, 7, 11, 0.94)",
+				"tonalRamp": [
+					"rgba(4, 7, 11, 0.94)"
+				]
+			},
+			"panel-overlay": {
+				"role": "neutral",
+				"displayName": "Panel Overlay",
+				"canonical": "rgba(8, 13, 19, 0.85)",
+				"tonalRamp": [
+					"rgba(8, 13, 19, 0.85)"
+				]
+			},
+			"panel-overlay-strong": {
+				"role": "neutral",
+				"displayName": "Panel Overlay Strong",
+				"canonical": "rgba(8, 13, 19, 0.92)",
+				"tonalRamp": [
+					"rgba(8, 13, 19, 0.92)"
+				]
+			},
+			"teal-wash": {
+				"role": "neutral",
+				"displayName": "Teal Wash",
+				"canonical": "rgba(34, 227, 210, 0.07)",
+				"tonalRamp": [
+					"rgba(34, 227, 210, 0.07)"
+				]
+			},
+			"shade-soft": {
+				"role": "neutral",
+				"displayName": "Shade Soft",
+				"canonical": "rgba(0, 0, 0, 0.3)",
+				"tonalRamp": [
+					"rgba(0, 0, 0, 0.3)"
+				]
+			},
+			"shade-mid": {
+				"role": "neutral",
+				"displayName": "Shade Mid",
+				"canonical": "rgba(0, 0, 0, 0.35)",
+				"tonalRamp": [
+					"rgba(0, 0, 0, 0.35)"
+				]
+			},
+			"shade-deep": {
+				"role": "neutral",
+				"displayName": "Shade Deep",
+				"canonical": "rgba(0, 0, 0, 0.45)",
+				"tonalRamp": [
+					"rgba(0, 0, 0, 0.45)"
+				]
 			}
 		},
 		"typographyMeta": {
@@ -253,7 +324,11 @@
 		"breakpoints": [
 			{
 				"name": "panel-stack",
-				"value": "1000px"
+				"value": "1260px"
+			},
+			{
+				"name": "entry-stack",
+				"value": "900px"
 			},
 			{
 				"name": "phone",
@@ -284,7 +359,7 @@
 			"refersTo": "nest-socket",
 			"description": "Ticket states: built, building, needs a person, waiting (empty socket).",
 			"html": "<span class=\"ds-eggs\"><span class=\"ds-slot\"><i class=\"ds-egg\"></i></span><span class=\"ds-slot\"><i class=\"ds-egg b\"></i></span><span class=\"ds-slot\"><i class=\"ds-egg n\"></i></span><span class=\"ds-slot\"></span></span>",
-			"css": ".ds-egg{display:inline-block;width:.95rem;height:1.2rem;border-radius:50% 50% 50% 50%/62% 62% 38% 38%;box-shadow:inset -3px -3px 0 rgba(0,0,0,.3);position:relative;background:#14a89c}.ds-egg.b{background:#22e3d2;outline:2px solid #22e3d2;outline-offset:3px}.ds-egg.n{background:#ff9a1f;margin:0 .65rem}.ds-egg.n:before,.ds-egg.n:after{content:'';position:absolute;top:.45rem;width:.5rem;height:3px;border-radius:2px;background:#ff9a1f}.ds-egg.n:before{left:-.65rem;transform:rotate(-20deg)}.ds-egg.n:after{right:-.65rem;transform:rotate(20deg)}.ds-egg.w{background:none;border:2px dashed #2f5a63;box-shadow:none}.ds-eggs{display:flex;gap:7px;align-items:center}.ds-slot{display:inline-grid;place-items:center;width:1.75rem;height:1.75rem;border-radius:50%;background:rgba(0,0,0,.35);border:1px solid #1b3a42}"
+			"css": ".ds-egg{display:inline-block;width:.95rem;height:1.2rem;border-radius:50% 50% 50% 50%/62% 62% 38% 38%;box-shadow:inset -3px -3px 0 rgba(0,0,0,.3);position:relative;background:#14a89c}.ds-egg.b{background:#22e3d2;outline:2px solid #22e3d2;outline-offset:3px}.ds-egg.n{background:#ff9a1f;margin:0 .65rem}.ds-egg.n:before,.ds-egg.n:after{content:'';position:absolute;top:.45rem;width:.5rem;height:3px;border-radius:2px;background:#ff9a1f}.ds-egg.n:before{left:-.65rem;transform:rotate(-20deg)}.ds-egg.n:after{right:-.65rem;transform:rotate(20deg)}.ds-egg.w{background:none;border:2px dashed #2f5a63;box-shadow:none}.ds-eggs{display:flex;gap:7px;align-items:center}.ds-slot{display:inline-grid;place-items:center;width:1.75rem;height:1.75rem;border-radius:50%;background:rgba(0,0,0,.35);border:1px solid #3f7078}"
 		},
 		{
 			"name": "Habitat Mat",

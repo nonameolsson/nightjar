@@ -15,6 +15,14 @@ colors:
   muted: "#7f979b"
   err: "#ff5a5f"
   socket-dash: "#2f5a63"
+  socket-border: "#3f7078"
+  bar-overlay: "rgba(4, 7, 11, 0.94)"
+  panel-overlay: "rgba(8, 13, 19, 0.85)"
+  panel-overlay-strong: "rgba(8, 13, 19, 0.92)"
+  teal-wash: "rgba(34, 227, 210, 0.07)"
+  shade-soft: "rgba(0, 0, 0, 0.3)"
+  shade-mid: "rgba(0, 0, 0, 0.35)"
+  shade-deep: "rgba(0, 0, 0, 0.45)"
 typography:
   heading-mono:
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
@@ -63,7 +71,7 @@ components:
     rounded: "{rounded.none}"
     padding: "5px 16px"
   nav-tab-active:
-    backgroundColor: "rgba(34, 227, 210, 0.07)"
+    backgroundColor: "{colors.teal-wash}"
     textColor: "{colors.teal}"
   chip:
     backgroundColor: "transparent"
@@ -74,19 +82,20 @@ components:
     backgroundColor: "{colors.teal}"
     textColor: "{colors.void}"
   mat:
-    backgroundColor: "rgba(8, 13, 19, 0.85)"
+    backgroundColor: "{colors.panel-overlay}"
     rounded: "{rounded.none}"
   detail-panel:
-    backgroundColor: "rgba(8, 13, 19, 0.92)"
+    backgroundColor: "{colors.panel-overlay-strong}"
     rounded: "{rounded.none}"
     padding: "18px"
     width: "340px"
   meter:
-    backgroundColor: "rgba(0, 0, 0, 0.3)"
+    backgroundColor: "{colors.shade-soft}"
     rounded: "{rounded.none}"
     padding: "6px 10px"
   nest-socket:
-    backgroundColor: "rgba(0, 0, 0, 0.35)"
+    backgroundColor: "{colors.shade-mid}"
+    textColor: "{colors.socket-border}"
     rounded: "{rounded.round}"
     size: "1.75rem"
 ---
@@ -130,6 +139,13 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 - **Line** (#1b3a42): all hairlines, mat borders, dashed entry dividers, table rules.
 - **Ink** (#e6f1f2): primary text. **Soft Ink** (#9db5b8): secondary text, labels. **Muted** (#7f979b): meta, empty states, column heads.
 - **Socket Dash** (#2f5a63): dashed outline of a waiting (empty) egg.
+- **Socket Border** (#3f7078): the 1px ring of a nest socket; the one border brighter than Line.
+
+### Overlays
+Translucent fills laid over the void and its grid; they stand in for a solid surface colour.
+- **Bar Overlay** (rgba(4, 7, 11, 0.94)): the sticky bar. **Panel Overlay** (rgba(8, 13, 19, 0.85)): the mat; **Panel Overlay Strong** (rgba(8, 13, 19, 0.92)): the Building-now panel, which sits above the grid and needs the extra opacity.
+- **Teal Wash** (rgba(34, 227, 210, 0.07)): active view tab fill, and the top tint of the Building-now panel.
+- **Shade** (black at 0.3, 0.35, 0.45): **soft** for meters and egg inset shading (0.25 on the needs-a-person egg, 0.3 on the speckles), **mid** for the socket fill (0.35), **deep** for the session log (0.45). Known drift: egg speckles also use 0.3-0.35 and the amber egg 0.25; collapse to the three steps above if touched.
 
 ### Named Rules
 **The Hue-Plus-Shape Rule.** State colour never travels alone: built, building, needs-a-person and waiting each differ in egg form (solid, ringed pulse, wing-flash, dashed empty) as well as colour.
@@ -151,13 +167,17 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 - **Body** (400, 15px, 1.5, sans): prose and descriptions; secondary text 0.85rem in Soft Ink.
 - **Data** (400, 0.76-0.9rem, mono): stats, meta, clocks, Ticket lists, session log (12px, 1.7).
 - **Label** (600-700, 0.72-0.78rem, mono, 0.14-0.2em tracking, uppercase): mat tabs, table column heads, meter captions, the sticky-bar mark.
+- **Meter value** (700 inherited, 1rem, sans): elapsed and cost under their captions.
+
+### Known drift: off-ramp sizes
+The CSS carries sizes outside the roles above; none is a token. New work picks a role, not one of these: 0.9rem (view tabs, chips, run-state span, entry ids), 1rem (meter values), 0.78rem (the Now label and `.sub`), 0.66rem (meter captions, below the 0.72rem Label floor), plus 0.7rem (column heads), 0.75rem (table heads, overview headings), 0.8rem (clock, legend) and 1.1rem (hexagon tally). Remove by snapping to 0.72 / 0.85 / 1 rem when the CSS is next touched.
 
 ### Named Rules
 **The Mono Means Measured Rule.** Monospace marks counts, ids, times, costs, and column or tab labels. Names and sentences stay in sans.
 
 ## Layout
 
-A sticky bar (view switcher, 4px gaps, 10px/32px padding) sits under a 260px banner (180px on phones) that fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 60px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding, collapsing to one column at 760px. Under 1000px the detail panel drops below and stops sticking. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
+A sticky bar (view switcher, 4px gaps, 10px/32px padding) sits under a 260px banner (180px on phones) that fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 60px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding. At 1260px and below the detail panel moves above the mats and stops sticking; at 900px the head row hides and entries collapse to one column; at 760px (phone) the mark hides, the banner shrinks and the tab rail narrows to 40px. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
 
 ## Elevation & Depth
 
@@ -180,7 +200,7 @@ A bordered rectangle tinted from its left by 12% of its state hue. Left rail is 
 
 ### Egg and Nest Socket
 - **Built:** solid Deep Teal egg. **Building:** Signal Teal egg with a 2px ring at 3px offset pulsing over 2.4s (`incubate`). **Needs a person:** amber egg with two small amber wings angled 20 degrees (the wing-flash). **Waiting:** dashed Socket Dash outline, no fill (hidden inside a socket, which stands for the empty nest).
-- Sockets are 1.75rem circles on 35% black with a Line border.
+- Sockets are 1.75rem circles on 35% black with a Socket Border ring.
 
 ### Building-Now Panel
 Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
