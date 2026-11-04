@@ -182,7 +182,7 @@ function withDrafts(w: ReturnType<typeof world>) {
 	let outcome: (red: RedDraft) => Promise<PullFixOutcome> = async (red) => {
 		// as a green round does, a new commit is pushed and its Pull checks start
 		await host.push(`/work/${red.feature}`, red.draft.branch);
-		return { kind: 'fixed', pull: red.draft.pull, round: 1 };
+		return { kind: 'fixed', pull: red.draft.pull, round: 1, summary: 'Fixed.', usd: 1 };
 	};
 	// a draft on Nightjar's branch for `feature`, its body naming it unless null
 	const open = async (
@@ -307,7 +307,7 @@ describe('queue --watch with the Pull-check pass', () => {
 		const d = withDrafts(w);
 		d.done('20');
 		const pull = await d.open('20');
-		d.fixWith(() => Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red' }));
+		d.fixWith(() => Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1 }));
 		await queue(w.deps, false);
 		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4']);
 	});

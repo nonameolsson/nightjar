@@ -202,6 +202,27 @@ describe('renderBlock', () => {
 		expect(review).toContain('  2/5 Tickets built  review');
 	});
 
+	it('shows a Pull-check fix round as one, with its round of the pull request, and no Ticket progress', () => {
+		const fix = render(
+			view(
+				status(
+					building({
+						ticket: null,
+						step: 'pullChecks',
+						round: 1,
+						rounds: 2,
+						session: 's2',
+						tickets: undefined
+					})
+				),
+				{ featureCostUsd: 1 }
+			)
+		);
+		expect(fix).toContain('  Pull-check fix, round 1/2');
+		expect(fix.join('\n')).not.toContain('pullChecks');
+		expect(fix.find((l) => l.startsWith('● '))).toMatch(/^● #272 Custom views\s+.*\$1\.00$/);
+	});
+
 	it('shows the newest say() line at the foot, and holds every line to the width', () => {
 		const lines = render(
 			view(status(building()), { tail: ['x'.repeat(200)] }),

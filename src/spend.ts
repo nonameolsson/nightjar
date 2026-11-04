@@ -7,7 +7,8 @@ export interface Entry {
 	readonly feature: string;
 	readonly ticket: string | null;
 	readonly branch: string;
-	readonly step: 'build' | 'fix' | 'review' | 'step';
+	// 'pullChecks' is a Pull-check fix round, its check's own fix rounds too
+	readonly step: 'build' | 'fix' | 'review' | 'step' | 'pullChecks';
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;

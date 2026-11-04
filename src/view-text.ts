@@ -16,6 +16,9 @@ export const elapsed = (ms: number) => {
 	return `${String(Math.floor(s / 60))}m ${two(s % 60)}s`;
 };
 
+// How a view names a build's step: the step as it is, but for a Pull-check fix round.
+export const stepText = (step: string) => (step === 'pullChecks' ? 'Pull-check fix' : step);
+
 export const dollars = (usd: number) => `$${usd.toFixed(2)}`;
 
 // a numeric id reads as #42; another Tracker's (PROJ-123) as it is

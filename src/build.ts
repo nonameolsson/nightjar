@@ -3,10 +3,11 @@ import type { RunCheck } from './check.js';
 import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import { DEFAULT_PULL_CHECKS } from './config.js';
-import { failedAt, pullChecksReport } from './gate.js';
+import { pullChecksReport } from './gate.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
 import {
@@ -161,7 +162,7 @@ const hash = (id: ItemId) => `#${id}`;
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps'.
-type Work = 'build' | 'fix' | 'steps' | 'review';
+type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -778,10 +779,22 @@ export interface RedDraft {
 }
 
 export type PullFixOutcome =
-	// a green fix pushed to the branch as its `round`th Pull-check fix
-	| { readonly kind: 'fixed'; readonly pull: Pull; readonly round: number }
+	// a green fix pushed to the branch as its `round`th Pull-check fix, which cost `usd`
+	| {
+			readonly kind: 'fixed';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly summary: string;
+			readonly usd: number;
+	  }
 	// nothing pushed: the work, if any, is kept on an attempt branch, and the Feature is handed to a person
-	| { readonly kind: 'gaveUp'; readonly pull: Pull; readonly round: number; readonly why: string }
+	| {
+			readonly kind: 'gaveUp';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly why: string;
+			readonly usd: number;
+	  }
 	// the pull request has had its `rounds` fix rounds: no Session, and the Feature is handed to a person
 	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
 	// the pull request is not Nightjar's to fix after all; nothing was done
@@ -825,7 +838,7 @@ export async function fixPullChecks(
 	if (used >= rounds) {
 		const why = `it has had its ${String(rounds)} Pull-check fix round${rounds === 1 ? '' : 's'}`;
 		deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, and ${why}`);
-		await handOver(deps, setup, feature.id, draft, why);
+		await handOver(deps, setup, feature.id, draft, why, draft.body);
 		return { kind: 'atLimit', pull, rounds };
 	}
 	const round = used + 1;
@@ -834,12 +847,21 @@ export async function fixPullChecks(
 	let got: PullFixOutcome;
 	try {
 		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round });
+		// every round that ran says so in the body, the one that gave up too
+		const ran = (r: Pick<PullRound, 'outcome' | 'summary' | 'usd'>) =>
+			withPullRound(draft.body, { round, failed: draft.checks.failed, ...r });
+		if (got.kind === 'fixed') {
+			await deps.codeHost.editBody(
+				pull,
+				ran({ outcome: 'pushed', summary: got.summary, usd: got.usd })
+			);
+		} else if (got.kind === 'gaveUp') {
+			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
+			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
+			await handOver(deps, setup, feature.id, draft, why, body);
+		}
 	} finally {
 		await tracker.removeSignal(feature.id, 'working');
-	}
-	if (got.kind === 'gaveUp') {
-		const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
-		await handOver(deps, setup, feature.id, draft, why);
 	}
 	return got;
 }
@@ -862,17 +884,16 @@ async function handOver(
 	setup: Setup,
 	feature: ItemId,
 	draft: NightjarDraft,
-	why: string
+	why: string,
+	// the pull request body as it is to stay, before the mark
+	body: string
 ): Promise<void> {
 	const { pull } = draft;
 	await deps.tracker.addSignal(feature, 'human');
-	const failing = draft.checks.failed.map((f) => {
-		const where = failedAt(f);
-		return `- \`${f.check}\`${where === '' ? '' : `: ${where}`}`;
-	});
+	const failing = draft.checks.failed.map(failingLine);
 	const comment = `Nightjar could not make the Pull checks of ${pull.url} green: ${why}.\n\nFailing Pull checks:\n\n${failing.join('\n')}`;
 	await deps.tracker.comment(feature, withNext(comment, pullChecksStep(setup.signals)));
-	await deps.codeHost.editBody(pull, markHandedOver(draft.body));
+	await deps.codeHost.editBody(pull, markHandedOver(body));
 	deps.say(`${hash(feature)}: handed to a person, ${why}`);
 }
 
@@ -891,14 +912,15 @@ async function pullFixRound(
 	const { pull } = draft;
 	const show = buildingOf(feature, deps.now);
 	let sessionStartedAt = deps.now();
-	const building = (rounds: { round: number; rounds: number } | null) => {
+	// the whole round, the check's own fix rounds too, shows as the Pull-check fix it is
+	const building = () => {
 		sessionStartedAt = deps.now();
 		deps.status.doing(
 			show({
 				ticket: null,
-				step: 'fix',
-				round: rounds?.round ?? null,
-				rounds: rounds?.rounds ?? null,
+				step: 'pullChecks',
+				round,
+				rounds: setup.limits.pullFixRounds,
 				session
 			})
 		);
@@ -911,25 +933,26 @@ async function pullFixRound(
 			feature: feature.id,
 			branch: tree.at.branch,
 			durationMs: Math.max(0, at.getTime() - sessionStartedAt.getTime()),
-			...entry
+			...entry,
+			step: 'pullChecks'
 		});
 		sessionStartedAt = at;
 	};
 	const name = `Pull-check fix ${String(round)}`;
 	const before = await tree.head();
-	const gaveUp = async (why: string): Promise<PullFixOutcome> => {
+	const gaveUp = async (why: string, usd: number): Promise<PullFixOutcome> => {
 		const side = await tree.discard(before, `pull-fix-${String(round)}`);
 		deps.say(
 			`${hash(feature.id)}: ${name} gave up: ${why}${side ? `; the attempt is kept on ${side}` : ''}`
 		);
-		return { kind: 'gaveUp', pull, round, why };
+		return { kind: 'gaveUp', pull, round, why, usd };
 	};
 	const halted = async (halt: Halt): Promise<PullFixOutcome> => {
 		await tree.discard(before, `pull-fix-${String(round)}`);
 		return halt.kind === 'paused' ? { kind: 'paused', why: halt.why } : { kind: 'stopped' };
 	};
 
-	building(null);
+	building();
 	const { pullFixUsd: cap, pullFixMinutes: minutes } = setup.limits;
 	const deadline = deps.now().getTime() + minutes * 60_000;
 	// why the round stopped short of a green check: one of its own caps, else the fix rounds ran out
@@ -948,7 +971,7 @@ async function pullFixRound(
 		budgetUsd: cap,
 		minutes
 	});
-	const entry = { ticket: null, step: 'fix' as const, session, costUsd: got.costUsd };
+	const entry = { ticket: null, step: 'pullChecks' as const, session, costUsd: got.costUsd };
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });
@@ -958,10 +981,10 @@ async function pullFixRound(
 			return halted(got);
 		case 'failed':
 			log({ ...entry, outcome: `pull checks ${String(round)} failed: ${got.why}` });
-			return gaveUp(got.why);
+			return gaveUp(got.why, got.costUsd);
 		case 'gaveUp':
 			log({ ...entry, outcome: `pull checks ${String(round)} gave up` });
-			return gaveUp('the Session could not fix the Pull checks');
+			return gaveUp('the Session could not fix the Pull checks', got.costUsd);
 		case 'fixed':
 			log({ ...entry, outcome: `pull checks ${String(round)}` });
 	}
@@ -971,7 +994,7 @@ async function pullFixRound(
 			deps,
 			setup,
 			tree,
-			building: (_ticket, _session, rounds) => building(rounds),
+			building,
 			log: (e) => log(e)
 		},
 		{
@@ -986,14 +1009,14 @@ async function pullFixRound(
 		}
 	);
 	if (fixed.halt !== undefined) return halted(fixed.halt);
-	if (!fixed.check.ok) return gaveUp(stillRed(fixed.spent));
+	if (!fixed.check.ok) return gaveUp(stillRed(fixed.spent), fixed.spent);
 	const summary = [got.summary, ...fixed.summaries].join('\n\n');
 	if (!(await tree.commitPullFix(round, summary, session))) {
-		return gaveUp('the Session changed no file');
+		return gaveUp('the Session changed no file', fixed.spent);
 	}
 	await deps.codeHost.push(tree.at.folder, tree.at.branch);
 	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
-	return { kind: 'fixed', pull, round };
+	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
 }
 
 async function reviewFeature(

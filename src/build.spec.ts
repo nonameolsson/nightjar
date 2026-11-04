@@ -1731,9 +1731,10 @@ describe('the limits of the Pull-check pass', () => {
 		expect(comment).toContain('- `CI / lint`: job lint, step Run eslint');
 		expect(comment).toContain('**Next step**');
 		expect(comment).toContain('remove `ready-for-human` and add `factory-go`');
-		// the body keeps what Nightjar wrote, with the hidden mark at its end
+		// the body keeps what Nightjar wrote and tells the round, with the hidden mark at its end
 		const body = world.host.pulls[0]?.body ?? '';
-		expect(body.startsWith(pull.body)).toBe(true);
+		expect(body).toContain('Nightjar built all of #1 One escape.');
+		expect(body).toContain('### Round 1: gave up, $4.00');
 		expect(handedOver(body)).toBe(true);
 	});
 
@@ -1890,6 +1891,236 @@ describe('the limits of the Pull-check pass', () => {
 		expect(pushes(world)).toHaveLength(1);
 		expect(world.tracker.signalsOf('1')).toEqual([]);
 		expect(sleeps).toEqual([30 * 60_000]);
+	});
+});
+
+describe('what a person sees of a Pull-check fix round', () => {
+	const FAILURES = [
+		{ check: 'CI / test', job: 'test', step: 'Run npm test', logTail: 'Error: TZ is not set' },
+		{ check: 'CI / lint', job: 'lint', step: 'Run eslint', logTail: 'src/b.ts: 1 problem' }
+	];
+	const BRANCH = 'factory/1-one-escape';
+
+	// Feature 1 built into a draft whose Pull checks then failed; each fix Session changes a file and costs $1.
+	async function redDraft(world: World) {
+		await buildFeature(deps(world), setup(world), '1');
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		world.host.setChecks(pull, { pending: false, failed: FAILURES });
+		world.fixAgent = (req) => {
+			write(world, req.at.folder, `ci-${String(req.round)}-${req.of.kind}.txt`);
+			return {
+				kind: 'fixed',
+				summary: 'Set TZ in the test job.',
+				sessionId: req.resume,
+				costUsd: 1
+			};
+		};
+		return pull;
+	}
+
+	// a new run of --watch that ends on its first idle tick
+	function watch(world: World, over: Partial<Setup> = {}) {
+		const d = deps(world);
+		const s = setup(world, over);
+		const stop = new AbortController();
+		const pass = pullChecksPass({ enabled: true }, world.host, (red) => fixPullChecks(d, s, red));
+		return queue(
+			{
+				tracker: world.tracker,
+				person: 'ann',
+				build: ({ id }) => buildFeature(d, s, id),
+				status: d.status,
+				now: d.now,
+				say: () => undefined,
+				sleep: () => {
+					stop.abort();
+					return Promise.resolve();
+				},
+				signal: stop.signal,
+				...(pass === null ? {} : { pullChecks: pass })
+			},
+			false
+		);
+	}
+
+	const failRed = (world: World, pull: Pull) =>
+		world.host.setChecks(pull, { pending: false, failed: FAILURES });
+	const body = (world: World) => world.host.pulls[0]?.body ?? '';
+
+	const PAUSED: Ending = { kind: 'paused', why: 'the day is over', sessionId: 's', costUsd: 1 };
+	const STOPPED: Ending = { kind: 'aborted', sessionId: 's', costUsd: 1 };
+
+	describe('the Feature holds working', () => {
+		const endings = [
+			{ name: 'a green fix', final: [] },
+			{ name: 'a check that stays red', final: ['human'], red: true },
+			{ name: 'a Session that gives up', final: ['human'], giveUp: true },
+			{ name: 'a pause', final: [], settle: PAUSED },
+			{ name: 'a stop by a person', final: [], settle: STOPPED },
+			{ name: 'a fault', final: [], fault: true }
+		] as const;
+
+		it.each(endings)('while the round runs, and loses it on $name', async (ending) => {
+			const world = makeWorld();
+			await redDraft(world);
+			const { fixAgent } = world;
+			const during: string[][] = [];
+			world.fixAgent = (req) => {
+				during.push([...world.tracker.signalsOf('1')]);
+				if ('fault' in ending) throw new Error('the Coding agent crashed');
+				if ('giveUp' in ending) return { kind: 'gaveUp', sessionId: req.resume, costUsd: 1 };
+				return fixAgent(req);
+			};
+			if ('settle' in ending) {
+				const { settle } = ending;
+				world.settle = (req) => {
+					during.push([...world.tracker.signalsOf('1')]);
+					return req.kind === 'fix' ? settle : undefined;
+				};
+			}
+			world.checkOk = !('red' in ending);
+			await watch(world);
+
+			expect(during[0]).toEqual(['working']);
+			expect(world.tracker.signalsOf('1')).toEqual(ending.final);
+		});
+	});
+
+	describe('the pull request body', () => {
+		it('gains a Pull checks section with the round: its summary, its failing checks and its cost', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			await watch(world);
+			expect(body(world)).toContain(
+				'## Pull checks\n\n### Round 1: pushed, $1.00\n\nSet TZ in the test job.\n\nFailing Pull checks:\n\n' +
+					'- `CI / test`: job test, step Run npm test\n- `CI / lint`: job lint, step Run eslint'
+			);
+			// before the Cost section, and the body still ends signed
+			expect(body(world).indexOf('## Pull checks')).toBeLessThan(body(world).indexOf('## Cost'));
+			expect(body(world)).toMatch(/Built by Nightjar\._$/);
+			expect(body(world)).toMatchSnapshot();
+		});
+
+		it('counts what a round spent on its check fix rounds into its cost', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.checkOk = false;
+			const { fixAgent } = world;
+			world.fixAgent = (req) => {
+				const got = fixAgent(req);
+				if (req.of.kind === 'build') world.checkOk = true;
+				return got;
+			};
+			await watch(world);
+			expect(body(world)).toContain('### Round 1: pushed, $2.00');
+		});
+
+		it('lists every round so far, the first one kept as it was, across runs', async () => {
+			const world = makeWorld();
+			const pull = await redDraft(world);
+			await watch(world);
+			failRed(world, pull);
+			await watch(world);
+
+			const text = body(world);
+			expect(text.match(/^### Round /gm)).toHaveLength(2);
+			const first = text.indexOf('### Round 1: pushed, $1.00');
+			expect(first).toBeGreaterThan(0);
+			expect(text.indexOf('### Round 2: pushed, $1.00')).toBeGreaterThan(first);
+			expect(text.match(/## Pull checks/g)).toHaveLength(1);
+			expect(text.indexOf('### Round 2')).toBeLessThan(text.indexOf('## Cost'));
+		});
+
+		it('tells a round that gave up too, and keeps the section before the mark that hands the pull request over', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.fixAgent = (req) => ({ kind: 'gaveUp', sessionId: req.resume, costUsd: 1.5 });
+			await watch(world);
+			expect(body(world)).toContain(
+				'### Round 1: gave up, $1.50\n\nIt gave up: the Session could not fix the Pull checks.'
+			);
+			expect(body(world)).toContain('- `CI / lint`: job lint, step Run eslint');
+			expect(handedOver(body(world))).toBe(true);
+		});
+
+		it('writes no round when none ran: a pause leaves the body as it was', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			const before = body(world);
+			world.settle = (req) => (req.kind === 'fix' ? PAUSED : undefined);
+			await watch(world);
+			expect(body(world)).toBe(before);
+		});
+	});
+
+	describe('the ledger', () => {
+		it('records the round as its own kind of work, with its session and cost, its check fix rounds in it', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			const before = ledger(world).length;
+			world.checkOk = false;
+			const { fixAgent } = world;
+			world.fixAgent = (req) => {
+				const got = fixAgent(req);
+				if (req.of.kind === 'build') world.checkOk = true;
+				return got;
+			};
+			await watch(world);
+
+			const lines = ledger(world).slice(before);
+			expect(lines.map((e) => [e.step, e.session, e.costUsd, e.outcome])).toEqual([
+				['pullChecks', 'session-2', 1, 'pull checks 1'],
+				['pullChecks', 'session-2', 1, 'round 1']
+			]);
+			expect(lines[0]).toMatchObject({ feature: '1', ticket: null, branch: BRANCH });
+			expect(lines.map((e) => e.step)).not.toContain('fix');
+		});
+
+		it('records a round that gave up, and the day counts its cost', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			const before = ledger(world).length;
+			world.fixAgent = (req) => ({ kind: 'gaveUp', sessionId: req.resume, costUsd: 1.5 });
+			const spent = world.spend.today(deps(world).now());
+			await watch(world);
+			const lines = ledger(world).slice(before);
+			expect(lines.map((e) => [e.step, e.outcome, e.costUsd])).toEqual([
+				['pullChecks', 'pull checks 1 gave up', 1.5]
+			]);
+			expect(world.spend.today(deps(world).now())).toBe(spent + 1.5);
+		});
+	});
+
+	describe('the status file', () => {
+		it('shows a Pull-check fix round, as its round of the pull request, from its start to its end', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.checkOk = false;
+			const { fixAgent } = world;
+			world.fixAgent = (req) => {
+				const got = fixAgent(req);
+				if (req.of.kind === 'build') world.checkOk = true;
+				return got;
+			};
+			const seen = world.doing.length;
+			await watch(world);
+
+			const shown = world.doing.slice(seen).filter((d) => d.kind === 'building');
+			// the Session, then the check's fix round, both the same Pull-check fix
+			expect(shown.length).toBeGreaterThanOrEqual(2);
+			for (const d of shown) {
+				expect(d).toMatchObject({
+					feature: '1',
+					title: 'One escape',
+					ticket: null,
+					step: 'pullChecks',
+					round: 1,
+					rounds: LIMITS.pullFixRounds,
+					session: 'session-2'
+				});
+			}
+		});
 	});
 });
 
