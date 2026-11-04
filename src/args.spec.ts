@@ -10,6 +10,17 @@ describe('parseArgs', () => {
 		expect(parseArgs(['doctor', '--use-api-key'])).toEqual({ mode: 'doctor', useApiKey: true });
 		// --dry-run is the old name of doctor
 		expect(parseArgs(['--dry-run'])).toEqual({ mode: 'doctor', useApiKey: false });
+		// doctor with a Feature checks that Feature, whichever is said first
+		expect(parseArgs(['doctor', '#42'])).toEqual({
+			mode: 'doctor',
+			feature: '42',
+			useApiKey: false
+		});
+		expect(parseArgs(['42', '--dry-run'])).toEqual({
+			mode: 'doctor',
+			feature: '42',
+			useApiKey: false
+		});
 		expect(parseArgs(['#42', '--model', 'opus', '--effort', 'high', '--use-api-key'])).toEqual({
 			mode: 'feature',
 			feature: '42',
@@ -26,6 +37,20 @@ describe('parseArgs', () => {
 		});
 	});
 
+	it('reads --poll with --watch, and refuses it elsewhere or under 30', () => {
+		expect(parseArgs(['--watch', '--poll', '45'])).toEqual({
+			mode: 'watch',
+			useApiKey: false,
+			poll: 45
+		});
+		expect(parseArgs(['--poll', '30', '--watch'])).toMatchObject({ poll: 30 });
+		expect(parseArgs(['--watch', '--poll', '29'])).toMatch(/at least 30/);
+		expect(parseArgs(['--watch', '--poll', 'soon'])).toMatch(/at least 30/);
+		expect(parseArgs(['--watch', '--poll'])).toBe('--poll needs a value');
+		expect(parseArgs(['--once', '--poll', '60'])).toBe('--poll goes with --watch only');
+		expect(parseArgs(['--poll', '60'])).toBe('say what to build');
+	});
+
 	it('reads --profile with its name', () => {
 		expect(parseArgs(['--once', '--profile', 'work'])).toEqual({
 			mode: 'once',
@@ -40,6 +65,10 @@ describe('parseArgs', () => {
 		expect(parseArgs(['--watch', '--once'])).toBe(
 			'choose one of --watch, --once, a Feature and doctor'
 		);
+		expect(parseArgs(['doctor', '--once'])).toBe(
+			'choose one of --watch, --once, a Feature and doctor'
+		);
+		expect(parseArgs(['1', '2'])).toBe('choose one of --watch, --once, a Feature and doctor');
 		expect(parseArgs(['--model'])).toBe('--model needs a value');
 		expect(parseArgs(['--effort', '--once'])).toBe('--effort needs a value');
 		expect(parseArgs(['--detach'])).toBe('unknown argument --detach');

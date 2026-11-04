@@ -6,10 +6,13 @@ import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
 import { firstLine, run, type Env } from './git.js';
+import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
+import { templateFaults } from './template.js';
 import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
@@ -64,6 +67,8 @@ export interface CheckOptions {
 	readonly failFast: boolean;
 	// the skills a headless claude session loads; a spec passes its own
 	readonly skills?: LoadedSkills;
+	// the clock a schedule's next due time is counted from; a spec passes its own
+	readonly now?: () => Date;
 }
 
 // What the checks find, each for the checks after it and for Ready.
@@ -184,7 +189,7 @@ const personCheck = check({
 		const person = loadPersonConfig(o.env);
 		return {
 			found: { person },
-			detail: `$${String(person.dailyUsd)} a day, building for ${person.assignee ?? 'the signed-in person'}`,
+			detail: `$${String(person.dailyUsd)} a day, polling every ${String(person.pollSeconds)}s, building for ${person.assignee ?? 'the signed-in person'}`,
 			summary: null
 		};
 	}
@@ -230,6 +235,28 @@ export const codeHostCheck = check({
 			throw new Refusal(adapters.codeHostFix(why(fault)));
 		}
 		return { detail: adapters.repo, summary: null };
+	}
+});
+
+// a warning only: the pass never runs, but every build still does
+export const pullChecksCheck = check({
+	name: 'Pull checks',
+	needs: ['adapters', 'loaded'],
+	unmet: null,
+	run: ({ adapters, loaded }) => {
+		if (loaded.config.pullChecks?.enabled !== true) return {};
+		if (typeof adapters.codeHost.nightjarDrafts === 'function') return {};
+		return {
+			lines: [
+				{
+					name: 'Pull checks',
+					status: 'warn',
+					detail:
+						'pullChecks.enabled is on, but this Code host cannot report Pull checks (its Adapter has no nightjarDrafts), so the pass will not run.',
+					summary: null
+				}
+			]
+		};
 	}
 });
 
@@ -305,6 +332,66 @@ const workflowsCheck = check({
 	}
 });
 
+// A Source's fault does not stop a build, which never reads Sources: each says a line of its own, as a Workflow does.
+const sourcesCheck = check({
+	name: 'Sources',
+	needs: ['root', 'loaded'],
+	run: async ({ root, loaded, adapters, me }, o) => {
+		const lines: Line[] = [];
+		for (const [name, source] of Object.entries(loaded.config.sources ?? {})) {
+			const said = { name: `Source ${name}`, summary: null, source: name };
+			const faults = templateFaults(root, source.template).map(
+				(f) => `template ${source.template}: ${f}`
+			);
+			// the same refusal intake makes before it starts
+			if (source.go === true && source.owner !== undefined) {
+				const fault =
+					adapters === undefined || me === undefined
+						? `the owner ${source.owner} cannot be checked until the Tracker is reached`
+						: await goFault(adapters.tracker, source.owner, loaded.config.trusted);
+				if (fault !== null) faults.push(fault);
+			}
+			lines.push(sourceLine(said, source, faults, o));
+		}
+		return { lines };
+	}
+});
+
+// The line of one Source: its faults, or what it is and when a schedule is next due.
+function sourceLine(
+	said: Pick<Line, 'name' | 'summary' | 'source'>,
+	source: NonNullable<Config['sources']>[string],
+	faults: readonly string[],
+	o: CheckOptions
+): Line {
+	const all = [...faults];
+	if (source.type !== 'schedule') {
+		if (source.secretEnv === undefined) {
+			all.push('name the variable that holds its webhook secret, as secretEnv');
+		} else if ((o.env[source.secretEnv] ?? '') === '') {
+			all.push(
+				`${source.secretEnv} is not set; put the webhook secret in that variable, never in factory.json`
+			);
+		}
+	}
+	if (all.length > 0) return { ...said, status: 'fail', detail: all.join('\n') };
+	const go = source.go === true ? `, gives the Go for ${source.owner ?? ''}` : '';
+	if (source.type !== 'schedule') {
+		return {
+			...said,
+			status: 'ok',
+			detail: `${source.type}, template ${source.template} is in shape${go}`
+		};
+	}
+	// factory.json has loaded, so the cron time reads; intake fires it in the machine's local time zone
+	const next = nextDue(parseCron(source.cron ?? ''), o.now?.() ?? new Date());
+	return {
+		...said,
+		status: 'ok',
+		detail: `schedule ${source.cron ?? ''}, next due ${next === null ? 'never' : localTime(next)}, template ${source.template} is in shape${go}`
+	};
+}
+
 // In the order doctor lists them.
 export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	apiKeyCheck,
@@ -315,9 +402,11 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	adaptersCheck,
 	trackerCheck,
 	codeHostCheck,
+	pullChecksCheck,
 	claudeCheck,
 	signingCheck,
-	workflowsCheck
+	workflowsCheck,
+	sourcesCheck
 ];
 
 export async function checkMachine(o: CheckOptions): Promise<Checked> {

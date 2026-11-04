@@ -1,28 +1,40 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
 import type { RunCheck } from './check.js';
-import type { CodeHost, Pull } from './code-host.js';
+import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
+import { DEFAULT_PULL_CHECKS } from './config.js';
+import { pullChecksReport } from './gate.js';
 import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
 import {
 	featureAfterRunStep,
 	featureStopStep,
 	nextStepText,
+	pullChecksStep,
 	stoppedStep,
 	ticketStep,
 	type NextStep,
 	type TicketHandBack
 } from './next-step.js';
 import type { Signal, SignalNames } from './signals.js';
+import { ticketFaults } from './ticket-contract.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
-import { branchFor, type OpenWorktree, type Worktree } from './worktree.js';
 import {
+	SESSION_TRAILER,
+	TRAILER_PREFIX,
+	branchFor,
+	type OpenWorktree,
+	type Worktree
+} from './worktree.js';
+import {
+	DIFF_CHARS,
 	chooseWorkflow,
 	openWorkflow,
 	type FixEnd,
@@ -41,6 +53,11 @@ export interface Limits {
 	readonly reviewMinutes: number;
 	readonly questionRounds: number;
 	readonly dailyUsd: number;
+	// how many Pull-check fix rounds one pull request may get, counted from its branch's trailers
+	readonly pullFixRounds: number;
+	// the most one Pull-check fix round may cost and run, its check's fix rounds too
+	readonly pullFixUsd: number;
+	readonly pullFixMinutes: number;
 }
 
 export const LIMITS: Limits = {
@@ -50,8 +67,29 @@ export const LIMITS: Limits = {
 	reviewUsd: 3,
 	reviewMinutes: 10,
 	questionRounds: 2,
-	dailyUsd: DEFAULT_DAILY_USD
+	dailyUsd: DEFAULT_DAILY_USD,
+	pullFixRounds: DEFAULT_PULL_CHECKS.fixRounds,
+	pullFixUsd: DEFAULT_PULL_CHECKS.fixUsd,
+	pullFixMinutes: DEFAULT_PULL_CHECKS.fixMinutes
 };
+
+// What factory.json's pullChecks says of the pass's limits.
+interface PullFixSettings {
+	readonly fixRounds?: number | undefined;
+	readonly fixUsd?: number | undefined;
+	readonly fixMinutes?: number | undefined;
+}
+
+// The Pull-check limits factory.json sets, each one it leaves out at its default.
+export function pullFixLimits(
+	pullChecks: PullFixSettings | undefined
+): Pick<Limits, 'pullFixRounds' | 'pullFixUsd' | 'pullFixMinutes'> {
+	return {
+		pullFixRounds: pullChecks?.fixRounds ?? LIMITS.pullFixRounds,
+		pullFixUsd: pullChecks?.fixUsd ?? LIMITS.pullFixUsd,
+		pullFixMinutes: pullChecks?.fixMinutes ?? LIMITS.pullFixMinutes
+	};
+}
 
 export interface Deps {
 	readonly tracker: Tracker;
@@ -68,6 +106,8 @@ export interface Deps {
 	readonly openWorktree: OpenWorktree;
 	readonly now: () => Date;
 	readonly newId: () => string;
+	// whether the Coding agent still has the Session of this id on this machine, to resume
+	readonly sessionExists: (id: string) => boolean;
 	readonly say: (line: string) => void;
 	readonly status: StatusReport;
 }
@@ -127,7 +167,7 @@ const hash = (id: ItemId) => `#${id}`;
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps'.
-type Work = 'build' | 'fix' | 'steps' | 'review';
+type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -366,6 +406,17 @@ class FeatureRun {
 
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		const before = await this.tree.head();
+		const faults = ticketFaults(ticket.body);
+		if (faults.length > 0) {
+			await this.handBack(
+				ticket,
+				before,
+				`Nightjar did not start a Session on this Ticket, because it does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+				'retry',
+				`it fails the Ticket contract: ${faults.join(' ')}`
+			);
+			return NEXT;
+		}
 		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
 		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);
@@ -496,50 +547,17 @@ class FeatureRun {
 		return this.steps === null ? NEXT : this.steps.runAt('afterEachTicket', ticket);
 	}
 
-	// Fix rounds while the check fails, each in the session that built the work; `cap` is the most the whole piece of work may cost.
-	private async fixUntilGreen(o: FixWork): Promise<FixEnd> {
-		const { limits, check: command } = this.setup;
-		const summaries: string[] = [];
-		const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
-		let { check, spent } = o;
-		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
-			const { usd: budget, enough } = this.deps.spend.allowance(o.cap, spent);
-			if (!enough) break;
-			this.deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
-			this.building(o.ticket, 'fix', o.sessionId, { round, rounds: limits.fixRounds });
-			const got = await this.deps.codingAgent.fix({
-				kind: 'fix',
-				at: this.tree.at,
-				of: o.of,
-				resume: o.sessionId,
-				round,
-				tail: check.tail,
-				budgetUsd: budget
-			});
-			spent += got.costUsd;
-			const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
-			if (got.kind === 'paused') {
-				this.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
-				return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
-			}
-			// the ledger names a fix round that failed or was stopped as one that gave up
-			const gaveUp = got.kind !== 'fixed';
-			this.log(
-				{
-					...entry,
-					costUsd: got.costUsd,
-					outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`
-				},
-				work
-			);
-			if (got.kind === 'aborted') return { check, spent, summaries, halt: { kind: 'aborted' } };
-			if (got.kind !== 'fixed') break;
-			summaries.push(got.summary);
-			check = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
-		}
-		// a stop during the check, which no Session reports
-		if (this.aborted) return { check, spent, summaries, halt: { kind: 'aborted' } };
-		return { check, spent, summaries };
+	private fixUntilGreen(o: FixWork): Promise<FixEnd> {
+		return fixUntilGreen(
+			{
+				deps: this.deps,
+				setup: this.setup,
+				tree: this.tree,
+				building: (ticket, session, rounds) => this.building(ticket, 'fix', session, rounds),
+				log: (entry, work) => this.log(entry, work)
+			},
+			o
+		);
 	}
 
 	private building(
@@ -707,6 +725,339 @@ class FeatureRun {
 	}
 }
 
+// What the fix rounds work with: the run's seams and worktree, and how the run shows and logs a round.
+interface FixContext {
+	readonly deps: Deps;
+	readonly setup: Setup;
+	readonly tree: Worktree;
+	readonly building: (
+		ticket: ItemId | null,
+		session: string,
+		rounds: { readonly round: number; readonly rounds: number }
+	) => void;
+	readonly log: (entry: LogEntry, work: Work) => void;
+}
+
+// Fix rounds while the check fails, each in the session that built the work; `cap` is the most the whole piece of work may cost.
+async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
+	const { deps, setup, tree } = ctx;
+	const { limits, check: command } = setup;
+	const summaries: string[] = [];
+	const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
+	let { check, spent } = o;
+	for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
+		const { usd: budget, enough } = deps.spend.allowance(o.cap, spent);
+		if (!enough) break;
+		const minutes = minutesLeft(deps.now, o.deadline);
+		if (minutes !== undefined && minutes <= 0) break;
+		deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
+		ctx.building(o.ticket, o.sessionId, { round, rounds: limits.fixRounds });
+		const got = await deps.codingAgent.fix({
+			kind: 'fix',
+			at: tree.at,
+			of: o.of,
+			resume: o.sessionId,
+			round,
+			tail: check.tail,
+			budgetUsd: budget,
+			...(minutes === undefined ? {} : { minutes })
+		});
+		spent += got.costUsd;
+		const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
+		if (got.kind === 'paused') {
+			ctx.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
+			return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
+		}
+		// the ledger names a fix round that failed or was stopped as one that gave up
+		const gaveUp = got.kind !== 'fixed';
+		ctx.log(
+			{
+				...entry,
+				costUsd: got.costUsd,
+				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`
+			},
+			work
+		);
+		if (got.kind === 'aborted') return { check, spent, summaries, halt: { kind: 'aborted' } };
+		if (got.kind !== 'fixed') break;
+		summaries.push(got.summary);
+		check = await deps.runCheck(command, tree.at.folder, envOf(setup));
+	}
+	// a stop during the check, which no Session reports
+	if (setup.signal?.aborted === true) {
+		return { check, spent, summaries, halt: { kind: 'aborted' } };
+	}
+	return { check, spent, summaries };
+}
+
+// What is left of the minutes before `deadline`; nothing for work without one.
+const minutesLeft = (now: () => Date, deadline: number | undefined) =>
+	deadline === undefined ? undefined : (deadline - now().getTime()) / 60_000;
+
+// A draft pull request the revisit pass takes: red, finished, unengaged, and on a Feature of the person's that holds no Signal.
+export interface RedDraft {
+	readonly draft: NightjarDraft;
+	// the Feature its body's marker names
+	readonly feature: ItemId;
+}
+
+export type PullFixOutcome =
+	// a green fix pushed to the branch as its `round`th Pull-check fix, which cost `usd`
+	| {
+			readonly kind: 'fixed';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly summary: string;
+			readonly usd: number;
+	  }
+	// nothing pushed: the work, if any, is kept on an attempt branch, and the Feature is handed to a person
+	| {
+			readonly kind: 'gaveUp';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly why: string;
+			readonly usd: number;
+	  }
+	// the pull request has had its `rounds` fix rounds: no Session, and the Feature is handed to a person
+	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
+	// the pull request is not Nightjar's to fix after all; nothing was done
+	| { readonly kind: 'skipped'; readonly why: string }
+	| { readonly kind: 'paused'; readonly why: string }
+	| { readonly kind: 'stopped' };
+
+// One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
+export async function fixPullChecks(
+	deps: Deps,
+	setup: Setup,
+	red: RedDraft
+): Promise<PullFixOutcome> {
+	const { tracker } = deps;
+	const { draft } = red;
+	const { pull } = draft;
+	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
+	if (day !== null) return { kind: 'paused', why: day };
+	const feature = await tracker.feature(red.feature);
+	const tree = await deps.openWorktree(
+		setup.root,
+		setup.worktrees,
+		draft.branch,
+		setup.baseBranch,
+		setup.env
+	);
+	const skip = (why: string): PullFixOutcome => {
+		deps.say(`${pull.url}: left alone, ${why}`);
+		return { kind: 'skipped', why };
+	};
+	if (!(await tree.toRemote())) return skip('its branch here holds commits the Code host lacks');
+	const trailers = await tree.headTrailers();
+	if (![...trailers.keys()].some((k) => k.startsWith(TRAILER_PREFIX))) {
+		return skip("its head commit is not Nightjar's");
+	}
+	const headSession = trailers.get(SESSION_TRAILER);
+	// counted from the branch, so neither a new run nor taking needs a person off resets it
+	const used = await tree.pullFixes();
+	const rounds = setup.limits.pullFixRounds;
+	if (used >= rounds) {
+		const why = `it has had its ${String(rounds)} Pull-check fix round${rounds === 1 ? '' : 's'}`;
+		deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, and ${why}`);
+		await handOver(deps, setup, feature.id, draft, why, draft.body);
+		return { kind: 'atLimit', pull, rounds };
+	}
+	const round = used + 1;
+	deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, fix ${String(round)}`);
+	// the head commit's Session where this machine still has it, else a new one
+	const session: PullFixSession =
+		headSession !== undefined && deps.sessionExists(headSession)
+			? { kind: 'resume', id: headSession }
+			: { kind: 'fresh', id: deps.newId() };
+	if (session.kind === 'fresh') {
+		deps.say(
+			`${hash(feature.id)}: ${headSession === undefined ? 'the head commit names no Session' : `Session ${headSession} is not on this machine`}, starting a new one`
+		);
+	}
+	await tracker.addSignal(feature.id, 'working');
+	let got: PullFixOutcome;
+	try {
+		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round });
+		// every round that ran says so in the body, the one that gave up too
+		const ran = (r: Pick<PullRound, 'outcome' | 'summary' | 'usd'>) =>
+			withPullRound(draft.body, { round, failed: draft.checks.failed, ...r });
+		if (got.kind === 'fixed') {
+			await deps.codeHost.editBody(
+				pull,
+				ran({ outcome: 'pushed', summary: got.summary, usd: got.usd })
+			);
+		} else if (got.kind === 'gaveUp') {
+			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
+			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
+			await handOver(deps, setup, feature.id, draft, why, body);
+		}
+	} finally {
+		await tracker.removeSignal(feature.id, 'working');
+	}
+	return got;
+}
+
+const HANDED_OVER = '<!-- nightjar-pull-checks: handed to a person -->';
+
+// Whether the revisit pass handed this pull request to a person; a normal build rewrites the body, and so takes the mark off.
+export function handedOver(body: string): boolean {
+	return body.includes(HANDED_OVER);
+}
+
+// The body with the hidden mark that the pass handed the pull request to a person.
+export function markHandedOver(body: string): string {
+	return handedOver(body) ? body : `${body}\n\n${HANDED_OVER}`;
+}
+
+// The Feature is a person's now: needs a person on it, a comment naming the pull request and its failing Pull checks, and a mark in the body so the pass leaves it alone once the Signal comes off.
+async function handOver(
+	deps: Deps,
+	setup: Setup,
+	feature: ItemId,
+	draft: NightjarDraft,
+	why: string,
+	// the pull request body as it is to stay, before the mark
+	body: string
+): Promise<void> {
+	const { pull } = draft;
+	await deps.tracker.addSignal(feature, 'human');
+	const failing = draft.checks.failed.map(failingLine);
+	const comment = `Nightjar could not make the Pull checks of ${pull.url} green: ${why}.\n\nFailing Pull checks:\n\n${failing.join('\n')}`;
+	await deps.tracker.comment(feature, withNext(comment, pullChecksStep(setup.signals)));
+	await deps.codeHost.editBody(pull, markHandedOver(body));
+	deps.say(`${hash(feature)}: handed to a person, ${why}`);
+}
+
+// The Session a Pull-check fix round runs in: the head commit's, resumed, or a new one when this machine has none.
+type PullFixSession = { readonly kind: 'resume' | 'fresh'; readonly id: string };
+
+async function pullFixRound(
+	deps: Deps,
+	setup: Setup,
+	o: {
+		feature: Feature;
+		tree: Worktree;
+		draft: NightjarDraft;
+		session: PullFixSession;
+		round: number;
+	}
+): Promise<PullFixOutcome> {
+	const { feature, tree, draft, round } = o;
+	const session = o.session.id;
+	const { pull } = draft;
+	const show = buildingOf(feature, deps.now);
+	let sessionStartedAt = deps.now();
+	// the whole round, the check's own fix rounds too, shows as the Pull-check fix it is
+	const building = () => {
+		sessionStartedAt = deps.now();
+		deps.status.doing(
+			show({
+				ticket: null,
+				step: 'pullChecks',
+				round,
+				rounds: setup.limits.pullFixRounds,
+				session
+			})
+		);
+	};
+	const log = (entry: LogEntry) => {
+		const at = deps.now();
+		deps.spend.record({
+			at: at.toISOString(),
+			repo: setup.repo,
+			feature: feature.id,
+			branch: tree.at.branch,
+			durationMs: Math.max(0, at.getTime() - sessionStartedAt.getTime()),
+			...entry,
+			step: 'pullChecks'
+		});
+		sessionStartedAt = at;
+	};
+	const name = `Pull-check fix ${String(round)}`;
+	const before = await tree.head();
+	const gaveUp = async (why: string, usd: number): Promise<PullFixOutcome> => {
+		const side = await tree.discard(before, `pull-fix-${String(round)}`);
+		deps.say(
+			`${hash(feature.id)}: ${name} gave up: ${why}${side ? `; the attempt is kept on ${side}` : ''}`
+		);
+		return { kind: 'gaveUp', pull, round, why, usd };
+	};
+	const halted = async (halt: Halt): Promise<PullFixOutcome> => {
+		await tree.discard(before, `pull-fix-${String(round)}`);
+		return halt.kind === 'paused' ? { kind: 'paused', why: halt.why } : { kind: 'stopped' };
+	};
+
+	building();
+	const { pullFixUsd: cap, pullFixMinutes: minutes } = setup.limits;
+	const deadline = deps.now().getTime() + minutes * 60_000;
+	// why the round stopped short of a green check: one of its own caps, else the fix rounds ran out
+	const stillRed = (spent: number) => {
+		if (!deps.spend.allowance(cap, spent).enough) return `it reached its cap of ${dollars(cap)}`;
+		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
+		return `\`${setup.check}\` still fails after the fix rounds`;
+	};
+	// a new Session knows nothing of the work: it is given the Feature and the branch's diff as it stands
+	const fresh =
+		o.session.kind === 'fresh' ? { feature, diff: await tree.diff(DIFF_CHARS) } : undefined;
+	const got = await deps.codingAgent.fix({
+		kind: 'fix',
+		at: tree.at,
+		of: fresh === undefined ? { kind: 'pullChecks' } : { kind: 'pullChecks', fresh },
+		resume: session,
+		round,
+		tail: pullChecksReport(draft.checks.failed),
+		budgetUsd: cap,
+		minutes
+	});
+	const entry = { ticket: null, step: 'pullChecks' as const, session, costUsd: got.costUsd };
+	switch (got.kind) {
+		case 'paused':
+			log({ ...entry, outcome: `paused: ${got.why}` });
+			return halted(got);
+		case 'aborted':
+			log({ ...entry, outcome: 'stopped by a person' });
+			return halted(got);
+		case 'failed':
+			log({ ...entry, outcome: `pull checks ${String(round)} failed: ${got.why}` });
+			return gaveUp(got.why, got.costUsd);
+		case 'gaveUp':
+			log({ ...entry, outcome: `pull checks ${String(round)} gave up` });
+			return gaveUp('the Session could not fix the Pull checks', got.costUsd);
+		case 'fixed':
+			log({ ...entry, outcome: `pull checks ${String(round)}` });
+	}
+	const first = await deps.runCheck(setup.check, tree.at.folder, envOf(setup));
+	const fixed = await fixUntilGreen(
+		{
+			deps,
+			setup,
+			tree,
+			building,
+			log: (e) => log(e)
+		},
+		{
+			ticket: null,
+			name,
+			sessionId: session,
+			cap,
+			spent: got.costUsd,
+			check: first,
+			of: { kind: 'build' },
+			deadline
+		}
+	);
+	if (fixed.halt !== undefined) return halted(fixed.halt);
+	if (!fixed.check.ok) return gaveUp(stillRed(fixed.spent), fixed.spent);
+	const summary = [got.summary, ...fixed.summaries].join('\n\n');
+	if (!(await tree.commitPullFix(round, summary, session))) {
+		return gaveUp('the Session changed no file', fixed.spent);
+	}
+	await deps.codeHost.push(tree.at.folder, tree.at.branch);
+	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
+	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
+}
+
 async function reviewFeature(
 	deps: Deps,
 	setup: Setup,
@@ -794,7 +1145,20 @@ function pullBody(p: {
 			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
 		);
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
+	parts.push(featureMarker(p.feature.id));
 	return `${parts.join('\n\n')}${FOOTER}`;
+}
+
+const MARKER = /<!-- nightjar-feature: (\S+) -->/;
+
+// The hidden line that names the Feature a pull request belongs to.
+export function featureMarker(id: ItemId): string {
+	return `<!-- nightjar-feature: ${id} -->`;
+}
+
+// The Feature id a pull request body names; nothing for a body written without the marker.
+export function featureOfBody(body: string): string | undefined {
+	return MARKER.exec(body)?.[1];
 }
 
 // The total, then what each Ticket cost by kind of work, the Steps after all Tickets, and the review; a kind with no Session is left out.

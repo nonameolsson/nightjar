@@ -3,13 +3,15 @@ import { why } from './say.js';
 
 export interface Line {
 	readonly name: string;
-	readonly status: 'ok' | 'fail' | 'skip';
+	readonly status: 'ok' | 'fail' | 'skip' | 'warn';
 	// what was found, or why it failed and how to fix it
 	readonly detail: string;
 	// the check as the one-line `checked:` of a build names it; none when it is left out
 	readonly summary: string | null;
 	// the one Workflow this line is an error for; it stops no other Workflow and no build of its own
 	readonly only?: string;
+	// the one Source this line is about; a fault in it stops no build, which never reads a Source
+	readonly source?: string;
 }
 
 // What a check that passed found, and what it says.

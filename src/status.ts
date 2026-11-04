@@ -110,6 +110,11 @@ export class StatusFile implements StatusReport {
 			const own: Item = { feature: doing.feature, ticket: null };
 			this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
 		}
+		// a Ticket Nightjar builds again is no longer handed back; its reason would be stale
+		if (doing.kind === 'building' && doing.ticket !== null) {
+			const own: Item = { feature: doing.feature, ticket: doing.ticket };
+			this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
+		}
 		this.now = doing;
 		// with no run going there is no Queue
 		if (doing.kind === 'off') this.refresh = null;

@@ -1,10 +1,27 @@
 // --once, --watch and --dry-run over the in-memory Tracker, with the build loop scripted.
 import { describe, expect, it } from 'vitest';
-import type { FeatureOutcome } from './build.js';
-import { FakeTracker } from './fakes/tracker.js';
+import {
+	featureMarker,
+	markHandedOver,
+	type FeatureOutcome,
+	type PullFixOutcome,
+	type RedDraft
+} from './build.js';
+import type { PullChecks } from './code-host.js';
+import { FakeCodeHost } from './fakes/code-host.js';
+import { FakeTracker, type NewItem } from './fakes/tracker.js';
 import { featureStopStep, nextStepText } from './next-step.js';
 import type { Waiting } from './plan.js';
-import { buildNamed, cannotClaim, dryRun, queue, type QueueDeps } from './queue.js';
+import {
+	buildNamed,
+	cannotClaim,
+	dryRun,
+	fixNamed,
+	pullChecksPass,
+	pullFixExit,
+	queue,
+	type QueueDeps
+} from './queue.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
 
@@ -138,6 +155,12 @@ describe('queue --watch', () => {
 			nextPollAt: new Date(2026, 9, 30, 9, 2).toISOString()
 		});
 	});
+
+	it('waits the poll interval the person set', async () => {
+		const w = world();
+		await queue({ ...w.deps, pollMs: 45_000 }, false);
+		expect(w.sleeps).toEqual([45_000, 45_000]);
+	});
 });
 
 describe('queue --watch with newer Nightjar code', () => {
@@ -168,6 +191,308 @@ describe('queue --watch with newer Nightjar code', () => {
 		w.deps = { ...w.deps, newer: () => ((checked += 1), Promise.resolve('0.3.0')) };
 		await queue(w.deps, true);
 		expect(checked).toBe(0);
+	});
+});
+
+const FAILURE = {
+	check: 'CI / test',
+	job: 'test',
+	step: 'Run npm test',
+	logTail: 'Error: expected 1 to be 2'
+};
+
+// The world, with draft pull requests on a fake Code host and the Pull-check fix round scripted.
+function withDrafts(w: ReturnType<typeof world>) {
+	const host = new FakeCodeHost();
+	const fixed: string[] = [];
+	let outcome: (red: RedDraft) => Promise<PullFixOutcome> = async (red) => {
+		// as a green round does, a new commit is pushed and its Pull checks start
+		await host.push(`/work/${red.feature}`, red.draft.branch);
+		return { kind: 'fixed', pull: red.draft.pull, round: 1, summary: 'Fixed.', usd: 1 };
+	};
+	// a draft on Nightjar's branch for `feature`, its body naming it unless null
+	const open = async (
+		feature: string | null,
+		checks: PullChecks = { pending: false, failed: [FAILURE] }
+	) => {
+		const branch = `factory/${feature ?? 'x'}-done`;
+		await host.push(`/work/${branch}`, branch);
+		const marker = feature === null ? '' : `\n\n${featureMarker(feature)}`;
+		const body = `Nightjar built all of it.${marker}`;
+		const pull = await host.createDraft({ title: 'Done', head: branch, base: 'main', body });
+		host.setChecks(pull, checks);
+		return pull;
+	};
+	// a Feature assigned to ann, built and holding no Signal
+	const done = (id: string, over: Partial<NewItem> = {}) => {
+		w.tracker.add({ id, title: `Done ${id}`, assignees: ['ann'], ...over });
+	};
+	w.deps = {
+		...w.deps,
+		pullChecks: {
+			drafts: host.nightjarDrafts,
+			fix: (red) => {
+				fixed.push(red.feature);
+				w.trail.push(`fix ${red.feature}`);
+				return outcome(red);
+			}
+		}
+	};
+	return {
+		host,
+		open,
+		done,
+		fixed,
+		fixWith: (o: (red: RedDraft) => Promise<PullFixOutcome>) => {
+			outcome = o;
+		}
+	};
+}
+
+const work = (trail: readonly string[]) => trail.filter((t) => !t.startsWith('refresh'));
+
+describe('queue --watch with the Pull-check pass', () => {
+	it("fixes a red draft before it takes the next Feature, handing it the draft and the body's Feature", async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		const handed: RedDraft[] = [];
+		const fix = w.deps.pullChecks?.fix;
+		w.deps = {
+			...w.deps,
+			pullChecks: {
+				drafts: d.host.nightjarDrafts,
+				fix: (red) => {
+					handed.push(red);
+					return fix ? fix(red) : Promise.reject(new Error('no fix'));
+				}
+			}
+		};
+		expect(await queue(w.deps, false)).toBe(130);
+		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4']);
+		expect(handed).toMatchObject([
+			{
+				feature: '20',
+				draft: {
+					pull,
+					branch: 'factory/20-done',
+					checks: { pending: false, failed: [FAILURE] },
+					personEngaged: false
+				}
+			}
+		]);
+	});
+
+	it('takes the oldest red draft first, and the next before any Feature', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		d.done('22');
+		await d.open('20');
+		await d.open('22');
+		await queue(w.deps, false);
+		expect(work(w.trail)).toEqual(['fix 20', 'fix 22', 'build 2', 'build 4']);
+	});
+
+	it("leaves alone a draft that is pending, green, engaged, unmarked, on another person's Feature or on one holding a Signal", async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20', { pending: true, failed: [FAILURE] });
+		d.done('22');
+		await d.open('22', { pending: false, failed: [] });
+		d.done('24');
+		d.host.engage(await d.open('24'));
+		await d.open(null);
+		d.done('26', { assignees: ['bob'] });
+		await d.open('26');
+		d.done('28', { signals: ['needsInfo'] });
+		await d.open('28');
+		d.done('30', { signals: ['human'] });
+		await d.open('30');
+		await queue(w.deps, false);
+		expect(d.fixed).toEqual([]);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it('leaves alone a draft the pass handed to a person, after the Signal comes off too', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		const body = d.host.pulls.find((p) => p.id === pull.id)?.body ?? '';
+		await d.host.editBody(pull, markHandedOver(body));
+		await queue(w.deps, false);
+		expect(d.fixed).toEqual([]);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it('takes a draft once at its head commit, so a round that pushed nothing does not hold up the Queue', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1 }));
+		await queue(w.deps, false);
+		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4']);
+	});
+
+	it('goes on to the Queue when a round stops on a fault, saying so', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.reject(new Error('the network went away')));
+		await queue(w.deps, false);
+		expect(w.built).toEqual(['2', '4']);
+		expect(w.lines.some((l) => l.includes('stopped on a fault: the network went away'))).toBe(true);
+	});
+
+	it('goes on to the Queue when the Code host cannot list the drafts, saying so', async () => {
+		const w = world();
+		w.deps = {
+			...w.deps,
+			pullChecks: {
+				drafts: () => Promise.reject(new Error('the Code host is down')),
+				fix: () => Promise.reject(new Error('never'))
+			}
+		};
+		await queue(w.deps, false);
+		expect(w.built).toEqual(['2', '4']);
+		expect(w.lines.some((l) => l.includes('the Code host is down'))).toBe(true);
+	});
+
+	it('looks again on each idle tick, so a draft that turns red while nothing is queued is fixed', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20', { pending: true, failed: [] });
+		const { sleep } = w.deps;
+		w.deps = {
+			...w.deps,
+			sleep: (ms, signal) => {
+				d.host.setChecks(pull, { pending: false, failed: [FAILURE] });
+				return sleep(ms, signal);
+			}
+		};
+		await queue(w.deps, false);
+		expect(d.fixed).toEqual(['20']);
+	});
+
+	it('pauses as a build does when the round pauses, and takes the draft again after', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
+		await queue(w.deps, false);
+		expect(w.sleeps).toEqual([30 * 60_000, 30 * 60_000]);
+		expect(d.fixed).toEqual(['20', '20']);
+		expect(w.doing[0]).toMatchObject({ kind: 'paused', why: 'the daily limit was reached' });
+	});
+});
+
+describe('queue --once with the Pull-check pass', () => {
+	it('fixes the oldest red draft as its one piece of work, builds no Feature and exits', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		d.done('22');
+		await d.open('20');
+		await d.open('22');
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(d.fixed).toEqual(['20']);
+		expect(w.built).toEqual([]);
+		expect(w.sleeps).toEqual([]);
+	});
+
+	it('builds the next Feature when no draft is red', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20', { pending: false, failed: [] });
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(d.fixed).toEqual([]);
+		expect(w.built).toEqual(['2']);
+	});
+
+	it('builds the next Feature when the draft is not Nightjar to fix after all', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'skipped', why: 'its head commit is not Nightjar' }));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(d.fixed).toEqual(['20']);
+		expect(w.built).toEqual(['2']);
+	});
+
+	it('exits 0 when the round gave up and handed the Feature to a person', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1 }));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.built).toEqual([]);
+	});
+
+	it('exits 1, saying why, when the daily limit holds the round back, and builds nothing', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
+		expect(await queue(w.deps, true)).toBe(1);
+		expect(w.lines).toContain('the daily limit was reached');
+		expect(w.built).toEqual([]);
+	});
+
+	it('builds the next Feature when the Code host cannot list the drafts, saying so', async () => {
+		const w = world();
+		w.deps = {
+			...w.deps,
+			pullChecks: {
+				drafts: () => Promise.reject(new Error('the Code host is down')),
+				fix: () => Promise.reject(new Error('never'))
+			}
+		};
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.built).toEqual(['2']);
+		expect(w.lines.some((l) => l.includes('the Code host is down'))).toBe(true);
+	});
+
+	it('takes no draft when the pass is off', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		const { pullChecks: _off, ...off } = w.deps;
+		expect(await queue(off, true)).toBe(0);
+		expect(d.fixed).toEqual([]);
+		expect(w.built).toEqual(['2']);
+	});
+});
+
+describe('pullChecksPass', () => {
+	const fix = () => Promise.resolve<PullFixOutcome>({ kind: 'stopped' });
+
+	it('is there when factory.json turns it on and the Code host lists its drafts', () => {
+		expect(pullChecksPass({ enabled: true }, new FakeCodeHost(), fix)).not.toBeNull();
+	});
+
+	it('is off when factory.json leaves it out or off, so --watch is as before', () => {
+		expect(pullChecksPass(undefined, new FakeCodeHost(), fix)).toBeNull();
+		expect(pullChecksPass({}, new FakeCodeHost(), fix)).toBeNull();
+		expect(pullChecksPass({ enabled: false }, new FakeCodeHost(), fix)).toBeNull();
+	});
+
+	it('is off over a Code host without nightjarDrafts', () => {
+		const { nightjarDrafts: _gone, ...without } = new FakeCodeHost();
+		expect(pullChecksPass({ enabled: true }, without, fix)).toBeNull();
 	});
 });
 
@@ -448,5 +773,63 @@ describe('nightjar <id>', () => {
 			why: 'boom',
 			startedAt: new Date(2026, 9, 30, 9).toISOString()
 		});
+	});
+});
+
+describe('nightjar <id> with the Pull-check pass', () => {
+	it("fixes that Feature's red draft, not another Feature's, even when an older one is red", async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		d.done('22');
+		await d.open('20');
+		await d.open('22');
+		const got = await fixNamed(w.deps, '22');
+		expect(got).toMatchObject({ kind: 'fixed' });
+		expect(d.fixed).toEqual(['22']);
+		expect(w.built).toEqual([]);
+		expect(got === null ? 1 : pullFixExit(got)).toBe(0);
+	});
+
+	it('leaves the Feature to be built as today when it has no red draft', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20', { pending: false, failed: [] });
+		d.done('22');
+		await d.open('22');
+		expect(await fixNamed(w.deps, '20')).toBeNull();
+		expect(await fixNamed(w.deps, '4')).toBeNull();
+		expect(d.fixed).toEqual([]);
+	});
+
+	it('leaves the Feature to be built when the round skipped its draft', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'skipped', why: 'nothing to resume' }));
+		expect(await fixNamed(w.deps, '20')).toBeNull();
+	});
+
+	it('exits 1, saying why, when the daily limit holds the round back', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
+		const got = await fixNamed(w.deps, '20');
+		expect(got === null ? 0 : pullFixExit(got)).toBe(1);
+		expect(w.lines).toContain('the daily limit was reached');
+	});
+
+	it('does nothing when the pass is off', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		const { pullChecks: _off, ...off } = w.deps;
+		expect(await fixNamed(off, '20')).toBeNull();
+		expect(d.fixed).toEqual([]);
 	});
 });

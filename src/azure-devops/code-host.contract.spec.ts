@@ -3,8 +3,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
-import { run } from '../git.js';
-import { codeHostContract, type Pull } from '../index.js';
+import { run, type Env } from '../git.js';
+import {
+	codeHostContract,
+	nightjarDraftsContract,
+	type DraftsWorld,
+	type Pull,
+	type PullChecks
+} from '../index.js';
 import { AzureDevOpsApi } from './api.js';
 import { AzureReposCodeHost, REFERENCES_MARK, type ReferencesAs } from './code-host.js';
 import { FakeAzureDevOps } from './fake-azure-devops.js';
@@ -25,6 +31,47 @@ function referencesShown(body: string, linked: readonly number[]): string[] {
 					.map((l) => l.trim().replace(/^- /, ''))
 					.filter((l) => l !== '');
 	return [...lines, ...linked.map((id) => `#${String(id)}`)];
+}
+
+// each line stamped with its time, as Azure Pipelines writes a log
+const stamp = (line: string) => `2026-11-04T06:53:39.1234567Z ${line}`;
+
+// Each Pull check as Azure Repos reports it: one with a job as a failed build of a build validation policy, one without as a status.
+function setChecks(ado: FakeAzureDevOps, pull: Pull, checks: PullChecks): void {
+	ado.clearChecks(pull.id);
+	if (checks.pending) ado.policy(pull.id, { type: 'build', status: 'running' });
+	for (const f of checks.failed) {
+		if (f.job === '') {
+			ado.status(pull.id, { name: f.check, state: 'failed', description: f.logTail });
+			continue;
+		}
+		const log = f.logTail.split('\n').map(stamp).join('\n');
+		const buildId = ado.build([
+			{
+				name: f.job,
+				result: 'failed',
+				...(f.step === '' ? { log } : {}),
+				steps: [
+					{ name: 'Checkout', result: 'succeeded', log: stamp('Syncing repository') },
+					...(f.step === '' ? [] : [{ name: f.step, result: 'failed', log }])
+				]
+			}
+		]);
+		ado.policy(pull.id, { type: 'build', status: 'rejected', displayName: f.check, buildId });
+	}
+}
+
+function azureReposDrafts(ado: FakeAzureDevOps): DraftsWorld {
+	const done = (act: () => void) => {
+		act();
+		return Promise.resolve();
+	};
+	return {
+		checks: (pull, checks) => done(() => setChecks(ado, pull, checks)),
+		engage: (pull) => done(() => ado.sayOnPull(pull.id, 'bea@contoso.com', 'Why this change?')),
+		ready: (pull) => done(() => ado.markReady(pull.id)),
+		closePull: (pull) => done(() => ado.abandon(pull.id))
+	};
 }
 
 const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
@@ -66,14 +113,24 @@ const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
 	for (const n of [1, 2, 3])
 		ado.workItem({ type: 'Product Backlog Item', title: `Ticket ${String(n)}` });
 	const api = new AzureDevOpsApi('contoso', ado.signIn(), ado.request);
+	// Azure Repos learns of each push, so a pull request's head commit follows its branch
+	const pushing = async (args: readonly string[], cwd: string, extra: Env) => {
+		const got = await run('git', args, cwd, { ...env, ...extra });
+		const ref = /^HEAD:refs\/heads\/(.+)$/.exec(args.at(-1) ?? '');
+		if (got.ok && args[0] === 'push' && ref) {
+			ado.pushed(ref[1] ?? '', await git(['rev-parse', 'HEAD'], cwd));
+		}
+		return got;
+	};
 	const codeHost = new AzureReposCodeHost(
 		api,
 		{ project: PROJECT, repo: REPO, referencesAs },
-		(args, cwd, extra) => run('git', args, cwd, { ...env, ...extra }),
+		pushing,
 		origin
 	);
 	return {
 		codeHost,
+		drafts: azureReposDrafts(ado),
 		base: 'main',
 		commit,
 		branch: async (name: string) => {
@@ -110,4 +167,8 @@ describe('AzureReposCodeHost meets the Code host contract', { timeout: 30_000 },
 	describe('placing references from another Tracker in the body', () => {
 		for (const c of codeHostContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 	});
+});
+
+describe('AzureReposCodeHost meets the nightjarDrafts contract', { timeout: 30_000 }, () => {
+	for (const c of nightjarDraftsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 });

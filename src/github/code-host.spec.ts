@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { Pull } from '../code-host.js';
 import type { Run } from '../git.js';
 import { GitHubFailure } from './api.js';
 import { GitHubCodeHost, type GitRunner } from './code-host.js';
 import { failed, fakeGh, ok, on, type GhCall } from './fake-gh.js';
+import { FakeGitHub } from './fake-github.js';
 
 const noGit: GitRunner = () => Promise.resolve(failed('no git here'));
 
@@ -115,5 +117,240 @@ describe('GitHubCodeHost', () => {
 		const { gh, calls } = fakeGh(on('POST', 'repos/o/r/issues/9/comments', ok({})));
 		await new GitHubCodeHost('o/r', gh, noGit).comment(PULL, 'A review');
 		expect(calls[0]?.fields).toEqual({ body: 'A review' });
+	});
+});
+
+// o/r signed in as nightjar-bot, whose draft pull requests a spec opens on a pushed branch.
+function draftsWorld() {
+	const github = new FakeGitHub('o/r', 'nightjar-bot');
+	const host = new GitHubCodeHost('o/r', github.gh, noGit);
+	const open = (branch: string, commit = `sha-${branch.replaceAll('/', '-')}`) => {
+		github.pushed(branch, commit);
+		return host.createDraft({
+			title: branch,
+			head: branch,
+			base: 'main',
+			body: `Body of ${branch}`
+		});
+	};
+	const one = async (pull: Pull) => {
+		const found = (await host.nightjarDrafts()).find((d) => d.pull.id === pull.id);
+		if (found === undefined) throw new Error(`pull request ${String(pull.id)} is not listed`);
+		return found;
+	};
+	return { github, host, open, one };
+}
+
+// each line stamped with its time, as GitHub writes an Actions log
+const STAMPED_AT = '2026-11-04T06:53:39.1234567Z';
+const stamped = (...lines: string[]) => lines.map((l) => `${STAMPED_AT} ${l}`).join('\n');
+
+describe('GitHubCodeHost lists its drafts', () => {
+	it("lists only open drafts on Nightjar's branches, oldest first, with their head commit and body", async () => {
+		const { github, host, open } = draftsWorld();
+		const first = await open('factory/1-a', 'abc1234');
+		await open('person/fix-typo');
+		const ready = await open('factory/2-b');
+		const closed = await open('factory/3-c');
+		const last = await open('factory/4-d');
+		github.markReady(ready.id);
+		github.close(closed.id);
+		const drafts = await host.nightjarDrafts();
+		expect(drafts.map((d) => [d.pull, d.branch])).toEqual([
+			[first, 'factory/1-a'],
+			[last, 'factory/4-d']
+		]);
+		expect(drafts[0]).toMatchObject({ headCommit: 'abc1234', body: 'Body of factory/1-a' });
+	});
+
+	it('leaves out a draft whose branch comes from a fork', async () => {
+		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/pulls', () =>
+				ok([
+					{
+						number: 9,
+						html_url: 'https://github.com/o/r/pull/9',
+						body: '',
+						draft: true,
+						head: { ref: 'factory/1-a', sha: 'abc', repo: { full_name: 'someone/r' } }
+					}
+				])
+			)
+		);
+		expect(await new GitHubCodeHost('o/r', gh, noGit).nightjarDrafts()).toEqual([]);
+	});
+
+	it('has no Pull checks on a head commit nothing ran on', async () => {
+		const { open, one } = draftsWorld();
+		const pull = await open('factory/1-a');
+		expect((await one(pull)).checks).toEqual({ pending: false, failed: [] });
+	});
+
+	it('is pending while a check is queued or in progress, or a commit status is pending', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a', 'c1');
+		for (const status of ['queued', 'in_progress']) {
+			github.clearChecks('c1');
+			github.checkRun('c1', { name: 'test', status });
+			expect((await one(pull)).checks.pending).toBe(true);
+		}
+		github.clearChecks('c1');
+		github.commitStatus('c1', { context: 'ci/circleci', state: 'pending' });
+		expect((await one(pull)).checks.pending).toBe(true);
+		github.commitStatus('c1', { context: 'ci/circleci', state: 'success' });
+		github.checkRun('c1', { name: 'test', status: 'completed', conclusion: 'success' });
+		expect((await one(pull)).checks).toEqual({ pending: false, failed: [] });
+	});
+
+	it('names a failed Actions job by its workflow and job, its failed step and the end of its log, without the times', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a', 'c1');
+		github.actionsJob('c1', {
+			workflow: 'CI',
+			name: 'test',
+			conclusion: 'failure',
+			steps: [
+				{ name: 'Set up job', conclusion: 'success' },
+				{ name: 'Run npm test', conclusion: 'failure' },
+				{ name: 'Post Run actions/checkout@v4', conclusion: 'success' }
+			],
+			log: stamped(
+				...Array.from({ length: 150 }, (_, i) => `line ${String(i)}`),
+				'FAIL src/a.spec.ts > a > works',
+				'##[error]Process completed with exit code 1.'
+			)
+		});
+		github.checkRun('c1', { name: 'build', status: 'completed', conclusion: 'success' });
+		const { checks } = await one(pull);
+		expect(checks.pending).toBe(false);
+		expect(checks.failed).toHaveLength(1);
+		const [failed] = checks.failed;
+		expect(failed).toMatchObject({ check: 'CI / test', job: 'test', step: 'Run npm test' });
+		const tail = (failed?.logTail ?? '').split('\n');
+		expect(tail).toHaveLength(100);
+		expect(tail.at(-1)).toBe('##[error]Process completed with exit code 1.');
+		expect(tail).not.toContain('line 0');
+	});
+
+	it('counts each red conclusion as failed, and neither skipped nor neutral', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a', 'c1');
+		for (const conclusion of ['failure', 'timed_out', 'cancelled', 'skipped', 'neutral']) {
+			github.checkRun('c1', { name: conclusion, status: 'completed', conclusion, app: 'other' });
+		}
+		expect((await one(pull)).checks.failed.map((f) => f.check)).toEqual([
+			'failure',
+			'timed_out',
+			'cancelled'
+		]);
+	});
+
+	it("names a commit status, or another app's check run, by the check alone, with what it says", async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a', 'c1');
+		github.commitStatus('c1', {
+			context: 'ci/circleci: build',
+			state: 'failure',
+			description: 'Your tests failed on CircleCI'
+		});
+		github.commitStatus('c1', { context: 'deploy', state: 'error', description: null });
+		github.checkRun('c1', {
+			name: 'Snyk',
+			status: 'completed',
+			conclusion: 'failure',
+			app: 'snyk',
+			output: { title: '2 issues', summary: 'lodash has a known vulnerability' }
+		});
+		expect((await one(pull)).checks.failed).toEqual([
+			{
+				check: 'Snyk',
+				job: '',
+				step: '',
+				logTail: '2 issues\nlodash has a known vulnerability'
+			},
+			{ check: 'ci/circleci: build', job: '', step: '', logTail: 'Your tests failed on CircleCI' },
+			{ check: 'deploy', job: '', step: '', logTail: '' }
+		]);
+	});
+
+	it('still names a failed Actions job whose log has expired', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a', 'c1');
+		github.actionsJob('c1', {
+			workflow: 'CI',
+			name: 'lint',
+			conclusion: 'failure',
+			steps: [{ name: 'Run npm run lint', conclusion: 'failure' }],
+			log: null
+		});
+		expect((await one(pull)).checks.failed).toEqual([
+			{ check: 'CI / lint', job: 'lint', step: 'Run npm run lint', logTail: '' }
+		]);
+	});
+
+	it('reads a failed job once, however often its drafts are listed', async () => {
+		const { github, host, open } = draftsWorld();
+		await open('factory/1-a', 'c1');
+		const id = github.actionsJob('c1', {
+			workflow: 'CI',
+			name: 'test',
+			conclusion: 'failure',
+			steps: [],
+			log: stamped('red')
+		});
+		await host.nightjarDrafts();
+		await host.nightjarDrafts();
+		const logs = `repos/o/r/actions/jobs/${String(id)}/logs`;
+		expect(github.calls.filter((c) => c.path === logs)).toHaveLength(1);
+	});
+
+	it('follows the head commit to a later push, whose checks are its own', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a', 'c1');
+		github.checkRun('c1', { name: 'test', status: 'completed', conclusion: 'failure', app: 'x' });
+		github.pushed('factory/1-a', 'c2');
+		expect(await one(pull)).toMatchObject({
+			headCommit: 'c2',
+			checks: { pending: false, failed: [] }
+		});
+	});
+
+	it("is not engaged by the signed-in login's own comments and reviews", async () => {
+		const { github, host, open, one } = draftsWorld();
+		const pull = await open('factory/1-a');
+		await host.comment(pull, '**Nightjar review: approve**');
+		github.review(pull.id, { login: 'nightjar-bot', body: 'Looks fine.' });
+		expect((await one(pull)).personEngaged).toBe(false);
+	});
+
+	it('is engaged once another login comments', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a');
+		github.say(pull.id, 'bea', 'Why this change?');
+		expect((await one(pull)).personEngaged).toBe(true);
+	});
+
+	it('is engaged once another login reviews, an inline comment too', async () => {
+		const { github, open, one } = draftsWorld();
+		const pull = await open('factory/1-a');
+		const other = await open('factory/2-b');
+		github.review(pull.id, { login: 'bea', body: 'Not yet.', state: 'CHANGES_REQUESTED' });
+		expect((await one(pull)).personEngaged).toBe(true);
+		expect((await one(other)).personEngaged).toBe(false);
+	});
+
+	it('reads the signed-in login once', async () => {
+		const { github, host, open } = draftsWorld();
+		await open('factory/1-a');
+		await open('factory/2-b');
+		await host.nightjarDrafts();
+		await host.nightjarDrafts();
+		expect(github.calls.filter((c) => c.path === 'user')).toHaveLength(1);
+	});
+
+	it('fails with the reason when GitHub cannot list the pull requests', async () => {
+		const { github, host } = draftsWorld();
+		github.signOut();
+		await expect(host.nightjarDrafts()).rejects.toThrow(GitHubFailure);
 	});
 });

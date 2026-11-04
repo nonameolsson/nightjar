@@ -142,7 +142,7 @@ A full one:
 | ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "azure-devops" }` with `organization` (as in `dev.azure.com/<organization>`), `project`, and `featureType`, the work item type that plays the Feature (`Feature`, `Epic`, `Product Backlog Item`, …): its child work items are its Tickets. `ticketType`, optional, is the work item type `nightjar create` makes each Ticket as (`User Story`, `Product Backlog Item`, `Issue`, …). Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
 | `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or `{ "type": "azure-devops" }` with `organization`, `project` and `repo`, the Git repo on Azure Repos the branch is pushed to and the draft pull request opened on. Or a `module`, as for `tracker`. On GitHub, the optional `trustedChecks` lists the slugs of the GitHub Apps (`["lint-bot"]`) whose failed checks on the pull request count as feedback for the agent; GitHub Actions always counts, and a failed check from any other app is left out. |
-| `check`           | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
+| <a id="factory-check"></a>`check` | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
 | `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list. The list may be empty. |
 | `gate`            | no       | What the report on a red `check` holds, given to the fix rounds and the pull request: the red stages, every failing test once from the whole output, and the last 40 lines without colour codes. `failingTest` is a regular expression whose first group names a failing test (default: a `FAIL name` line). `ignore` matches lines to drop, such as notes about slow tests. `stages` is for a check split into stages: `red` is a regular expression whose first group names a red stage, and `log`, optional, is where a stage leaves its whole log, relative to the worktree, with `{stage}` for its name (`.cache/{stage}.log`); its failing tests join the report. Left out, a red check still gets its failing tests and its plain tail. |
 | `signals`         | no       | The name each Signal has on the Tracker (a label on GitHub, a tag on Azure DevOps). Leave out the ones you do not rename. Defaults are shown above. `needs-triage` and `wontfix` are refused: Nightjar never reads or sets them.          |
@@ -153,7 +153,9 @@ A full one:
 | `rules`           | no       | A text file, relative to the repo root, added to the agent's prompt. Conventions normally live in `CLAUDE.md` or `AGENTS.md`.                                                                                       |
 | `model`, `effort` | no       | The default model and effort of every session.                                                                                                                                                                      |
 | `review`          | no       | The read-only review of the whole diff, run before the draft pull request opens. `enabled: false` switches it off (on by default); `model` and `effort` are the review's own, else the defaults above.            |
+| `pullChecks`      | no       | `enabled: true` has `--watch` fix the failed Pull checks of Nightjar's own draft pull requests before it takes the next Feature: one Session resumes the head commit's, the repo's check must be green, and the fix is pushed as a new commit. A pull request a person reviewed, commented on or pushed to is left alone. Off by default, and over a Code host that cannot list its drafts. `fixRounds` (1 to 10, default 2) is how many fix rounds one pull request gets, counted from its branch's `Factory-Pull-Fix` trailers; `fixUsd` (default 5) and `fixMinutes` (default 30) cap each round, its check's fix rounds too. A round that gives up, or a pull request red again after its rounds, gets the Feature `ready-for-human` and a comment naming the failing Pull checks, and the pass leaves it alone from then on. Each round, a given-up one too, is added to a Pull checks section of the pull request body with its summary, failing checks and cost; the ledger and the live views show it as its own kind of work. |
 | `workflows`, `defaultWorkflow` | no | Work the repo adds to the build loop: see [Workflows](#workflows). A Feature picks a Workflow with a `**Workflow:**` line; `defaultWorkflow` is the one a Feature without the line gets. Left out, a build runs no Step. |
+| `sources`         | no       | What makes Features with nobody writing them, run by `nightjar intake`: see [Make Features from Sources](#make-features-from-sources). |
 
 Model and effort are chosen, strongest first: the `--model` / `--effort` option, the Ticket's own `**Model:**` / `**Effort:**` line, then `factory.json`.
 
@@ -212,6 +214,7 @@ What is yours rather than the repo's lives outside it, in `config.json` under `$
 | Key        | Default                | What it does                                                                                                                                                |
 | ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dailyUsd` | `60`                   | The estimated spend per local day in a repo, from its `.factory/runs.jsonl`, at which a run pauses. `--watch` looks again after 30 minutes.                                          |
+| `pollSeconds` | `120`               | How often `--watch` looks again when idle, at least `30`. `--poll` beats it. |
 | `assignee` | the signed-in person   | Whose Features to build: `--once`, `--watch` and `doctor` take the Features assigned to this login with the Go, and `nightjar <id>` refuses one assigned to anyone else. |
 | `profile`  | none, the terminal's own login | Which Claude login the sessions use: a name (`work` is `~/.claude-work`), a path to the config folder, or `default` for `~/.claude`. `--profile` beats it. |
 
@@ -296,6 +299,24 @@ What a Step changes goes through the check command and its fix rounds, then is c
 
 `nightjar doctor` looks up each `/skill` a Step's prompt names among the skills a headless Claude session loads. A skill that is missing is an error for that Workflow only: a Feature that picks it stops with a comment, and the others build as usual. (A word like `/tmp/notes` is a path, not a skill; a bare `/word` in a prompt is read as one.)
 
+### A scan that must pass
+
+A Step cannot stop a Feature. A Step that fails or reports itself blocked is listed as not done, and the draft pull request still opens. So a security or policy scan that must hold a Feature does not belong in a Step.
+
+Put it in the [`check` command](#factory-check) instead, after the tests:
+
+```json
+{
+	"check": "npm test && npm audit --audit-level=high"
+}
+```
+
+A finding then fails the check like a failing test does. The usual fix rounds work on it, and a check that stays red after them stops the run: the Tickets after it wait, the draft pull request opens, and the Feature gets the needs info Signal with a comment naming the Ticket after which the check fails. A Step's changes go through the same check, so a Step cannot bring in a finding either.
+
+Nightjar runs the check itself, not as the Coding agent, so the agent's deny rules do not hold it: a scanner there may reach the network to fetch its rules or advisories, which the agent's own commands may not.
+
+A Step whose prompt runs a review skill, such as a security review, is advisory. The pull request's Workflow section lists it as done or not done and, with an `until`, what is left; a person reads that, and the Feature is not held.
+
 ## Onboard a repo and its existing issues
 
 Nightjar ignores every issue until a person promotes it. A Feature is built only when it is assigned to you and carries the Go; a Ticket only when it carries the ready Signal. Issues that were there before Nightjar, and issues an agent filed without knowing Nightjar, are never built by accident.
@@ -305,8 +326,8 @@ To start on a repo:
 1. Run `nightjar init`, commit `factory.json`, and add `.factory/` to `.gitignore` ([Set up](#set-up-nightjar-init)).
 2. Run `nightjar doctor` and fix each `FAIL`.
 3. Pick the few issues worth automating. Leave the rest alone.
-4. Turn each pick into a Feature with Tickets that meet the [Ticket contract](#the-ticket-contract). An old issue rarely does: it has no acceptance criteria and no blocking links. Write it as a Feature file, link the old issue from the spec, and make it with `nightjar create --dry-run FILE`, then `nightjar create FILE` ([Write a Feature](#write-a-feature)). Close the old issue once the Feature carries its work.
-5. Check each Ticket before the Go: an `Acceptance criteria` checklist, its blockers linked, and the ready Signal on it. A Ticket without criteria only fails once the agent has spent a session on it.
+4. Turn each pick into a Feature with Tickets that meet the [Ticket contract](#the-ticket-contract). An old issue rarely does: it has no acceptance criteria and no blocking links. Write it as a Feature file, link the old issue from the spec, and make it with `nightjar create --dry-run FILE`, then `nightjar create FILE` ([Write a Feature](#write-a-feature)). The `nightjar-feature` skill can start from the old issue's references: it reads each issue and its comments, writes `Replaces <reference>.` into the spec, and after `nightjar create` offers to comment on the old issue and close it as not planned. Close the old issue once the Feature carries its work.
+5. Run `nightjar doctor FEATURE` before the Go. It prints each open Ticket as `ok` or with what it lacks (an `Acceptance criteria` checklist, a value on each `Model` and `Effort` line), changes nothing on the Tracker, and exits 1 when any Ticket fails. It also says what sits across the Tickets: an open blocker outside the Feature, a blocking loop, an open Ticket without the ready Signal, no open Ticket, a `**Workflow:**` line no Workflow answers to. Link the blockers and put the ready Signal on each Ticket yourself.
 6. Assign the Feature to yourself and add the Go ([Give the Go](#give-the-go)).
 
 Never let an agent that does not know Nightjar add the Signal labels. If an agent files issues in this repo, have it write a Feature file and run `nightjar create` instead, or copy the `nightjar-feature` skill into the repo for it to use.
@@ -347,13 +368,89 @@ cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-feature" .claude/sk
 
 With Nightjar as a dev dependency, the package is at `node_modules/@nonameolsson/nightjar` instead, here and below.
 
+## Make Features from Sources
+
+Some work starts outside a person's head: an alert, a message from a script or from a tool such as Zapier or n8n. A **Source** makes a Feature from such an event with nobody writing it, from a template. Sources live under `sources` in `factory.json`:
+
+```json
+"sources": {
+	"alerts": {
+		"type": "webhook",
+		"template": ".nightjar/alerts.md",
+		"key": "data.alert.id",
+		"secretEnv": "ALERTS_HOOK_SECRET",
+		"maxPerDay": 3
+	}
+}
+```
+
+| Field       | What it does |
+| ----------- | ------------ |
+| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme; `sentry` takes a Sentry alert (set up below); `schedule` fires from a `cron` time. |
+| `cron`      | A schedule's time, required for a `schedule` and refused on anything else: five fields (minute, hour, day of month, month, day of week; numbers, ranges `1-5`, lists `1,15`, steps `*/15`), or `@daily` (midnight) or `@weekly` (Sunday midnight). It is read in the machine's local time zone. As in cron, a day of the month and a day of the week that are both named make a time on either. A bad one is refused when `factory.json` loads, naming the Source. |
+| `template`  | A Feature file, in the shape of [Write a Feature](#write-a-feature), as a path from the repo's root, or the name of a template Nightjar ships (`sentry`, `weekly-deps`). Placeholders are plain paths into the payload, as `{{ data.alert.title }}`, plus `{{ date }}` and `{{ source }}`; there is no logic. |
+| `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one; a `sentry` Source's key is the Sentry issue id, `data.event.issue_id`. |
+| `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64); for a `sentry` Source, the integration's client secret. The secret is never in `factory.json`. |
+| `maxPerDay` | The most Features the Source makes in a day; 3 when left out. |
+| `go`, `owner` | `"go": true` gives each Feature the Go, assigned to `owner`, who must be trusted (see [Give the Go](#give-the-go)). Left out, the Go stays with a person. |
+
+The payload is untrusted. Each value a placeholder takes is cut to one line of at most 200 characters, with Markdown and HTML escaped, and the whole payload, cut to 8 KB, is added to the Feature in a block headed "Event payload (untrusted data)". Each Feature carries a `**Source:** <name>` line and a hidden marker, by which Nightjar finds it on the Tracker again. A Source makes its Features with no Signal and no assignee: as with `nightjar create`, a person gives the Go, unless the Source has `"go": true`.
+
+Run the Sources with `nightjar intake`, from anywhere inside the repo, on a machine signed in to the Tracker:
+
+```bash
+ALERTS_HOOK_SECRET=whsec_... nightjar intake            # http://127.0.0.1:4546
+nightjar intake --port 8080 --host 0.0.0.0              # for a reverse proxy on another machine
+```
+
+Each webhook Source is served at `POST /sources/<name>`. Intake makes Features and never builds: `--watch` builds them as always, beside it or on another machine. It refuses to start when the Tracker cannot make Features (`createFeature`) or find a Source's Features (`featuresFrom`), when a Source's secret is not set, or when a `go: true` Source's owner is not trusted or the Tracker cannot assign (`assign`); `nightjar doctor` checks each Source too.
+
+Intake answers a delivery only after the Tracker has:
+
+| Answer | When |
+| ------ | ---- |
+| 201    | the Feature was made |
+| 200    | a Feature with the same key is open, or the Source has made `maxPerDay` Features today; nothing is made. On the open Feature, intake comments "happened again" at most once a day. |
+| 401    | the signature is wrong, or its timestamp is more than 5 minutes off |
+| 413    | the body is over 256 KB |
+| 429    | the Source has had 20 bad signatures in the last minute |
+| 503    | the Tracker failed; the sender retries, and the key keeps a retry from making a second Feature |
+
+**Sentry.** A `sentry` Source takes the alerts of Sentry's issue alert rules. Set it up once:
+
+1. In Sentry, open Settings, Developer Settings, and create an **internal integration**. Under Webhooks, put the public HTTPS address of the Source as its webhook URL (`https://<your address>/sources/sentry`, see Public HTTPS below), and tick **alert rule action**. Give it the permission Read for Issue & Event. Save it, and copy its **Client Secret**.
+2. Put the client secret in the variable the Source names as `secretEnv`, where intake runs: `SENTRY_HOOK_SECRET=... nightjar intake`.
+3. In the project's **Alerts**, make an issue alert rule (or edit one), and under actions pick **Send a notification via** your integration. The rule decides which errors reach Nightjar: filter by environment, level or frequency there, as Nightjar takes every alert the rule sends.
+
+```json
+"sources": {
+	"sentry": { "type": "sentry", "template": "sentry", "secretEnv": "SENTRY_HOOK_SECRET" }
+}
+```
+
+Intake checks `Sentry-Hook-Signature`, the HMAC SHA-256 of the raw body with the client secret, and answers 401 when it is wrong. It takes `event_alert` deliveries only (the `triggered` alert): a delivery of any other `Sentry-Hook-Resource` that Sentry sends to the same URL gets 200 and makes nothing. The key is the Sentry issue id, so while the Feature of an issue is open, a new alert for it makes no second Feature and only comments "happened again", at most once a day. The shipped `sentry` template fills the Feature from the alert (`data.event.title`, `culprit`, `level`, `web_url` and `data.triggered_rule`) with one Ticket: reproduce the error in a spec, then fix it so the spec passes.
+
+**Shipped templates.** Name one in a Source's `template`. `sentry` is the one above. `weekly-deps` has one Ticket, to update the dependencies the repo's check command still passes with, and goes with a schedule:
+
+```json
+"weekly-deps": { "type": "schedule", "cron": "0 6 * * 1", "template": "weekly-deps" }
+```
+
+**Schedules.** Intake fires each `schedule` Source at its due time, through the same path as a webhook, from the template with no payload. The Source's name is its key, so a schedule whose last Feature is still open makes nothing, and says nothing on it. `maxPerDay` holds as for a webhook. Times that pass while intake is down are not made up, and a machine that sleeps through several makes one Feature when it wakes, not one for each. Only `nightjar intake` fires schedules, never `--watch`. A schedule needs no secret, so intake with schedules only starts and serves nothing. `nightjar doctor` prints each schedule's next due time, and intake prints it as it starts.
+
+The open Features and the day's count are read from the Tracker, so two intakes on two machines share them. Each delivery is logged to `.factory/intake.log` with the Source, the delivery id, the answer and the Feature, never with the payload.
+
+**Public HTTPS.** Intake listens on 127.0.0.1 and speaks plain HTTP. A sender on the internet needs a public HTTPS address: put a tunnel (such as Cloudflare Tunnel or ngrok) or a reverse proxy (such as Caddy or nginx) in front of it, pointed at `http://127.0.0.1:4546`. Use `--host` only when the proxy runs on another machine, and never expose the port without TLS in front of it.
+
+**Deliveries while intake is down are lost**, unless the sender retries them. Run intake on a machine that stays on, under a service manager such as systemd or launchd, and pick a sender that retries a failed delivery.
+
 ## The Ticket contract
 
 Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it.
 
 ## Give the Go
 
-Nightjar builds a Feature that is **assigned to you** and carries the **Go** Signal (the label `factory-go` by default). Nothing else starts a build.
+Nightjar builds a Feature that is **assigned to you** and carries the **Go** Signal (the label `factory-go` by default). Nothing else starts a build. A person gives the Go, with one exception: a [Source](#make-features-from-sources) with `"go": true`, below.
 
 1. Write the Feature as an issue, with its spec in the body.
 2. Add its Tickets as **sub-issues**. Each Ticket holds its acceptance criteria in the body.
@@ -378,6 +475,14 @@ On Azure DevOps Boards the same steps read:
 
 A work item counts as closed once Azure DevOps has stamped its Closed Date, which it does when the item reaches a closed state of your process; Nightjar reads that date and never the state ([ADR 0002](docs/adr/0002-signals-are-labels-or-tags-never-states.md)). A known limit follows: a **Removed** work item has no Closed Date, so Nightjar counts it as open. A removed Ticket that still carries the ready Signal is built, and one that blocks others keeps them waiting. Take the ready Signal off a Ticket before you remove it, and the Predecessor links from it.
 
+**A standing Go from a Source.** A Source with `"go": true` and an `owner` gives each Feature it makes the Go: intake assigns the Feature to the owner, then adds the Go, and the owner's `--watch` builds it. This is the one place Nightjar gives the Go. Whoever commits such a Source to `factory.json` gives a standing Go, ahead of time, to every Feature it makes ([ADR 0003](docs/adr/0003-a-source-may-give-a-standing-go.md)). It is bounded by the Source's `maxPerDay`, the [limits](#limits) of each Ticket, and the owner's own `dailyUsd`.
+
+```json
+"weekly-deps": { "type": "schedule", "cron": "0 6 * * 1", "template": "weekly-deps", "go": true, "owner": "ann" }
+```
+
+The owner must be trusted: on `factory.json`'s `trusted` list, or if there is no list, by the Tracker's own default, write access on GitHub or the project's Contributors group on Azure DevOps Boards. `nightjar intake` refuses to start, and `nightjar doctor` fails the Source, while the owner is not trusted, or while the Tracker has no `assign` (a [Tracker module](docs/custom-adapters.md) written before it). If assigning a Feature fails, intake still answers 201 and leaves the Feature with no Signal, for a person to give the Go.
+
 While it works, Nightjar puts the working Signal (`agent-working`) on the Feature. When it cannot build a Ticket it takes the ready Signal off, puts on needs info (`needs-info`) or needs a person (`ready-for-human`), and comments with why. Answer by commenting on the Ticket, put the ready Signal back on it, and give the Go again: the next run continues on the same branch and pull request. Only Trusted comments reach the agent. Nightjar never closes a Ticket and never sets a tracker state.
 
 ## Run
@@ -392,15 +497,17 @@ nightjar doctor
 | ---------------------- | ------------------------------------------------------------------------------------------------------ |
 | `init`                 | Asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins. See [Set up](#set-up-nightjar-init). |
 | `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
+| `doctor FEATURE`       | Checks that Feature's open Tickets against the Ticket contract, with no machine check, and prints one line per Ticket: `ok` or each fault. Also reports faults across the Tickets (see [the Ticket contract](docs/ticket-contract.md)). Writes nothing to the Tracker; exits 1 when any fails. |
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
-| `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
+| `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes, or `pollSeconds`. |
+| `--poll SECONDS`       | With `--watch` only: looks again after this many seconds (at least 30); beats `pollSeconds`.           |
 | `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). It refuses a Feature not assigned to you, without the Go, or already carrying the working Signal. |
 | `--use-api-key`        | Lets the sessions bill `ANTHROPIC_API_KEY` instead of your Claude plan.                                |
 | `--profile <name>`     | Runs the sessions as that Claude login: `~/.claude-NAME`, a path as the folder itself, or `default` for `~/.claude`. It drops `CLAUDE_CODE_OAUTH_TOKEN`, which would win over the folder. `doctor` and every build name the account, organization, plan and config folder first. |
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone.
+Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them; `--poll` only with `--watch`. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone. `nightjar intake [--port PORT] [--host HOST]` runs the Sources ([Make Features from Sources](#make-features-from-sources)).
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 

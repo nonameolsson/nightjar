@@ -6,7 +6,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
-import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
+import {
+	buildFeature,
+	fixPullChecks,
+	LIMITS,
+	pullFixLimits,
+	type Deps,
+	type Setup
+} from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
@@ -15,15 +22,26 @@ import type { GhRunner } from './github/api.js';
 import type { Ask } from './ask.js';
 import type { Prompter } from './prompter.js';
 import { runDoctor } from './doctor.js';
+import { runFeatureDoctor } from './doctor-feature.js';
 import { runInitCommand } from './init.js';
 import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
+import { runIntakeCommand } from './intake.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
-import { runSession } from './session.js';
+import {
+	buildNamed,
+	cannotClaim,
+	fixNamed,
+	handBack,
+	pullChecksPass,
+	pullFixExit,
+	queue,
+	type QueueDeps
+} from './queue.js';
+import { runSession, sessionExists } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -71,9 +89,9 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 	const { ready, lines } = checked;
 	const { adapters, me, assignee, person } = ready;
 	say(`${adapters.repo}, as ${me}, on ${ready.login ?? 'ANTHROPIC_API_KEY'}`);
-	// with the build ready, a line that failed is a Workflow's own
+	// with the build ready, a line that failed is a Workflow's own; a Source's is for `nightjar intake`, which may run on another machine
 	for (const l of lines) {
-		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
+		if (l.status === 'fail' && l.source === undefined) say(`${l.name} cannot run: ${l.detail}`);
 	}
 	const found = lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
@@ -95,7 +113,7 @@ export interface Host {
 	readonly ask?: Ask;
 	// select and multi-select prompts for init; a terminal gets them unless a spec passes its own
 	readonly prompter?: Prompter;
-	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
+	// ends `nightjar ui` and `nightjar intake`; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
 }
 
@@ -126,6 +144,7 @@ export async function runNightjar(
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
+	if (argv[0] === 'intake') return runIntakeCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);
@@ -134,6 +153,15 @@ export async function runNightjar(
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	if (args.mode === 'doctor') {
 		const { cwd, request, gh } = host;
+		if (args.feature !== undefined) {
+			return runFeatureDoctor({
+				feature: args.feature,
+				env,
+				cwd,
+				...(request ? { request } : {}),
+				...(gh ? { gh } : {})
+			});
+		}
 		return runDoctor({
 			useApiKey: args.useApiKey,
 			...(args.profile === undefined ? {} : { profile: args.profile }),
@@ -203,7 +231,11 @@ export async function runNightjar(
 		env: ready.env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
-		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
+		limits: {
+			...LIMITS,
+			dailyUsd: ready.person.dailyUsd,
+			...pullFixLimits(config.pullChecks)
+		},
 		signal: stop.signal
 	};
 	const deps: Deps = {
@@ -217,11 +249,15 @@ export async function runNightjar(
 		openWorktree,
 		now: () => new Date(),
 		newId: () => randomUUID(),
+		sessionExists: (id) => sessionExists(id, ready.env),
 		say: runSay,
 		status
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: Named | null = null;
+	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
+		fixPullChecks(deps, setup, red)
+	);
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
@@ -239,6 +275,8 @@ export async function runNightjar(
 		sleep,
 		signal: stop.signal,
 		signals: config.signals,
+		...(pullChecks === null ? {} : { pullChecks }),
+		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 
@@ -266,6 +304,9 @@ export async function runNightjar(
 
 	try {
 		if (args.mode === 'feature' && args.feature !== undefined) {
+			// a Feature with a red draft is fixed, not built: it holds no Go by now
+			const fixed = await fixNamed(queueDeps, args.feature);
+			if (fixed !== null) return pullFixExit(fixed);
 			let refusal: string | null;
 			try {
 				refusal = await cannotClaim(queueDeps, args.feature);

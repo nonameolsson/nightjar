@@ -155,6 +155,24 @@ describe('StatusFile', () => {
 		expect(whys()).toEqual(['asked', 'nothing']);
 	});
 
+	it("drops a Ticket's hand-back when that Ticket builds again", () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.happened({ kind: 'needs-info', feature: '1', ticket: '2', why: 'asked' });
+		status.happened({ kind: 'needs-info', feature: '1', ticket: '3', why: 'unclear' });
+		status.doing({
+			kind: 'building',
+			feature: '1',
+			ticket: '2',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		expect(readStatus(path)?.handedBack?.map((h) => h.why)).toEqual(['unclear']);
+	});
+
 	it('writes the Queue and Waiting on you with when they were refreshed, and drops them when the run is off', () => {
 		const path = join(dir, 'status.json');
 		const status = file(path);

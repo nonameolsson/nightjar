@@ -21,6 +21,12 @@ describe('nightjar --help', () => {
 		expect(out).toEqual([USAGE]);
 		expect(err).toEqual([]);
 	});
+
+	it('names doctor with a Feature', async () => {
+		await runNightjar(['--help'], { platform: 'linux' });
+		expect(out.join('\n')).toContain('doctor [FEATURE]');
+		expect(out.join('\n')).toContain('doctor FEATURE');
+	});
 });
 
 describe('nightjar --version', () => {

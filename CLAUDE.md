@@ -18,6 +18,7 @@ Node 24, TypeScript, npm.
 - `npm run lint`, `npm run format`, `npm run typecheck`.
 - CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you edit.
 - `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
+- `npm run ui:dev [building|idle|paused|stopped|off]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
 
 ## Architecture
 

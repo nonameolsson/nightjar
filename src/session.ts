@@ -1,7 +1,8 @@
 // One headless `claude -p` session, run restricted on Nightjar's own settings; every line it prints is kept in its log.
 import { spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { createWriteStream, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Env } from './git.js';
 
@@ -63,6 +64,23 @@ export function sessionArgs(req: SessionRequest): string[] {
 	if (req.model) args.push('--model', req.model);
 	if (req.effort) args.push('--effort', req.effort);
 	return args;
+}
+
+// Whether Claude Code keeps a Session of this id on this machine, which `--resume` needs. The id comes from a commit trailer, so only a plain one is looked up.
+export function sessionExists(
+	id: string,
+	env: Env = process.env,
+	home: string = homedir()
+): boolean {
+	if (!/^[\w-]+$/.test(id)) return false;
+	const projects = join(env.CLAUDE_CONFIG_DIR ?? join(home, '.claude'), 'projects');
+	try {
+		return readdirSync(projects, { withFileTypes: true }).some(
+			(d) => d.isDirectory() && existsSync(join(projects, d.name, `${id}.jsonl`))
+		);
+	} catch {
+		return false;
+	}
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>

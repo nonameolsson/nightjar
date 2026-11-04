@@ -27,23 +27,39 @@ describe('personConfigPath', () => {
 
 describe('loadPersonConfig', () => {
 	it('gives the defaults when there is no file: $60 a day, the signed-in person', () => {
-		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 60 });
+		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 60, pollSeconds: 120 });
 	});
 
 	it('reads the daily spend cap and whose Features to build', () => {
 		write(join(dir, '.config'), { dailyUsd: 25, assignee: 'zed' });
-		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 25, assignee: 'zed' });
+		expect(loadPersonConfig({ HOME: dir })).toEqual({
+			dailyUsd: 25,
+			pollSeconds: 120,
+			assignee: 'zed'
+		});
 	});
 
 	it('reads the Claude profile', () => {
 		write(join(dir, '.config'), { profile: 'work' });
-		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 60, profile: 'work' });
+		expect(loadPersonConfig({ HOME: dir })).toEqual({
+			dailyUsd: 60,
+			pollSeconds: 120,
+			profile: 'work'
+		});
+	});
+
+	it('reads the poll interval and refuses one under 30 seconds', () => {
+		write(join(dir, '.config'), { pollSeconds: 45 });
+		expect(loadPersonConfig({ HOME: dir }).pollSeconds).toBe(45);
+		write(join(dir, '.config'), { pollSeconds: 10 });
+		expect(() => loadPersonConfig({ HOME: dir })).toThrow(/pollSeconds: .*at least 30/);
 	});
 
 	it('reads it from XDG_CONFIG_HOME when that is set', () => {
 		write(join(dir, 'xdg'), { dailyUsd: 10 });
 		expect(loadPersonConfig({ HOME: dir, XDG_CONFIG_HOME: join(dir, 'xdg') })).toEqual({
-			dailyUsd: 10
+			dailyUsd: 10,
+			pollSeconds: 120
 		});
 	});
 

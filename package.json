@@ -1,6 +1,6 @@
 {
 	"name": "@nonameolsson/nightjar",
-	"version": "0.5.1",
+	"version": "0.6.2",
 	"description": "Builds a repo's Features from its Tracker with nobody at the keyboard, one draft pull request per Feature.",
 	"license": "MIT",
 	"repository": {
@@ -37,6 +37,7 @@
 		"!dist/**/*.spec.*",
 		"schema",
 		"skills",
+		"templates",
 		"docs/ticket-contract.md",
 		"plugin/nightjar-status",
 		"!plugin/**/*.spec.ts",
@@ -53,6 +54,7 @@
 		"format:check": "prettier --check .",
 		"test": "vitest run",
 		"schema": "tsx scripts/schema.ts",
+		"ui:dev": "tsx watch scripts/ui-dev.ts",
 		"leaks": "tsx scripts/leak-check.ts",
 		"pack:check": "tsx scripts/pack-install.ts",
 		"check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build && npm run leaks && npm run pack:check",

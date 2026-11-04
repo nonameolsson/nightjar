@@ -1,8 +1,8 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runSession, sessionArgs, settle, type SessionRequest } from './session.js';
+import { runSession, sessionArgs, sessionExists, settle, type SessionRequest } from './session.js';
 
 const init = (apiKeySource = 'none') => ({ type: 'system', subtype: 'init', apiKeySource });
 const result = (over: Record<string, unknown> = {}) => ({
@@ -160,5 +160,43 @@ describe('runSession', () => {
 		const command = fake([init()]);
 		const got = await runSession(request({ cwd: dir, log: join(dir, 'run.jsonl') }), command);
 		expect(got).toMatchObject({ kind: 'stopped', why: 'claude exited with code 0 and no result' });
+	});
+});
+
+describe('sessionExists', () => {
+	let home: string;
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), 'nightjar-sessions-'));
+	});
+	afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+	const keep = (project: string, id: string, config = '.claude') => {
+		const folder = join(home, config, 'projects', project);
+		mkdirSync(folder, { recursive: true });
+		writeFileSync(join(folder, `${id}.jsonl`), '{}\n');
+	};
+
+	it('finds a Session Claude Code keeps under any project', () => {
+		keep('-w-1-one-escape', 's-1');
+		expect(sessionExists('s-1', {}, home)).toBe(true);
+	});
+
+	it('finds none that was made on another machine', () => {
+		keep('-w-1-one-escape', 's-1');
+		expect(sessionExists('s-2', {}, home)).toBe(false);
+		expect(sessionExists('s-1', {}, join(home, 'other'))).toBe(false);
+	});
+
+	it("reads Claude Code's own config folder when the environment names one", () => {
+		keep('-w', 's-1', 'elsewhere');
+		expect(sessionExists('s-1', { CLAUDE_CONFIG_DIR: join(home, 'elsewhere') }, home)).toBe(true);
+		expect(sessionExists('s-1', {}, home)).toBe(false);
+	});
+
+	it('looks up only a plain id, as a trailer is text a person can write', () => {
+		keep('-w', 's-1');
+		writeFileSync(join(home, '.claude', 'secret.jsonl'), '{}\n');
+		expect(sessionExists('../../secret', {}, home)).toBe(false);
+		expect(sessionExists('', {}, home)).toBe(false);
 	});
 });

@@ -3,7 +3,7 @@ import { checkMachine, type CheckOptions, type Line } from './checks.js';
 import { dryRun } from './queue.js';
 import { say, why } from './say.js';
 
-const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip' } as const;
+const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip', warn: 'warn' } as const;
 
 // Failures go to stderr, the rest to stdout; a line that wraps is indented under its name.
 export function printLines(lines: readonly Line[]): void {
@@ -33,9 +33,17 @@ export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promis
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;
 	}
-	// a broken Workflow stops no build, but doctor says so in its code
+	// a broken Workflow or Source stops no build, but doctor says so in its code
 	if (failed > 0) {
-		console.error('nightjar: a Workflow cannot run; fix it, then run `nightjar doctor` again.');
+		const broken = checked.lines.filter((l) => l.status === 'fail');
+		const sources = broken.filter((l) => l.source !== undefined).length;
+		const what =
+			sources === 0
+				? 'a Workflow'
+				: sources === broken.length
+					? 'a Source'
+					: 'a Workflow or Source';
+		console.error(`nightjar: ${what} cannot run; fix it, then run \`nightjar doctor\` again.`);
 		return 2;
 	}
 	return 0;

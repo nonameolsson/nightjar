@@ -2,9 +2,12 @@
 import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
+import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
+import { linksFor, NO_LINKS, type Links } from './ui-links.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
@@ -23,6 +26,7 @@ import {
 	pollAfter,
 	running,
 	runState,
+	stepText,
 	two
 } from './view-text.js';
 
@@ -46,7 +50,16 @@ export interface UiOptions {
 
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
 
-const idHtml = (id: string) => escape(idText(id));
+const EXTERNAL = 'target="_blank" rel="noreferrer noopener"';
+
+// An id, as a link to its page on the Tracker when the page knows one
+const idHtml = (id: string, links: Links = NO_LINKS) => {
+	const text = escape(idText(id));
+	const href = links.issue(id);
+	return href === null
+		? text
+		: `<a class="ext" href="${escape(href)}" ${EXTERNAL} title="Open ${text} on ${links.tracker ?? 'the Tracker'}">${text}</a>`;
+};
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -74,14 +87,14 @@ function cards(view: FactoryView): string {
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
-function queue(view: FactoryView): string {
+function queue(view: FactoryView, links: Links): string {
 	const status = view.status;
 	let body: string;
-	if (!running(view)) body = '<p class="empty">not known while nightjar is off</p>';
+	if (!running(view)) body = OFF;
 	else if (status?.queue === undefined) body = '<p class="empty">not read yet</p>';
-	else if (status.queue.length === 0) body = '<p class="empty">empty</p>';
+	else if (status.queue.length === 0) body = emptyQueue(links);
 	else
-		body = `<ul>${status.queue.map((q) => `<li>${idHtml(q.id)} ${escape(q.title)}</li>`).join('')}</ul>`;
+		body = `<ul>${status.queue.map((q) => `<li>${idHtml(q.id, links)} ${escape(q.title)}</li>`).join('')}</ul>`;
 	const refreshed =
 		running(view) && status?.refreshedAt !== undefined
 			? ` <small>refreshed ${clock(status.refreshedAt)}</small>`
@@ -98,28 +111,28 @@ function stepLine(doing: Building): string {
 		doing.round === null || doing.rounds === null
 			? ''
 			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-	return `${where}${doing.step}${round}`;
+	return `${where}${stepText(doing.step)}${round}`;
 }
 
 // One `<li>` per Ticket, in order, with its state and why.
-function ticketItems(tickets: readonly TicketProgress[]): string {
+function ticketItems(tickets: readonly TicketProgress[], links: Links): string {
 	return tickets
 		.map(
 			(t) =>
-				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state === 'waiting' ? 'needs a person' : t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+				`<li class="${t.state}">${idHtml(t.id, links)} ${escape(t.title)} <small>${t.state === 'waiting' ? 'needs a person' : t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
 		)
 		.join('');
 }
 
-function current(view: FactoryView): string {
+function current(view: FactoryView, links: Links): string {
 	const doing = view.status?.doing;
 	let body = '<p class="empty">nothing is being built</p>';
 	if (doing?.kind === 'building' && running(view)) {
 		const tickets = doing.tickets ?? [];
-		const progress = ticketItems(tickets);
+		const progress = ticketItems(tickets, links);
 		const tail = view.tail.map(escape).join('\n');
 		body =
-			`<p>${idHtml(doing.feature)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
+			`<p>${idHtml(doing.feature, links)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
 			`<p>${stepLine(doing)}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
 			(tail === '' ? '' : `<pre>${tail}</pre>`);
@@ -127,10 +140,10 @@ function current(view: FactoryView): string {
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
-function waiting(view: FactoryView): string {
+function waiting(view: FactoryView, links: Links): string {
 	const found = view.status?.waitingOnYou;
 	let body: string;
-	if (!running(view)) body = '<p class="empty">not known while nightjar is off</p>';
+	if (!running(view)) body = OFF;
 	else if (found === undefined) body = '<p class="empty">not read yet</p>';
 	else {
 		const note = found.trackerCannotList
@@ -141,7 +154,7 @@ function waiting(view: FactoryView): string {
 		const items = found.items
 			.map((i) => {
 				const back = lastHandBack(view, i.feature ?? i.id, i.kind === 'ticket' ? i.id : null);
-				return `<li>${idHtml(i.id)} ${escape(i.title)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
+				return `<li>${idHtml(i.id, links)} ${escape(i.title)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
 			})
 			.join('');
 		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
@@ -152,9 +165,9 @@ function waiting(view: FactoryView): string {
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
-function completed(view: FactoryView): string {
+function completed(view: FactoryView, links: Links): string {
 	const li = ({ done: { event, costUsd }, runs }: CompletedCard) =>
-		`<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
+		`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
 	const rows = features(view).completed.map(li).join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
@@ -163,7 +176,7 @@ function completed(view: FactoryView): string {
 const outcomeHtml = (event: Completed['event']) =>
 	event.kind === 'pull'
 		? safeUrl(event.url)
-			? `<a href="${escape(event.url)}">draft pull request</a>`
+			? `<a class="act ext" href="${escape(event.url)}" ${EXTERNAL}>draft pull request</a>`
 			: escape(event.url)
 		: `failed: ${escape(event.why)}`;
 
@@ -245,7 +258,9 @@ interface CompletedCard extends FeatureCard {
 const progressText = (p: Progress | null) =>
 	p === null ? '?' : `${String(p.built)} of ${String(p.total)} ${p.counts}`;
 
-const runsText = (runs: number) => (runs === 1 ? '1 run' : `latest of ${String(runs)} runs`);
+// counted from status.json's recent events only, so older runs are not in it
+const runsText = (runs: number) =>
+	runs === 1 ? '1 recent run' : `latest of ${String(runs)} recent runs`;
 
 // A Ticket as an egg: built, being built, needs a person, or still waiting its turn
 type Egg = 'built' | 'building' | 'need' | 'waiting';
@@ -421,8 +436,8 @@ function features(view: FactoryView): Features {
 	};
 }
 
-const feature = (card: FeatureCard) =>
-	`<b>${card.id === '' ? '' : idHtml(card.id)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+const feature = (card: FeatureCard, links: Links) =>
+	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
 
 // A Next step as the Tracker comment numbers it, a Signal's `name` set as code
 function nextStepHtml(back: HandBack | undefined): string {
@@ -433,13 +448,13 @@ function nextStepHtml(back: HandBack | undefined): string {
 	return `<div class="next"><p>Next step</p><ol>${lines}</ol></div>`;
 }
 
-const waitingTicketsHtml = (card: FeatureCard) =>
+const waitingTicketsHtml = (card: FeatureCard, links: Links) =>
 	card.waitingTickets.length === 0
 		? ''
-		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id)} ${escape(t.title)} <small>${escape(t.why)}</small>${t.handBack === undefined ? '' : ` <span class="reason">${escape(t.handBack.why)}</span>`}${nextStepHtml(t.handBack)}</li>`).join('')}</ul>`;
+		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id, links)} ${escape(t.title)} <small>${escape(t.why)}</small>${t.handBack === undefined ? '' : ` <span class="reason">${escape(t.handBack.why)}</span>`}${nextStepHtml(t.handBack)}</li>`).join('')}</ul>`;
 
 // A Feature that waits on a person; its own Next step comes last, as it speaks of the Tickets above
-function waitingCard(card: WaitingCard): string {
+function waitingCard(card: WaitingCard, links: Links): string {
 	const back = card.handBack;
 	const known = back !== undefined || card.waitingTickets.some((t) => t.handBack !== undefined);
 	const why =
@@ -448,13 +463,15 @@ function waitingCard(card: WaitingCard): string {
 			: known
 				? ''
 				: '<p class="meta">no reason recorded; see its comments on the Tracker</p>';
+	const u = unblock(card, links);
 	return nest(
 		'waiting',
 		card,
+		links,
 		progressHtml(card.progress),
-		`<p class="label"><i class="egg need"></i>${escape(card.why)}</p>${why}`,
-		'',
-		waitingTicketsHtml(card) + nextStepHtml(back)
+		whyHtml(card, u) + why,
+		actionLink(u, links),
+		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
 	);
 }
 
@@ -462,20 +479,22 @@ function waitingCard(card: WaitingCard): string {
 function nest(
 	cls: string,
 	card: FeatureCard,
+	links: Links,
 	eggs: string,
 	now: string,
 	meta: string,
 	beneath = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
 }
 
-function buildingCard(card: BuildingCard): string {
+function buildingCard(card: BuildingCard, links: Links): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
 	return nest(
 		'building',
 		card,
+		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
 		`<p class="label">Building</p><p>${stepLine(doing)}</p>`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`
@@ -483,14 +502,14 @@ function buildingCard(card: BuildingCard): string {
 }
 
 // What the one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its Session.
-function detail(card: BuildingCard, view: FactoryView): string {
+function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
-	const steps = ticketItems(tickets);
+	const steps = ticketItems(tickets, links);
 	const tail = view.tail.map(escape).join('\n');
 	return (
 		`<aside class="detail" aria-label="Building now"><p class="dk"><i></i>Building now</p>` +
-		`<h3>${feature(card)}</h3><p class="sub">${stepLine(doing)}</p>` +
+		`<h3>${feature(card, links)}</h3><p class="sub">${stepLine(doing)}</p>` +
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
@@ -499,23 +518,24 @@ function detail(card: BuildingCard, view: FactoryView): string {
 }
 
 // A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
-function queuedCard(card: QueuedCard): string {
+function queuedCard(card: QueuedCard, links: Links): string {
 	const counts = card.ticketCounts;
 	let count = '';
 	if (counts === null) count = '<p class="meta count">? Tickets</p>';
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
-	return nest('queue', card, count, '<p class="label">Queued</p>', est);
+	return nest('queue', card, links, count, '<p class="label">Queued</p>', est);
 }
 
-function completedCard(card: CompletedCard): string {
+function completedCard(card: CompletedCard, links: Links): string {
 	const { event, costUsd } = card.done;
 	const took = tookMs(event);
 	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
 	return nest(
 		event.kind === 'failed' ? 'failed' : 'pulled',
 		card,
+		links,
 		progressHtml(card.progress),
 		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
 		`${duration}${dollars(costUsd)}`
@@ -527,12 +547,81 @@ function group(state: string, name: string, count: number | null, body: string):
 	return `<section class="mat" data-state="${state}"><div class="tab"><h2>${name}</h2>${shown}</div><div class="lines">${body}</div></section>`;
 }
 
-const OFF = '<p class="empty">not known while nightjar is off</p>';
+const copyable = (command: string) =>
+	`<code>${escape(command)}</code> <button type="button" class="copy" data-copy="${escape(command)}">copy</button>`;
+
+const hint = (html: string) => ` <span class="hint">${html}</span>`;
+
+const OFF = `<p class="empty">not known while nightjar is off${hint(`Start it in this repo: ${copyable('nightjar --watch')}`)}</p>`;
+
+function emptyQueue(links: Links): string {
+	const where =
+		links.issues === null
+			? ''
+			: ` <a class="ext" href="${escape(links.issues)}" ${EXTERNAL}>Open the Tracker</a>.`;
+	return `<p class="empty">empty${hint(`Assign a Feature to yourself and give it the Go (<code>${escape(links.signals.go)}</code>).${where}`)}</p>`;
+}
+
+// What a waiting Feature needs from the person: which kind of help, and the page to give it on
+interface Unblock {
+	readonly kind: 'info' | 'person';
+	readonly target: string;
+	readonly href: string | null;
+}
+
+function unblock(card: WaitingCard, links: Links): Unblock | null {
+	const first = card.waitingTickets[0];
+	const why = first?.why ?? card.why;
+	const kind = why === NEEDS_INFO ? 'info' : why === NEEDS_A_PERSON ? 'person' : null;
+	if (kind === null) return null;
+	const target = first?.id ?? card.id;
+	return { kind, target, href: links.issue(target) };
+}
+
+const onTracker = (links: Links) => links.tracker ?? 'the Tracker';
+
+function actionLink(u: Unblock | null, links: Links): string {
+	if (u?.href == null) return '';
+	const verb = u.kind === 'info' ? 'Answer' : 'Open';
+	return `<a class="act ext" href="${escape(u.href)}" ${EXTERNAL} aria-label="${verb} ${escape(idText(u.target))} on ${onTracker(links)}">${verb}</a>`;
+}
+
+// The label of a waiting Feature: a button that opens the steps to unblock it, when the page knows them
+function whyHtml(card: WaitingCard, u: Unblock | null): string {
+	const egg = '<i class="egg need"></i>';
+	if (u === null) return `<p class="label">${egg}${escape(card.why)}</p>`;
+	const id = escape(card.id);
+	return `<p class="label"><button type="button" class="why" data-help="${id}" aria-expanded="false" aria-controls="help-${id}">${egg}${escape(card.why)}<span>what to do</span></button></p>`;
+}
+
+// The steps that put a stopped Feature back in the Queue, in the repo's own Signal names
+function helpHtml(card: WaitingCard, u: Unblock | null, links: Links): string {
+	if (u === null) return '';
+	const s = links.signals;
+	const id = escape(idText(u.target));
+	const where =
+		u.href === null
+			? id
+			: `<a class="ext" href="${escape(u.href)}" ${EXTERNAL}>${id} on ${onTracker(links)}</a>`;
+	const code = (name: string) => `<code>${escape(name)}</code>`;
+	const steps = [
+		`Open ${where} and read Nightjar's last comment.`,
+		u.kind === 'info'
+			? 'Answer in a comment. Only Trusted comments reach the agent.'
+			: 'Do what the comment asks, then say so in a comment.',
+		`Take ${code(u.kind === 'info' ? s.needsInfo : s.human)} off, put ${code(s.ready)} back on, and give the Go (${code(s.go)}) again.`
+	];
+	const lead =
+		u.kind === 'info'
+			? 'Nightjar could not go on without an answer, so it stopped and asked.'
+			: 'Nightjar reached something only a person can do, so it stopped.';
+	return `<div class="help" id="help-${escape(card.id)}" hidden><p>${lead}</p><ol>${steps.map((x) => `<li>${x}</li>`).join('')}</ol><p>The next run continues on the same branch and pull request.</p></div>`;
+}
 
 const LEGEND =
 	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
 
-function board(view: FactoryView): string {
+function board(view: FactoryView, links: Links): string {
 	const all = features(view);
 	const on = running(view);
 	const none = (text: string) => `<p class="empty">${text}</p>`;
@@ -541,23 +630,23 @@ function board(view: FactoryView): string {
 		: all.queue === undefined
 			? none('not read yet')
 			: all.queue.length === 0
-				? none('empty')
-				: all.queue.map(queuedCard).join('');
+				? emptyQueue(links)
+				: all.queue.map((q) => queuedCard(q, links)).join('');
 	const building =
-		all.building === null ? none('nothing is being built') : buildingCard(all.building);
+		all.building === null ? none('nothing is being built') : buildingCard(all.building, links);
 	let waiting: string;
 	if (!on) waiting = OFF;
 	else if (all.waiting === undefined) waiting = none('not read yet');
 	else {
 		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
-		const cards = all.waiting.map(waitingCard).join('');
+		const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
 	}
 	const completed =
 		all.completed.length === 0
 			? none('nothing has finished yet')
-			: all.completed.map(completedCard).join('');
-	const side = all.building === null ? '' : detail(all.building, view);
+			: all.completed.map((c) => completedCard(c, links)).join('');
+	const side = all.building === null ? '' : detail(all.building, view, links);
 	return (
 		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
@@ -587,7 +676,7 @@ const COLUMNS = [
 ] as const;
 
 // One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
-function table(view: FactoryView): string {
+function table(view: FactoryView, links: Links): string {
 	const all = features(view);
 	interface Row {
 		readonly card: FeatureCard;
@@ -633,7 +722,7 @@ function table(view: FactoryView): string {
 			timeText: '',
 			cost: null,
 			outcome,
-			outcomeText: escape(outcome),
+			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}`,
 			progress: card.progress
 		});
 	}
@@ -662,7 +751,7 @@ function table(view: FactoryView): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
 	const note = !running(view)
@@ -670,21 +759,39 @@ function table(view: FactoryView): string {
 		: all.trackerCannotList
 			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
 			: '';
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Features"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
 }
 
+// Splits what stays in view (the run's state and numbers) from the content that scrolls beneath it.
+const MAIN = '<!--main-->';
+
 // The panels, which the page replaces whole each time an event brings new ones.
-export function renderPanels(root: string, view: FactoryView): string {
+export function renderPanels(root: string, view: FactoryView, links: Links = NO_LINKS): string {
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
 		cards(view),
-		board(view),
-		table(view),
-		`<div class="overview">${[current(view), queue(view), waiting(view), completed(view)].join('\n')}</div>`
+		MAIN,
+		board(view, links),
+		table(view, links),
+		`<div class="overview">${[current(view, links), queue(view, links), waiting(view, links), completed(view, links)].join('\n')}</div>`
 	].join('\n');
 }
 
-const PAGE = (panels: string) => `<!doctype html>
+// Links to the Tracker and the Code host, always at hand in the bar
+function elsewhere(links: Links): string {
+	const link = (href: string | null, text: string, title: string) =>
+		href === null
+			? ''
+			: `<a class="act ext" href="${escape(href)}" ${EXTERNAL} title="${escape(title)}">${text}</a>`;
+	const found =
+		link(links.issues, 'Tracker', `Open the Features and Tickets on ${onTracker(links)}`) +
+		link(links.pulls, 'Pull requests', 'Open the pull requests on the Code host');
+	return found === '' ? '' : `<nav class="elsewhere" aria-label="Open elsewhere">${found}</nav>`;
+}
+
+const PAGE = (panels: string, links: Links) => {
+	const [top = '', main = ''] = panels.split(MAIN);
+	return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -693,17 +800,28 @@ const PAGE = (panels: string) => `<!doctype html>
 <style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
 </head>
 <body>
-<div class="banner" aria-hidden="true"></div>
-<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav></div>
-<main id="panels" data-view="board">${panels}</main>
+<a class="skip" href="#panels">Skip to Features</a>
+<p id="live" class="sr" role="status"></p>
+<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}</div>
+<div id="top">${top}</div>
+<div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
 <script>${SCRIPT}</script>
 </body>
 </html>
 `;
+};
 
 // The browser replaces the panels with each event and counts the clocks itself, so the server pushes only on a change.
 const SCRIPT = `
 const panels = document.getElementById('panels');
+const live = document.getElementById('live');
+// below the reflow threshold the whole page scrolls, so the region has nothing to scroll and leaves the tab order
+const scroller = document.getElementById('scroll');
+const flow = matchMedia('(max-height: 480px), (max-width: 400px)');
+const place = () => { scroller.tabIndex = flow.matches ? -1 : 0; };
+place();
+flow.addEventListener('change', place);
+const MAIN = '<!' + '--main-->';
 const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
@@ -762,10 +880,38 @@ function applyTable() {
 		attr(b, 'aria-pressed', b.dataset.on);
 	}
 }
+// the "what to do" panels the person opened, kept across each swap of the panels
+const helpOpen = new Set();
+function applyHelp() {
+	for (const b of document.querySelectorAll('button[data-help]')) {
+		if (!b.dataset || !b.dataset.help) continue;
+		const open = helpOpen.has(b.dataset.help);
+		attr(b, 'aria-expanded', String(open));
+		const panel = document.getElementById('help-' + b.dataset.help);
+		if (panel) panel.hidden = !open;
+	}
+}
+function copied(button) {
+	const was = button.textContent;
+	button.textContent = 'copied';
+	setTimeout(() => { button.textContent = was; }, 1500);
+}
 panels.onclick = (e) => {
 	const t = e.target && e.target.closest ? e.target : null;
 	const sorter = t && t.closest('[data-sort]');
 	const chip = t && t.closest('[data-chip]');
+	const help = t && t.closest('[data-help]');
+	const copy = t && t.closest('[data-copy]');
+	if (help) {
+		const id = help.dataset.help;
+		if (helpOpen.has(id)) helpOpen.delete(id); else helpOpen.add(id);
+		applyHelp();
+		return;
+	}
+	if (copy) {
+		try { navigator.clipboard.writeText(copy.dataset.copy).then(() => copied(copy)); } catch {}
+		return;
+	}
 	if (sorter) {
 		const key = sorter.dataset.sort;
 		tableState = { ...tableState, sort: key, dir: tableState.sort === key ? -tableState.dir : 1 };
@@ -793,75 +939,113 @@ for (const b of document.querySelectorAll('button[data-view]')) {
 		try { localStorage.setItem('nightjar-view', b.dataset.view); } catch {}
 	};
 }
+// the status region speaks only when the count of Features waiting on a person, or failed, rises
+// inner scrollers a swap would reset, matched by position
+const SCROLLERS = ['.detail', '.scroll', 'pre'];
+let seen = null;
+function announce() {
+	const waiting = document.querySelectorAll('tr[data-state="waiting"]').length;
+	const failed = document.querySelectorAll('tr[data-failed]').length;
+	const said = [];
+	if (seen && waiting > seen.waiting) said.push(waiting + ' waiting on a person');
+	if (seen && failed > seen.failed) said.push(failed + ' failed');
+	if (said.length) {
+		// clear first so an identical message is read again
+		live.textContent = '';
+		requestAnimationFrame(() => { live.textContent = said.join(', '); });
+	}
+	seen = { waiting, failed };
+}
 function tick() {
 	const now = Date.now();
 	for (const t of document.querySelectorAll('time[data-since]')) t.textContent = elapsed(now - Date.parse(t.dataset.since));
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header or chip; put focus back on its twin
-	const was = document.activeElement && document.activeElement.dataset;
-	const key = was && (was.sort ? 'sort' : was.chip ? 'chip' : null);
-	const value = key && was[key];
-	panels.innerHTML = JSON.parse(e.data);
+	// a swap drops the focused sort header, chip, help or copy button or link; put focus back on its twin
+	const was = document.activeElement;
+	const data = (was && was.dataset) || {};
+	const key = ['sort', 'chip', 'help', 'copy'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
+	// links can share an href, so remember which of them had focus
+	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
+	const nth = key ? Math.max(0, pool().indexOf(was)) : 0;
+	const kept = [];
+	for (const sel of SCROLLERS) {
+		document.querySelectorAll(sel).forEach((n, i) => kept.push([sel, i, n.scrollTop, n.scrollLeft]));
+	}
+	const [top, main] = JSON.parse(e.data).split(MAIN);
+	document.getElementById('top').innerHTML = top;
+	panels.innerHTML = main;
+	for (const [sel, i, top, left] of kept) {
+		const n = document.querySelectorAll(sel)[i];
+		if (n) { n.scrollTop = top; n.scrollLeft = left; }
+	}
 	if (key) {
-		const back = document.querySelector('[data-' + key + '="' + value + '"]');
+		const found = pool();
+		const back = found[nth] || found[0];
 		if (back) back.focus();
 	}
 	applyTable();
+	announce();
+	applyHelp();
 	tick();
 };
 applyTable();
+announce();
 tick();
 setInterval(tick, 1000);
 `;
 
 const STYLE = `
-:root { color-scheme: dark; --void: #04070b; --panel: #0b131b; --line: #1b3a42; --teal: #22e3d2; --teal2: #14a89c; --amber: #ff9a1f; --slate: #8f98e0; --ok: #3fd17f; --ink: #e6f1f2; --ink2: #9db5b8; --muted: #7f979b; --err: #ff5a5f; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
+:root { color-scheme: dark; --void: #04070b; --panel: #0b131b; --line: #1b3a42; --teal: #22e3d2; --teal2: #14a89c; --amber: #ff9a1f; --slate: #8f98e0; --ok: #3fd17f; --ink: #e6f1f2; --ink2: #9db5b8; --muted: #7f979b; --err: #ff5a5f; --socket-dash: #2f5a63; --socket-border: #3f7078; --bar-overlay: rgba(4, 7, 11, 0.94); --panel-overlay: rgba(8, 13, 19, 0.85); --panel-overlay-strong: rgba(8, 13, 19, 0.92); --teal-wash: color-mix(in srgb, var(--teal) 7%, transparent); --shade-soft: rgba(0, 0, 0, 0.3); --shade-mid: rgba(0, 0, 0, 0.35); --shade-deep: rgba(0, 0, 0, 0.45); --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
-body { background: var(--void) linear-gradient(rgba(34, 227, 210, 0.035) 1px, transparent 1px) 0 0 / 32px 32px; background-image: linear-gradient(rgba(34, 227, 210, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34, 227, 210, 0.035) 1px, transparent 1px); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0; scrollbar-color: var(--teal2) var(--void); }
+body { background-color: var(--void); background-size: 32px 32px; background-image: linear-gradient(color-mix(in srgb, var(--teal) 3.5%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--teal) 3.5%, transparent) 1px, transparent 1px); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; --gut: max(32px, calc((100% - 1380px) / 2 + 32px)); }
 ::selection { background: var(--teal); color: var(--void); }
 a { color: var(--teal); text-underline-offset: 3px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre { font-variant-numeric: tabular-nums; }
-.banner { background: var(--void) center 40% / cover no-repeat; height: 260px; position: relative; }
+.banner { background: var(--void) center 40% / cover no-repeat; height: 150px; position: relative; }
 .banner::after { background: linear-gradient(180deg, transparent 60%, var(--void)); content: ""; inset: 0; position: absolute; }
-html { scroll-padding-top: 64px; }
-.bar { align-items: center; background: rgba(4, 7, 11, 0.94); border-bottom: 1px solid var(--line); display: flex; gap: 4px; padding: 10px 32px; position: sticky; top: 0; z-index: 3; }
+.bar { align-items: center; background: var(--void); border-bottom: 1px solid var(--line); display: flex; flex: none; gap: 4px; padding: 10px var(--gut); }
+#top { background: var(--bar-overlay); border-bottom: 1px solid var(--line); flex: none; padding: 0 var(--gut); }
+#scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: var(--teal2) var(--void); }
+#scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.elsewhere { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .mark { color: var(--teal); font: 700 0.85rem var(--mono); letter-spacing: 0.2em; margin: 0 22px 0 0; text-transform: uppercase; }
 #views { display: flex; gap: 4px; }
-#views button { background: none; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 5px 16px; }
+#views button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 5px 16px; }
 #views button:hover { color: var(--ink); }
-#views button[data-on="true"] { background: rgba(34, 227, 210, 0.07); border-color: var(--teal2); color: var(--teal); }
-#panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 0 32px 56px; }
+#views button[data-on="true"] { background: var(--teal-wash); border-color: var(--teal2); color: var(--teal); }
+#panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 16px 32px 56px; }
 h1, h2 { font-size: 1em; margin: 0; }
-header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 24px 0 6px; }
+header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 12px 0 2px; }
 h1 { font: 700 1.6rem var(--mono); }
-header span { color: var(--muted); font-family: var(--mono); font-size: 0.9rem; }
+header span { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; }
 header .state { color: var(--teal); font-weight: 600; }
-#cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0 0 10px; }
+#cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
 .stat b { color: var(--ink); }
 .empty, small, .meta { color: var(--muted); }
 .empty { margin: 10px 0; }
 ul, ol { list-style: none; margin: 4px 0; padding: 0; }
-pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var(--ink2); font: 12px/1.7 var(--mono); margin: 8px 0 0; max-height: 14rem; overflow: auto; padding: 10px 12px; white-space: pre-wrap; }
+pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(--ink2); font: 0.75rem/1.7 var(--mono); margin: 8px 0 0; max-height: 14rem; overflow: auto; padding: 10px 12px; white-space: pre-wrap; }
 .overview { font-family: system-ui, sans-serif; }
 #panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
-.egg { background: radial-gradient(circle at 28% 26%, rgba(0, 0, 0, 0.35) 0 1.4px, transparent 2.4px), radial-gradient(circle at 66% 58%, rgba(0, 0, 0, 0.3) 0 1.8px, transparent 2.8px), var(--teal2); border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%; box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.3); display: inline-block; flex: none; height: 1.2rem; position: relative; width: 0.95rem; }
+.egg { background: radial-gradient(circle at 28% 26%, var(--shade-mid) 0 1.4px, transparent 2.4px), radial-gradient(circle at 66% 58%, var(--shade-soft) 0 1.8px, transparent 2.8px), var(--teal2); border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%; box-shadow: inset -3px -3px 0 var(--shade-soft); display: inline-block; flex: none; height: 1.2rem; position: relative; width: 0.95rem; }
 .egg.building { background: var(--teal); outline: 2px solid var(--teal); outline-offset: 3px; animation: incubate 2.4s ease-in-out infinite; }
-.egg.need { background: var(--amber); box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.25); margin: 0 0.65rem; }
-.egg.need::before, .egg.need::after { background: var(--amber); border-radius: 2px; content: ""; height: 3px; position: absolute; top: 0.45rem; width: 0.5rem; }
+.egg.need { background: var(--amber); box-shadow: inset -3px -3px 0 var(--shade-soft); margin: 0 0.65rem; }
+.egg.need::before, .egg.need::after { background: var(--amber); content: ""; height: 3px; position: absolute; top: 0.45rem; width: 0.5rem; }
 .egg.need::before { left: -0.65rem; transform: rotate(-20deg); }
 .egg.need::after { right: -0.65rem; transform: rotate(20deg); }
-.egg.waiting { background: none; border: 2px dashed #2f5a63; box-shadow: none; }
-@keyframes incubate { 50% { outline-color: rgba(34, 227, 210, 0.25); } }
-.slot { align-items: center; background: rgba(0, 0, 0, 0.35); border: 1px solid #3f7078; border-radius: 50%; display: inline-grid; height: 1.75rem; place-items: center; width: 1.75rem; }
+.egg.waiting { background: none; border: 2px dashed var(--socket-dash); box-shadow: none; }
+@keyframes incubate { 50% { outline-color: color-mix(in srgb, var(--teal) 25%, transparent); } }
+.slot { align-items: center; background: var(--shade-mid); border: 1px solid var(--socket-border); border-radius: 50%; display: inline-grid; height: 1.75rem; place-items: center; width: 1.75rem; }
 .slot > .egg.waiting { display: none; }
 .eggs { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
 .eggs small { align-self: center; }
-.legend { color: var(--muted); display: flex; flex-wrap: wrap; font: 0.8rem var(--mono); gap: 6px 22px; margin: 0 0 14px; }
+.legend { color: var(--muted); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 6px 22px; margin: 0 0 14px; }
 .legend span { align-items: center; display: inline-flex; gap: 8px; }
-.legend .egg { height: 1rem; width: 0.8rem; }
+.legend .egg { height: 1rem; width: 0.85rem; }
 .legend .egg.need { margin: 0 0.5rem; }
 .legend .egg.need::before, .legend .egg.need::after { top: 0.35rem; width: 0.4rem; }
 .legend .egg.need::before { left: -0.5rem; }
@@ -869,9 +1053,9 @@ pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var
 .cols { display: block; }
 .cols.has-detail { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) 340px; }
 .left { min-width: 0; }
-.head { border-bottom: 1px solid var(--line); color: var(--muted); display: grid; font-size: 0.7rem; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; letter-spacing: 0.18em; margin: 0 0 14px 88px; padding: 6px 18px; text-transform: uppercase; }
+.head { background: var(--void); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; color: var(--muted); display: grid; font-size: 0.75rem; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; letter-spacing: 0.18em; margin: 0 0 14px 88px; padding: 6px 18px; text-transform: uppercase; }
 .head span:last-child { text-align: right; white-space: nowrap; }
-.mat { --h: var(--teal); background: linear-gradient(90deg, color-mix(in srgb, var(--h) 12%, transparent), transparent 45%), rgba(8, 13, 19, 0.85); border: 1px solid var(--line); display: grid; grid-template-columns: 88px minmax(0, 1fr); margin-bottom: 16px; position: relative; }
+.mat { --h: var(--teal); background: linear-gradient(90deg, color-mix(in srgb, var(--h) 12%, transparent), transparent 45%), var(--panel-overlay); border: 1px solid var(--line); display: grid; grid-template-columns: 88px minmax(0, 1fr); margin-bottom: 16px; position: relative; }
 .mat::before, .mat::after { border: 2px solid var(--h); content: ""; height: 16px; pointer-events: none; position: absolute; right: -1px; width: 16px; }
 .mat::before { border-bottom: 0; border-left: 0; top: -1px; }
 .mat::after { border-left: 0; border-top: 0; bottom: -1px; }
@@ -879,29 +1063,29 @@ pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var
 .mat[data-state="queue"] { --h: var(--slate); }
 .mat[data-state="completed"] { --h: var(--ok); }
 .tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
-.tab h2 { font: 600 0.72rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
-.tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1.1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
+.tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
+.tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
 .lines { padding: 4px 18px; }
 .entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
 .entry p { margin: 0; }
 .who { font-size: 1.05rem; font-weight: 600; }
-.who b { color: var(--ink2); font: 500 0.9rem var(--mono); margin-right: 10px; }
-.eggcell .meta { font: 0.76rem var(--mono); margin-top: 6px; }
-.now .label { align-items: center; color: var(--ink2); display: flex; font: 700 0.78rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
-.now .label .egg { height: 1rem; margin: 0 0.9rem 0 0.6rem; width: 0.8rem; }
+.who b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 10px; }
+.eggcell .meta { font: 0.75rem var(--mono); margin-top: 6px; }
+.now .label { align-items: center; color: var(--ink2); display: flex; font: 700 0.75rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.now .label .egg { height: 1rem; margin: 0 0.85rem 0 0.6rem; width: 0.85rem; }
 .now .label .egg.need::before, .now .label .egg.need::after { top: 0.35rem; width: 0.4rem; }
 .now .label .egg.need::before { left: -0.5rem; }
 .now .label .egg.need::after { right: -0.5rem; }
 .now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
-.clock { color: var(--muted); font: 0.8rem var(--mono); text-align: right; }
+.clock { color: var(--muted); font: 0.85rem var(--mono); text-align: right; }
 .entry > ul, .entry > .next { grid-column: 1 / -1; }
 .next { color: var(--ink2); font: 0.85rem/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 2px 0 0; }
 .next p { color: var(--muted); margin: 6px 0 2px; }
 .next ol { list-style: decimal; margin: 0; padding-left: 1.6em; }
 .next li { padding: 1px 0; }
-.next code { color: var(--ink); font: 0.8rem var(--mono); }
+.next code { color: var(--ink); font: 0.85rem var(--mono); }
 .tickets .reason { color: var(--ink2); font: 0.85rem system-ui, -apple-system, 'Segoe UI', sans-serif; }
 .tickets .next { margin-left: 4px; }
 .entry.waiting .now .label { color: var(--amber); }
@@ -910,16 +1094,16 @@ pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var
 .entry.failed .now .label, .entry.failed .now p { color: var(--err); }
 .tickets li { font: 0.85rem var(--mono); padding: 2px 0 2px 4px; }
 .tickets li.waiting { color: var(--amber); }
-.detail { background: linear-gradient(180deg, rgba(34, 227, 210, 0.07), transparent 40%), rgba(8, 13, 19, 0.92); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: sticky; top: 60px; }
+.detail { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: sticky; top: 16px; }
 .detail::before, .detail::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
 .detail::before { border-bottom: 0; border-right: 0; left: -1px; top: -1px; }
 .detail::after { border-left: 0; border-top: 0; bottom: -1px; right: -1px; }
-.dk { align-items: center; color: var(--teal); display: flex; font-size: 0.72rem; gap: 8px; letter-spacing: 0.18em; margin: 0; text-transform: uppercase; }
+.dk { align-items: center; color: var(--teal); display: flex; font-size: 0.75rem; gap: 8px; letter-spacing: 0.18em; margin: 0; text-transform: uppercase; }
 .dk i { animation: blip 2s ease-out infinite; background: var(--teal); border-radius: 50%; height: 8px; width: 8px; }
-@keyframes blip { 0% { box-shadow: 0 0 0 0 rgba(34, 227, 210, 0.6); } 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes blip { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--teal) 60%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
 .detail h3 { font: 700 1.2rem system-ui, sans-serif; margin: 8px 0 2px; overflow-wrap: anywhere; }
-.detail h3 b { color: var(--ink2); font: 500 0.9rem var(--mono); margin-right: 8px; }
-.sub { color: var(--muted); font-size: 0.78rem; margin: 0; }
+.detail h3 b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 8px; }
+.sub { color: var(--muted); font-size: 0.75rem; margin: 0; }
 .steps { margin: 16px 0; position: relative; }
 .steps::before { background: var(--line); bottom: 8px; content: ""; left: 8px; position: absolute; top: 8px; width: 1px; }
 .steps li { color: var(--ink2); font-size: 0.85rem; padding: 4px 0 4px 30px; position: relative; }
@@ -931,13 +1115,15 @@ pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var
 .steps li.waiting { color: var(--amber); }
 .steps li.waiting::before { border-color: var(--amber); }
 .meters { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin-bottom: 14px; }
-.meters div { background: rgba(0, 0, 0, 0.3); border: 1px solid var(--line); padding: 6px 10px; }
-.meters small { display: block; font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; }
+.meters div { background: var(--shade-soft); border: 1px solid var(--line); padding: 6px 10px; }
+.meters small { display: block; font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; }
 .meters b { font-size: 1rem; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
-.chips button { background: none; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 3px 14px; }
+.chips button { background: none; min-height: 24px; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 3px 14px; }
 .chips button[data-on="true"] { background: var(--teal); border-color: var(--teal); color: var(--void); }
 .scroll { overflow-x: auto; }
+.sr, .skip:not(:focus) { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
+.skip { background: var(--void); color: var(--teal); left: 8px; padding: 8px 12px; top: 8px; z-index: 4; }
 td.progress .eggs { display: inline-flex; vertical-align: middle; }
 td.progress p { display: inline; margin: 0 0 0 14px; }
 .scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
@@ -948,7 +1134,7 @@ tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
 tr[data-failed] td:first-child { border-left-color: var(--err); }
 table { border-collapse: collapse; width: 100%; }
 th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
-th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: 600 0.75rem var(--mono); letter-spacing: 0.16em; padding: 0; text-transform: uppercase; }
+th button { align-items: center; background: none; border: 0; display: inline-flex; min-height: 24px; color: var(--muted); cursor: pointer; font: 600 0.75rem var(--mono); letter-spacing: 0.16em; padding: 0; text-transform: uppercase; }
 th button[data-on="true"] { color: var(--teal); }
 th button[data-dir]::after { border: solid currentColor; border-width: 0 2px 2px 0; content: ""; display: inline-block; height: 0.4em; margin-left: 0.6em; transform: rotate(45deg) translateY(-0.2em); width: 0.4em; }
 th button[data-dir="asc"]::after { transform: rotate(-135deg) translate(-0.1em, -0.1em); }
@@ -957,10 +1143,42 @@ td.progress .eggs { margin-bottom: 4px; }
 .overview section { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 12px; }
 .overview h2 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; text-transform: uppercase; }
 .overview li { padding: 3px 0; }
+a.ext { color: inherit; text-decoration-color: var(--muted); text-decoration-style: dotted; text-underline-offset: 3px; }
+a.ext:hover { color: var(--teal); text-decoration-style: solid; }
+a.act { align-items: center; border: 1px solid var(--teal2); color: var(--teal); display: inline-flex; font: 0.75rem var(--mono); gap: 6px; min-height: 24px; padding: 2px 9px; text-decoration: none; white-space: nowrap; }
+a.act:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); color: var(--teal); }
+a.act::after { background: currentColor; content: ""; height: 0.8em; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8'%3E%3Cpath d='M6 3H3v10h10v-3M9 2h5v5M14 2 7 9'/%3E%3C/svg%3E") center / contain no-repeat; width: 0.8em; }
+.entry.waiting a.act { border-color: var(--amber); color: var(--amber); }
+.entry.waiting a.act:hover { background: color-mix(in srgb, var(--amber) 12%, transparent); }
+.clock a.act { margin-left: auto; }
+button.why { align-items: center; flex-wrap: wrap; background: none; border: 0; color: inherit; cursor: pointer; display: inline-flex; font: inherit; letter-spacing: inherit; padding: 2px 0; position: relative; text-align: left; text-transform: inherit; }
+button.why span { color: var(--ink2); flex-basis: 100%; padding: 2px 0 0 2.4rem; white-space: nowrap; font-weight: 400; letter-spacing: 0; text-decoration: underline dotted; text-underline-offset: 3px; text-transform: none; }
+button.why[aria-expanded="true"] span { color: var(--amber); }
+.entry > .help { background: color-mix(in srgb, var(--amber) 6%, transparent); border: 1px dashed var(--amber); font-size: 0.85rem; grid-column: 1 / -1; max-width: 64ch; padding: 10px 16px; }
+.help p { margin: 4px 0; }
+.help p:last-child { color: var(--ink2); }
+.help ol { list-style: decimal; margin: 6px 0; padding-left: 1.3rem; }
+.help li { padding: 2px 0; }
+code { background: color-mix(in srgb, var(--teal) 10%, transparent); color: var(--teal); font: 0.85em var(--mono); padding: 1px 5px; }
+.hint { color: var(--ink2); display: block; font-size: 0.85rem; margin-top: 2px; }
+button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; min-height: 24px; padding: 1px 8px; }
+button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
+@media (min-width: 1261px) and (max-width: 1400px) {
+	.cols.has-detail .entry { grid-template-columns: 1fr; }
+	.cols.has-detail .head { display: none; }
+}
 @media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
 	.detail { order: -1; position: static; }
+}
+@media (pointer: coarse) {
+	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }
+	#views button, .chips button { padding-inline: 20px; }
+}
+@media (max-height: 480px), (max-width: 400px) {
+	body { height: auto; overflow: visible; }
+	#scroll { overflow: visible; }
 }
 @media (max-width: 900px) {
 	.entry { grid-template-columns: 1fr; }
@@ -968,13 +1186,16 @@ td.progress .eggs { margin-bottom: 4px; }
 	.clock { text-align: left; }
 }
 @media (max-width: 760px) {
+	body { --gut: 12px; }
+	h1 { font-size: 1.2rem; }
+	#cards { font-size: 0.75rem; gap: 2px 14px; }
 	.mark { display: none; }
-	.banner { background-position: 25% 40%; height: 180px; }
-	.bar { flex-wrap: wrap; padding: 10px 16px; }
-	#panels { padding: 0 12px 40px; }
+	.banner { background-position: 25% 40%; height: 100px; }
+	.bar { flex-wrap: wrap; }
+	#panels { padding: 12px 12px 40px; }
 	.mat { grid-template-columns: 40px minmax(0, 1fr); }
 	.tab { padding: 10px 4px; }
-	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.9rem; }
+	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.85rem; }
 	.lines { padding: 4px 12px; }
 	.scroll table { min-width: 36rem; }
 }
@@ -984,7 +1205,21 @@ td.progress .eggs { margin-bottom: 4px; }
 const hostOk = (host: string | undefined, port: number) =>
 	host === `127.0.0.1:${String(port)}` || host === `localhost:${String(port)}`;
 
+// The origin remote's url, which names the GitHub repo when factory.json does not; null with no remote
+function originOf(root: string): string | null {
+	try {
+		const url = execFileSync('git', ['-C', root, 'config', '--get', 'remote.origin.url'], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'ignore']
+		}).trim();
+		return url === '' ? null : url;
+	} catch {
+		return null;
+	}
+}
+
 export function startUi(o: UiOptions): Promise<Ui> {
+	const origin = originOf(o.root);
 	const clients = new Set<ServerResponse>();
 	const panelsNow = () =>
 		renderPanels(
@@ -992,7 +1227,8 @@ export function startUi(o: UiOptions): Promise<Ui> {
 			readFactory(o.root, {
 				...(o.alive === undefined ? {} : { alive: o.alive }),
 				...(o.now === undefined ? {} : { now: o.now })
-			})
+			}),
+			linksFor(o.root, origin)
 		);
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);
@@ -1027,7 +1263,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				'content-security-policy':
 					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 			});
-			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow()));
+			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow(), linksFor(o.root, origin)));
 		} else {
 			res.writeHead(404).end();
 		}

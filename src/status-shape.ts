@@ -48,8 +48,8 @@ export type Doing =
 			readonly title?: string;
 			// null while the Feature is set up and reviewed, and during a Step that runs after all Tickets
 			readonly ticket: string | null;
-			readonly step: 'setup' | 'build' | 'fix' | 'review' | 'step';
-			// a build's question round or a fix round, of how many there may be
+			readonly step: 'setup' | 'build' | 'fix' | 'review' | 'step' | 'pullChecks';
+			// a build's question round or a fix round, of how many there may be; for a Pull-check fix, its round of the pull request's fix rounds
 			readonly round: number | null;
 			readonly rounds: number | null;
 			readonly session: string | null;

@@ -46,6 +46,21 @@ describe('fileSpend', () => {
 		expect(fileSpend(path).entries()).toHaveLength(2);
 	});
 
+	it('reads back a Pull-check fix round as its own kind of work, with its session and cost', () => {
+		const path = join(dir, 'runs.jsonl');
+		const morning = new Date(2026, 9, 30, 8, 0);
+		const round: Entry = {
+			...entry(morning, 2.5),
+			ticket: null,
+			step: 'pullChecks',
+			session: 'session-2',
+			outcome: 'pull checks 1'
+		};
+		fileSpend(path).record(round);
+		expect(fileSpend(path).entries()).toEqual([round]);
+		expect(builtOn(path, morning)).toBe(0);
+	});
+
 	it('counts a line written when ids were numbers', () => {
 		const path = join(dir, 'runs.jsonl');
 		const now = new Date(2026, 9, 30, 8, 0);

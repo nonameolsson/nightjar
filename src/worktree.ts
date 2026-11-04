@@ -13,10 +13,20 @@ export const TICKET_TRAILER = 'Factory-Ticket';
 // Names the Workflow Step a commit holds, so a later run knows it is done.
 export const STEP_TRAILER = 'Factory-Step';
 
+// Counts the Pull-check fixes pushed to a branch, so a later run knows how many rounds it had.
+export const PULL_FIX_TRAILER = 'Factory-Pull-Fix';
+
+// Names the Session a commit came from, so a later round can resume it.
+export const SESSION_TRAILER = 'Factory-Session';
+
+// Every trailer Nightjar writes starts with it; a head commit without one is not Nightjar's.
+export const TRAILER_PREFIX = 'Factory-';
+
 // The notes the Steps of a run share, in the worktree and never committed.
 const NOTES = '.factory/notes';
 
-const BRANCH_PREFIX = 'factory/';
+// Every branch Nightjar builds on starts with it.
+export const BRANCH_PREFIX = 'factory/';
 
 // An item id as a piece of a branch name: whatever a ref may not hold becomes a dash.
 const refPart = (id: string) => id.replace(/[^A-Za-z0-9_-]+/g, '-');
@@ -51,7 +61,12 @@ export function ticketCommitMessage(
 	summary: string,
 	session: string
 ): string {
-	return `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\nFactory-Session: ${session}`;
+	return `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\n${SESSION_TRAILER}: ${session}`;
+}
+
+// The commit of one Pull-check fix round, the `round`th on the branch.
+export function pullFixCommitMessage(round: number, summary: string, session: string): string {
+	return `Fix the Pull checks, round ${String(round)}\n\n${summary.trim()}\n\n${PULL_FIX_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
 }
 
 export interface StepCommit {
@@ -65,7 +80,7 @@ export interface StepCommit {
 
 export function stepCommitMessage(o: StepCommit): string {
 	const subject = `${o.workflow}: ${o.step}${o.after === null ? '' : ` (after #${o.after})`}`;
-	return `${subject}\n\n${o.summary.trim()}\n\n${STEP_TRAILER}: ${o.key}\nFactory-Session: ${o.session}`;
+	return `${subject}\n\n${o.summary.trim()}\n\n${STEP_TRAILER}: ${o.key}\n${SESSION_TRAILER}: ${o.session}`;
 }
 
 // The side branch a failed attempt at a Ticket is kept on.
@@ -104,6 +119,26 @@ export interface Worktree {
 	revert(before: string): Promise<void>;
 	// Keeps what the session left on a side branch, which it names; null when it left nothing.
 	discard(before: string, ticket: string): Promise<string | null>;
+	// Moves the branch on to the commit the remote holds, when that loses no commit of its own; false when the remote has no such branch or the branch holds commits the remote lacks.
+	toRemote(): Promise<boolean>;
+	// The trailers of the head commit, by key; the last value of a key given twice.
+	headTrailers(): Promise<ReadonlyMap<string, string>>;
+	// How many Pull-check fixes the branch's own commits hold, from their trailers.
+	pullFixes(): Promise<number>;
+	// One commit of what a Pull-check fix round left, the `round`th; false when it changed no file.
+	commitPullFix(round: number, summary: string, session: string): Promise<boolean>;
+}
+
+// The trailers of a commit message: the `Key: value` lines of its last paragraph, by key.
+export function trailersOf(message: string): Map<string, string> {
+	const paragraphs = message.trimEnd().split(/\n\s*\n/);
+	const last = paragraphs.at(-1) ?? '';
+	const found = new Map<string, string>();
+	for (const line of last.split('\n')) {
+		const m = /^([A-Za-z0-9-]+):\s*(.*)$/.exec(line);
+		if (m?.[1] !== undefined) found.set(m[1], (m[2] ?? '').trim());
+	}
+	return found;
 }
 
 // Opens the worktree of a Feature's branch, reusing what a run before left.
@@ -238,6 +273,54 @@ export class GitWorktree implements Worktree {
 		await this.git(['reset', '-q', '--hard', before]);
 		await this.git(['clean', '-q', '-fd']);
 		return side;
+	}
+
+	// The remote branch was fetched when the worktree opened; a branch that is behind it moves on, one ahead of it stays.
+	async toRemote(): Promise<boolean> {
+		const remote = `refs/remotes/origin/${this.at.branch}`;
+		const theirs = await run(
+			'git',
+			['rev-parse', '--verify', '--quiet', `${remote}^{commit}`],
+			this.at.folder,
+			this.env
+		);
+		if (!theirs.ok) return false;
+		if (theirs.out.trim() === (await this.head())) return true;
+		const behind = await run(
+			'git',
+			['merge-base', '--is-ancestor', 'HEAD', remote],
+			this.at.folder,
+			this.env
+		);
+		if (!behind.ok) return false;
+		await this.git(['reset', '-q', '--hard', remote]);
+		return true;
+	}
+
+	async headTrailers(): Promise<ReadonlyMap<string, string>> {
+		const out = await this.git(['log', '-1', '--format=%(trailers:only,unfold)']);
+		const found = new Map<string, string>();
+		for (const line of out.split('\n')) {
+			const m = /^([^:\s]+):\s*(.*)$/.exec(line);
+			if (m?.[1] !== undefined) found.set(m[1], (m[2] ?? '').trim());
+		}
+		return found;
+	}
+
+	async pullFixes(): Promise<number> {
+		const out = await this.git([
+			'log',
+			`--format=%(trailers:key=${PULL_FIX_TRAILER},valueonly)`,
+			`${this.at.base}..HEAD`
+		]);
+		return out.split('\n').filter((l) => l.trim() !== '').length;
+	}
+
+	async commitPullFix(round: number, summary: string, session: string): Promise<boolean> {
+		await this.git(['add', '-A']);
+		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
+		await this.git(['commit', '-q', '-m', pullFixCommitMessage(round, summary, session)]);
+		return true;
 	}
 }
 

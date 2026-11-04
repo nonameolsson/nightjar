@@ -1,9 +1,12 @@
 // The worktree's in-memory adapter, which the build loop's specs run over in place of real git: a branch is a list of commits, and what a Session leaves is files written to it.
 import {
+	PULL_FIX_TRAILER,
 	attemptBranch,
 	folderFor,
+	pullFixCommitMessage,
 	stepCommitMessage,
 	ticketCommitMessage,
+	trailersOf,
 	type FeatureBranch,
 	type OpenWorktree,
 	type StepCommit,
@@ -39,6 +42,8 @@ export interface MemoryWorktrees {
 	subjects(folder: string): string[];
 	// The side branches failed attempts were kept on, with the files each kept.
 	readonly sides: ReadonlyMap<string, string[]>;
+	// A person's own commit on the branch, of one file, with no trailer.
+	commitAsPerson(folder: string, message: string, file: string): void;
 }
 
 export function memoryWorktrees(): MemoryWorktrees {
@@ -77,7 +82,10 @@ export function memoryWorktrees(): MemoryWorktrees {
 		messages: (folder) => [...state(folder).commits].reverse().map((c) => c.message),
 		subjects: (folder) =>
 			[...state(folder).commits].reverse().map((c) => c.message.split('\n')[0] ?? ''),
-		sides
+		sides,
+		commitAsPerson: (folder, message, file) => {
+			state(folder).commits.push({ message, files: new Map([[file, 'by hand\n']]) });
+		}
 	};
 }
 
@@ -149,6 +157,23 @@ class MemoryWorktree implements Worktree {
 	revert(before: string) {
 		this.reset(before);
 		return Promise.resolve();
+	}
+
+	// The model has one copy of the branch, which is the remote's too.
+	toRemote = () => Promise.resolve(true);
+
+	headTrailers = (): Promise<ReadonlyMap<string, string>> => {
+		const head = this.folder.commits.at(-1);
+		return Promise.resolve(head === undefined ? new Map() : trailersOf(head.message));
+	};
+
+	pullFixes = () =>
+		Promise.resolve(
+			this.folder.commits.filter((c) => trailersOf(c.message).has(PULL_FIX_TRAILER)).length
+		);
+
+	commitPullFix(round: number, summary: string, session: string) {
+		return Promise.resolve(this.commit({ message: pullFixCommitMessage(round, summary, session) }));
 	}
 
 	discard(before: string, ticket: string) {

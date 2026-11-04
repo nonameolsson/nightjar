@@ -430,6 +430,69 @@
 				"description": "A named list of Steps that a Feature picks with a **Workflow:** line"
 			}
 		},
+		"sources": {
+			"description": "Where Features come from besides a person, by name. nightjar intake receives their webhooks and fires their schedules, and makes each Feature on the Tracker; it never builds.",
+			"type": "object",
+			"propertyNames": {
+				"type": "string",
+				"pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+			},
+			"additionalProperties": {
+				"type": "object",
+				"properties": {
+					"type": {
+						"type": "string",
+						"enum": [
+							"schedule",
+							"webhook",
+							"sentry"
+						],
+						"description": "schedule fires from a cron time, webhook takes a signed webhook of the Standard Webhooks scheme, sentry takes a Sentry alert"
+					},
+					"cron": {
+						"type": "string",
+						"pattern": "^(?:@daily|@weekly|(?:[\\d*][\\d*/,-]*\\s+){4}[\\d*][\\d*/,-]*)$",
+						"description": "When a schedule fires, in the machine's local time zone: five cron fields, @daily or @weekly. A schedule needs it; a webhook has none."
+					},
+					"template": {
+						"type": "string",
+						"pattern": "\\S",
+						"description": "A Feature file as a path from the repo's root, or the name of a template Nightjar ships, such as sentry or weekly-deps"
+					},
+					"key": {
+						"type": "string",
+						"pattern": "\\S",
+						"description": "A path into the payload, such as data.event.issue_id, that says when two events are the same; while a Feature with the same key is open, no new one is made"
+					},
+					"secretEnv": {
+						"type": "string",
+						"pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+						"description": "The environment variable that holds the webhook secret; the secret is never in factory.json"
+					},
+					"maxPerDay": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 9007199254740991,
+						"description": "The most Features the Source makes in a day; 3 when left out"
+					},
+					"go": {
+						"type": "boolean",
+						"description": "true gives each Feature the Go, assigned to the owner. Left out, the Go stays with a person. Needs an owner."
+					},
+					"owner": {
+						"type": "string",
+						"pattern": "\\S",
+						"description": "The login a Feature with the Go is assigned to; the Tracker must trust them (on Azure DevOps, a sign-in name such as ann@contoso.com)"
+					}
+				},
+				"required": [
+					"type",
+					"template"
+				],
+				"additionalProperties": false,
+				"description": "Makes Features with nobody writing them: a schedule or a signed webhook, each from a template. nightjar intake runs it."
+			}
+		},
 		"defaultWorkflow": {
 			"description": "The Workflow of a Feature without a **Workflow:** line; none when left out",
 			"type": "string",
@@ -472,6 +535,33 @@
 				"count",
 				"env"
 			],
+			"additionalProperties": false
+		},
+		"pullChecks": {
+			"description": "The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request",
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"description": "true has Nightjar fix the failed Pull checks of its own draft pull requests before it takes the next Feature; off by default",
+					"type": "boolean"
+				},
+				"fixRounds": {
+					"description": "How many Pull-check fix rounds one pull request may get, counted from its branch's commits; 2 when left out. After them, the Feature gets the needs-a-person Signal",
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 10
+				},
+				"fixUsd": {
+					"description": "The most one Pull-check fix round may cost in dollars, its check's fix rounds too; 5 when left out",
+					"type": "number",
+					"exclusiveMinimum": 0
+				},
+				"fixMinutes": {
+					"description": "The most minutes one Pull-check fix round may run, its check's fix rounds too; 30 when left out",
+					"type": "number",
+					"exclusiveMinimum": 0
+				}
+			},
 			"additionalProperties": false
 		}
 	},

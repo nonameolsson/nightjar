@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
+import { cronFault } from './cron.js';
 import { DEFAULT_SIGNAL_NAMES, RESERVED_NAMES, type SignalNames } from './signals.js';
 import { why } from './say.js';
 
@@ -97,6 +98,9 @@ const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
 
 const oneLine = (what: string) => z.string().regex(/^[^\r\n]*\S[^\r\n]*$/, `${what} is one line`);
 
+// The Pull-check pass's limits when factory.json names none.
+export const DEFAULT_PULL_CHECKS = { fixRounds: 2, fixUsd: 5, fixMinutes: 30 } as const;
+
 // How many rounds a Step with an `until` runs when it names no maxRounds.
 export const DEFAULT_ROUNDS = 3;
 
@@ -172,6 +176,88 @@ const Workflow = z
 		})
 	})
 	.meta({ description: 'A named list of Steps that a Feature picks with a **Workflow:** line' });
+
+// How many Features a Source makes in a day when it names no maxPerDay.
+export const DEFAULT_MAX_PER_DAY = 3;
+
+// A cron time of five fields, or @daily or @weekly; each field is numbers, ranges, lists, * and steps.
+const CRON = /^(?:@daily|@weekly|(?:[\d*][\d*/,-]*\s+){4}[\d*][\d*/,-]*)$/;
+
+// a Source is named in the marker on its Features, so its name holds no space
+const SOURCE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+
+const Source = z
+	.strictObject({
+		type: z
+			.enum(['schedule', 'webhook', 'sentry'], {
+				error: missingOr('name the type: schedule, webhook or sentry')
+			})
+			.meta({
+				description:
+					'schedule fires from a cron time, webhook takes a signed webhook of the Standard Webhooks scheme, sentry takes a Sentry alert'
+			}),
+		cron: z
+			.string()
+			.regex(CRON, 'five cron fields such as "0 6 * * 1", or @daily or @weekly')
+			.optional()
+			.meta({
+				description:
+					"When a schedule fires, in the machine's local time zone: five cron fields, @daily or @weekly. A schedule needs it; a webhook has none."
+			}),
+		template: named('name the template').meta({
+			description:
+				"A Feature file as a path from the repo's root, or the name of a template Nightjar ships, such as sentry or weekly-deps"
+		}),
+		key: z.string().regex(/\S/, 'a key is empty').optional().meta({
+			description:
+				'A path into the payload, such as data.event.issue_id, that says when two events are the same; while a Feature with the same key is open, no new one is made'
+		}),
+		secretEnv: z
+			.string()
+			.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'not a valid variable name')
+			.optional()
+			.meta({
+				description:
+					'The environment variable that holds the webhook secret; the secret is never in factory.json'
+			}),
+		maxPerDay: z
+			.number()
+			.int()
+			.min(1)
+			.optional()
+			.meta({
+				description: `The most Features the Source makes in a day; ${String(DEFAULT_MAX_PER_DAY)} when left out`
+			}),
+		go: z.boolean().optional().meta({
+			description:
+				'true gives each Feature the Go, assigned to the owner. Left out, the Go stays with a person. Needs an owner.'
+		}),
+		owner: z.string().regex(/\S/, 'an owner is empty').optional().meta({
+			description:
+				'The login a Feature with the Go is assigned to; the Tracker must trust them (on Azure DevOps, a sign-in name such as ann@contoso.com)'
+		})
+	})
+	.refine((s) => s.type !== 'schedule' || s.cron !== undefined, {
+		path: ['cron'],
+		error: 'missing: a schedule needs the cron time it fires at'
+	})
+	.refine((s) => s.type === 'schedule' || s.cron === undefined, {
+		path: ['cron'],
+		error: 'only a schedule has a cron time'
+	})
+	.superRefine((s, ctx) => {
+		// the pattern refuses the shape; what it lets through, such as minute 61, is read here
+		const fault = s.cron === undefined || !CRON.test(s.cron) ? null : cronFault(s.cron);
+		if (fault !== null) ctx.addIssue({ code: 'custom', path: ['cron'], message: fault });
+	})
+	.refine((s) => s.go !== true || s.owner !== undefined, {
+		path: ['owner'],
+		error: 'missing: a Source with "go": true names the owner it assigns each Feature to'
+	})
+	.meta({
+		description:
+			'Makes Features with nobody writing them: a schedule or a signed webhook, each from a template. nightjar intake runs it.'
+	});
 
 const signalName = (fallback: string, what: string) =>
 	z
@@ -336,6 +422,13 @@ export const ConfigSchema = z
 			description:
 				'Work a repo adds to the build loop, by name. A Feature picks one with a **Workflow:** line; Nightjar still keeps the branch, the commits, the Signals and the pull request.'
 		}),
+		sources: z
+			.record(z.string().regex(SOURCE_NAME, 'a Source name is letters, digits, _, . and -'), Source)
+			.optional()
+			.meta({
+				description:
+					'Where Features come from besides a person, by name. nightjar intake receives their webhooks and fires their schedules, and makes each Feature on the Tracker; it never builds.'
+			}),
 		defaultWorkflow: z.string().regex(/\S/, 'defaultWorkflow is empty').optional().meta({
 			description: 'The Workflow of a Feature without a **Workflow:** line; none when left out'
 		}),
@@ -370,6 +463,41 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					'Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.'
+			}),
+		pullChecks: z
+			.strictObject({
+				enabled: z.boolean().optional().meta({
+					description:
+						'true has Nightjar fix the failed Pull checks of its own draft pull requests before it takes the next Feature; off by default'
+				}),
+				fixRounds: z
+					.number()
+					.int()
+					.min(1)
+					.max(10)
+					.optional()
+					.meta({
+						description: `How many Pull-check fix rounds one pull request may get, counted from its branch's commits; ${String(DEFAULT_PULL_CHECKS.fixRounds)} when left out. After them, the Feature gets the needs-a-person Signal`
+					}),
+				fixUsd: z
+					.number()
+					.positive()
+					.optional()
+					.meta({
+						description: `The most one Pull-check fix round may cost in dollars, its check's fix rounds too; ${String(DEFAULT_PULL_CHECKS.fixUsd)} when left out`
+					}),
+				fixMinutes: z
+					.number()
+					.positive()
+					.optional()
+					.meta({
+						description: `The most minutes one Pull-check fix round may run, its check's fix rounds too; ${String(DEFAULT_PULL_CHECKS.fixMinutes)} when left out`
+					})
+			})
+			.optional()
+			.meta({
+				description:
+					"The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request"
 			})
 	})
 	.refine(
@@ -389,6 +517,8 @@ export const ConfigSchema = z
 export type Config = Omit<z.infer<typeof ConfigSchema>, '$schema'> & {
 	readonly signals: SignalNames;
 };
+
+export type SourceConfig = NonNullable<Config['sources']>[string];
 
 export function configJsonSchema(): object {
 	return z.toJSONSchema(ConfigSchema, { io: 'input' });

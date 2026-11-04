@@ -15,6 +15,14 @@ colors:
   muted: "#7f979b"
   err: "#ff5a5f"
   socket-dash: "#2f5a63"
+  socket-border: "#3f7078"
+  bar-overlay: "rgba(4, 7, 11, 0.94)"
+  panel-overlay: "rgba(8, 13, 19, 0.85)"
+  panel-overlay-strong: "rgba(8, 13, 19, 0.92)"
+  teal-wash: "rgba(34, 227, 210, 0.07)"
+  shade-soft: "rgba(0, 0, 0, 0.3)"
+  shade-mid: "rgba(0, 0, 0, 0.35)"
+  shade-deep: "rgba(0, 0, 0, 0.45)"
 typography:
   heading-mono:
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
@@ -43,9 +51,14 @@ typography:
     lineHeight: 1.5
   label:
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
-    fontSize: "0.72rem"
+    fontSize: "0.75rem"
     fontWeight: 600
     letterSpacing: "0.14em"
+  meter-value:
+    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif"
+    fontSize: "1rem"
+    fontWeight: 700
+    lineHeight: 1.5
 rounded:
   none: "0"
   pill: "999px"
@@ -63,7 +76,7 @@ components:
     rounded: "{rounded.none}"
     padding: "5px 16px"
   nav-tab-active:
-    backgroundColor: "rgba(34, 227, 210, 0.07)"
+    backgroundColor: "{colors.teal-wash}"
     textColor: "{colors.teal}"
   chip:
     backgroundColor: "transparent"
@@ -74,19 +87,20 @@ components:
     backgroundColor: "{colors.teal}"
     textColor: "{colors.void}"
   mat:
-    backgroundColor: "rgba(8, 13, 19, 0.85)"
+    backgroundColor: "{colors.panel-overlay}"
     rounded: "{rounded.none}"
   detail-panel:
-    backgroundColor: "rgba(8, 13, 19, 0.92)"
+    backgroundColor: "{colors.panel-overlay-strong}"
     rounded: "{rounded.none}"
     padding: "18px"
     width: "340px"
   meter:
-    backgroundColor: "rgba(0, 0, 0, 0.3)"
+    backgroundColor: "{colors.shade-soft}"
     rounded: "{rounded.none}"
     padding: "6px 10px"
   nest-socket:
-    backgroundColor: "rgba(0, 0, 0, 0.35)"
+    backgroundColor: "{colors.shade-mid}"
+    textColor: "{colors.socket-border}"
     rounded: "{rounded.round}"
     size: "1.75rem"
 ---
@@ -130,6 +144,15 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 - **Line** (#1b3a42): all hairlines, mat borders, dashed entry dividers, table rules.
 - **Ink** (#e6f1f2): primary text. **Soft Ink** (#9db5b8): secondary text, labels. **Muted** (#7f979b): meta, empty states, column heads.
 - **Socket Dash** (#2f5a63): dashed outline of a waiting (empty) egg.
+- **Socket Border** (#3f7078): the 1px ring of a nest socket; the one border brighter than Line.
+
+### Overlays
+Every colour is a `:root` token (`--socket-dash`, `--socket-border`, `--bar-overlay`, `--panel-overlay`, `--panel-overlay-strong`, `--teal-wash`, `--shade-soft|mid|deep`); a spec rejects a literal outside `:root`, and translucent teal is `color-mix()` on `--teal`.
+
+Translucent fills laid over the void and its grid; they stand in for a solid surface colour.
+- **Bar Overlay** (rgba(4, 7, 11, 0.94)): the sticky bar. **Panel Overlay** (rgba(8, 13, 19, 0.85)): the mat; **Panel Overlay Strong** (rgba(8, 13, 19, 0.92)): the Building-now panel, which sits above the grid and needs the extra opacity.
+- **Teal Wash** (rgba(34, 227, 210, 0.07)): active view tab fill, and the top tint of the Building-now panel.
+- **Shade** (black at 0.3, 0.35, 0.45): **soft** for meters and egg inset shading (0.25 on the needs-a-person egg, 0.3 on the speckles), **mid** for the socket fill (0.35), **deep** for the session log (0.45). Egg shading and speckles use soft (0.3) and mid (0.35); the needs-a-person egg shares soft.
 
 ### Named Rules
 **The Hue-Plus-Shape Rule.** State colour never travels alone: built, building, needs-a-person and waiting each differ in egg form (solid, ringed pulse, wing-flash, dashed empty) as well as colour.
@@ -149,15 +172,19 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 - **Panel title** (700, 1.2rem, 1.5, sans): Building-now Ticket name.
 - **Entry name** (600, 1.05rem, 1.5, sans): Ticket and run names on mats.
 - **Body** (400, 15px, 1.5, sans): prose and descriptions; secondary text 0.85rem in Soft Ink.
-- **Data** (400, 0.76-0.9rem, mono): stats, meta, clocks, Ticket lists, session log (12px, 1.7).
-- **Label** (600-700, 0.72-0.78rem, mono, 0.14-0.2em tracking, uppercase): mat tabs, table column heads, meter captions, the sticky-bar mark.
+- **Data** (400, 0.85rem, mono): stats, meta, clocks, Ticket lists, session log (0.75rem, 1.7).
+- **Label** (600-700, 0.75rem, mono, 0.14-0.2em tracking, uppercase): mat tabs, table column heads, meter captions, the sticky-bar mark.
+- **Meter value** (700 inherited, 1rem, sans): elapsed and cost under their captions.
+
+### Type ramp
+The CSS uses only these sizes: 0.75rem (labels, column heads, meter captions, session log; the floor, nothing smaller), 0.85rem (data, tabs, chips, clocks, legend), 1rem (meter values, tally), 1.05rem (entry name), 1.2rem (panel title), 1.6rem (heading), plus the 15px body. A spec holds the ramp.
 
 ### Named Rules
 **The Mono Means Measured Rule.** Monospace marks counts, ids, times, costs, and column or tab labels. Names and sentences stay in sans.
 
 ## Layout
 
-A sticky bar (view switcher, 4px gaps, 10px/32px padding) sits under a 260px banner (180px on phones) that fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 60px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding, collapsing to one column at 760px. Under 1000px the detail panel drops below and stops sticking. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
+The page never scrolls: the bar (view switcher and links to the Tracker and pull requests) and the run header with its numbers stay fixed, and only the content beneath scrolls. Below 480px height or 400px width (a landscape phone, 400% zoom) the bar and header scroll with the content, so the Features stay reachable. A 150px banner (100px on phones) opens the scrolling content and fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 16px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding. At 1260px and below the detail panel moves above the mats and stops sticking; at 900px the head row hides and entries collapse to one column; at 760px (phone) the mark hides and the tab rail narrows to 40px. Beside the detail panel, entries also collapse to one column between 1261px and 1400px (the head row hides). Interactive controls (sort buttons, view tabs, chips) are at least 24px tall, 44px on `pointer: coarse`. A visually hidden `role="status"` region announces a rise in waiting or failed Features; a skip link jumps to the panels. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
 
 ## Elevation & Depth
 
@@ -180,7 +207,7 @@ A bordered rectangle tinted from its left by 12% of its state hue. Left rail is 
 
 ### Egg and Nest Socket
 - **Built:** solid Deep Teal egg. **Building:** Signal Teal egg with a 2px ring at 3px offset pulsing over 2.4s (`incubate`). **Needs a person:** amber egg with two small amber wings angled 20 degrees (the wing-flash). **Waiting:** dashed Socket Dash outline, no fill (hidden inside a socket, which stands for the empty nest).
-- Sockets are 1.75rem circles on 35% black with a Line border.
+- Sockets are 1.75rem circles on 35% black with a Socket Border ring.
 
 ### Building-Now Panel
 Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
@@ -189,7 +216,7 @@ Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal c
 Filter chips are pill outlines in Deep Teal with teal text; on state they fill Signal Teal with void text. Table headers are tracked mono buttons that turn teal when sorted, with a rotated-border chevron for direction; rows have Line bottom borders.
 
 ### Session Log
-Black 45% fill, Line border, 12px mono at 1.7 line-height in Soft Ink, wrapped, capped at 14rem height and scrolling.
+Black 45% fill, Line border, 0.75rem mono at 1.7 line-height in Soft Ink, wrapped, capped at 14rem height and scrolling.
 
 ## Do's and Don'ts
 
