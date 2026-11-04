@@ -15,6 +15,42 @@ export interface PullView {
 	readonly comments: readonly string[];
 }
 
+// Feedback as a person or a check puts it on a pull request; the harness makes the host show it so.
+export type Given =
+	| {
+			readonly kind: 'comment';
+			readonly author: string;
+			readonly body: string;
+			// whether the host trusts the author, as its own rule would say
+			readonly trusted: boolean;
+			// a line comment: its file, and its line, null for a line the head commit lost
+			readonly on?: { readonly path: string; readonly line: number | null };
+	  }
+	| {
+			readonly kind: 'review';
+			readonly author: string;
+			// an approval's may be empty
+			readonly body: string;
+			readonly trusted: boolean;
+			readonly approval?: boolean;
+	  }
+	| {
+			readonly kind: 'check';
+			readonly name: string;
+			readonly output: string;
+			readonly conclusion: 'failure' | 'timed_out' | 'success' | 'skipped' | 'neutral';
+			// whether the host trusts what ran the check
+			readonly trusted: boolean;
+	  };
+
+// What a harness adds for a Code host that has `feedback` and `reply`.
+export interface FeedbackBench {
+	// puts `given` on the pull request; resolves to the id the Code host reads it back by
+	readonly give: (pull: Pull, given: Given) => Promise<string>;
+	// the bodies of the replies in the thread of line comment `id`, oldest first
+	readonly thread: (pull: Pull, id: string) => Promise<readonly string[]>;
+}
+
 export interface CodeHostSubject {
 	readonly codeHost: CodeHost;
 	// a branch on the host that pull requests can target
@@ -26,6 +62,8 @@ export interface CodeHostSubject {
 	readonly pull: (pull: Pull) => Promise<PullView>;
 	// what the Code host's own runs and a person do to a pull request; the nightjarDrafts suite needs it
 	readonly drafts?: DraftsWorld;
+	// needed when the Code host has `feedback` and `reply`
+	readonly bench?: FeedbackBench;
 	// called after the case, pass or fail
 	readonly close?: () => Promise<void>;
 }

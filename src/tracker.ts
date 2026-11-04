@@ -1,5 +1,6 @@
 // The Tracker seam (docs/adr/0001): the build loop calls nothing else there.
 import type { Signal } from './signals.js';
+import { readMarker } from './template.js';
 
 // An item's id as its Tracker spells it (`42`, `PROJ-123`); Nightjar never reads meaning into it.
 export type ItemId = string;
@@ -25,6 +26,22 @@ export async function waitingFrom(
 		for (const f of await featuresWith(signal)) found.set(f.id, { ...f, signal });
 	}
 	return [...found.values()].sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }));
+}
+
+// featuresFrom from what a Tracker's search found: those whose first marker names `source` (a search matches text anywhere, so a payload that quotes a marker is no Feature of it), oldest first.
+export function sourcedFrom(
+	source: string,
+	found: readonly { id: ItemId; body: string; open: boolean; at: string }[]
+): SourcedFeature[] {
+	const sourced: SourcedFeature[] = [];
+	for (const { id, body, open, at } of found) {
+		const marker = readMarker(body);
+		if (marker?.source === source) sourced.push({ id, key: marker.key, open, at });
+	}
+	return sourced.sort(
+		(a, b) =>
+			Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id, 'en', { numeric: true })
+	);
 }
 
 export interface Ticket {
@@ -62,6 +79,16 @@ export interface Standing {
 	readonly signals: readonly Signal[];
 }
 
+// A Feature a Source made, found by the marker in its body.
+export interface SourcedFeature {
+	readonly id: ItemId;
+	// what the marker says is the event's key; empty when the Source has none
+	readonly key: string;
+	readonly open: boolean;
+	// when the Tracker made it, as an ISO date
+	readonly at: string;
+}
+
 export interface Tracker {
 	// the signed-in person
 	me(): Promise<string>;
@@ -81,6 +108,12 @@ export interface Tracker {
 	reference(id: ItemId): TicketReference;
 	// optional, so a Tracker module written before it still loads: the open Features assigned to `person` that carry needs info or needs a person, oldest first
 	waitingOn?(person: string): Promise<WaitingFeature[]>;
+	// optional, so a Tracker module written before it still loads: the Features, open or closed, whose body holds the marker of Source `source` (`nightjar:source=<name> key=<key>`), oldest first; the Tracker is the record of what a Source made
+	featuresFrom?(source: string): Promise<SourcedFeature[]>;
+	// optional, so a Tracker module written before it still loads: assigns the Feature to `person`, so a Source with `go: true` can give it the Go in their name
+	assign?(id: ItemId, person: string): Promise<void>;
+	// optional, so a Tracker module written before it still loads: whether `person` is trusted, by factory.json's trusted list when set, else the Tracker's own default (GitHub: write access; Azure DevOps: the project's Contributors group)
+	trusts?(person: string): Promise<boolean>;
 	// optional, so a Tracker module written before it still loads: how many Tickets each Feature has and how many are closed; every id asked about is answered, null for one whose count cannot be read
 	ticketCounts?(featureIds: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>>;
 }

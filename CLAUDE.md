@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Nightjar builds a repo's Features with nobody at the keyboard: it reads Tickets from a Tracker, has a Coding agent build each one, and opens one draft pull request per Feature on a Code host. Specced in #1, with its tickets as that issue's sub-issues.
 
-Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement calls the reviewer holds the code to: `CODING_STANDARDS.md`. UI colors and design principles: `docs/design/color-scheme.md`.
+Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement calls the reviewer holds the code to: `CODING_STANDARDS.md`. UI colors and design principles: `DESIGN.md` (product context: `PRODUCT.md`). `docs/design/color-scheme.md` is the brand palette for the icon, not the page.
 
 ## Build, lint, test
 
@@ -18,6 +18,7 @@ Node 24, TypeScript, npm.
 - `npm run lint`, `npm run format`, `npm run typecheck`.
 - CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you edit.
 - `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
+- `npm run ui:dev [building|idle|paused|stopped|off]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
 
 ## Architecture
 

@@ -1,10 +1,13 @@
 // Runs the contract suites with no test runner, so an installed Nightjar can check a repo's own Adapter.
+import { assignContract } from './assign.js';
 import type { ContractCase } from './case.js';
 import { codeHostContract, type CodeHostHarness, type CodeHostSubject } from './code-host.js';
+import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { sourcesContract } from './sources.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import { why } from '../say.js';
@@ -60,19 +63,25 @@ function harnessOf(exports: Record<string, unknown>, name: string): unknown {
 }
 
 // What the Tracker can do beyond the interface's required methods. A harness that cannot build a Tracker over an empty world has failed every case already, so it is asked nothing more.
-async function optionalSuites(
-	harness: TrackerHarness
-): Promise<{ creates: boolean; waitsOn: boolean; counts: boolean }> {
+async function optionalSuites(harness: TrackerHarness): Promise<{
+	creates: boolean;
+	waitsOn: boolean;
+	finds: boolean;
+	assigns: boolean;
+	counts: boolean;
+}> {
 	let subject: TrackerSubject;
 	try {
 		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
 	} catch {
-		return { creates: false, waitsOn: false, counts: false };
+		return { creates: false, waitsOn: false, finds: false, assigns: false, counts: false };
 	}
 	try {
 		return {
 			creates: canCreate(subject.tracker),
 			waitsOn: typeof subject.tracker.waitingOn === 'function',
+			finds: typeof subject.tracker.featuresFrom === 'function',
+			assigns: typeof subject.tracker.assign === 'function',
 			counts: typeof subject.tracker.ticketCounts === 'function'
 		};
 	} finally {
@@ -95,7 +104,25 @@ async function listsDrafts(harness: CodeHostHarness): Promise<boolean> {
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, and the waitingOn suite when it has waitingOn.
+// Whether the Code host answers feedback. A harness that cannot make a Code host has failed every case already, so it is asked nothing more.
+async function hasFeedback(harness: CodeHostHarness): Promise<boolean> {
+	let subject: CodeHostSubject;
+	try {
+		subject = await harness();
+	} catch {
+		return false;
+	}
+	try {
+		return (
+			typeof subject.codeHost.feedback === 'function' &&
+			typeof subject.codeHost.reply === 'function'
+		);
+	} finally {
+		await subject.close?.();
+	}
+}
+
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the Nightjar drafts suite when the Code host has nightjarDrafts, and the feedback suite when it has feedback and reply.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -112,6 +139,12 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		if (has.waitsOn) {
 			suites.push(await runSuite('Tracker waiting on', waitingOnContract, tracker as never));
 		}
+		if (has.finds) {
+			suites.push(await runSuite('Tracker sources', sourcesContract, tracker as never));
+		}
+		if (has.assigns) {
+			suites.push(await runSuite('Tracker assign', assignContract, tracker as never));
+		}
 		if (has.counts) {
 			suites.push(await runSuite('Tracker ticket counts', ticketCountsContract, tracker as never));
 		}
@@ -122,6 +155,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 			suites.push(
 				await runSuite('Code host Nightjar drafts', nightjarDraftsContract, codeHost as never)
 			);
+		}
+		if (await hasFeedback(codeHost as CodeHostHarness)) {
+			suites.push(await runSuite('Code host feedback', feedbackContract, codeHost as never));
 		}
 	}
 	const all = suites.flatMap((s) => s.results);

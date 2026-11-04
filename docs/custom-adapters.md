@@ -85,6 +85,26 @@ To let Waiting on you in the live views list Features, give the Tracker one more
 		waitingOn: todo('waitingOn'),
 ```
 
+To let a Source's Features be found again on your Tracker, give it one more optional method. Without it, `nightjar doctor` still reads the Sources, but intake cannot tell what a Source made before.
+
+```js
+		// the Features, open or closed, whose body holds the marker `<!-- nightjar:source=NAME key=KEY -->`
+		// of the Source `NAME`, oldest first, each as `{ id, key, open, at }` with `at` an ISO date;
+		// search for the text `nightjar:source=NAME`, then read the first marker of each body yourself,
+		// as a search may match more than that
+		featuresFrom: todo('featuresFrom'),
+```
+
+To let a Source with `"go": true` give its Features the Go ([ADR 0003](adr/0003-a-source-may-give-a-standing-go.md)), give the Tracker two more optional methods. Without `assign`, intake and `nightjar doctor` refuse such a Source and name the method. Without `trusts`, they take the owner only from `factory.json`'s `trusted` list.
+
+```js
+		// assigns the Feature to `person`, so that with the Go it is among assignedFeatures(person)
+		assign: todo('assign'),
+		// whether `person` is trusted: on `trusted` when it is set, else by your Tracker's own default
+		// (as write access is on GitHub); a person your Tracker does not know is not trusted
+		trusts: todo('trusts'),
+```
+
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
 To let Nightjar fix the failed Pull checks of its own draft pull requests (`pullChecks.enabled` in `factory.json`), give the Code host one more optional method. A Code host without it builds as before, and gets no Pull-check pass.
@@ -98,6 +118,37 @@ To let Nightjar fix the failed Pull checks of its own draft pull requests (`pull
 		// Leave out pull requests marked ready for review, closed or merged.
 		nightjarDrafts: todo('nightjarDrafts'),
 ```
+
+To let Nightjar answer feedback on a draft pull request, give the Code host two more optional methods. A Code host without them builds as before and gets no Feedback rounds; one with only one of them is refused at start.
+
+```js
+		// every piece of Feedback on the pull request, all pages of each list, in any order
+		feedback: todo('feedback'),
+		// answers one piece by its id; the body always ends with the footer
+		reply: todo('reply'),
+```
+
+`feedback(pull)` resolves to a list of `Feedback`, a type exported from `@nonameolsson/nightjar`:
+
+| Field      | What it is                                                                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`       | The kind, a colon and your host's own id: `comment:123`, `review:45` or `check:678`. The prefix keeps ids from different lists of the host apart. |
+| `kind`     | `comment`, `review` or `check`.                                                                                                                    |
+| `author`   | The person, or for a check the app that ran it.                                                                                                    |
+| `body`     | The text. A check's is its name, then the last 4 KB of its output.                                                                                 |
+| `at`       | When it was said.                                                                                                                                  |
+| `trusted`  | Whether its author is trusted, by the rule below. Only trusted feedback reaches the Coding agent.                                                  |
+| `path`     | A line comment's file.                                                                                                                             |
+| `line`     | A line comment's line, left out when the line is no longer on the head commit.                                                                     |
+| `outdated` | `true` on a line comment whose line is gone from the head commit. It comes with `path` and no `line`.                                              |
+
+What `feedback` returns: line comments, comments in the pull request's conversation, reviews that have a body (an approval with no body is not feedback, one with a body is), and checks on the head commit whose conclusion is `failure` or `timed_out`. A check that passed, was skipped or was neutral is not feedback.
+
+**Nightjar's own words are never feedback.** Every comment and reply Nightjar posts ends with its footer (`FOOTER`, exported from `@nonameolsson/nightjar`: a blank line, `---`, then `_Built by Nightjar._`). Nightjar posts as the person signed in, often the same login as the reviewer, so the author cannot tell its words from theirs. Leave out every comment and review that ends with the footer, whoever its author. Your own `reply` must end its body with the footer too, or Nightjar would read its answers as new feedback.
+
+Trust follows the Tracker's rule: the logins of `trusted` in `factory.json` when it is set, else your host's own default (write access on GitHub). A check's author is the app that ran it; the GitHub Code host trusts GitHub Actions, and the apps named in `codeHost.trustedChecks`.
+
+`reply(pull, feedbackId, body)` answers a line comment in its thread. Anything else it answers as a comment on the pull request's conversation, which quotes the start of what it answers so the reader can tell which piece it is for. It fails when the host has no such feedback.
 
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
@@ -131,7 +182,7 @@ export async function trackerHarness(world) {
 }
 ```
 
-`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld` and `PullView` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
+`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, and a check has a `conclusion`. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
 
 Then run, from the repo:
 
@@ -139,7 +190,7 @@ Then run, from the repo:
 nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, and the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`; over a Code host, the `nightjarDrafts` suite (`nightjarDraftsContract`) runs when it has `nightjarDrafts`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`, the `assign` suite (`assignContract`, which checks `trusts` too when it is there) when it has `assign`, the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`, the `nightjarDrafts` suite (`nightjarDraftsContract`) when the harness's Code host has `nightjarDrafts`, and the feedback suite (`feedbackContract`) when it has `feedback` and `reply`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -152,6 +203,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `ticketCountsContract`, `codeHostContract` and `nightjarDraftsContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract`, `assignContract`, `ticketCountsContract`, `codeHostContract`, `nightjarDraftsContract` and `feedbackContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

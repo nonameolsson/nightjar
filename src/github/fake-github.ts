@@ -31,6 +31,7 @@ export interface ShownPull extends PullHead {
 }
 
 interface IssueComment {
+	readonly id: number;
 	readonly login: string;
 	readonly body: string;
 	readonly createdAt: string;
@@ -39,13 +40,17 @@ interface IssueComment {
 // A check run on a commit, as an app reports it.
 export interface NewCheckRun {
 	readonly name: string;
-	// queued, in_progress or completed
-	readonly status: string;
+	// queued, in_progress or completed; completed by default
+	readonly status?: string;
 	// set once completed: success, failure, timed_out, cancelled, skipped and others
 	readonly conclusion?: string | null;
-	// the app that reports it, github-actions by default
-	readonly app?: string;
-	readonly output?: { readonly title?: string; readonly summary?: string };
+	// the slug of the app that reports it, github-actions by default; null for a check no app made
+	readonly app?: string | null;
+	readonly output?: {
+		readonly title?: string;
+		readonly summary?: string;
+		readonly text?: string;
+	};
 }
 
 // A GitHub Actions job, reported as a check run whose id is the job's id.
@@ -61,6 +66,8 @@ export interface NewJob {
 
 interface CheckRun extends NewCheckRun {
 	readonly id: number;
+	readonly commit: string;
+	readonly completedAt: string;
 }
 
 // A commit status, the latest of its context.
@@ -71,12 +78,58 @@ export interface CommitStatus {
 	readonly description?: string | null;
 }
 
+// A comment on a line of a pull request's diff; a reply names the comment it answers.
+interface LineComment {
+	readonly id: number;
+	readonly pull: number;
+	readonly login: string;
+	readonly body: string;
+	readonly createdAt: string;
+	readonly path: string;
+	// null once the head commit no longer has the line
+	readonly line: number | null;
+	readonly inReplyTo?: number;
+}
+
+interface Review {
+	readonly id: number;
+	readonly pull: number;
+	readonly login: string;
+	readonly body: string | null;
+	readonly state: string;
+	readonly submittedAt: string;
+}
+
 const NOT_FOUND = failed('gh: Not Found (HTTP 404)');
 
 const INVALID = (why: string) => failed(`gh: Validation Failed: ${why} (HTTP 422)`);
 
 // GitHub's own id of an issue, which its sub-issue and dependency calls take, apart from its number.
 const databaseId = (number: number) => 4_000_000 + number * 7;
+
+// GitHub's own paging: thirty to a page unless per_page says otherwise.
+function page<T>(list: readonly T[], query: URLSearchParams): T[] {
+	const size = Number(query.get('per_page') ?? 30);
+	const at = Number(query.get('page') ?? 1);
+	return list.slice((at - 1) * size, at * size);
+}
+
+// The commit a pull request's head branch points at, as far as the fake has one.
+const headSha = (number: number) => `${String(number).padStart(8, '0')}${'ab'.repeat(16)}`;
+
+function renderCheck(run: CheckRun) {
+	const status = run.status ?? 'completed';
+	return {
+		id: run.id,
+		name: run.name,
+		head_sha: run.commit,
+		status,
+		conclusion: status === 'completed' ? (run.conclusion ?? null) : null,
+		completed_at: status === 'completed' ? run.completedAt : null,
+		app: run.app === null ? null : { slug: run.app ?? 'github-actions' },
+		output: { title: null, summary: null, text: null, ...run.output }
+	};
+}
 
 // An integer field, as `gh api -F` sends one; `-f` would send it as a string, which GitHub refuses.
 function integerField(call: GhCall, name: string): number | null {
@@ -94,17 +147,19 @@ export class FakeGitHub {
 	private readonly issues = new Map<number, Issue>();
 	private readonly comments = new Map<number, IssueComment[]>();
 	private readonly permissions = new Map<string, string>();
+	private readonly lineComments: LineComment[] = [];
+	private readonly reviews: Review[] = [];
+	private readonly checkRuns: CheckRun[] = [];
+	// one count for every kind of comment, so no two ids are alike
+	private lastId = 0;
+	private lastMinute = 0;
 	private readonly repoLabels = new Set<string>();
 	// the commit each branch points at, as pushed
 	private readonly heads = new Map<string, string>();
 	// by commit
-	private readonly checkRuns = new Map<string, CheckRun[]>();
 	private readonly statuses = new Map<string, CommitStatus[]>();
 	// by id, the id of its check run
 	private readonly jobs = new Map<number, NewJob>();
-	// by pull request number
-	private readonly reviews = new Map<number, { login: string; state: string }[]>();
-	private checkRunCount = 0;
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -133,9 +188,83 @@ export class FakeGitHub {
 
 	say(number: number, login: string, body: string): IssueComment {
 		const at = new Date(Date.UTC(2026, 9, 30, 9, this.commentCount())).toISOString();
-		const comment = { login, body, createdAt: at };
+		const comment = { id: this.nextId(), login, body, createdAt: at };
 		this.comments.set(number, [...(this.comments.get(number) ?? []), comment]);
 		return comment;
+	}
+
+	// A comment on a line of the diff of pull request `pull`; `line` null is a line the head commit lost. Gives its id.
+	lineComment(
+		pull: number,
+		comment: { login: string; body: string; path: string; line: number | null }
+	): number {
+		this.pullAt(pull);
+		const id = this.nextId();
+		this.lineComments.push({ ...comment, id, pull, createdAt: this.stamp() });
+		return id;
+	}
+
+	// A reply in the thread of line comment `answered`. Gives its id.
+	replyTo(answered: number, login: string, body: string): number {
+		const first = this.lineCommentAt(answered);
+		if (first === undefined) {
+			throw new Error(`the fake GitHub has no line comment ${String(answered)}`);
+		}
+		const id = this.nextId();
+		this.lineComments.push({
+			id,
+			pull: first.pull,
+			login,
+			body,
+			createdAt: this.stamp(),
+			path: first.path,
+			line: first.line,
+			inReplyTo: first.inReplyTo ?? first.id
+		});
+		return id;
+	}
+
+	// A review of pull request `pull`; its body may be empty, as an approval's is. Gives its id.
+	review(pull: number, review: { login: string; body: string | null; state?: string }): number {
+		this.pullAt(pull);
+		const id = this.nextId();
+		this.reviews.push({
+			id,
+			pull,
+			login: review.login,
+			body: review.body,
+			state: review.state ?? 'COMMENTED',
+			submittedAt: this.stamp()
+		});
+		return id;
+	}
+
+	// An app reports a check run on `commit`, or on the head commit of pull request number `commit`. Gives its id.
+	checkRun(commit: string | number, run: NewCheckRun): number {
+		const on = typeof commit === 'number' ? this.shaOf(commit) : commit;
+		const id = this.nextId();
+		this.checkRuns.push({ ...run, id, commit: on, completedAt: this.stamp() });
+		return id;
+	}
+
+	// The bodies of the replies in the thread of line comment `answered`, oldest first.
+	thread(answered: number): string[] {
+		return this.lineComments.filter((c) => c.inReplyTo === answered).map((c) => c.body);
+	}
+
+	private nextId(): number {
+		this.lastId += 1;
+		return this.lastId;
+	}
+
+	// a time later than every comment `say` dates, one minute on from the last
+	private stamp(): string {
+		this.lastMinute += 1;
+		return new Date(Date.UTC(2026, 9, 31, 0, this.lastMinute)).toISOString();
+	}
+
+	private lineCommentAt(id: number): LineComment | undefined {
+		return this.lineComments.find((c) => c.id === id);
 	}
 
 	// Makes `login` a collaborator with `permission` (read, write, maintain, admin).
@@ -167,12 +296,9 @@ export class FakeGitHub {
 		return this.heads.get(this.pullAt(number).head) ?? '';
 	}
 
-	// An app reports a check run on `commit`; gives back its id.
-	checkRun(commit: string, run: NewCheckRun): number {
-		this.checkRunCount += 1;
-		const id = 70_000 + this.checkRunCount;
-		this.checkRuns.set(commit, [...(this.checkRuns.get(commit) ?? []), { ...run, id }]);
-		return id;
+	// The commit pull request `number` is at: the one its head branch was pushed to, else a stand-in.
+	private shaOf(number: number): string {
+		return this.heads.get(this.pullAt(number).head) ?? headSha(number);
 	}
 
 	// GitHub Actions runs a job on `commit`; gives back its id.
@@ -195,13 +321,9 @@ export class FakeGitHub {
 
 	// No check run and no commit status on `commit`.
 	clearChecks(commit: string): void {
-		this.checkRuns.delete(commit);
+		const kept = this.checkRuns.filter((r) => r.commit !== commit);
+		this.checkRuns.splice(0, this.checkRuns.length, ...kept);
 		this.statuses.delete(commit);
-	}
-
-	// `login` reviews pull request `number`.
-	review(number: number, login: string, state = 'COMMENTED'): void {
-		this.reviews.set(number, [...(this.reviews.get(number) ?? []), { login, state }]);
 	}
 
 	// A person marks pull request `number` ready for review.
@@ -256,13 +378,14 @@ export class FakeGitHub {
 			return this.repoLabels.has(decodeURIComponent(named[1] ?? '')) ? ok({}) : NOT_FOUND;
 		}
 		if (method === 'GET' && path === `${repo}/issues`) return ok(this.list(call.query));
+		if (method === 'GET' && path === 'search/issues') return this.search(call.query);
 		if (method === 'POST' && path === `${repo}/issues`) return this.openIssue(call);
 		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
 		if (method === 'POST' && path === `${repo}/pulls`) return this.openPull(call);
-		const reviewed = new RegExp(`^${repo}/pulls/(\\d+)/reviews$`).exec(path);
-		if (method === 'GET' && reviewed) return this.renderReviews(Number(reviewed[1]));
 		const checked = new RegExp(`^${repo}/commits/([^/]+)/(check-runs|status)$`).exec(path);
-		if (method === 'GET' && checked) return this.renderChecks(checked[1] ?? '', checked[2] ?? '');
+		if (method === 'GET' && checked) {
+			return this.renderChecks(checked[1] ?? '', checked[2] ?? '', call.query);
+		}
 		const job = new RegExp(`^${repo}/actions/jobs/(\\d+)(/logs)?$`).exec(path);
 		if (method === 'GET' && job) return this.renderJob(Number(job[1]), job[2] !== undefined);
 		const pullNumber = new RegExp(`^${repo}/pulls/(\\d+)$`).exec(path);
@@ -277,6 +400,8 @@ export class FakeGitHub {
 		if (method === 'GET' && asked) {
 			return ok({ permission: this.permissions.get(decodeURIComponent(asked[1] ?? '')) ?? 'none' });
 		}
+		const feedback = this.feedbackRoute(call);
+		if (feedback !== undefined) return feedback;
 		const issue = this.issueAt(path, repo);
 		if (issue === undefined) return NOT_FOUND;
 		const rest = path.slice(`${repo}/issues/${String(issue.number)}`.length);
@@ -288,12 +413,19 @@ export class FakeGitHub {
 		if (method === 'POST' && rest === '/sub_issues') return this.adopt(issue, call);
 		if (method === 'POST' && rest === '/dependencies/blocked_by') return this.blockBy(issue, call);
 		if (method === 'GET' && rest === '/comments') {
-			return ok((this.comments.get(issue.number) ?? []).map((c) => this.renderComment(c)));
+			const listed = page(this.comments.get(issue.number) ?? [], call.query);
+			return ok(listed.map((c) => this.renderComment(c, issue.number)));
 		}
 		if (method === 'POST' && rest === '/comments') {
-			return ok(this.renderComment(this.say(issue.number, this.person, String(call.fields.body))));
+			return ok(
+				this.renderComment(
+					this.say(issue.number, this.person, String(call.fields.body)),
+					issue.number
+				)
+			);
 		}
 		if (method === 'POST' && rest === '/labels') return this.label(issue, call);
+		if (method === 'POST' && rest === '/assignees') return this.assign(issue, call);
 		const label = /^\/labels\/([^/]+)$/.exec(rest);
 		if (method === 'DELETE' && label)
 			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
@@ -401,34 +533,23 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			draft: issue.pull?.draft ?? false,
-			head: { ref: head, sha: this.heads.get(head) ?? '', repo: { full_name: this.repo } },
+			head: {
+				ref: head,
+				sha: this.shaOf(issue.number),
+				repo: { full_name: this.repo }
+			},
 			base: { ref: issue.pull?.base ?? '' }
 		};
 	}
 
-	private renderReviews(number: number): Run {
-		if (this.issues.get(number)?.pull === undefined) return NOT_FOUND;
-		return ok(
-			(this.reviews.get(number) ?? []).map((r) => ({ user: { login: r.login }, state: r.state }))
-		);
-	}
-
 	// The check runs on a commit, or its combined status: the latest status of each context.
-	private renderChecks(commit: string, what: string): Run {
+	private renderChecks(commit: string, what: string, query: URLSearchParams): Run {
 		if (what === 'status') {
 			const statuses = this.statuses.get(commit) ?? [];
 			return ok({ sha: commit, total_count: statuses.length, statuses });
 		}
-		const runs = (this.checkRuns.get(commit) ?? []).map((r) => ({
-			id: r.id,
-			name: r.name,
-			head_sha: commit,
-			status: r.status,
-			conclusion: r.status === 'completed' ? (r.conclusion ?? null) : null,
-			app: { slug: r.app ?? 'github-actions' },
-			output: { title: r.output?.title ?? null, summary: r.output?.summary ?? null }
-		}));
-		return ok({ total_count: runs.length, check_runs: runs });
+		const runs = this.checkRuns.filter((r) => r.commit === commit);
+		return ok({ total_count: runs.length, check_runs: page(runs, query).map(renderCheck) });
 	}
 
 	// A job, or its log as plain text; GitHub answers 410 for a log that has expired.
@@ -460,6 +581,18 @@ export class FakeGitHub {
 		const labels = [...issue.labels, ...added];
 		this.change(issue.number, () => ({ labels }));
 		return ok(labels.map((name) => ({ name })));
+	}
+
+	// GitHub assigns only the signed-in person and the repo's collaborators, and drops anyone else without a word.
+	private assign(issue: Issue, call: GhCall): Run {
+		const asked = call.fields['assignees[]'];
+		const added = (Array.isArray(asked) ? asked : []).filter(
+			(login) =>
+				!issue.assignees.includes(login) &&
+				(login === this.person || (this.permissions.get(login) ?? 'none') !== 'none')
+		);
+		this.change(issue.number, (i) => ({ assignees: [...i.assignees, ...added] }));
+		return ok(this.render(this.get(issue.number)));
 	}
 
 	// GitHub answers 404 for a label the issue lacks.
@@ -497,13 +630,129 @@ export class FakeGitHub {
 		return found.map((i) => this.render(i));
 	}
 
-	private renderComment(comment: IssueComment) {
-		const permission = this.permissions.get(comment.login) ?? 'none';
+	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, optionally only the open ones, and quoted phrases that must all be in it.
+	private search(query: URLSearchParams): Run {
+		const phrases: string[] = [];
+		let openOnly = false;
+		for (const term of (query.get('q') ?? '').match(/"[^"]*"|\S+/g) ?? []) {
+			if (term.startsWith('"')) phrases.push(term.slice(1, -1).toLowerCase());
+			else if (term === 'is:open') openOnly = true;
+			else if (![`repo:${this.repo}`, 'is:issue', 'in:body'].includes(term)) {
+				return INVALID(`the fake GitHub search does not know ${term}`);
+			}
+		}
+		const found = [...this.issues.values()].filter((i) => {
+			const body = (i.body ?? '').toLowerCase();
+			return (
+				i.pull === undefined &&
+				(!openOnly || i.state === 'open') &&
+				phrases.every((p) => body.includes(p))
+			);
+		});
+		if (query.get('order') !== 'asc') found.reverse();
+		const size = Number(query.get('per_page') ?? '30');
+		const from = (Number(query.get('page') ?? '1') - 1) * size;
+		return ok({
+			total_count: found.length,
+			incomplete_results: false,
+			items: found.slice(from, from + size).map((i) => this.render(i))
+		});
+	}
+
+	// each issue is made a minute after the one before
+	private createdAt(number: number): string {
+		return new Date(Date.UTC(2026, 9, 30, 8, number)).toISOString();
+	}
+
+	private renderComment(comment: IssueComment, number: number) {
 		return {
+			id: comment.id,
+			issue_url: `https://api.github.com/repos/${this.repo}/issues/${String(number)}`,
 			body: comment.body,
 			user: { login: comment.login },
 			created_at: comment.createdAt,
-			author_association: permission === 'none' ? 'NONE' : 'COLLABORATOR'
+			author_association: this.association(comment.login)
+		};
+	}
+
+	private association(login: string): string {
+		return (this.permissions.get(login) ?? 'none') === 'none' ? 'NONE' : 'COLLABORATOR';
+	}
+
+	// The routes of a pull request's feedback; undefined for any other call.
+	private feedbackRoute({ method, path, query, fields }: GhCall): Run | undefined {
+		const repo = `repos/${this.repo}`;
+		if (method === 'GET') {
+			const inPull = new RegExp(`^${repo}/pulls/(\\d+)/(comments|reviews)$`).exec(path);
+			const number = Number(inPull?.[1]);
+			if (inPull?.[2] === 'comments') {
+				const there = this.lineComments.filter((c) => c.pull === number);
+				return ok(page(there, query).map((c) => this.renderLineComment(c)));
+			}
+			if (inPull?.[2] === 'reviews') {
+				const there = this.reviews.filter((r) => r.pull === number);
+				return ok(page(there, query).map((r) => this.renderReview(r)));
+			}
+			const line = new RegExp(`^${repo}/pulls/comments/(\\d+)$`).exec(path);
+			if (line !== null) {
+				const found = this.lineCommentAt(Number(line[1]));
+				return found === undefined ? NOT_FOUND : ok(this.renderLineComment(found));
+			}
+			const review = new RegExp(`^${repo}/pulls/(\\d+)/reviews/(\\d+)$`).exec(path);
+			if (review !== null) {
+				const found = this.reviews.find(
+					(r) => r.pull === Number(review[1]) && r.id === Number(review[2])
+				);
+				return found === undefined ? NOT_FOUND : ok(this.renderReview(found));
+			}
+			const check = new RegExp(`^${repo}/check-runs/(\\d+)$`).exec(path);
+			if (check !== null) {
+				const found = this.checkRuns.find((r) => r.id === Number(check[1]));
+				return found === undefined ? NOT_FOUND : ok(renderCheck(found));
+			}
+			const said = new RegExp(`^${repo}/issues/comments/(\\d+)$`).exec(path);
+			if (said !== null) {
+				for (const [number, listed] of this.comments) {
+					const found = listed.find((c) => c.id === Number(said[1]));
+					if (found !== undefined) return ok(this.renderComment(found, number));
+				}
+				return NOT_FOUND;
+			}
+		}
+		const replies = new RegExp(`^${repo}/pulls/(\\d+)/comments/(\\d+)/replies$`).exec(path);
+		if (method === 'POST' && replies !== null) {
+			const answered = this.lineCommentAt(Number(replies[2]));
+			if (answered === undefined || answered.pull !== Number(replies[1])) return NOT_FOUND;
+			const id = this.replyTo(answered.id, this.person, String(fields.body));
+			const made = this.lineCommentAt(id);
+			return made === undefined ? NOT_FOUND : ok(this.renderLineComment(made));
+		}
+		return undefined;
+	}
+
+	private renderLineComment(c: LineComment) {
+		return {
+			id: c.id,
+			body: c.body,
+			user: { login: c.login },
+			created_at: c.createdAt,
+			author_association: this.association(c.login),
+			path: c.path,
+			line: c.line,
+			subject_type: 'line',
+			...(c.inReplyTo === undefined ? {} : { in_reply_to_id: c.inReplyTo }),
+			pull_request_url: `https://api.github.com/repos/${this.repo}/pulls/${String(c.pull)}`
+		};
+	}
+
+	private renderReview(r: Review) {
+		return {
+			id: r.id,
+			body: r.body,
+			user: { login: r.login },
+			state: r.state,
+			submitted_at: r.submittedAt,
+			author_association: this.association(r.login)
 		};
 	}
 
@@ -521,6 +770,7 @@ export class FakeGitHub {
 			title: issue.title,
 			body: issue.body,
 			state: issue.state,
+			created_at: this.createdAt(issue.number),
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },

@@ -1,6 +1,5 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, which red draft pull request the revisit pass fixes first, and what happens to a Feature whose build fails on a fault.
 import {
-	FOOTER,
 	featureOfBody,
 	handedOver,
 	type FeatureOutcome,
@@ -8,6 +7,7 @@ import {
 	type RedDraft
 } from './build.js';
 import type { CodeHost, NightjarDraft } from './code-host.js';
+import { FOOTER } from './footer.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import {
 	waitingTickets,
@@ -20,7 +20,9 @@ import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 import type { Newer } from './stale.js';
 
-export const POLL_MS = 2 * 60_000;
+import { DEFAULT_POLL_SECONDS } from './person-config.js';
+
+export const POLL_MS = DEFAULT_POLL_SECONDS * 1000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
 export const PAUSE_MS = 30 * 60_000;
 
@@ -34,6 +36,8 @@ export interface QueueDeps {
 	readonly say: (line: string) => void;
 	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly signal?: AbortSignal;
+	// how long --watch waits when idle; POLL_MS when left out
+	readonly pollMs?: number;
 	// --watch only: newer Nightjar code than the one running, checked while idle
 	readonly newer?: Newer;
 	// the revisit pass, when factory.json turns it on and the Code host can list Nightjar's drafts
@@ -275,9 +279,10 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	};
 	const idle = async () => {
 		await warnIfStale();
-		const nextPollAt = new Date(deps.now().getTime() + POLL_MS).toISOString();
+		const pollMs = deps.pollMs ?? POLL_MS;
+		const nextPollAt = new Date(deps.now().getTime() + pollMs).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
-		await deps.sleep(POLL_MS, stop);
+		await deps.sleep(pollMs, stop);
 	};
 	const pause = async (reason: string) => {
 		const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();

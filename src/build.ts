@@ -4,6 +4,7 @@ import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import { DEFAULT_PULL_CHECKS } from './config.js';
 import { pullChecksReport } from './gate.js';
+import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
@@ -19,6 +20,7 @@ import {
 	type TicketHandBack
 } from './next-step.js';
 import type { Signal, SignalNames } from './signals.js';
+import { ticketFaults } from './ticket-contract.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -153,8 +155,6 @@ export type FeatureOutcome =
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
-
-export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: string) => `${body}\n\n${step}${FOOTER}`;
@@ -404,6 +404,17 @@ class FeatureRun {
 
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		const before = await this.tree.head();
+		const faults = ticketFaults(ticket.body);
+		if (faults.length > 0) {
+			await this.handBack(
+				ticket,
+				before,
+				`Nightjar did not start a Session on this Ticket, because it does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+				'retry',
+				`it fails the Ticket contract: ${faults.join(' ')}`
+			);
+			return NEXT;
+		}
 		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
 		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);

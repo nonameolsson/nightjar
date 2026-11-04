@@ -858,6 +858,14 @@ export class FakeAzureDevOps {
 		if (op === 'CONTAINS' && field === 'System.Tags') {
 			return (item) => tagList(item.fields['System.Tags']).some((t) => t.toLowerCase() === value);
 		}
+		// Contains on a Description finds the text anywhere in it, as stored
+		if (op === 'CONTAINS' && field === 'System.Description') {
+			return (item) => {
+				const stored = item.fields['System.Description'];
+				const shown = typeof stored === 'string' ? stored : '';
+				return shown.replace(/&lt;/g, '<').replace(/&gt;/g, '>').toLowerCase().includes(value);
+			};
+		}
 		if (op === '=' && ['System.WorkItemType', 'System.AssignedTo'].includes(field)) {
 			return (item) => text(item) === value;
 		}
@@ -899,7 +907,7 @@ export class FakeAzureDevOps {
 		return json(200, { count: value.length, value });
 	}
 
-	// Only the tags are Nightjar's to write: any other patch is a fault.
+	// Only the tags, the assignee and dependency links are Nightjar's to write: any other patch is a fault.
 	private patch(id: number, body: unknown): AzureDevOpsReply {
 		const item = this.items.get(id);
 		if (item === undefined)
@@ -923,6 +931,13 @@ export class FakeAzureDevOps {
 				}
 				if (tags.length === 0) delete fields['System.Tags'];
 				else fields['System.Tags'] = tags.join('; ');
+			} else if (
+				(op.op === 'add' || op.op === 'replace') &&
+				op.path === '/fields/System.AssignedTo' &&
+				typeof op.value === 'string' &&
+				op.value !== ''
+			) {
+				fields['System.AssignedTo'] = this.identity(op.value);
 			} else {
 				throw fault(`a patch Nightjar may not send: ${JSON.stringify(op)}`);
 			}
@@ -996,10 +1011,32 @@ export class FakeAzureDevOps {
 		return json(200, this.renderComment(id, made));
 	}
 
-	// Two reads of the identity host: the project's Contributors group by name, and a person by id with every group above them.
+	// Three reads of the identity host: a person by sign-in name, the project's Contributors group by name, and a person by id with every group above them.
 	private identities(search: URLSearchParams): AzureDevOpsReply {
 		const url = new URL(`https://vssps.dev.azure.com/?${search.toString()}`);
 		const contributors = `[${this.project}]\\Contributors`;
+		if (search.get('searchFilter') === 'AccountName') {
+			const name = search.get('filterValue') ?? '';
+			this.query(url, {
+				'api-version': API,
+				searchFilter: 'AccountName',
+				filterValue: name,
+				queryMembership: 'None'
+			});
+			const person = this.people.get(name.toLowerCase());
+			const value =
+				person === undefined
+					? []
+					: [
+							{
+								id: person.id,
+								descriptor: `Microsoft.IdentityModel.Claims.ClaimsIdentity;contoso\\${person.uniqueName}`,
+								providerDisplayName: person.uniqueName,
+								isContainer: false
+							}
+						];
+			return json(200, { count: value.length, value });
+		}
 		if (search.has('searchFilter')) {
 			this.query(url, {
 				'api-version': API,

@@ -22,8 +22,17 @@ export interface AdapterContext {
 export type TrackerFactory = (context: AdapterContext) => Tracker | Promise<Tracker>;
 export type CodeHostFactory = (context: AdapterContext) => CodeHost | Promise<CodeHost>;
 
+// The Tracker methods that stand alone: each may be left out, and is a function when it is there.
+const LONE_METHODS = [
+	'waitingOn',
+	'featuresFrom',
+	'assign',
+	'trusts',
+	'ticketCounts'
+] as const satisfies readonly (keyof Tracker)[];
+
 // Typed as records, so a method added to an interface fails to compile until it is listed here.
-const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn' | 'ticketCounts'>, true> = {
+const TRACKER_METHODS: Record<Exclude<keyof Tracker, (typeof LONE_METHODS)[number]>, true> = {
 	me: true,
 	assignedFeatures: true,
 	feature: true,
@@ -36,7 +45,10 @@ const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn' | 'ticketCounts
 	reference: true
 };
 
-const CODE_HOST_METHODS: Record<Exclude<keyof CodeHost, 'nightjarDrafts'>, true> = {
+const CODE_HOST_METHODS: Record<
+	Exclude<keyof CodeHost, 'nightjarDrafts' | 'feedback' | 'reply'>,
+	true
+> = {
 	push: true,
 	openPull: true,
 	createDraft: true,
@@ -44,6 +56,8 @@ const CODE_HOST_METHODS: Record<Exclude<keyof CodeHost, 'nightjarDrafts'>, true>
 	placeReferences: true,
 	comment: true
 };
+
+const FEEDBACK_METHODS = ['feedback', 'reply'] as const;
 
 export interface ModuleSpec {
 	readonly path: string;
@@ -68,7 +82,7 @@ const TRACKER: Kind = {
 	factory: 'createTracker',
 	methods: Object.keys(TRACKER_METHODS),
 	optional: FEATURE_WRITER_METHODS,
-	lone: ['waitingOn', 'ticketCounts']
+	lone: LONE_METHODS
 };
 
 const CODE_HOST: Kind = {
@@ -126,6 +140,22 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 		if (have[lone] !== undefined && typeof have[lone] !== 'function') {
 			throw new ConfigError(
 				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${lone} is not a function`
+			);
+		}
+	}
+	if (kind === CODE_HOST) {
+		// feedback and reply come together or not at all
+		const given = FEEDBACK_METHODS.filter((name) => have[name] !== undefined);
+		const notFunctions = given.filter((name) => typeof have[name] !== 'function');
+		if (notFunctions.length > 0) {
+			throw new ConfigError(
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${notFunctions.join(' and ')} is not a function`
+			);
+		}
+		if (given.length === 1) {
+			const other = FEEDBACK_METHODS.find((name) => !given.includes(name));
+			throw new ConfigError(
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} with ${given[0] ?? ''} but without ${other ?? ''}`
 			);
 		}
 	}

@@ -3,7 +3,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileSpend, record } from './ledger.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
@@ -43,6 +43,9 @@ const get = async (path: string, method = 'GET') => {
 	const got = await fetch(`http://127.0.0.1:${String(ui?.port)}${path}`, { method });
 	return { status: got.status, text: await got.text() };
 };
+
+// the page asks the browser whether it is in reflow mode; the specs say it is not
+const noMedia = () => ({ matches: false, addEventListener: () => {} });
 
 describe('nightjar ui page', () => {
 	it('binds 127.0.0.1 only and, with no .factory/, shows the run as off with nothing else', async () => {
@@ -389,6 +392,7 @@ describe('nightjar ui page', () => {
 		const since = { dataset: { since: '2026-10-30T06:57:55.000Z' }, textContent: '' };
 		const until = { dataset: { until: '2026-10-30T08:01:12.000Z' }, textContent: '' };
 		runInNewContext(script, {
+			matchMedia: noMedia,
 			document: {
 				getElementById: () => ({ dataset: {} }),
 				querySelectorAll: (q: string) => (q.includes('since') ? [since] : [until])
@@ -520,7 +524,7 @@ describe('nightjar ui board', () => {
 		});
 		await open();
 		const page = (await get('/')).text;
-		expect(page).toContain('<main id="panels" data-view="board">');
+		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
 		for (const name of ['Queue', 'Building', 'Waiting on you', 'Completed'])
 			expect(page).toContain(`<h2>${name}</h2>`);
 		expect(page).toContain('Exports');
@@ -779,6 +783,7 @@ describe('nightjar ui board', () => {
 		const panels = { dataset: {} as Record<string, string> };
 		const button = { dataset: { view: 'board' } as Record<string, string>, onclick: () => {} };
 		runInNewContext(script, {
+			matchMedia: noMedia,
 			document: { getElementById: () => panels, querySelectorAll: () => [button] },
 			localStorage: {
 				getItem: (k: string) => store[k] ?? null,
@@ -840,7 +845,8 @@ describe('nightjar ui Table', () => {
 			(m) => `${m[1] ?? ''}:${m[2] ?? ''}`
 		);
 		expect(ids).toEqual(['queue:9', 'queue:10', 'waiting:3', 'completed:32', 'completed:31']);
-		expect(table).toContain('<a href="https://example.test/pull/31">draft pull request</a>');
+		expect(table).toContain('href="https://example.test/pull/31"');
+		expect(table).toContain('>draft pull request</a>');
 		expect(table).toContain('failed: check red');
 	});
 
@@ -881,6 +887,7 @@ describe('nightjar ui Table', () => {
 			panels,
 			load: () => {
 				runInNewContext(code, {
+					matchMedia: noMedia,
 					document: {
 						getElementById: () => panels,
 						querySelectorAll: (sel: string) =>
@@ -958,5 +965,418 @@ describe('nightjar ui page, more', () => {
 		const page = (await get('/')).text;
 		expect(page).toContain('<span class="state">paused</span>');
 		expect(page).toContain('daily limit reached');
+	});
+
+	describe('review fixes', () => {
+		const building = () => {
+			const file = status();
+			file.doing({
+				kind: 'building',
+				feature: '5',
+				title: 'Search',
+				ticket: '7',
+				step: 'build',
+				round: 1,
+				rounds: 3,
+				session: null,
+				startedAt: at.toISOString(),
+				tickets: [
+					{ id: '7', title: 'Query', state: 'building' },
+					{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+				]
+			});
+			file.happened({ kind: 'failed', feature: '9', title: 'Retry', why: 'it broke' });
+			return file;
+		};
+
+		it('labels a failed Feature Failed in the Table, not Completed', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			const row =
+				page
+					.split('<tr ')
+					.slice(1)
+					.find((r) => r.includes('Retry')) ?? '';
+			expect(row).toContain('<td>Failed</td>');
+		});
+
+		it('names a waiting Ticket needs a person, not waiting', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<small>needs a person: needs info</small>');
+			expect(page).not.toContain('<small>waiting');
+		});
+
+		it('keys an unbuilt Ticket with the socket the board draws', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<i class="slot"></i>waiting');
+			expect(page).not.toContain('<i class="egg waiting"></i>waiting');
+		});
+
+		it('lets a keyboard scroll the Table and names the banner once', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain(
+				'<div class="scroll" tabindex="0" role="region" aria-label="Feature table">'
+			);
+			expect(page).toContain('<div class="banner" aria-hidden="true">');
+			expect(page).toContain("'aria-pressed'");
+			expect(page).not.toContain("'aria-current'");
+		});
+	});
+});
+
+describe('nightjar ui audit fixes', () => {
+	const css = async () => {
+		await open();
+		const page = (await get('/')).text;
+		return { page, style: page.split('<style>')[1]?.split('</style>')[0] ?? '' };
+	};
+	const rule = (style: string, selector: string) =>
+		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
+
+	it('has a status region outside the panels that stays out of sight', async () => {
+		const { page, style } = await css();
+		expect(page).toContain('<p id="live" class="sr" role="status"></p>');
+		expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
+		expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
+	});
+
+	it('announces only when the waiting or failed count rises', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const live = { textContent: '' };
+		const panels = { dataset: {} as Record<string, string>, innerHTML: '' };
+		const counts = { waiting: 1, failed: 0 };
+		let message: ((e: { data: string }) => void) | undefined;
+		const frames: Array<() => void> = [];
+		const flush = () => frames.splice(0).forEach((f) => f());
+		runInNewContext(script, {
+			matchMedia: noMedia,
+			requestAnimationFrame: (f: () => void) => frames.push(f),
+			document: {
+				getElementById: (id: string) => (id === 'live' ? live : panels),
+				querySelectorAll: (sel: string) =>
+					Array.from({
+						length:
+							sel === 'tr[data-state="waiting"]'
+								? counts.waiting
+								: sel === 'tr[data-failed]'
+									? counts.failed
+									: 0
+					})
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		const push = () => {
+			message?.({ data: JSON.stringify('') });
+			flush();
+		};
+		expect(live.textContent).toBe('');
+		push();
+		expect(live.textContent).toBe('');
+		counts.waiting = 2;
+		push();
+		expect(live.textContent).toBe('2 waiting on a person');
+		counts.waiting = 1;
+		push();
+		expect(live.textContent).toBe('2 waiting on a person');
+		counts.failed = 1;
+		push();
+		expect(live.textContent).toBe('1 failed');
+		// a repeat of the same text is cleared first, so assistive tech reads it again
+		counts.failed = 0;
+		push();
+		counts.failed = 1;
+		message?.({ data: JSON.stringify('') });
+		expect(live.textContent).toBe('');
+		flush();
+		expect(live.textContent).toBe('1 failed');
+	});
+
+	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act'];
+	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
+		const { style } = await css();
+		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
+		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
+		for (const s of BUTTONS) expect(coarse, s).toContain(s);
+		expect(coarse).toContain('min-height: 44px');
+	});
+
+	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
+		const { style } = await css();
+		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(rem|px)/g)].map((m) =>
+			m[2] === 'px' ? `${m[1] ?? ''}px` : Number(m[1])
+		);
+		const ramp = [0.75, 0.85, 1, 1.05, 1.2, 1.6, '15px'];
+		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
+	});
+
+	it('collapses entries beside the detail panel only between 1261px and 1400px', async () => {
+		const { style } = await css();
+		expect(style).not.toContain('@media (max-width: 1400px)');
+		const block =
+			style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
+		expect(block).toContain('.cols.has-detail .entry');
+		expect(block).toContain('.cols.has-detail .head');
+	});
+
+	it('keeps the inner scroll of the log, detail panel and Table across a live swap', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const el = (scrollTop: number, scrollLeft = 0) => ({ scrollTop, scrollLeft });
+		let found: Record<string, Array<{ scrollTop: number; scrollLeft: number }>> = {
+			pre: [el(90)],
+			'.scroll': [el(0, 40)],
+			'.detail': [el(12)]
+		};
+		const live = { textContent: '' };
+		const panels = {
+			dataset: {} as Record<string, string>,
+			set innerHTML(_: string) {
+				found = { pre: [el(0)], '.scroll': [el(0)], '.detail': [el(0)] };
+			}
+		};
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			matchMedia: noMedia,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				getElementById: (id: string) => (id === 'live' ? live : panels),
+				querySelectorAll: (sel: string) => found[sel] ?? []
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		message?.({ data: JSON.stringify('') });
+		expect(found.pre?.[0]?.scrollTop).toBe(90);
+		expect(found['.scroll']?.[0]?.scrollLeft).toBe(40);
+		expect(found['.detail']?.[0]?.scrollTop).toBe(12);
+	});
+
+	it('draws the egg wings square, on DESIGN.md radius scale', async () => {
+		const { style } = await css();
+		expect(rule(style, '.egg.need::before, .egg.need::after')).not.toContain('border-radius');
+	});
+
+	it('draws colours from tokens: no literals outside :root', async () => {
+		const { style } = await css();
+		const rest = style
+			.split('\n')
+			.filter((l) => !l.startsWith(':root'))
+			.join('\n');
+		expect(rest).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+		expect(rest).not.toContain('rgba(');
+		for (const t of ['--socket-dash', '--socket-border', '--panel-overlay', '--shade-soft'])
+			expect(style).toContain(`${t}:`);
+	});
+
+	it('sets the body background once', async () => {
+		const { style } = await css();
+		const body = rule(style, 'body');
+		expect(body).not.toContain('background:');
+		expect(body.match(/linear-gradient/g)).toHaveLength(2);
+	});
+
+	it('has no hover tooltip or shadow: the help button opens the panel', async () => {
+		const { style, page } = await css();
+		expect(style).not.toContain('data-tip');
+		expect(style).not.toContain('tip-shadow');
+		expect(style).not.toContain('box-shadow: 0 6px');
+		expect(page).not.toContain('data-tip');
+	});
+
+	it('lets the whole page scroll on a short or narrow viewport', async () => {
+		const { style } = await css();
+		const block =
+			style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
+		expect(block).toContain('height: auto');
+		expect(block).toContain('overflow: visible');
+	});
+
+	it('puts focus back on a copy button or link after a live swap', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const focus = vi.fn();
+		const copy = { dataset: { copy: 'npm test "x"' }, focus, getAttribute: () => null };
+		const link = {
+			dataset: {},
+			tagName: 'A',
+			focus: vi.fn(),
+			getAttribute: () => 'https://x.test/1'
+		};
+		for (const [was, found, sel] of [
+			[copy, [copy], '[data-copy]'],
+			[link, [link], 'a[href]']
+		] as const) {
+			const doc = {
+				activeElement: was,
+				getElementById: () => ({ dataset: {}, innerHTML: '', textContent: '' }),
+				querySelectorAll: (s: string) => (s === sel ? found : [])
+			};
+			let message: ((e: { data: string }) => void) | undefined;
+			runInNewContext(script, {
+				matchMedia: noMedia,
+				requestAnimationFrame: (f: () => void) => f(),
+				document: doc,
+				localStorage: { getItem: () => null, setItem: () => {} },
+				EventSource: function EventSource() {
+					return {
+						set onmessage(f: (e: { data: string }) => void) {
+							message = f;
+						}
+					};
+				},
+				setInterval: () => 0
+			});
+			message?.({ data: JSON.stringify('') });
+		}
+		expect(focus).toHaveBeenCalledOnce();
+		expect(link.focus).toHaveBeenCalledOnce();
+	});
+
+	it('takes the page region out of the tab order when the whole page scrolls', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const scroller = { tabIndex: 0, dataset: {}, innerHTML: '', textContent: '' };
+		let change: (() => void) | undefined;
+		const media = {
+			matches: true,
+			addEventListener: (_: string, f: () => void) => {
+				change = f;
+			}
+		};
+		runInNewContext(script, {
+			matchMedia: () => media,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				activeElement: null,
+				getElementById: (id: string) =>
+					id === 'scroll' ? scroller : { dataset: {}, innerHTML: '', textContent: '' },
+				querySelectorAll: () => []
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {};
+			},
+			setInterval: () => 0
+		});
+		expect(scroller.tabIndex).toBe(-1);
+		media.matches = false;
+		change?.();
+		expect(scroller.tabIndex).toBe(0);
+	});
+
+	it('puts focus back on the link that had it when several share an href', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const link = () => ({
+			dataset: {},
+			tagName: 'A',
+			focus: vi.fn(),
+			getAttribute: () => 'https://x.test/1'
+		});
+		const [first, second] = [link(), link()];
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			matchMedia: noMedia,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				activeElement: second,
+				getElementById: () => ({ dataset: {}, innerHTML: '', textContent: '' }),
+				querySelectorAll: (s: string) => (s === 'a[href]' ? [first, second] : [])
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		message?.({ data: JSON.stringify('') });
+		expect(second.focus).toHaveBeenCalledOnce();
+		expect(first.focus).not.toHaveBeenCalled();
+	});
+
+	it('offers a skip link to the panels', async () => {
+		const { page } = await css();
+		expect(page).toContain('<a class="skip" href="#panels">Skip to Features</a>');
+		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
+	});
+});
+
+describe('nightjar ui guidance and links', () => {
+	const config = {
+		tracker: { type: 'github', repo: 'o/app' },
+		codeHost: { type: 'github', repo: 'o/app' },
+		check: 'npm test',
+		allowedCommands: ['npm test']
+	};
+	const waitingOnInfo = () => {
+		writeFileSync(join(root, 'factory.json'), JSON.stringify(config));
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed([], {
+			items: [{ kind: 'feature', id: '268', title: 'Webhook retries', why: 'needs info' }],
+			trackerCannotList: false
+		});
+	};
+
+	it('links a Feature and its pull request to the Tracker and the Code host', async () => {
+		writeFileSync(join(root, 'factory.json'), JSON.stringify(config));
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.happened({ kind: 'pull', feature: '259', url: 'https://github.com/o/app/pull/9' });
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('href="https://github.com/o/app/issues/259"');
+		expect(page).toContain('href="https://github.com/o/app/pull/9"');
+		expect(page).toContain('href="https://github.com/o/app/pulls"');
+		expect(page).toContain('target="_blank"');
+	});
+
+	it('tells the person what to do about needs info, with the repo’s Signal names and a link', async () => {
+		waitingOnInfo();
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('aria-controls="help-268"');
+		expect(page).toContain('<code>needs-info</code>');
+		expect(page).toContain('<code>ready-for-agent</code>');
+		expect(page).toContain('<code>factory-go</code>');
+		expect(page).toContain('aria-label="Answer #268 on GitHub"');
+	});
+
+	it('keeps the run state and the view switcher outside the scrolling content', async () => {
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toMatch(/<div id="top">.*<header>.*<\/div>\s*<div id="scroll"/s);
+	});
+
+	it('says how to start Nightjar when it is off', async () => {
+		await open();
+		expect((await get('/')).text).toContain('data-copy="nightjar --watch"');
 	});
 });

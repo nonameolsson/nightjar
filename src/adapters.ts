@@ -56,6 +56,9 @@ const WRITER_LIST = `${FEATURE_WRITER_METHODS.slice(0, -1).join(', ')} and ${FEA
 // The Tracker with its references rewritten for the Code host; every other call goes to it as it is.
 function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketReference): Tracker {
 	const waitingOn = tracker.waitingOn?.bind(tracker);
+	const featuresFrom = tracker.featuresFrom?.bind(tracker);
+	const assign = tracker.assign?.bind(tracker);
+	const trusts = tracker.trusts?.bind(tracker);
 	const ticketCounts = tracker.ticketCounts?.bind(tracker);
 	return {
 		me: () => tracker.me(),
@@ -70,6 +73,9 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 		reference: (id) => fit(tracker.reference(id)),
 		// optional, so only a Tracker that has it passes it on
 		...(waitingOn === undefined ? {} : { waitingOn }),
+		...(featuresFrom === undefined ? {} : { featuresFrom }),
+		...(assign === undefined ? {} : { assign }),
+		...(trusts === undefined ? {} : { trusts }),
 		...(ticketCounts === undefined ? {} : { ticketCounts })
 	};
 }
@@ -182,7 +188,10 @@ const CODE_HOSTS: {
 	github: async (spec, m) => {
 		const repo = spec.repo ?? (await m.fromOrigin('codeHost.repo'));
 		return {
-			codeHost: new GitHubCodeHost(repo, m.gh, (args, cwd) => run('git', args, cwd, m.env)),
+			codeHost: new GitHubCodeHost(repo, m.gh, (args, cwd) => run('git', args, cwd, m.env), {
+				trusted: m.config.trusted,
+				trustedChecks: spec.trustedChecks
+			}),
 			repo,
 			// the branch is pushed and the pull request opened as the person gh is signed in as
 			reachCodeHost: async () => {

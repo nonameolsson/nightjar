@@ -319,7 +319,7 @@ describe('GitHubCodeHost lists its drafts', () => {
 		const { github, host, open, one } = draftsWorld();
 		const pull = await open('factory/1-a');
 		await host.comment(pull, '**Nightjar review: approve**');
-		github.review(pull.id, 'nightjar-bot');
+		github.review(pull.id, { login: 'nightjar-bot', body: 'Looks fine.' });
 		expect((await one(pull)).personEngaged).toBe(false);
 	});
 
@@ -334,7 +334,7 @@ describe('GitHubCodeHost lists its drafts', () => {
 		const { github, open, one } = draftsWorld();
 		const pull = await open('factory/1-a');
 		const other = await open('factory/2-b');
-		github.review(pull.id, 'bea', 'CHANGES_REQUESTED');
+		github.review(pull.id, { login: 'bea', body: 'Not yet.', state: 'CHANGES_REQUESTED' });
 		expect((await one(pull)).personEngaged).toBe(true);
 		expect((await one(other)).personEngaged).toBe(false);
 	});

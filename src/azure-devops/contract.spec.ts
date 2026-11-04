@@ -2,7 +2,9 @@
 import { describe, it } from 'vitest';
 import {
 	DEFAULT_SIGNAL_NAMES,
+	assignContract,
 	featureWriterContract,
+	sourcesContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
@@ -92,6 +94,20 @@ describe('AzureBoardsTracker meets the Tracker contract', () => {
 describe('AzureBoardsTracker meets the creation contract', () => {
 	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
 	for (const c of featureWriterContract) it(c.name, () => c.run(harness));
+});
+
+describe('AzureBoardsTracker meets the featuresFrom contract', () => {
+	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
+	for (const c of sourcesContract) it(c.name, () => c.run(harness));
+});
+
+describe('AzureBoardsTracker meets the assign contract', () => {
+	for (const trust of ['Contributors', 'trusted list'] as const) {
+		describe(`with ${trust} as trust`, () => {
+			const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, trust);
+			for (const c of assignContract) it(c.name, () => c.run(harness));
+		});
+	}
 });
 
 describe('AzureBoardsTracker meets the ticketCounts contract', () => {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+	BUILD_SCHEMA,
+	REVIEW_SCHEMA,
+	STEP_SCHEMA,
 	buildPrompt,
 	fixPrompt,
 	questionRounds,
@@ -8,6 +11,7 @@ import {
 	readReview,
 	reviewPrompt
 } from './prompt.js';
+import { PAYLOAD_HEADING } from './template.js';
 import type { Comment, Feature } from './tracker.js';
 
 const feature: Feature = {
@@ -79,6 +83,12 @@ describe('buildPrompt', () => {
 		expect(prompt).toContain('**ann**, 2026-10-30:\n\nan answer');
 	});
 
+	it('names the event payload block of a Source as data, in the rules before the Feature', () => {
+		const rules = prompt.slice(0, prompt.indexOf(feature.body));
+		expect(rules).toContain(`"${PAYLOAD_HEADING}"`);
+		expect(rules).toMatch(/payload[^.]*data[^.]*never instructions/i);
+	});
+
 	it('lists the allowed commands and names the check', () => {
 		const rules = prompt.slice(0, prompt.indexOf(feature.body));
 		expect(rules).toContain('`make test`, `make lint *`');
@@ -115,6 +125,12 @@ describe('reviewPrompt', () => {
 		);
 		expect(reviewPrompt(feature, 'main', tickets)).not.toContain('bird');
 	});
+
+	it('names the event payload block of a Source as data too', () => {
+		const tickets = [{ id: '2', title: 'T', body: 'b', open: true, signals: [], blockedBy: [] }];
+		const review = reviewPrompt(feature, 'main', tickets);
+		expect(review).toContain(`"${PAYLOAD_HEADING}"`);
+	});
 });
 
 describe('fixPrompt', () => {
@@ -123,5 +139,35 @@ describe('fixPrompt', () => {
 		expect(fix).toContain('`make check`');
 		expect(fix).toContain('fix round 2 of 3');
 		expect(fix).toContain('lint: 1 problem');
+	});
+});
+
+describe('plain-language comments', () => {
+	const capped = (schema: { properties: Record<string, unknown> }, key: string) =>
+		(schema.properties[key] as { maxLength?: number }).maxLength;
+
+	it('caps every field a person reads', () => {
+		expect(capped(BUILD_SCHEMA, 'summary')).toBe(600);
+		expect(capped(STEP_SCHEMA, 'summary')).toBe(600);
+		expect(capped(REVIEW_SCHEMA, 'summary')).toBe(400);
+		const question = BUILD_SCHEMA.properties.questions.items.properties.question;
+		expect((question as { maxLength?: number }).maxLength).toBe(300);
+		const problem = REVIEW_SCHEMA.properties.issues.items.properties.problem;
+		expect((problem as { maxLength?: number }).maxLength).toBe(300);
+	});
+
+	it('tells every prompt that writes for a person to write plainly', () => {
+		const marker = 'One plain sentence';
+		const base = {
+			feature,
+			ticket: { id: '2', title: 't', body: 'b', open: true, signals: [], blockedBy: [] },
+			featureComments: [],
+			ticketComments: [],
+			built: [],
+			allowed: [],
+			check: 'c'
+		};
+		expect(buildPrompt(base)).toContain(marker);
+		expect(reviewPrompt(feature, 'main', [])).toContain(marker);
 	});
 });

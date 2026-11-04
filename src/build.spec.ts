@@ -731,6 +731,40 @@ describe('buildFeature', () => {
 		expect(refs(world)).toEqual(['#2', '#1', '#3']);
 	});
 
+	it('hands back a Ticket with no acceptance criteria before a Session', async () => {
+		const world = makeWorld();
+		const item = world.tracker.items.get('2');
+		if (item) world.tracker.items.set('2', { ...item, body: 'Just do it.' });
+		world.asked.length = 0;
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(askedOf(world, 'build').map((r) => r.ticket.id)).not.toContain('2');
+		expect(world.tracker.signalsOf('2')).toEqual(['needsInfo']);
+		expect(world.tracker.said('2').join('\n')).toContain('Acceptance criteria');
+		expect(ledger(world).filter((e) => e.ticket === '2')).toEqual([]);
+	});
+
+	it('takes the ready Signal off a Ticket it hands back and lists each fault', async () => {
+		const world = makeWorld();
+		const item = world.tracker.items.get('2');
+		if (item) world.tracker.items.set('2', { ...item, body: '**Model:**\nJust do it.' });
+		expect(world.tracker.signalsOf('2')).toContain('ready');
+		world.asked.length = 0;
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(world.tracker.signalsOf('2')).not.toContain('ready');
+		const said = world.tracker.said('2').join('\n');
+		expect(said).toContain('Acceptance criteria');
+		expect(said).toContain('**Model:**');
+	});
+
+	it('builds a Ticket that passes the check as before', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(askedOf(world, 'build').map((r) => r.ticket.id)).toContain('2');
+		expect(world.tracker.signalsOf('2')).not.toContain('needsInfo');
+	});
+
 	it('asks a person after the question rounds are used up', async () => {
 		const world = makeWorld();
 		world.acts['2'] = 'ask';

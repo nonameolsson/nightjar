@@ -14,7 +14,8 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { waitingFrom, type WaitingFeature } from '../tracker.js';
+import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
+import { markerSearch } from '../template.js';
 import {
 	GitHubApi,
 	GitHubFailure,
@@ -23,6 +24,7 @@ import {
 	type GhRunner,
 	type RawIssue
 } from './api.js';
+import { GitHubTrust } from './trust.js';
 
 const CommentSchema = z.looseObject({
 	body: z.string().nullable(),
@@ -31,10 +33,12 @@ const CommentSchema = z.looseObject({
 	author_association: z.string().optional()
 });
 
-// Stand in for write access when the permission call is refused; a COLLABORATOR may hold only read.
-const TIED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+const SearchSchema = z.looseObject({
+	items: z.array(IssueSchema.extend({ created_at: z.string() }))
+});
 
-const WRITE = ['admin', 'maintain', 'write'];
+// GitHub's search pages hold 100 at most and reach no further than 1,000 results.
+const SEARCH_PAGES = 10;
 
 // The issue number an id names; GitHub has no other kind of id.
 function issue(id: ItemId): string {
@@ -58,16 +62,17 @@ function countOf(raw: RawIssue): TicketCount | null {
 export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
 	private readonly counts = new Map<ItemId, TicketCount>();
-	private readonly writers = new Map<string, boolean>();
+	private readonly trust: GitHubTrust;
 
 	constructor(
 		readonly repo: string,
 		gh: GhRunner,
 		private readonly names: SignalNames,
 		// factory.json's trusted list; when set it replaces the write-access default
-		private readonly trusted?: readonly string[]
+		trusted?: readonly string[]
 	) {
 		this.api = new GitHubApi(repo, gh);
+		this.trust = new GitHubTrust(this.api, trusted);
 	}
 
 	private signalsOf(raw: RawIssue): Signal[] {
@@ -91,6 +96,51 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 	// labels in one query must all be there, so each Signal is asked for alone
 	waitingOn(person: string): Promise<WaitingFeature[]> {
 		return waitingFrom((signal) => this.featuresWith(person, this.names[signal]));
+	}
+
+	// the issues whose body holds the Source's marker, open or closed, oldest first
+	async featuresFrom(source: string): Promise<SourcedFeature[]> {
+		const q = `repo:${this.repo} is:issue in:body "${markerSearch(source)}"`;
+		// a search reaches 1,000 results: newest first keeps today's, and the open ones are asked for alone so an old one is not lost
+		const found = new Map<number, z.infer<typeof SearchSchema>['items'][number]>();
+		for (const query of [q, `${q} is:open`]) {
+			for (const item of await this.searchNewestFirst(source, query)) found.set(item.number, item);
+		}
+		return sourcedFrom(
+			source,
+			[...found.values()]
+				.filter((i) => i.pull_request === undefined)
+				.map((i) => ({
+					id: String(i.number),
+					body: i.body ?? '',
+					open: i.state === 'open',
+					at: i.created_at
+				}))
+		);
+	}
+
+	private async searchNewestFirst(
+		source: string,
+		q: string
+	): Promise<z.infer<typeof SearchSchema>['items']> {
+		const found: z.infer<typeof SearchSchema>['items'] = [];
+		for (let page = 1; page <= SEARCH_PAGES; page += 1) {
+			const query = new URLSearchParams({
+				q,
+				sort: 'created',
+				order: 'desc',
+				per_page: '100',
+				page: String(page)
+			});
+			const got = await this.api.parse(
+				`search the issues of Source ${source}`,
+				[`search/issues?${query.toString()}`],
+				SearchSchema
+			);
+			found.push(...got.items);
+			if (got.items.length < 100) break;
+		}
+		return found;
 	}
 
 	// the open Features assigned to `person` that carry the label, oldest first
@@ -207,40 +257,30 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 				author,
 				body: c.body ?? '',
 				at: c.created_at,
-				trusted: await this.isTrusted(author, c.author_association)
+				trusted: await this.trust.isTrusted(author, c.author_association)
 			});
 		}
 		return comments;
 	}
 
-	// On the configured list, else may push; the comment's own association answers when a proxy refuses the permission call.
-	private async isTrusted(login: string, association?: string): Promise<boolean> {
-		// GitHub logins are case-insensitive
-		if (this.trusted !== undefined) {
-			return this.trusted.some((t) => t.toLowerCase() === login.toLowerCase());
-		}
-		const known = this.writers.get(login);
-		if (known !== undefined) return known;
-		const got = await this.api.raw([
-			`repos/${this.repo}/collaborators/${encodeURIComponent(login)}/permission`
-		]);
-		// 404 means no collaborator; reading any other refusal as no access would drop the person's own answers unsaid
-		if (!got.ok && !/HTTP 404/.test(got.err)) {
-			if (association !== undefined) return TIED.includes(association);
+	trusts(person: string): Promise<boolean> {
+		return this.trust.isTrusted(person);
+	}
+
+	// GitHub drops an assignee it cannot assign without a word, so the answer is read for them.
+	async assign(id: ItemId, person: string): Promise<void> {
+		const n = issue(id);
+		const got = await this.api.parse(
+			`assign #${n} to ${person}`,
+			['-X', 'POST', `repos/${this.repo}/issues/${n}/assignees`, '-f', `assignees[]=${person}`],
+			IssueSchema
+		);
+		const held = (got.assignees ?? []).some((a) => a.login.toLowerCase() === person.toLowerCase());
+		if (!held) {
 			throw new GitHubFailure(
-				`gh could not read the permission of ${login}: ${firstLine(got.err)}`
+				`GitHub did not assign #${n} to ${person}, who cannot be assigned issues on ${this.repo}.`
 			);
 		}
-		let value: unknown = null;
-		try {
-			value = got.ok ? JSON.parse(got.out) : null;
-		} catch {
-			// no JSON reads as no permission
-		}
-		const parsed = z.looseObject({ permission: z.string() }).safeParse(value);
-		const can = parsed.success && WRITE.includes(parsed.data.permission);
-		this.writers.set(login, can);
-		return can;
 	}
 
 	async addSignal(id: ItemId, signal: Signal): Promise<void> {

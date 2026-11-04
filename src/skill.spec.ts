@@ -30,6 +30,15 @@ describe('the nightjar-feature skill', () => {
 		expect(text).not.toMatch(/\/[a-z]+-[a-z-]+|Skill tool|invoke the/i);
 	});
 
+	it('can start from existing Tracker issues and replace them', () => {
+		const text = readFileSync(SKILL, 'utf8');
+		expect(text).toMatch(/^description: .*existing issues/m);
+		expect(text).toContain('Replaces <reference>.');
+		expect(text).toMatch(/issue and its comments/);
+		expect(text).toContain('nightjar doctor FEATURE');
+		expect(text).toContain('not planned');
+	});
+
 	it('shows a Feature file the reader takes', () => {
 		const [shape] = featureFiles(SKILL);
 		expect(shape).toBeDefined();

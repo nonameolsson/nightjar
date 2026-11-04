@@ -1,5 +1,14 @@
 // A Code host kept in memory, for the build loop's specs and for anyone testing against the seam.
-import type { CodeHost, DraftRequest, NightjarDraft, Pull, PullChecks } from '../code-host.js';
+import { failedCheckBody } from '../check-output.js';
+import type {
+	CodeHost,
+	DraftRequest,
+	Feedback,
+	NightjarDraft,
+	Pull,
+	PullChecks
+} from '../code-host.js';
+import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import type { TicketReference } from '../tracker.js';
 import { BRANCH_PREFIX } from '../worktree.js';
 
@@ -117,4 +126,54 @@ export class FakeCodeHost implements CodeHost {
 	close(pull: Pull): void {
 		this.change(pull.id, () => ({ open: false }));
 	}
+
+	// the feedback of each pull request, by its id, as people and checks gave it
+	private readonly given = new Map<number, Feedback[]>();
+	// the replies in the thread of each line comment, by pull request and feedback id
+	readonly threads: { readonly pull: number; readonly id: string; readonly body: string }[] = [];
+	private lastId = 0;
+
+	// Puts feedback on a pull request, with the next id of its kind; a comment in the conversation shows there too.
+	give = (pull: Pull, feedback: Omit<Feedback, 'id' | 'at'>): string => {
+		this.lastId += 1;
+		const id = `${feedback.kind}:${String(this.lastId)}`;
+		const at = new Date(Date.UTC(2026, 9, 31, 0, this.lastId)).toISOString();
+		this.given.set(pull.id, [...(this.given.get(pull.id) ?? []), { ...feedback, id, at }]);
+		if (feedback.kind === 'comment' && feedback.path === undefined) {
+			this.change(pull.id, (p) => ({ comments: [...p.comments, feedback.body] }));
+		}
+		return id;
+	};
+
+	// A failed check by `author`, the app that ran it; its body is its name and the end of its output.
+	giveCheck = (
+		pull: Pull,
+		check: { name: string; output: string; author: string; trusted: boolean }
+	): string =>
+		this.give(pull, {
+			kind: 'check',
+			author: check.author,
+			trusted: check.trusted,
+			body: failedCheckBody(check.name, check.output)
+		});
+
+	feedback = (pull: Pull): Promise<Feedback[]> => {
+		const said = (f: Feedback) => f.body.trim() !== '' && !endsWithFooter(f.body);
+		return Promise.resolve((this.given.get(pull.id) ?? []).filter(said));
+	};
+
+	reply = (pull: Pull, feedbackId: string, body: string): Promise<void> => {
+		const answered = (this.given.get(pull.id) ?? []).find((f) => f.id === feedbackId);
+		if (answered === undefined) {
+			return Promise.reject(
+				new Error(`the fake Code host has no feedback ${feedbackId} on ${String(pull.id)}`)
+			);
+		}
+		if (answered.path === undefined) {
+			this.change(pull.id, (p) => ({ comments: [...p.comments, answerText(answered.body, body)] }));
+		} else {
+			this.threads.push({ pull: pull.id, id: feedbackId, body: withFooter(body) });
+		}
+		return Promise.resolve();
+	};
 }
