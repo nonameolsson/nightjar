@@ -786,7 +786,20 @@ function pullBody(p: {
 			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
 		);
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
+	parts.push(featureMarker(p.feature.id));
 	return `${parts.join('\n\n')}${FOOTER}`;
+}
+
+const MARKER = /<!-- nightjar-feature: (\S+) -->/;
+
+// The hidden line that names the Feature a pull request belongs to.
+function featureMarker(id: ItemId): string {
+	return `<!-- nightjar-feature: ${String(id)} -->`;
+}
+
+// The Feature id a pull request body names; nothing for a body written without the marker.
+export function featureOfBody(body: string): string | undefined {
+	return MARKER.exec(body)?.[1];
 }
 
 // The total, then what each Ticket cost by kind of work, the Steps after all Tickets, and the review; a kind with no Session is left out.

@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
+import { buildFeature, featureOfBody, LIMITS, type Deps, type Setup } from './build.js';
 import type {
 	BuildOutcome,
 	BuildRequest,
@@ -525,6 +525,21 @@ describe('buildFeature', () => {
 		expect(pull?.comments[0]).toMatch(/Built by Nightjar\._$/);
 		expect(world.tracker.said('1')[0]).toMatch(/Built by Nightjar\._$/);
 		expect(world.tracker.said('3')[0]?.startsWith('<!-- nightjar:questions -->')).toBe(true);
+	});
+
+	it('names its Feature in the pull request body, once even after the body is edited', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(featureOfBody(world.host.pulls[0]?.body ?? '')).toBe('1');
+		expect(world.host.pulls[0]?.body).toMatchSnapshot();
+		await buildFeature(deps(world), setup(world), '1');
+		const body = world.host.pulls[0]?.body ?? '';
+		expect(body.match(/<!-- nightjar-feature:/g)).toHaveLength(1);
+		expect(featureOfBody(body)).toBe('1');
+	});
+
+	it('reads no Feature from a body without the marker', () => {
+		expect(featureOfBody('Nightjar built all of it.\n\n---\n_Built by Nightjar._')).toBeUndefined();
 	});
 
 	it('runs the configured check after each Ticket, in the worktree', async () => {
