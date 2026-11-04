@@ -128,7 +128,7 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 		}
 	}
 	if (kind === CODE_HOST) {
-		// feedback and reply come together or not at all, and a Code host without them gets no Feedback rounds
+		// feedback and reply come together or not at all
 		const given = FEEDBACK_METHODS.filter((name) => have[name] !== undefined);
 		const notFunctions = given.filter((name) => typeof have[name] !== 'function');
 		if (notFunctions.length > 0) {

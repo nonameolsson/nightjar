@@ -45,11 +45,8 @@ export interface CodeHost {
 	// links each Ticket not linked yet; never closes one or sets its state
 	placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void>;
 	comment(pull: Pull, body: string): Promise<void>;
-	// Optional, and both or neither: a Code host without them gets no Feedback rounds.
-	// Every line comment, conversation comment and review with a body, and every failed check on the head commit, all pages of each.
-	// Never Nightjar's own words: whatever ends with the footer is left out, whoever wrote it.
+	// Optional, both or neither. Every page of each list; whatever ends with the footer is left out, whoever wrote it.
 	feedback?(pull: Pull): Promise<Feedback[]>;
-	// Answers one piece of feedback by its id; the body always ends with the footer.
-	// A line comment is answered in its thread, anything else in the pull request's conversation with the start of it quoted.
+	// A line comment is answered in its thread, anything else in the conversation quoting its start; the body ends with the footer.
 	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
 }

@@ -54,7 +54,6 @@ function countOf(raw: RawIssue): TicketCount | null {
 export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
 	private readonly counts = new Map<ItemId, TicketCount>();
-	private readonly writers = new Map<string, boolean>();
 	private readonly trust: GitHubTrust;
 
 	constructor(

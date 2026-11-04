@@ -323,10 +323,15 @@ export class FakeGitHub {
 		if (method === 'POST' && rest === '/dependencies/blocked_by') return this.blockBy(issue, call);
 		if (method === 'GET' && rest === '/comments') {
 			const listed = page(this.comments.get(issue.number) ?? [], call.query);
-			return ok(listed.map((c) => this.renderComment(c)));
+			return ok(listed.map((c) => this.renderComment(c, issue.number)));
 		}
 		if (method === 'POST' && rest === '/comments') {
-			return ok(this.renderComment(this.say(issue.number, this.person, String(call.fields.body))));
+			return ok(
+				this.renderComment(
+					this.say(issue.number, this.person, String(call.fields.body)),
+					issue.number
+				)
+			);
 		}
 		if (method === 'POST' && rest === '/labels') return this.label(issue, call);
 		const label = /^\/labels\/([^/]+)$/.exec(rest);
@@ -487,9 +492,10 @@ export class FakeGitHub {
 		return found.map((i) => this.render(i));
 	}
 
-	private renderComment(comment: IssueComment) {
+	private renderComment(comment: IssueComment, number: number) {
 		return {
 			id: comment.id,
+			issue_url: `https://api.github.com/repos/${this.repo}/issues/${String(number)}`,
 			body: comment.body,
 			user: { login: comment.login },
 			created_at: comment.createdAt,
@@ -542,9 +548,11 @@ export class FakeGitHub {
 			}
 			const said = new RegExp(`^${repo}/issues/comments/(\\d+)$`).exec(path);
 			if (said !== null) {
-				const everyComment = [...this.comments.values()].flat();
-				const found = everyComment.find((c) => c.id === Number(said[1]));
-				return found === undefined ? NOT_FOUND : ok(this.renderComment(found));
+				for (const [number, listed] of this.comments) {
+					const found = listed.find((c) => c.id === Number(said[1]));
+					if (found !== undefined) return ok(this.renderComment(found, number));
+				}
+				return NOT_FOUND;
 			}
 		}
 		const replies = new RegExp(`^${repo}/pulls/(\\d+)/comments/(\\d+)/replies$`).exec(path);

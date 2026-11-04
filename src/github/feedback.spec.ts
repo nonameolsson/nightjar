@@ -301,6 +301,20 @@ describe('GitHubCodeHost reply', () => {
 		expect(github.thread(Number(elsewhere.slice('comment:'.length)))).toEqual([]);
 	});
 
+	it('does not quote a conversation comment of another pull request', async () => {
+		const { github, host, pull } = await world();
+		const other = await host.createDraft({
+			title: 'U',
+			head: 'factory/2-b',
+			base: 'main',
+			body: ''
+		});
+		const elsewhere = idOf('comment', github.say(other.id, 'bob', 'Secret there.').id);
+		const gone = `GitHub has no ${elsewhere} on pull request #${String(pull.id)}.`;
+		await expect(host.reply(pull, elsewhere, 'Done.')).rejects.toThrow(new GitHubFailure(gone));
+		expect(github.said(pull.id)).toEqual([]);
+	});
+
 	it('refuses an id that names no feedback', async () => {
 		const { host, pull } = await world();
 		await expect(host.reply(pull, 'nonsense', 'x')).rejects.toThrow(

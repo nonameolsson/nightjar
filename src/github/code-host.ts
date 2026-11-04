@@ -101,6 +101,11 @@ const FEEDBACK_ID = /^(comment|review|check):(\d+)$/;
 
 const BodySchema = z.looseObject({ body: z.string().nullable() });
 
+const ConversationBodySchema = z.looseObject({
+	body: z.string().nullable(),
+	issue_url: z.string().optional()
+});
+
 const gone = (feedbackId: string, n: string) =>
 	new GitHubFailure(`GitHub has no ${feedbackId} on pull request #${n}.`);
 
@@ -381,12 +386,23 @@ export class GitHubCodeHost implements CodeHost {
 			if (run === null) throw gone(feedbackId, n);
 			return checkBody(run);
 		}
-		const path =
-			kind === 'review'
-				? `repos/${this.repo}/pulls/${n}/reviews/${number}`
-				: `repos/${this.repo}/issues/comments/${number}`;
-		const said = await this.api.find(what, [path], BodySchema);
-		if (said === null) throw gone(feedbackId, n);
+		if (kind === 'review') {
+			const review = await this.api.find(
+				what,
+				[`repos/${this.repo}/pulls/${n}/reviews/${number}`],
+				BodySchema
+			);
+			if (review === null) throw gone(feedbackId, n);
+			return review.body ?? '';
+		}
+		const said = await this.api.find(
+			what,
+			[`repos/${this.repo}/issues/comments/${number}`],
+			ConversationBodySchema
+		);
+		// the comments endpoint is the whole repo's, so one of another pull request is found too
+		if (said === null || !(said.issue_url ?? '').endsWith(`/issues/${n}`))
+			throw gone(feedbackId, n);
 		return said.body ?? '';
 	}
 }
