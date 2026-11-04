@@ -30,9 +30,17 @@ export interface SessionRequest {
 	readonly signal?: AbortSignal;
 }
 
+// Why a Session failed: `passing` may go away on its own, `budget` is its budget or time limit, `lasting` is anything else.
+export type Failure = 'passing' | 'budget' | 'lasting';
+
 export type Settled =
 	| { readonly kind: 'done'; readonly costUsd: number; readonly output: unknown }
-	| { readonly kind: 'stopped'; readonly costUsd: number; readonly why: string }
+	| {
+			readonly kind: 'stopped';
+			readonly costUsd: number;
+			readonly why: string;
+			readonly failure: Failure;
+	  }
 	| { readonly kind: 'api-key' }
 	| { readonly kind: 'rate-limited'; readonly resetsAt: number | null };
 
@@ -104,18 +112,27 @@ export function settle(line: unknown, allowApiKey: boolean): Settled | null {
 	if (line.type !== 'result') return null;
 	const costUsd = typeof line.total_cost_usd === 'number' ? line.total_cost_usd : 0;
 	if (line.subtype === 'error_max_budget_usd') {
-		return { kind: 'stopped', costUsd, why: 'it reached its budget' };
+		return { kind: 'stopped', costUsd, why: 'it reached its budget', failure: 'budget' };
 	}
 	if (line.is_error === true) {
-		return { kind: 'stopped', costUsd, why: `it ended with ${String(line.subtype)}` };
+		return {
+			kind: 'stopped',
+			costUsd,
+			why: `it ended with ${String(line.subtype)}`,
+			failure: 'lasting'
+		};
 	}
 	if (!isObject(line.structured_output)) {
-		return { kind: 'stopped', costUsd, why: 'it gave no structured answer' };
+		return { kind: 'stopped', costUsd, why: 'it gave no structured answer', failure: 'lasting' };
 	}
 	return { kind: 'done', costUsd, output: line.structured_output };
 }
 
 const TAIL = 2000;
+
+// A last line naming an overload, a 5xx error or a network fault.
+const PASSING_LINE =
+	/overloaded|\b5\d\d\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|network|fetch failed/i;
 
 // `command` is the seam a spec swaps for a stand-in.
 export function runSession(req: SessionRequest, command = 'claude'): Promise<SessionResult> {
@@ -151,10 +168,17 @@ export function runSession(req: SessionRequest, command = 'claude'): Promise<Ses
 			else log.end(() => done(result));
 		};
 		const timer = setTimeout(
-			() => end({ kind: 'stopped', costUsd: 0, why: `it ran past ${String(req.minutes)} minutes` }),
+			() =>
+				end({
+					kind: 'stopped',
+					costUsd: 0,
+					why: `it ran past ${String(req.minutes)} minutes`,
+					failure: 'budget'
+				}),
 			req.minutes * 60_000
 		);
-		const abort = () => end({ kind: 'stopped', costUsd: 0, why: 'stopped by a person' });
+		const abort = () =>
+			end({ kind: 'stopped', costUsd: 0, why: 'stopped by a person', failure: 'lasting' });
 		if (req.signal?.aborted) abort();
 		req.signal?.addEventListener('abort', abort, { once: true });
 		child.stderr.on('data', (chunk: Buffer) => {
@@ -176,10 +200,20 @@ export function runSession(req: SessionRequest, command = 'claude'): Promise<Ses
 		});
 		// a log that cannot be written stops the session; thrown, it would leave the Feature marked as worked on
 		log.on('error', (fault) =>
-			end({ kind: 'stopped', costUsd: 0, why: `its log could not be written: ${fault.message}` })
+			end({
+				kind: 'stopped',
+				costUsd: 0,
+				why: `its log could not be written: ${fault.message}`,
+				failure: 'lasting'
+			})
 		);
 		child.on('error', (fault) =>
-			end({ kind: 'stopped', costUsd: 0, why: `claude could not start: ${fault.message}` })
+			end({
+				kind: 'stopped',
+				costUsd: 0,
+				why: `claude could not start: ${fault.message}`,
+				failure: 'passing'
+			})
 		);
 		child.on('close', (code) => {
 			const last = stderr.trim().split('\n').pop() ?? '';
@@ -187,7 +221,8 @@ export function runSession(req: SessionRequest, command = 'claude'): Promise<Ses
 				settled ?? {
 					kind: 'stopped',
 					costUsd: 0,
-					why: `claude exited with code ${String(code)} and no result${last ? `: ${last}` : ''}`
+					why: `claude exited with code ${String(code)} and no result${last ? `: ${last}` : ''}`,
+					failure: PASSING_LINE.test(last) ? 'passing' : 'lasting'
 				}
 			);
 		});

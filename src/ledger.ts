@@ -17,6 +17,8 @@ const EntrySchema = z.looseObject({
 	session: z.string(),
 	costUsd: z.number(),
 	outcome: z.string(),
+	// only a failed session has it
+	failure: z.enum(['passing', 'budget', 'lasting']).optional(),
 	// older lines lack it
 	durationMs: z.number().optional()
 });

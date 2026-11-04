@@ -341,7 +341,7 @@ export class WorkflowRun {
 					run.log({ ...entry, outcome: `${label}: paused: ${got.why}` });
 					return { kind: 'paused', why: got.why };
 				case 'failed':
-					run.log({ ...entry, outcome: `${label}: failed: ${got.why}` });
+					run.log({ ...entry, outcome: `${label}: failed: ${got.why}`, failure: got.failure });
 					return giveUp(got.why);
 				case 'blocked':
 					run.log({ ...entry, outcome: `${label}: blocked` });

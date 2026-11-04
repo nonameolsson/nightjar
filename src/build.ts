@@ -452,11 +452,11 @@ class FeatureRun {
 				this.log({ ...entry, outcome: `paused: ${got.why}` });
 				return { kind: 'paused', why: got.why };
 			case 'failed':
-				this.log({ ...entry, outcome: `failed: ${got.why}` });
+				this.log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
 				await this.handBack(
 					ticket,
 					before,
-					`Nightjar could not build this Ticket: ${got.why}.\n\nSession: \`claude --resume ${sessionId}\``,
+					`Nightjar could not build this Ticket: ${got.why}.\n\nFailure: ${got.failure}.\n\nSession: \`claude --resume ${sessionId}\``,
 					'retry',
 					got.why
 				);
@@ -774,7 +774,8 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 			{
 				...entry,
 				costUsd: got.costUsd,
-				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`
+				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`,
+				...(got.kind === 'failed' ? { failure: got.failure } : {})
 			},
 			work
 		);
@@ -1019,7 +1020,11 @@ async function pullFixRound(
 			log({ ...entry, outcome: 'stopped by a person' });
 			return halted(got);
 		case 'failed':
-			log({ ...entry, outcome: `pull checks ${String(round)} failed: ${got.why}` });
+			log({
+				...entry,
+				outcome: `pull checks ${String(round)} failed: ${got.why}`,
+				failure: got.failure
+			});
 			return gaveUp(got.why, got.costUsd);
 		case 'gaveUp':
 			log({ ...entry, outcome: `pull checks ${String(round)} gave up` });
@@ -1094,7 +1099,7 @@ async function reviewFeature(
 			log({ ...entry, outcome: 'failed: stopped by a person' });
 			return null;
 		case 'failed':
-			log({ ...entry, outcome: `failed: ${got.why}` });
+			log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
 			return null;
 	}
 }

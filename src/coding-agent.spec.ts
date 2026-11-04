@@ -126,6 +126,7 @@ describe('a build', () => {
 		expect(await codingAgent(SETUP, session).build(buildRequest())).toEqual({
 			kind: 'failed',
 			why: 'it answered in a shape not known',
+			failure: 'lasting',
 			sessionId: 's-1',
 			costUsd: 2.5
 		});
@@ -293,6 +294,7 @@ describe('a fix round', () => {
 		expect(got).toEqual({
 			kind: 'failed',
 			why: 'it answered in a shape not known',
+			failure: 'lasting',
 			sessionId: 's-1',
 			costUsd: 2.5
 		});
@@ -410,6 +412,7 @@ describe('a Step round', () => {
 		expect(await codingAgent(SETUP, session).step(stepRequest())).toEqual({
 			kind: 'failed',
 			why: 'it answered in a shape not known',
+			failure: 'lasting',
 			sessionId: 's-1',
 			costUsd: 2.5
 		});
@@ -465,6 +468,7 @@ describe('the review', () => {
 		expect(await codingAgent(SETUP, session).review(reviewRequest())).toEqual({
 			kind: 'failed',
 			why: 'it answered in a shape not known',
+			failure: 'lasting',
 			sessionId: 's-9',
 			costUsd: 2.5
 		});
@@ -493,9 +497,17 @@ describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) 
 	};
 
 	it('fails with why a stopped Session stopped, and its cost', async () => {
-		expect(await ended({ kind: 'stopped', costUsd: 15.2, why: 'it reached its budget' })).toEqual({
+		expect(
+			await ended({
+				kind: 'stopped',
+				costUsd: 15.2,
+				why: 'it reached its budget',
+				failure: 'budget'
+			})
+		).toEqual({
 			kind: 'failed',
 			why: 'it reached its budget',
+			failure: 'budget',
 			sessionId,
 			costUsd: 15.2
 		});
@@ -531,7 +543,12 @@ describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) 
 	it('is aborted by a stop, whatever the Session said, and keeps its cost', async () => {
 		const stop = new AbortController();
 		const setup = { ...SETUP, signal: stop.signal };
-		const settled: Settled = { kind: 'stopped', costUsd: 1.5, why: 'stopped by a person' };
+		const settled: Settled = {
+			kind: 'stopped',
+			costUsd: 1.5,
+			why: 'stopped by a person',
+			failure: 'lasting'
+		};
 		expect(await ended(settled, setup, () => stop.abort())).toEqual({
 			kind: 'aborted',
 			sessionId,

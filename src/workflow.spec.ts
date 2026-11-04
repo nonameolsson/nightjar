@@ -353,7 +353,7 @@ describe('the Steps of a Workflow', () => {
 				if (req.step.name === 'critique' && act === 'blocked')
 					return { kind: 'blocked', blocker: 'which palette?', sessionId, costUsd: 1 };
 				if (req.step.name === 'critique' && act === 'failed')
-					return { kind: 'failed', why, sessionId, costUsd: 15.2 };
+					return { kind: 'failed', why, failure: 'budget', sessionId, costUsd: 15.2 };
 				return stepDone(req);
 			};
 			const steps = await open(b, { steps: [critique, polish] });
