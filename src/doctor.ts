@@ -1,6 +1,6 @@
 // `nightjar doctor`: runs every check, says how to fix each that fails, and lists what it would build.
 import { checkMachine, type CheckOptions, type Line } from './checks.js';
-import { dryRun } from './queue.js';
+import { dryRun, pullWatch } from './queue.js';
 import { say, why } from './say.js';
 
 const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip' } as const;
@@ -26,9 +26,10 @@ export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promis
 		console.error(`nightjar: ${count} failed; fix it, then run \`nightjar doctor\` again.`);
 		return 2;
 	}
-	const { adapters, assignee } = checked.ready;
+	const { adapters, assignee, root, baseBranch, env } = checked.ready;
 	try {
-		await dryRun({ tracker: adapters.tracker, person: assignee, say });
+		const pulls = pullWatch(adapters.codeHost, root, baseBranch, env);
+		await dryRun({ tracker: adapters.tracker, person: assignee, say, pulls });
 	} catch (fault) {
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;

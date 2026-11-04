@@ -1,6 +1,13 @@
 // A Code host kept in memory, for the build loop's specs and for anyone testing against the seam.
 import { failedCheckBody } from '../check-output.js';
-import type { CodeHost, DraftRequest, Feedback, Pull } from '../code-host.js';
+import type {
+	ChangeRequest,
+	CodeHost,
+	DraftRequest,
+	Feedback,
+	OpenPull,
+	Pull
+} from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import type { TicketReference } from '../tracker.js';
 
@@ -8,6 +15,8 @@ export interface FakePull extends Pull, DraftRequest {
 	readonly draft: true;
 	readonly references: readonly TicketReference[];
 	readonly comments: readonly string[];
+	readonly openedAt: string;
+	readonly changesRequested: readonly ChangeRequest[];
 }
 
 export class FakeCodeHost implements CodeHost {
@@ -33,9 +42,48 @@ export class FakeCodeHost implements CodeHost {
 	createDraft = (request: DraftRequest): Promise<Pull> => {
 		const id = 100 + this.pulls.length;
 		const url = `https://code.example/pull/${String(id)}`;
-		this.pulls.push({ ...request, id, url, draft: true, references: [], comments: [] });
+		this.pulls.push({
+			...request,
+			id,
+			url,
+			draft: true,
+			references: [],
+			comments: [],
+			// at the minute of the last thing said, so whatever is said on it comes after
+			openedAt: this.clock(this.lastId),
+			changesRequested: []
+		});
 		return Promise.resolve({ id, url });
 	};
+
+	openPulls = (prefix: string): Promise<OpenPull[]> =>
+		Promise.resolve(
+			this.pulls
+				.filter((p) => p.head.startsWith(prefix))
+				.map((p) => ({
+					id: p.id,
+					url: p.url,
+					branch: p.head,
+					openedAt: p.openedAt,
+					changesRequested: p.changesRequested
+				}))
+		);
+
+	// A review by `author` that requests changes, at the next minute; with a body it is feedback too, whose id it gives, else null.
+	requestChanges = (
+		pull: Pull,
+		review: { author: string; trusted: boolean; body?: string }
+	): string | null => {
+		const { author, trusted, body = '' } = review;
+		const id = body === '' ? null : this.give(pull, { kind: 'review', author, trusted, body });
+		if (id === null) this.lastId += 1;
+		const request = { author, trusted, at: this.clock(this.lastId) };
+		this.change(pull.id, (p) => ({ changesRequested: [...p.changesRequested, request] }));
+		return id;
+	};
+
+	private readonly clock = (minute: number) =>
+		new Date(Date.UTC(2026, 9, 31, 0, minute)).toISOString();
 
 	editBody = (pull: Pull, body: string): Promise<void> => {
 		this.change(pull.id, () => ({ body }));

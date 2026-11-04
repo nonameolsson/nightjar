@@ -310,3 +310,37 @@ describe('GitHubCodeHost reply', () => {
 		await expect(host.reply(pull, 'review:12', 'x')).rejects.toThrow(new GitHubFailure(gone));
 	});
 });
+
+describe('GitHubCodeHost openPulls', () => {
+	it('lists no pull request from a fork, whatever its branch is called', async () => {
+		const { github, host, pull } = await world();
+		github.pullFromFork('mallory/r', 'factory/1-a', 'Mine');
+		expect((await host.openPulls('factory/')).map((p) => p.id)).toEqual([pull.id]);
+	});
+
+	it('reads every page of the open pull requests', async () => {
+		const { host, pull, calls } = await world();
+		const more: number[] = [];
+		for (let n = 2; n <= 101; n += 1) {
+			const head = `factory/${String(n)}-b`;
+			more.push((await host.createDraft({ title: 'U', head, base: 'main', body: '' })).id);
+		}
+		expect((await host.openPulls('factory/')).map((p) => p.id)).toEqual([pull.id, ...more]);
+		expect(calls.filter((c) => c.startsWith('api repos/o/r/pulls?state=open'))).toHaveLength(2);
+	});
+
+	it("reads a request for changes by its author's write access, and never Nightjar's own words as one", async () => {
+		const { github, host, pull } = await world();
+		github.grant('bob', 'write');
+		github.review(pull.id, { login: 'bob', body: '', state: 'CHANGES_REQUESTED' });
+		github.review(pull.id, { login: 'eve', body: 'No.', state: 'CHANGES_REQUESTED' });
+		github.review(pull.id, { login: 'bob', body: `Mine.${FOOTER}`, state: 'CHANGES_REQUESTED' });
+		github.review(pull.id, { login: 'bob', body: 'Good.', state: 'APPROVED' });
+		const [shown] = await host.openPulls('factory/');
+		expect(shown?.changesRequested.map((r) => [r.author, r.trusted])).toEqual([
+			['bob', true],
+			['eve', false]
+		]);
+		expect(shown?.branch).toBe('factory/1-a');
+	});
+});

@@ -16,10 +16,15 @@ export const STEP_TRAILER = 'Factory-Step';
 // Lists the feedback a Feedback round's commit answered: the branch is the record of what is answered.
 export const FEEDBACK_TRAILER = 'Factory-Feedback';
 
+// Marks a Feedback round a request for changes started, so the branch counts them against the limit.
+export const ROUND_TRAILER = 'Factory-Feedback-Round';
+const AUTOMATIC = 'automatic';
+
 // The notes the Steps of a run share, in the worktree and never committed.
 const NOTES = '.factory/notes';
 
-const BRANCH_PREFIX = 'factory/';
+// What every Feature's branch starts with.
+export const BRANCH_PREFIX = 'factory/';
 
 // An item id as a piece of a branch name: whatever a ref may not hold becomes a dash.
 const refPart = (id: string) => id.replace(/[^A-Za-z0-9_-]+/g, '-');
@@ -140,9 +145,12 @@ export class Worktree {
 		ids: readonly string[];
 		summary: string;
 		session: string;
+		// a round a request for changes started under --watch, with no Go
+		automatic?: boolean;
 	}): Promise<string> {
 		await this.git(['add', '-A']);
-		const message = `Answer feedback on the pull request\n\n${o.summary.trim()}\n\n${FEEDBACK_TRAILER}: ${o.ids.join(', ')}\nFactory-Session: ${o.session}`;
+		const automatic = o.automatic === true ? `\n${ROUND_TRAILER}: ${AUTOMATIC}` : '';
+		const message = `Answer feedback on the pull request\n\n${o.summary.trim()}\n\n${FEEDBACK_TRAILER}: ${o.ids.join(', ')}${automatic}\nFactory-Session: ${o.session}`;
 		await this.git(['commit', '-q', '--allow-empty', '-m', message]);
 		return (await this.git(['rev-parse', '--short', 'HEAD'])).trim();
 	}
@@ -211,6 +219,46 @@ function inRoot(root: string, args: readonly string[], env: Env) {
 
 const hasRef = async (root: string, ref: string, env: Env) =>
 	(await inRoot(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], env)).ok;
+
+// One commit of a Feedback round on a branch.
+export interface FeedbackCommit {
+	// when it was committed
+	readonly at: string;
+	// the feedback its trailer names as answered
+	readonly ids: readonly string[];
+	// a request for changes started it, not the Go
+	readonly automatic: boolean;
+}
+
+const RECORD = '\x1e';
+const FIELD = '\x1f';
+
+// The Feedback rounds' commits on `branch`, newest first: the checkout's own branch when it has one, else the one pushed; none when neither is there.
+export async function feedbackCommits(
+	root: string,
+	branch: string,
+	baseBranch: string,
+	env: Env
+): Promise<FeedbackCommit[]> {
+	let ref = `refs/heads/${branch}`;
+	if (!(await hasRef(root, ref, env))) {
+		const remote = `refs/remotes/origin/${branch}`;
+		await inRoot(root, ['fetch', '-q', 'origin', `refs/heads/${branch}:${remote}`], env);
+		if (!(await hasRef(root, remote, env))) return [];
+		ref = remote;
+	}
+	const format = `--format=%x1e%cI%x1f%(trailers:key=${FEEDBACK_TRAILER},valueonly)%x1f%(trailers:key=${ROUND_TRAILER},valueonly)`;
+	const got = await inRoot(root, ['log', format, `origin/${baseBranch}..${ref}`], env);
+	if (got.missing) throw new GitFailure('git is not on the PATH.');
+	if (!got.ok) throw new GitFailure(`git log failed: ${firstLine(got.err)}`);
+	return got.out.split(RECORD).flatMap((record): FeedbackCommit[] => {
+		const [at = '', named = '', round = ''] = record.split(FIELD);
+		const ids = named.split(/[\s,]+/).filter((id) => id !== '');
+		if (ids.length === 0) return [];
+		const automatic = round.split('\n').some((l) => l.trim() === AUTOMATIC);
+		return [{ at: at.trim(), ids, automatic }];
+	});
+}
 
 // Reuses the worktree a run before left, else the pushed branch; a worktree a stopped run left dirty is cleaned.
 export async function openWorktree(

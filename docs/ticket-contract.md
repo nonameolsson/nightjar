@@ -42,6 +42,8 @@ Which Signal each item carries, and when it changes, under the default names:
 | The run pauses (the daily limit, the plan's usage limit)         | `factory-go` back on, `agent-working` off           | no change                                                    |
 | A person stops the run                                           | `agent-working` off                                 | no change                                                    |
 | A Feedback round answers feedback on the open pull request (its commit lands) | no change                              | no change: the branch's `Factory-Feedback` trailer is the only record |
+| Under `--watch` or `--once`, a trusted request for changes on the open pull request starts a Feedback round, with no Go | `agent-working` on; a `factory-go` given meanwhile stays; none put back on a pause | no change |
+| A trusted request for changes comes after the pull request's 5 automatic Feedback rounds | `ready-for-human` on, with a comment; only the Go starts another round | no change |
 | The run ends with a draft pull request                           | `agent-working` off; `needs-info` on while a Ticket waits, the check is red, or a Feedback round was thrown away or left feedback unanswered | no change |
 | The run builds nothing, its Workflow is refused, its setup fails, or a fault stops it | `agent-working` off, `needs-info` on | no change                                               |
 

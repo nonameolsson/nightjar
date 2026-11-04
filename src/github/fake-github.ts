@@ -15,6 +15,9 @@ interface PullHead {
 	readonly head: string;
 	readonly base: string;
 	readonly draft: boolean;
+	readonly createdAt: string;
+	// the repo its head branch is in: this one, or a fork
+	readonly from: string;
 }
 
 // On GitHub a pull request is an issue too, numbered with the issues.
@@ -353,9 +356,23 @@ export class FakeGitHub {
 			labels: [],
 			assignees: []
 		});
-		const pull = { head, base: field('base'), draft: field('draft') === 'true' };
+		const pull = {
+			head,
+			base: field('base'),
+			draft: field('draft') === 'true',
+			createdAt: this.stamp(),
+			from: this.repo
+		};
 		this.change(number, () => ({ pull }));
 		return ok(this.renderPull(this.get(number)));
+	}
+
+	// A pull request someone opened from a branch of their fork `from`. Gives its number.
+	pullFromFork(from: string, head: string, title: string): number {
+		const number = this.issue({ title, body: '', state: 'open', labels: [], assignees: [] });
+		const pull = { head, base: 'main', draft: false, createdAt: this.stamp(), from };
+		this.change(number, () => ({ pull }));
+		return number;
 	}
 
 	// GitHub's filters: state open by default, and head as owner:branch.
@@ -363,14 +380,13 @@ export class FakeGitHub {
 		const state = query.get('state') ?? 'open';
 		const head = query.get('head');
 		const owner = this.repo.split('/')[0] ?? '';
-		return [...this.issues.values()]
-			.filter(
-				(i) =>
-					i.pull !== undefined &&
-					(state === 'all' || i.state === state) &&
-					(head === null || head === `${owner}:${i.pull.head}`)
-			)
-			.map((i) => this.renderPull(i));
+		const found = [...this.issues.values()].filter(
+			(i) =>
+				i.pull !== undefined &&
+				(state === 'all' || i.state === state) &&
+				(head === null || head === `${owner}:${i.pull.head}`)
+		);
+		return page(found, query).map((i) => this.renderPull(i));
 	}
 
 	private renderPull(issue: Issue) {
@@ -381,7 +397,12 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			draft: issue.pull?.draft ?? false,
-			head: { ref: issue.pull?.head ?? '', sha: headSha(issue.number) },
+			created_at: issue.pull?.createdAt ?? '',
+			head: {
+				ref: issue.pull?.head ?? '',
+				sha: headSha(issue.number),
+				repo: { full_name: issue.pull?.from ?? this.repo }
+			},
 			base: { ref: issue.pull?.base ?? '' }
 		};
 	}

@@ -19,7 +19,7 @@ import { runCreateCommand } from './create.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
+import { buildNamed, cannotClaim, handBack, pullWatch, queue, type QueueDeps } from './queue.js';
 import { runSession } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
@@ -213,14 +213,15 @@ export async function runNightjar(
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
-		build: async (feature) => {
+		build: async (feature, start) => {
 			building = feature;
 			try {
-				return await buildFeature(deps, setup, feature.id);
+				return await buildFeature(deps, setup, feature.id, start);
 			} finally {
 				building = null;
 			}
 		},
+		pulls: pullWatch(adapters.codeHost, root, ready.baseBranch, ready.env),
 		status,
 		now: () => new Date(),
 		say: runSay,

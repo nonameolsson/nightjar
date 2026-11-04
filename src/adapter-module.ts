@@ -36,7 +36,9 @@ const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn'>, true> = {
 	reference: true
 };
 
-const CODE_HOST_METHODS: Record<Exclude<keyof CodeHost, 'feedback' | 'reply'>, true> = {
+type OptionalCodeHostMethod = 'feedback' | 'reply' | 'openPulls';
+
+const CODE_HOST_METHODS: Record<Exclude<keyof CodeHost, OptionalCodeHostMethod>, true> = {
 	push: true,
 	openPull: true,
 	createDraft: true,
@@ -138,6 +140,12 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 			const other = FEEDBACK_METHODS.find((name) => !given.includes(name));
 			throw new ConfigError(
 				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} with ${given[0] ?? ''} but without ${other ?? ''}`
+			);
+		}
+		// a lone optional method, left out or a function
+		if (have.openPulls !== undefined && typeof have.openPulls !== 'function') {
+			throw new ConfigError(
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose openPulls is not a function`
 			);
 		}
 	}

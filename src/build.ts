@@ -169,13 +169,25 @@ type FeedbackEnd =
 			readonly left: readonly Unanswered[];
 	  };
 
-export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promise<FeatureOutcome> {
+// What started a build: the Go, or a trusted request for changes on the Feature's open pull request, under --watch.
+export type Start = 'go' | 'changesRequested';
+
+// A build the Go started builds the Tickets, runs the Steps and answers feedback; one a request for changes started answers feedback alone.
+export async function buildFeature(
+	deps: Deps,
+	setup: Setup,
+	id: ItemId,
+	start: Start = 'go'
+): Promise<FeatureOutcome> {
 	const { tracker } = deps;
 	const feature = await tracker.feature(id);
 	const branch = branchFor(feature.id, feature.title);
-	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
+	deps.say(
+		`${hash(id)} ${feature.title}: ${start === 'go' ? 'building' : 'answering a request for changes'} on ${branch}`
+	);
 	await tracker.addSignal(id, 'working');
-	await tracker.removeSignal(id, 'go');
+	// a Go given since the request for changes stays, for the next build
+	if (start === 'go') await tracker.removeSignal(id, 'go');
 	const show = buildingOf(feature, deps.now);
 	const settingUp = (tickets?: TicketProgress[]): Doing =>
 		show({
@@ -220,7 +232,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 		await tree.markSetUp();
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show);
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show, start);
 	return run.build();
 }
 
@@ -287,7 +299,8 @@ class FeatureRun {
 		private readonly tickets: Ticket[],
 		private readonly built: Set<ItemId>,
 		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
-		private readonly show: ShowBuilding
+		private readonly show: ShowBuilding,
+		private readonly start: Start
 	) {}
 
 	private get aborted() {
@@ -297,6 +310,13 @@ class FeatureRun {
 	async build(): Promise<FeatureOutcome> {
 		this.featureComments = await this.trusted(this.feature.id);
 		if (this.workflow !== null) this.stepsDone = await this.tree.stepsDone();
+		const last = this.start === 'go' ? await this.buildTickets() : NEXT;
+		const answered = last.kind === 'next' && !this.aborted ? await this.answerFeedback() : last;
+		return this.finish(answered);
+	}
+
+	// The Tickets left to build, then the Steps of "all Tickets" once they are all built.
+	private async buildTickets(): Promise<Step> {
 		let last: Step = NEXT;
 		while (last.kind === 'next' && !this.aborted) {
 			const paused = this.dailyPause();
@@ -313,8 +333,7 @@ class FeatureRun {
 		if (last.kind === 'next' && !this.aborted && whole) {
 			last = await this.runSteps('afterAllTickets', null);
 		}
-		if (last.kind === 'next' && !this.aborted) last = await this.answerFeedback();
-		return this.finish(last);
+		return last;
 	}
 
 	private dailyPause(): string | null {
@@ -833,7 +852,8 @@ class FeatureRun {
 		const sha = await this.tree.commitFeedback({
 			ids: answered.map((a) => a.feedback.id),
 			summary: [got.summary, ...checked.summaries].join('\n\n'),
-			session: sessionId
+			session: sessionId,
+			automatic: this.start === 'changesRequested'
 		});
 		this.answered = { kind: 'committed', sha, answered, left };
 		return NEXT;
@@ -966,9 +986,9 @@ class FeatureRun {
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
 	}
 
-	// The Go back, so a later run goes on from the branch.
+	// The Go back, so a later run goes on from the branch; a request for changes still stands after a pause, and starts the round again without one.
 	private async pause(why: string): Promise<void> {
-		await this.deps.tracker.addSignal(this.feature.id, 'go');
+		if (this.start === 'go') await this.deps.tracker.addSignal(this.feature.id, 'go');
 		this.deps.say(`paused: ${why}`);
 		this.deps.status.doing({ kind: 'paused', why, until: null });
 	}

@@ -4,6 +4,7 @@ import {
 	codeHostContract,
 	featureWriterContract,
 	feedbackContract,
+	openPullsContract,
 	trackerContract,
 	waitingOnContract
 } from '../index.js';
@@ -34,4 +35,8 @@ describe('FakeCodeHost meets the Code host contract', () => {
 
 describe('FakeCodeHost meets the feedback contract', () => {
 	for (const c of feedbackContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the openPulls contract', () => {
+	for (const c of openPullsContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });

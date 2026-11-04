@@ -118,6 +118,15 @@ Trust follows the Tracker's rule: the logins of `trusted` in `factory.json` when
 
 `reply(pull, feedbackId, body)` answers a line comment in its thread. Anything else it answers as a comment on the pull request's conversation, which quotes the start of what it answers so the reader can tell which piece it is for. It fails when the host has no such feedback.
 
+To let a trusted request for changes start a Feedback round under `--watch` and `--once`, with no Go given, give the Code host one more optional method besides `feedback` and `reply`. A Code host without it answers feedback only when a Feature gets the Go again.
+
+```js
+		// the repo's open pull requests whose head branch starts with prefix, all pages, none from a fork
+		openPulls: todo('openPulls'),
+```
+
+`openPulls(prefix)` resolves to a list of `OpenPull`, a type exported from `@nonameolsson/nightjar`: a `Pull` (`id`, `url`) with `branch`, its head branch; `openedAt`, when it was opened; and `changesRequested`, every review of it that requested changes, oldest first, each `{ author, at, trusted }` by the same trust rule as `feedback`. Nightjar calls it with `factory/`, the start of every branch it makes. Leave out a review that ends with the footer, as `feedback` does.
+
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
 ## Test the module
@@ -150,7 +159,7 @@ export async function trackerHarness(world) {
 }
 ```
 
-`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, and a check has a `conclusion`. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
+`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, a review that requests changes has `changes: true`, and a check has a `conclusion`. A Code host with `openPulls` needs the `bench` too. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
 
 Then run, from the repo:
 
@@ -158,7 +167,7 @@ Then run, from the repo:
 nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, and the feedback suite (`feedbackContract`) when the harness's Code host has `feedback` and `reply`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the feedback suite (`feedbackContract`) when the harness's Code host has `feedback` and `reply`, and the openPulls suite (`openPullsContract`) when it has `openPulls`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -171,6 +180,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `codeHostContract` and `feedbackContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `codeHostContract`, `feedbackContract` and `openPullsContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

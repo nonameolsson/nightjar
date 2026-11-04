@@ -11,6 +11,7 @@ import {
 	codeHostContract,
 	featureWriterContract,
 	feedbackContract,
+	openPullsContract,
 	trackerContract,
 	waitingOnContract,
 	type Given,
@@ -161,7 +162,12 @@ function giveOnGitHub(github: FakeGitHub, pull: Pull, given: Given): string {
 		const id = github.review(pull.id, {
 			login: given.author,
 			body: given.body,
-			state: given.approval === true ? 'APPROVED' : 'COMMENTED'
+			state:
+				given.changes === true
+					? 'CHANGES_REQUESTED'
+					: given.approval === true
+						? 'APPROVED'
+						: 'COMMENTED'
 		});
 		return `review:${String(id)}`;
 	}
@@ -208,4 +214,8 @@ describe('GitHubCodeHost meets the Code host contract', { timeout: 30_000 }, () 
 
 describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () => {
 	for (const c of feedbackContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
+	for (const c of openPullsContract) it(c.name, () => c.run(gitHubCodeHost));
 });

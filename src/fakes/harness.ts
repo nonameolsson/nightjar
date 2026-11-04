@@ -58,6 +58,10 @@ function giveTo(codeHost: FakeCodeHost, pull: Pull, given: Given): string {
 			trusted: given.trusted
 		});
 	}
+	if (given.kind === 'review' && given.changes === true) {
+		const { author, body, trusted } = given;
+		return codeHost.requestChanges(pull, { author, body, trusted }) ?? 'review:0';
+	}
 	if (given.kind === 'review') {
 		return codeHost.give(pull, {
 			kind: 'review',

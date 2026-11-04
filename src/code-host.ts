@@ -34,6 +34,23 @@ export interface Feedback {
 	readonly outdated?: true;
 }
 
+// A review that requested changes on a pull request.
+export interface ChangeRequest {
+	readonly author: string;
+	readonly at: string;
+	// whether the host trusts its author, by the rule of `Feedback.trusted`
+	readonly trusted: boolean;
+}
+
+// An open pull request, as `--watch` reads it to tell whether a reviewer asks for a Feedback round.
+export interface OpenPull extends Pull {
+	// its head branch
+	readonly branch: string;
+	readonly openedAt: string;
+	// every review of it that requested changes, oldest first, trusted or not
+	readonly changesRequested: readonly ChangeRequest[];
+}
+
 export interface CodeHost {
 	// pushes the worktree's HEAD in `folder` to `branch` on the host
 	push(folder: string, branch: string): Promise<void>;
@@ -52,4 +69,7 @@ export interface CodeHost {
 	// Answers one piece of feedback by its id; the body always ends with the footer.
 	// A line comment is answered in its thread, anything else in the pull request's conversation with the start of it quoted.
 	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
+	// Optional, so a Code host module written before it still loads; without it, or without feedback and reply, a request for changes starts no round.
+	// The repo's open pull requests whose head branch starts with `prefix`, all pages, from the repo itself and not a fork.
+	openPulls?(prefix: string): Promise<OpenPull[]>;
 }

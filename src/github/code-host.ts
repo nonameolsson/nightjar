@@ -1,7 +1,14 @@
 // GitHub as a Code host: the branch goes to origin and each Ticket reference into the draft pull request.
 import { z } from 'zod';
 import { failedCheckBody } from '../check-output.js';
-import type { CodeHost, DraftRequest, Feedback, Pull } from '../code-host.js';
+import type {
+	ChangeRequest,
+	CodeHost,
+	DraftRequest,
+	Feedback,
+	OpenPull,
+	Pull
+} from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import { firstLine, type Run } from '../git.js';
 import type { TicketReference } from '../tracker.js';
@@ -24,6 +31,16 @@ const PullSchema = z.looseObject({
 });
 
 const HeadSchema = z.looseObject({ head: z.looseObject({ sha: z.string() }) });
+
+const OpenPullSchema = z.looseObject({
+	...PullSchema.shape,
+	created_at: z.string(),
+	head: z.looseObject({
+		ref: z.string(),
+		// null once a fork's repo is deleted
+		repo: z.looseObject({ full_name: z.string() }).nullable().optional()
+	})
+});
 
 // A deleted account comes back as null.
 const UserSchema = z.looseObject({ login: z.string() }).nullable();
@@ -158,6 +175,49 @@ export class GitHubCodeHost implements CodeHost {
 		);
 		const first = raw[0];
 		return first ? toPull(first) : null;
+	}
+
+	async openPulls(prefix: string): Promise<OpenPull[]> {
+		const raw = await this.api.everyPage(
+			'list the open pull requests',
+			`repos/${this.repo}/pulls?state=open`,
+			z.array(OpenPullSchema),
+			(page) => page
+		);
+		const same = (name: string | undefined) => name?.toLowerCase() === this.repo.toLowerCase();
+		const ours = raw.filter((p) => p.head.ref.startsWith(prefix) && same(p.head.repo?.full_name));
+		const found: OpenPull[] = [];
+		for (const p of ours) {
+			found.push({
+				...toPull(p),
+				branch: p.head.ref,
+				openedAt: p.created_at,
+				changesRequested: await this.changesRequested(p.number)
+			});
+		}
+		return found;
+	}
+
+	private async changesRequested(number: number): Promise<ChangeRequest[]> {
+		const n = String(number);
+		const raw = await this.api.everyPage(
+			`list the reviews of pull request #${n}`,
+			`repos/${this.repo}/pulls/${n}/reviews`,
+			z.array(ReviewSchema),
+			(page) => page
+		);
+		const found: ChangeRequest[] = [];
+		for (const r of raw) {
+			const author = r.user?.login ?? '';
+			if (r.state !== 'CHANGES_REQUESTED' || author === '') continue;
+			if (r.body !== null && endsWithFooter(r.body)) continue;
+			found.push({
+				author,
+				at: r.submitted_at ?? '',
+				trusted: await this.trust.isTrusted(author, r.author_association)
+			});
+		}
+		return found;
 	}
 
 	async createDraft(request: DraftRequest): Promise<Pull> {

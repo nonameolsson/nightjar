@@ -55,7 +55,7 @@ What is said on a Feature's draft pull request for the Coding agent to answer: a
 _Avoid_: review comments (when checks are meant too), PR feedback
 
 **Feedback round**:
-The Session that answers a Feature's unanswered Feedback, when the Feature has an open draft pull request and gets the Go again. It runs before the review, goes through the check and its fix rounds, and lands as one commit whose `Factory-Feedback:` trailer names the Feedback it answered; Nightjar then replies to each piece. A round that fails is thrown away.
+The Session that answers a Feature's unanswered Feedback, when the Feature has an open draft pull request and gets the Go again, or, under `--watch` and `--once`, when a trusted reviewer requests changes on that pull request after its last round (at most 5 such automatic rounds per pull request). It runs before the review, goes through the check and its fix rounds, and lands as one commit whose `Factory-Feedback:` trailer names the Feedback it answered; Nightjar then replies to each piece. A round that fails is thrown away.
 _Avoid_: review round, fix round (a fix round is a Session of its own)
 
 ### Where things are

@@ -1,10 +1,13 @@
 // --once, --watch and --dry-run over the in-memory Tracker, with the build loop scripted.
 import { describe, expect, it } from 'vitest';
 import type { FeatureOutcome } from './build.js';
+import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker } from './fakes/tracker.js';
+import { FOOTER } from './footer.js';
 import type { Waiting } from './plan.js';
 import { buildNamed, cannotClaim, dryRun, queue, type QueueDeps } from './queue.js';
 import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
+import type { FeedbackCommit } from './worktree.js';
 
 function world() {
 	const tracker = new FakeTracker('ann');
@@ -29,10 +32,15 @@ function world() {
 		// as the build loop does, the Go comes off the Feature it takes
 		return tracker.removeSignal(id, 'go').then(() => ({ kind: 'nothing', waiting: [] }));
 	};
+	// each Feature built, with what started it
+	const starts: string[] = [];
 	const deps: QueueDeps = {
 		tracker,
 		person: 'ann',
-		build: ({ id }) => outcome(id),
+		build: ({ id }, start) => {
+			starts.push(`${id} ${start ?? 'go'}`);
+			return outcome(id);
+		},
 		status: {
 			codeMoved: (commit) => moved.push(commit),
 			doing: (d) => doing.push(d),
@@ -78,8 +86,47 @@ function world() {
 		refreshes,
 		moved,
 		trail,
-		buildWaiting
+		buildWaiting,
+		starts
 	};
+}
+
+// Feature 8, assigned to ann without the Go, has an open draft pull request on its branch; the Feedback rounds on the branch are `commits`.
+function withPull() {
+	const w = world();
+	const host = new FakeCodeHost();
+	const commits = new Map<string, FeedbackCommit[]>();
+	const branch = 'factory/8-no-go';
+	w.deps = {
+		...w.deps,
+		pulls: {
+			codeHost: host,
+			feedbackCommits: (b) => Promise.resolve(commits.get(b) ?? [])
+		}
+	};
+	void host.createDraft({ title: 'No Go', head: branch, base: 'main', body: '' });
+	const pull = { id: 100, url: 'https://code.example/pull/100' };
+	// a Feedback round on the branch at `minute` past midnight, when the fake Code host dates its feedback
+	const round = (minute: number, o: { automatic?: boolean; ids?: string[] } = {}) => {
+		const at = new Date(Date.UTC(2026, 9, 31, 0, minute, 30)).toISOString();
+		const ids = o.ids ?? [`comment:${String(minute)}`];
+		const made = { at, ids, automatic: o.automatic ?? true };
+		commits.set(branch, [made, ...(commits.get(branch) ?? [])]);
+	};
+	const noGo = async () => {
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+	};
+	return { ...w, host, pull, commits, branch, round, noGo };
+}
+
+const KEYED = 'factory/PROJ-3-keyed';
+
+// Feature PROJ-3, whose id holds a dash, with an open pull request on its branch.
+function keyedPull(w: ReturnType<typeof withPull>) {
+	w.tracker.add({ id: 'PROJ-3', title: 'Keyed', assignees: ['ann'], children: ['9'] });
+	void w.host.createDraft({ title: 'Keyed', head: KEYED, base: 'main', body: '' });
+	return { id: 101, url: 'https://code.example/pull/101' };
 }
 
 describe('queue --once', () => {
@@ -317,6 +364,162 @@ describe('Waiting on you from a Tracker that has waitingOn', () => {
 	});
 });
 
+describe('a trusted request for changes under --once and --watch', () => {
+	const asks = (w: ReturnType<typeof withPull>, trusted = true) => {
+		const author = trusted ? 'bob' : 'eve';
+		w.host.requestChanges(w.pull, { author, trusted, body: 'Rename it.' });
+	};
+
+	it('starts a Feedback round on an open Nightjar pull request with no Go given, after the Features with the Go', async () => {
+		const w = withPull();
+		asks(w);
+		const build = w.deps.build;
+		// the round lands as a commit on the branch, after the request
+		w.deps = {
+			...w.deps,
+			build: async (f, start) => {
+				const got = await build(f, start);
+				if (f.id === '8') w.round(5);
+				return got;
+			}
+		};
+		expect(await queue(w.deps, false)).toBe(130);
+		expect(w.starts).toEqual(['2 go', '4 go', '8 changesRequested']);
+	});
+
+	it('takes it under --once when no Feature has the Go', async () => {
+		const w = withPull();
+		await w.noGo();
+		asks(w);
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.starts).toEqual(['8 changesRequested']);
+	});
+
+	it('builds a Feature with the Go first under --once', async () => {
+		const w = withPull();
+		asks(w);
+		await queue(w.deps, true);
+		expect(w.starts).toEqual(['2 go']);
+	});
+
+	it('starts nothing on an untrusted request for changes', async () => {
+		const w = withPull();
+		await w.noGo();
+		asks(w, false);
+		w.host.give(w.pull, { kind: 'comment', author: 'bob', body: 'A nit.', trusted: true });
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.starts).toEqual([]);
+		expect(w.lines).toContain('no Feature with the Go is assigned to ann');
+	});
+
+	it('starts nothing on a request for changes the last Feedback round came after', async () => {
+		const w = withPull();
+		await w.noGo();
+		asks(w);
+		w.round(4);
+		await queue(w.deps, true);
+		expect(w.starts).toEqual([]);
+	});
+
+	it('starts nothing when the request leaves no trusted feedback unanswered', async () => {
+		const w = withPull();
+		await w.noGo();
+		w.host.requestChanges(w.pull, { author: 'bob', trusted: true });
+		await queue(w.deps, true);
+		expect(w.starts).toEqual([]);
+
+		const id = w.host.give(w.pull, { kind: 'comment', author: 'bob', body: 'Hm.', trusted: true });
+		// answered by a round before this pull request, which counts as no round of it
+		w.round(-5, { ids: [id] });
+		await queue(w.deps, true);
+		expect(w.starts).toEqual([]);
+	});
+
+	it("leaves a Feature that is not the person's, or carries working, needs info or needs a person", async () => {
+		for (const held of ['working', 'needsInfo', 'human'] as const) {
+			const w = withPull();
+			await w.noGo();
+			asks(w);
+			await w.tracker.addSignal('8', held);
+			await queue(w.deps, true);
+			expect(w.starts).toEqual([]);
+		}
+		const w = withPull();
+		await w.noGo();
+		await w.tracker.removeSignal('6', 'go');
+		asks(w);
+		await queue({ ...w.deps, person: 'bob' }, true);
+		expect(w.starts).toEqual([]);
+	});
+
+	it('leaves a branch whose Feature has another title now, and a branch no Feature has', async () => {
+		const w = withPull();
+		await w.noGo();
+		w.tracker.add({ id: '8', title: 'Renamed', assignees: ['ann'], children: ['9'] });
+		void w.host.createDraft({ title: 'Gone', head: 'factory/77-gone', base: 'main', body: '' });
+		asks(w);
+		w.host.requestChanges({ id: 101, url: '' }, { author: 'bob', trusted: true, body: 'Hm.' });
+		await queue(w.deps, true);
+		expect(w.starts).toEqual([]);
+	});
+
+	it('finds the Feature of a branch whose id holds a dash', async () => {
+		const w = withPull();
+		await w.noGo();
+		const keyed = keyedPull(w);
+		w.host.requestChanges(keyed, { author: 'bob', trusted: true, body: 'Hm.' });
+		await queue(w.deps, true);
+		expect(w.starts).toEqual(['PROJ-3 changesRequested']);
+	});
+
+	it('starts no sixth automatic round: the Feature gets needs a person and a comment saying why, once', async () => {
+		const w = withPull();
+		await w.noGo();
+		for (const minute of [0, 0, 0, 0, 0]) w.round(minute);
+		asks(w);
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.starts).toEqual([]);
+		expect(w.tracker.signalsOf('8')).toEqual(['human']);
+		expect(w.tracker.said('8')).toEqual([
+			`A trusted reviewer asked for changes on ${w.pull.url} again, after the 5 automatic Feedback rounds Nightjar runs on one pull request without the Go, so this Feature needs a person. Give it the Go to have Nightjar answer the feedback in one more round.${FOOTER}`
+		]);
+		expect(w.happened).toContainEqual({
+			kind: 'needs-info',
+			feature: '8',
+			ticket: null,
+			why: 'its pull request had 5 automatic Feedback rounds'
+		});
+		await queue(w.deps, true);
+		expect(w.tracker.said('8')).toHaveLength(1);
+	});
+
+	it('counts only the automatic rounds of this pull request against the limit', async () => {
+		const w = withPull();
+		await w.noGo();
+		for (const minute of [0, 0, 0, 0]) w.round(minute);
+		// one the Go started, and one of a pull request the branch had before
+		w.round(0, { automatic: false });
+		w.round(-5);
+		asks(w);
+		await queue(w.deps, true);
+		expect(w.starts).toEqual(['8 changesRequested']);
+	});
+
+	it('starts nothing over a Code host without openPulls, and says a Code host it cannot read', async () => {
+		const w = withPull();
+		await w.noGo();
+		asks(w);
+		const { openPulls: _gone, ...older } = w.host;
+		const pulls = { codeHost: older, feedbackCommits: () => Promise.resolve([]) };
+		await queue({ ...w.deps, pulls }, true);
+		expect(w.starts).toEqual([]);
+
+		w.host.openPulls = () => Promise.reject(new Error('the network went away'));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.lines).toContain('could not read the open pull requests: the network went away');
+	});
+});
+
 describe('cannotClaim', () => {
 	it('lets the person take a Feature assigned to them with the Go', async () => {
 		const w = world();
@@ -359,6 +562,26 @@ describe('dryRun', () => {
 		await dryRun(w.deps);
 		expect(w.lines).toEqual(['would build #2 Older', 'would build #4 Later']);
 		expect(w.built).toEqual([]);
+	});
+
+	it('names the Features it would answer feedback on, and the ones it would hand to a person, changing nothing', async () => {
+		const w = withPull();
+		w.host.requestChanges(w.pull, { author: 'bob', trusted: true, body: 'Rename it.' });
+		const keyed = keyedPull(w);
+		w.host.requestChanges(keyed, { author: 'bob', trusted: true, body: 'Hm.' });
+		// after its pull request opened, at the minute of the first request, and before its own
+		const at = new Date(Date.UTC(2026, 9, 31, 0, 1, 30)).toISOString();
+		const rounds = [1, 2, 3, 4, 5].map((n) => ({ at, ids: [`x:${String(n)}`], automatic: true }));
+		w.commits.set(KEYED, rounds);
+		await dryRun(w.deps);
+		expect(w.lines).toEqual([
+			'would build #2 Older',
+			'would build #4 Later',
+			`would answer feedback on #8 No Go, asked for changes on ${w.pull.url}`,
+			`would hand #PROJ-3 Keyed to a person: ${keyed.url} had 5 automatic Feedback rounds`
+		]);
+		expect(w.tracker.signalsOf('PROJ-3')).toEqual([]);
+		expect(w.tracker.said('PROJ-3')).toEqual([]);
 	});
 });
 

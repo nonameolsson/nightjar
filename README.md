@@ -375,7 +375,9 @@ When the Feature's branch has an open pull request with trusted feedback that no
 
 After the push, Nightjar replies to each piece it answered, naming the commit: a line comment in its thread, anything else in the conversation, quoting it. Its replies end with its footer, and nothing that ends with the footer is ever read as feedback, so a later Go starts no round from them. A round that cannot get the check green, runs out of budget, or reports itself blocked is thrown away: the Feature gets needs info, with a comment naming the feedback left unanswered and why. Feedback the round chose not to answer is named the same way. The pull request's Feedback section counts the rounds run on it and what they cost.
 
-The GitHub Code host answers feedback; Azure Repos, and a Code host module without `feedback` and `reply`, build as before and get no Feedback rounds.
+Under `--watch` and `--once`, a trusted reviewer's request for changes starts a Feedback round too, with no Go given: when a Nightjar pull request (its branch starts with `factory/`) got a "changes requested" review from a trusted reviewer after its last Feedback round, or after it opened when it has had none, and its Feature is assigned to you and carries none of the Go, working, needs info or needs a person. Such a build only answers the feedback, then runs the review, pushes and updates the pull request; it builds no Ticket. The Features with the Go come first. Its commit carries a `Factory-Feedback-Round: automatic` trailer, and a pull request gets at most 5 such rounds: after them the next request for changes puts needs a person on the Feature, with a comment saying why, and only the Go starts another round. `nightjar doctor` lists these Features as "would answer feedback on #N".
+
+The GitHub Code host answers feedback; Azure Repos, and a Code host module without `feedback` and `reply`, build as before and get no Feedback rounds. A Code host module without `openPulls` answers feedback only when the Feature gets the Go again.
 
 ## Run
 
@@ -389,8 +391,8 @@ nightjar doctor
 | ---------------------- | ------------------------------------------------------------------------------------------------------ |
 | `init`                 | Asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins. See [Set up](#set-up-nightjar-init). |
 | `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
-| `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
-| `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
+| `--once`               | Builds the oldest Feature assigned to you with the Go, else answers a trusted request for changes on one of its pull requests, then exits. |
+| `--watch`              | Builds the Features assigned to you with the Go, oldest first, then answers trusted requests for changes on their pull requests, and looks again every 2 minutes. |
 | `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). It refuses a Feature not assigned to you, without the Go, or already carrying the working Signal. |
 | `--use-api-key`        | Lets the sessions bill `ANTHROPIC_API_KEY` instead of your Claude plan.                                |
 | `--profile <name>`     | Runs the sessions as that Claude login: `~/.claude-NAME`, a path as the folder itself, or `default` for `~/.claude`. It drops `CLAUDE_CODE_OAUTH_TOKEN`, which would win over the folder. `doctor` and every build name the account, organization, plan and config folder first. |

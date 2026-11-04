@@ -24,6 +24,7 @@ issue='{"number":1,"title":"One escape","body":"","state":"open","labels":[{"nam
 case "$*" in
   "api user") echo '{"login":"ann"}' ;;
   "api repos/o/r/issues?"*) echo "[$issue]" ;;
+  "api repos/o/r/pulls?"*) echo '[]' ;;
   "api -X POST repos/"*"/labels "*)
     all="$*"; name="@{all#*-f name=}"; name="@{name%% -f*}"
     if [[ ",$FAKE_GH_EXISTING," == *",$name,"* ]]; then

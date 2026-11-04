@@ -28,7 +28,8 @@ describe('runContract', () => {
 			'Tracker creation',
 			'Tracker waiting on',
 			'Code host',
-			'Code host feedback'
+			'Code host feedback',
+			'Code host openPulls'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -51,7 +52,7 @@ describe('runContract', () => {
 	it('runs no feedback suite over a Code host without feedback and reply, as a module written before them', async () => {
 		const reads: CodeHostHarness = async () => {
 			const { codeHost, ...rest } = await fakeCodeHostHarness();
-			const { feedback: _a, reply: _b, ...only } = codeHost as FakeCodeHost;
+			const { feedback: _a, reply: _b, openPulls: _c, ...only } = codeHost as FakeCodeHost;
 			return { ...rest, codeHost: only };
 		};
 		const report = await runContract({ codeHostHarness: reads });
@@ -115,7 +116,22 @@ describe('runContract', () => {
 
 	it('runs only the suite whose harness the module exports', async () => {
 		const report = await runContract({ codeHostHarness: fakeCodeHostHarness });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host feedback']);
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Code host',
+			'Code host feedback',
+			'Code host openPulls'
+		]);
+	});
+
+	it('runs the openPulls suite alone over a Code host with openPulls and no feedback', async () => {
+		const lists: CodeHostHarness = async () => {
+			const { codeHost, ...rest } = await fakeCodeHostHarness();
+			const { feedback: _a, reply: _b, ...only } = codeHost as FakeCodeHost;
+			return { ...rest, codeHost: only };
+		};
+		const report = await runContract({ codeHostHarness: lists });
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host openPulls']);
+		expect(report.failed).toBe(0);
 	});
 
 	it('names each behaviour that fails, with why, and keeps going', async () => {

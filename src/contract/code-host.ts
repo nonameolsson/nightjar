@@ -33,6 +33,8 @@ export type Given =
 			readonly body: string;
 			readonly trusted: boolean;
 			readonly approval?: boolean;
+			// a review that requests changes, which `openPulls` lists
+			readonly changes?: boolean;
 	  }
 	| {
 			readonly kind: 'check';
@@ -60,7 +62,7 @@ export interface CodeHostSubject {
 	// the commit `branch` points at on the host, else null
 	readonly branch: (name: string) => Promise<string | null>;
 	readonly pull: (pull: Pull) => Promise<PullView>;
-	// needed when the Code host has `feedback` and `reply`
+	// needed when the Code host has `feedback` and `reply`, or `openPulls`
 	readonly bench?: FeedbackBench;
 	// called after the case, pass or fail
 	readonly close?: () => Promise<void>;

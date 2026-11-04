@@ -13,7 +13,15 @@ export type {
 export { canCreate } from './tracker.js';
 export { featureWriterContract } from './contract/feature-writer.js';
 export { waitingOnContract } from './contract/waiting-on.js';
-export type { CodeHost, DraftRequest, Feedback, FeedbackKind, Pull } from './code-host.js';
+export type {
+	ChangeRequest,
+	CodeHost,
+	DraftRequest,
+	Feedback,
+	FeedbackKind,
+	OpenPull,
+	Pull
+} from './code-host.js';
 export { FOOTER } from './footer.js';
 export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';
 export { DEFAULT_SIGNAL_NAMES, SIGNALS, type Signal, type SignalNames } from './signals.js';
@@ -51,3 +59,4 @@ export {
 	type PullView
 } from './contract/code-host.js';
 export { feedbackContract } from './contract/feedback.js';
+export { openPullsContract } from './contract/open-pulls.js';

@@ -36,6 +36,7 @@ import { QUESTIONS_MARK } from './prompt.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
+import { feedbackCommits } from './worktree.js';
 
 // Each test runs a few dozen real git processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
@@ -1707,5 +1708,68 @@ describe('a Feedback round', () => {
 		expect(head(world)).toBe(before);
 		expect(world.host.pulls[0]?.body).not.toContain('## Feedback');
 		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it('answers the feedback alone when a request for changes started it, marks its commit automatic, and leaves a Go given since', async () => {
+		const world = makeWorld();
+		const { id } = await reviewed(world);
+		// a Ticket made ready since, which only the Go builds
+		world.tracker.add({ id: '4', title: 'Later', signals: ['ready'] });
+		world.tracker.add({
+			id: '1',
+			title: 'One escape',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['3', '2', '4']
+		});
+		await buildFeature(deps(world), setup(world), '1', 'changesRequested');
+
+		expect(world.asked.map((r) => r.kind)).toEqual(['feedback', 'review']);
+		const message = git(world, tree(), 'log', '-1', '--format=%B');
+		expect(message).toContain(
+			`Factory-Feedback: ${id}\nFactory-Feedback-Round: automatic\nFactory-Session: session-1`
+		);
+		expect(world.tracker.signalsOf('1')).toContain('go');
+		expect(world.tracker.signalsOf('1')).not.toContain('working');
+	});
+
+	it('marks no round the Go started as automatic', async () => {
+		const world = makeWorld();
+		await reviewed(world);
+		await buildFeature(deps(world), setup(world), '1');
+		expect(git(world, tree(), 'log', '-1', '--format=%B')).not.toContain('Factory-Feedback-Round');
+	});
+
+	it('gives no Go back when a round a request for changes started pauses', async () => {
+		const world = makeWorld();
+		await reviewed(world);
+		await world.tracker.removeSignal('1', 'go');
+		const limits = { ...LIMITS, dailyUsd: 6.5 };
+		await buildFeature(deps(world), setup(world, { limits }), '1', 'changesRequested');
+		expect(askedOf(world, 'feedback')).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it("reads the branch's Feedback rounds from its trailers, newest first, for the queue", async () => {
+		const world = makeWorld();
+		const { pull, id } = await reviewed(world);
+		await buildFeature(deps(world), setup(world), '1');
+		const next = world.host.give(pull, {
+			kind: 'comment',
+			author: 'bob',
+			body: 'One more.',
+			trusted: true
+		});
+		await buildFeature(deps(world), setup(world), '1', 'changesRequested');
+
+		const branch = 'factory/1-one-escape';
+		const got = await feedbackCommits(world.root, branch, 'main', world.env);
+		expect(got.map((c) => [c.ids, c.automatic])).toEqual([
+			[[next], true],
+			[[id], false]
+		]);
+		const at = git(world, tree(), 'log', '-1', '--format=%cI');
+		expect(got[0]?.at).toBe(at);
+		expect(await feedbackCommits(world.root, 'factory/9-none', 'main', world.env)).toEqual([]);
 	});
 });
