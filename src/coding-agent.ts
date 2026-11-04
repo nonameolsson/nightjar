@@ -18,7 +18,7 @@ import {
 	type Question,
 	type Review
 } from './prompt.js';
-import type { Session, SessionRequest, SessionResult } from './session.js';
+import type { Failure, Session, SessionRequest, SessionResult } from './session.js';
 import {
 	BUILD_TOOLS,
 	REVIEW_TOOLS,
@@ -144,7 +144,7 @@ export interface ReviewRequest extends Work {
 
 // How any Session can end besides its answer.
 export type Ended =
-	| { readonly kind: 'failed'; readonly why: string }
+	| { readonly kind: 'failed'; readonly why: string; readonly failure: Failure }
 	// a reason of the machine or the plan: the run goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'aborted' };
@@ -231,10 +231,16 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		if (result.kind === 'api-key' || result.kind === 'rate-limited') {
 			return { kind: 'paused', why: pauseWhy(result), ...ended };
 		}
-		if (result.kind === 'stopped') return { kind: 'failed', why: result.why, ...ended };
+		if (result.kind === 'stopped')
+			return { kind: 'failed', why: result.why, failure: result.failure, ...ended };
 		const answer = read(result.output);
 		if (answer === null) {
-			return { kind: 'failed', why: 'it answered in a shape not known', ...ended };
+			return {
+				kind: 'failed',
+				why: 'it answered in a shape not known',
+				failure: 'lasting',
+				...ended
+			};
 		}
 		return { ...answer, ...ended };
 	}

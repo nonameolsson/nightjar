@@ -251,7 +251,13 @@ function deps(world: World): Deps {
 						return { kind: 'questions', questions, sessionId, costUsd: 2 };
 					}
 					if (act === 'fail') {
-						return { kind: 'failed', why: 'it reached its budget', sessionId, costUsd: 15.2 };
+						return {
+							kind: 'failed',
+							why: 'it reached its budget',
+							failure: 'budget',
+							sessionId,
+							costUsd: 15.2
+						};
 					}
 					return { kind: 'built', summary: `Built #${n}`, sessionId, costUsd: 3 };
 				}),
@@ -925,7 +931,13 @@ describe('buildFeature', () => {
 		const world = makeWorld();
 		world.settle = (req) =>
 			req.kind === 'review'
-				? { kind: 'failed', why: 'it reached its budget', sessionId: req.sessionId, costUsd: 3 }
+				? {
+						kind: 'failed',
+						why: 'it reached its budget',
+						failure: 'budget',
+						sessionId: req.sessionId,
+						costUsd: 3
+					}
 				: undefined;
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.host.pulls[0]?.body).toContain('## Review\n\nThe review did not finish.');

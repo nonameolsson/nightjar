@@ -12,6 +12,8 @@ export interface Entry {
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;
+	// why a failed session failed; absent for any other outcome and in older lines
+	readonly failure?: 'passing' | 'budget' | 'lasting';
 	// how long the session ran, in milliseconds; older lines lack it
 	readonly durationMs?: number;
 }

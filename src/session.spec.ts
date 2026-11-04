@@ -46,16 +46,18 @@ describe('settle', () => {
 				result({ is_error: true, subtype: 'error_max_budget_usd', total_cost_usd: 15.3 }),
 				false
 			)
-		).toEqual({ kind: 'stopped', costUsd: 15.3, why: 'it reached its budget' });
+		).toEqual({ kind: 'stopped', costUsd: 15.3, why: 'it reached its budget', failure: 'budget' });
 		expect(settle(result({ is_error: true, subtype: 'error_max_turns' }), false)).toEqual({
 			kind: 'stopped',
 			costUsd: 1.25,
-			why: 'it ended with error_max_turns'
+			why: 'it ended with error_max_turns',
+			failure: 'lasting'
 		});
 		expect(settle(result({ structured_output: undefined }), false)).toEqual({
 			kind: 'stopped',
 			costUsd: 1.25,
-			why: 'it gave no structured answer'
+			why: 'it gave no structured answer',
+			failure: 'lasting'
 		});
 	});
 });
@@ -153,13 +155,37 @@ describe('runSession', () => {
 			request({ cwd: dir, log: join(dir, 'run.jsonl'), minutes: 0.01 }),
 			command
 		);
-		expect(got).toMatchObject({ kind: 'stopped', why: 'it ran past 0.01 minutes' });
+		expect(got).toMatchObject({
+			kind: 'stopped',
+			why: 'it ran past 0.01 minutes',
+			failure: 'budget'
+		});
 	});
 
 	it('names the exit of a session that ends with no result', async () => {
 		const command = fake([init()]);
 		const got = await runSession(request({ cwd: dir, log: join(dir, 'run.jsonl') }), command);
-		expect(got).toMatchObject({ kind: 'stopped', why: 'claude exited with code 0 and no result' });
+		expect(got).toMatchObject({
+			kind: 'stopped',
+			why: 'claude exited with code 0 and no result',
+			failure: 'lasting'
+		});
+	});
+
+	it('calls an exit with no result and an overload on its last line a passing failure', async () => {
+		const path = join(dir, 'claude');
+		writeFileSync(path, "#!/bin/sh\necho 'API Error: 529 overloaded_error' >&2\nexit 1\n");
+		chmodSync(path, 0o755);
+		const got = await runSession(request({ cwd: dir, log: join(dir, 'run.jsonl') }), path);
+		expect(got).toMatchObject({ kind: 'stopped', failure: 'passing' });
+	});
+
+	it('calls a claude that cannot start a passing failure', async () => {
+		const got = await runSession(
+			request({ cwd: dir, log: join(dir, 'run.jsonl') }),
+			join(dir, 'missing')
+		);
+		expect(got).toMatchObject({ kind: 'stopped', failure: 'passing' });
 	});
 });
 
