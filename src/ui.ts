@@ -99,7 +99,7 @@ function ticketItems(tickets: readonly TicketProgress[]): string {
 	return tickets
 		.map(
 			(t) =>
-				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state === 'waiting' ? 'needs a person' : t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
 		)
 		.join('');
 }
@@ -438,7 +438,7 @@ function group(state: string, name: string, count: number | null, body: string):
 const OFF = '<p class="empty">not known while nightjar is off</p>';
 
 const LEGEND =
-	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="egg waiting"></i>waiting</span></p>';
+	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
 
 function board(view: FactoryView): string {
 	const all = features(view);
@@ -578,8 +578,8 @@ function table(view: FactoryView): string {
 	const body = rows
 		.map(
 			(r, i) =>
-				`<tr data-state="${r.state}" data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
 	const note = !running(view)
@@ -587,7 +587,7 @@ function table(view: FactoryView): string {
 		: all.trackerCannotList
 			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
 			: '';
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Features"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
 }
 
 // The panels, which the page replaces whole each time an event brings new ones.
@@ -610,7 +610,7 @@ const PAGE = (panels: string) => `<!doctype html>
 <style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
 </head>
 <body>
-<div class="banner" role="img" aria-label="nightjar"></div>
+<div class="banner" aria-hidden="true"></div>
 <div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav></div>
 <main id="panels" data-view="board">${panels}</main>
 <script>${SCRIPT}</script>
@@ -698,7 +698,7 @@ function show(view) {
 	panels.dataset.view = view;
 	for (const b of document.querySelectorAll('button[data-view]')) {
 		b.dataset.on = String(b.dataset.view === view);
-		attr(b, 'aria-current', b.dataset.on === 'true' ? 'page' : 'false');
+		attr(b, 'aria-pressed', b.dataset.on);
 	}
 }
 let saved = null;
@@ -743,6 +743,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-
 time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre { font-variant-numeric: tabular-nums; }
 .banner { background: var(--void) center 40% / cover no-repeat; height: 260px; position: relative; }
 .banner::after { background: linear-gradient(180deg, transparent 60%, var(--void)); content: ""; inset: 0; position: absolute; }
+html { scroll-padding-top: 64px; }
 .bar { align-items: center; background: rgba(4, 7, 11, 0.94); border-bottom: 1px solid var(--line); display: flex; gap: 4px; padding: 10px 32px; position: sticky; top: 0; z-index: 3; }
 .mark { color: var(--teal); font: 700 0.85rem var(--mono); letter-spacing: 0.2em; margin: 0 22px 0 0; text-transform: uppercase; }
 #views { display: flex; gap: 4px; }
@@ -771,7 +772,7 @@ pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var
 .egg.need::after { right: -0.65rem; transform: rotate(20deg); }
 .egg.waiting { background: none; border: 2px dashed #2f5a63; box-shadow: none; }
 @keyframes incubate { 50% { outline-color: rgba(34, 227, 210, 0.25); } }
-.slot { align-items: center; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); border-radius: 50%; display: inline-grid; height: 1.75rem; place-items: center; width: 1.75rem; }
+.slot { align-items: center; background: rgba(0, 0, 0, 0.35); border: 1px solid #3f7078; border-radius: 50%; display: inline-grid; height: 1.75rem; place-items: center; width: 1.75rem; }
 .slot > .egg.waiting { display: none; }
 .eggs { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
 .eggs small { align-self: center; }
@@ -847,6 +848,14 @@ pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var
 .chips button { background: none; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 3px 14px; }
 .chips button[data-on="true"] { background: var(--teal); border-color: var(--teal); color: var(--void); }
 .scroll { overflow-x: auto; }
+td.progress .eggs { display: inline-flex; vertical-align: middle; }
+td.progress p { display: inline; margin: 0 0 0 14px; }
+.scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+tr[data-state] td:first-child { border-left: 3px solid var(--teal); }
+tr[data-state="waiting"] td:first-child { border-left-color: var(--amber); }
+tr[data-state="queue"] td:first-child { border-left-color: var(--slate); }
+tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
+tr[data-failed] td:first-child { border-left-color: var(--err); }
 table { border-collapse: collapse; width: 100%; }
 th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
 th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: 600 0.75rem var(--mono); letter-spacing: 0.16em; padding: 0; text-transform: uppercase; }
@@ -859,21 +868,24 @@ td.progress .eggs { margin-bottom: 4px; }
 .overview h2 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; text-transform: uppercase; }
 .overview li { padding: 3px 0; }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
-@media (max-width: 1000px) {
+@media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
-	.detail { position: static; }
+	.detail { order: -1; position: static; }
+}
+@media (max-width: 900px) {
+	.entry { grid-template-columns: 1fr; }
+	.head { display: none; }
+	.clock { text-align: left; }
 }
 @media (max-width: 760px) {
+	.mark { display: none; }
 	.banner { background-position: 25% 40%; height: 180px; }
 	.bar { flex-wrap: wrap; padding: 10px 16px; }
 	#panels { padding: 0 12px 40px; }
-	.head { display: none; }
 	.mat { grid-template-columns: 40px minmax(0, 1fr); }
 	.tab { padding: 10px 4px; }
 	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.9rem; }
 	.lines { padding: 4px 12px; }
-	.entry { grid-template-columns: 1fr; }
-	.clock { text-align: left; }
 	.scroll table { min-width: 36rem; }
 }
 `;
