@@ -93,6 +93,8 @@ interface World {
 	// what the scripted agent does in a fix round; the default says it fixed it
 	fixAgent: (req: FixRequest) => FixOutcome;
 	acts: Record<string, Act>;
+	// the test the scripted agent says shows a Ticket's bug, by Ticket
+	tests: Record<string, string>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
 	checkOk: boolean;
@@ -219,6 +221,7 @@ function worldOf(o: {
 		stepAgent: (req) => stepDone(req),
 		fixAgent: (req) => ({ kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 }),
 		acts: {},
+		tests: {},
 		settle: () => undefined,
 		checkOk: true,
 		setupOk: true,
@@ -254,7 +257,14 @@ function deps(world: World): Deps {
 					if (act === 'fail') {
 						return { kind: 'failed', why: 'it reached its budget', sessionId, costUsd: 15.2 };
 					}
-					return { kind: 'built', summary: `Built #${n}`, sessionId, costUsd: 3 };
+					const test = world.tests[n];
+					return {
+						kind: 'built',
+						summary: `Built #${n}`,
+						...(test === undefined ? {} : { test }),
+						sessionId,
+						costUsd: 3
+					};
 				}),
 			fix: (req) => answer(req, () => world.fixAgent(req)),
 			step: (req) => answer(req, () => world.stepAgent(req)),
@@ -1318,6 +1328,40 @@ describe('Workflows', () => {
 		await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow() } }), '1');
 		expect(kinds(world)).toEqual(['build', 'build', 'review']);
 		expect(body(world)).not.toContain('Workflow');
+	});
+
+	it("gives each Ticket's build Session the Workflow's prompt, and none to a Workflow without one", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			withFlow(world, { prompt: 'Show the bug with a test first.', steps: [] }),
+			'1'
+		);
+		const builds = askedOf(world, 'build');
+		expect(builds).toHaveLength(2);
+		for (const b of builds) {
+			expect(b.workflow).toEqual({
+				name: 'design-review',
+				prompt: 'Show the bug with a test first.'
+			});
+		}
+		expect(kinds(world)).toEqual(['build', 'build', 'review']);
+
+		const plain = makeWorld();
+		await buildFeature(deps(plain), withFlow(plain), '1');
+		expect(askedOf(plain, 'build').every((b) => b.workflow === undefined)).toBe(true);
+	});
+
+	it('names in the pull request the test a Session says shows the bug', async () => {
+		const world = makeWorld();
+		world.tests['2'] = 'src/marks.spec.ts: keeps the mark after a rename';
+		await buildFeature(deps(world), withFlow(world, { prompt: 'p', steps: [] }), '1');
+		expect(body(world)).toContain(
+			'## Test that shows the bug\n\n- #2: src/marks.spec.ts: keeps the mark after a rename'
+		);
+		const none = makeWorld();
+		await buildFeature(deps(none), withFlow(none, { prompt: 'p', steps: [] }), '1');
+		expect(body(none)).not.toContain('Test that shows');
 	});
 
 	it('runs the default Workflow of a Feature without a Workflow line', async () => {

@@ -298,6 +298,8 @@ function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
 
 class FeatureRun {
 	private readonly costs: Cost[] = [];
+	// the test each Ticket's Session said shows its bug, for the pull request
+	private readonly tests = new Map<ItemId, string>();
 	private featureComments: Comment[] = [];
 	// the Feature's Workflow, which runs its own Steps
 	private steps: WorkflowRun | null = null;
@@ -442,6 +444,9 @@ class FeatureRun {
 		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
 		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);
+		const prompt = this.workflow?.workflow.prompt;
+		const workflow =
+			this.workflow !== null && prompt !== undefined ? { name: this.workflow.name, prompt } : null;
 		this.building(ticket.id, 'build', sessionId, {
 			round: questionRounds(ticketComments) + 1,
 			rounds: this.setup.limits.questionRounds + 1
@@ -455,6 +460,7 @@ class FeatureRun {
 			featureComments: this.featureComments,
 			ticketComments,
 			built: this.tickets.filter((t) => this.built.has(t.id)),
+			...(workflow === null ? {} : { workflow }),
 			budgetUsd: this.setup.limits.ticketUsd
 		});
 		const entry = {
@@ -491,7 +497,7 @@ class FeatureRun {
 			}
 			case 'built':
 				this.log({ ...entry, outcome: 'built' });
-				return this.checkAndCommit(ticket, before, sessionId, got.summary, got.costUsd);
+				return this.checkAndCommit(ticket, before, sessionId, got.summary, got.costUsd, got.test);
 		}
 	}
 
@@ -523,7 +529,8 @@ class FeatureRun {
 		before: string,
 		sessionId: string,
 		built: string,
-		cost: number
+		cost: number,
+		test?: string
 	): Promise<Step> {
 		const { limits, check: command } = this.setup;
 		const first = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
@@ -553,6 +560,7 @@ class FeatureRun {
 			return NEXT;
 		}
 		this.built.add(ticket.id);
+		if (test !== undefined) this.tests.set(ticket.id, test);
 		if (this.shown?.kind === 'building') {
 			// no round of its own any more, so it is not counted as another fix round
 			this.deps.status.doing({
@@ -678,7 +686,11 @@ class FeatureRun {
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,
-			workflow
+			workflow,
+			tests: done.flatMap((t) => {
+				const test = this.tests.get(t.id);
+				return test === undefined ? [] : [{ ticket: t.id, test }];
+			})
 		});
 		const pull = await this.openDraft(body);
 		// a Feature that is its own Ticket is named once
@@ -1148,6 +1160,8 @@ function pullBody(p: {
 	paused: string | null;
 	// the Workflow's section, when it ran or left a Step
 	workflow: string | null;
+	// the tests the Sessions said show a bug, by Ticket
+	tests: readonly { ticket: ItemId; test: string }[];
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
@@ -1164,6 +1178,11 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
+	if (p.tests.length > 0) {
+		const many = p.tests.length > 1;
+		const lines = p.tests.map((t) => `- ${ref(t.ticket)}: ${t.test}`).join('\n');
+		parts.push(`## ${many ? 'Tests that show the bugs' : 'Test that shows the bug'}\n\n${lines}`);
+	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.review !== 'off')
 		parts.push(

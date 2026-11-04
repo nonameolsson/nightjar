@@ -110,6 +110,19 @@ describe('a build', () => {
 		});
 	});
 
+	it("puts the Workflow's prompt in the Session's instructions, and the test it names in the outcome", async () => {
+		const { sent, session } = fakeSession(
+			done({ outcome: 'built', summary: 'Fixed it', test: 'src/a.spec.ts: x' })
+		);
+		const got = await codingAgent(SETUP, session).build({
+			...buildRequest(),
+			workflow: { name: 'bug', prompt: 'Write the failing test first.' }
+		});
+		expect(sent[0]?.prompt).toContain('# Workflow `bug`');
+		expect(sent[0]?.prompt).toContain('Write the failing test first.');
+		expect(got).toMatchObject({ kind: 'built', test: 'src/a.spec.ts: x' });
+	});
+
 	it('reads questions', async () => {
 		const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
 		const { session } = fakeSession(done({ outcome: 'questions', summary: '', questions }));
