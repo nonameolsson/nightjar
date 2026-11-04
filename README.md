@@ -8,7 +8,8 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Platforms and requirements
 
-- macOS, Linux, or WSL2 on Windows. On native Windows every command stops with a message saying so.
+- macOS, Linux, or WSL2 on Windows. On native Windows every command stops with a message saying so. WSL1 is not supported: Claude Code cannot sandbox there, so Nightjar refuses to build.
+- On Linux and WSL2: `bubblewrap` and `socat`, which Claude Code's sandbox needs (`sudo apt-get install bubblewrap socat`, or `sudo dnf install bubblewrap socat` on Fedora). Without them Nightjar refuses to build, and `nightjar doctor` fails its `sandbox` line. macOS needs nothing extra.
 - Node 24 or later.
 - `git`, in a checkout whose `origin` is the Code host's repo, which `git fetch` can read with your own git login.
 - With GitHub as the Tracker or the Code host: [`gh`](https://cli.github.com/), signed in (`gh auth login`).
@@ -293,13 +294,13 @@ A Step has:
 
 A Workflow can also have `serve`, a command started in the background in the worktree before its Steps and stopped after them (it reads its port from the variables of `ports.env`, so `ports` is required); `allowedCommands` and `allowedTools`, which its Steps may use besides the usual ones; and `localNetwork`, which lets its Steps reach localhost and nothing else. The fixed deny rules (committing, pushing, switching branches, the outside network, `gh`) cannot be loosened by any of these.
 
-`localNetwork` runs the Step's commands in Claude Code's sandbox, set to fail closed: if the sandbox cannot start, the command does not run, and a failed command is never retried outside it. What it holds depends on the machine:
+Every Session runs its commands in Claude Code's sandbox with no network (see [Limits](#limits)); `localNetwork` opens localhost to a Step, and nothing else. What it holds depends on the machine:
 
 | Machine | What `localNetwork` does |
 | --- | --- |
 | macOS | Commands reach localhost, including the `serve` Nightjar started, and nothing else. The design-review example above has been shown to work here. |
-| Linux, WSL2 | Needs `bubblewrap` and `socat` (`sudo apt-get install bubblewrap socat`); without them the Step fails rather than run unsandboxed, and `nightjar doctor` fails the Workflow. A sandboxed command has its own private loopback, so a direct connection to `127.0.0.1:$APP_PORT` may not reach `serve`; only HTTP clients that honour the sandbox's proxy variables may. This has not yet been checked for `curl`, Playwright or a raw TCP client, and `nightjar doctor` warns about it. |
-| WSL1, native Windows | Claude Code cannot sandbox here, so a Workflow with `localNetwork` fails. (Nightjar does not run on native Windows.) |
+| Linux, WSL2 | A sandboxed command has its own private loopback, so a direct connection to `127.0.0.1:$APP_PORT` may not reach `serve`; only HTTP clients that honour the sandbox's proxy variables may. This has not yet been checked for `curl`, Playwright or a raw TCP client, and `nightjar doctor` warns about it. |
+| WSL1, native Windows | Claude Code cannot sandbox here, so Nightjar builds nothing. |
 
 Steps share one notes folder, `.factory/notes/` in the worktree, which is never committed. Nightjar passes nothing else from one Step to the next, so a Step that needs what an earlier one found reads it there.
 
@@ -550,6 +551,7 @@ Also:
 - Claude Code is the only Coding agent.
 - GitHub Issues and Azure DevOps Boards are the Trackers built in, and GitHub and Azure Repos the Code hosts; others are [custom Adapter modules](#another-tracker-or-code-host).
 - The agent never commits, pushes, switches branches, reaches the network, or runs `gh`. Nightjar does that, and `factory.json` cannot loosen it.
+- Every Session runs in Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux and WSL2): builds and their fix rounds, Steps and their fix rounds, the review and Pull-check fixes. The agent's commands reach no network at all, a Step of a `localNetwork` Workflow reaches localhost and nothing else, and no key in `factory.json` opens it further, not even a list of domains. The sandbox fails closed: a command it cannot hold does not run, and is never retried outside it. No hooks run in a Session. `setup`, the check and `serve` run outside the sandbox, by Nightjar itself. See [ADR 0005](docs/adr/0005-every-session-runs-in-the-sandbox-with-no-network.md).
 - One run builds one Feature at a time.
 - On Azure DevOps Boards a Removed work item counts as open, because it has no Closed Date and Nightjar never reads a state (see [Give the Go](#give-the-go)).
 - When a Feature is complete, its draft pull request references the Feature as well as its Tickets: on GitHub `Closes #N` closes it on merge too.

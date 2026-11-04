@@ -1,9 +1,9 @@
 // `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { oneEscape } from './fakes/github.js';
-import { machine, type Machine, type Tool } from './fakes/machine.js';
+import { machine, type Machine, type SandboxTool, type Tool } from './fakes/machine.js';
 import type { Adapters } from './adapters.js';
 import { checkMachine, pullChecksCheck, type CheckOptions } from './checks.js';
 import { loadConfig, type Config } from './config.js';
@@ -510,7 +510,7 @@ describe('nightjar doctor over Workflows', () => {
 	});
 });
 
-describe('nightjar doctor over a Workflow with localNetwork', () => {
+describe('the sandbox every Session runs in', () => {
 	const WORKFLOWS = {
 		review: {
 			localNetwork: true,
@@ -523,100 +523,102 @@ describe('nightjar doctor over a Workflow with localNetwork', () => {
 	const WSL2 = '5.15.153.1-microsoft-standard-WSL2';
 	const WSL1 = '4.4.0-19041-Microsoft';
 
-	// bubblewrap and socat on the machine's PATH, as a stand-in that does nothing
-	function install(...tools: string[]) {
-		for (const tool of tools) {
-			const path = join(m.env.PATH ?? '', tool);
-			writeFileSync(path, '#!/bin/bash\nexit 0\n');
-			chmodSync(path, 0o755);
-		}
-	}
-
-	async function lines(platform: NodeJS.Platform, kernel = '') {
-		m = machine();
-		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
-		return checkMachineOn(platform, kernel);
-	}
-
-	async function checkMachineOn(platform: NodeJS.Platform, kernel: string) {
+	async function checkMachineOn(platform: NodeJS.Platform, kernel: string, failFast = false) {
 		const checked = await checkMachine({
 			useApiKey: false,
 			env: m.env,
 			cwd: m.root,
-			failFast: true,
+			failFast,
 			gh: github.gh,
 			platform,
 			kernel
 		});
-		return { checked, review: checked.lines.find((l) => l.only === 'review') };
+		return {
+			checked,
+			sandbox: checked.lines.find((l) => l.name === 'sandbox'),
+			review: checked.lines.find((l) => l.only === 'review')
+		};
+	}
+
+	function on(without: SandboxTool[] = [], workflows: object = WORKFLOWS) {
+		m = machine(without);
+		m.writeConfig({ ...GITHUB, workflows });
 	}
 
 	it('fails on Linux without bubblewrap and socat, and says how to install them', async () => {
-		const { checked, review } = await lines('linux');
-		expect(review?.status).toBe('fail');
-		expect(review?.detail).toContain('bubblewrap and socat are not installed');
-		expect(review?.detail).toContain('sudo apt-get install bubblewrap socat');
-		expect(checked.ready?.workflowProblems['review']).toContain('bubblewrap');
-		// a Workflow without localNetwork needs no sandbox
-		expect(checked.lines.find((l) => l.only === 'quick')?.status).toBe('ok');
+		on(['bwrap', 'socat'], {});
+		const { checked, sandbox } = await checkMachineOn('linux', '');
+		expect(sandbox?.status).toBe('fail');
+		expect(sandbox?.detail).toContain('bubblewrap and socat are not installed');
+		expect(sandbox?.detail).toContain('sudo apt-get install bubblewrap socat');
+		expect(checked.ready).toBeNull();
 	});
 
 	it('names only the tool that is missing', async () => {
-		m = machine();
-		install('bwrap');
-		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
-		const { review } = await checkMachineOn('linux', WSL2);
-		expect(review?.status).toBe('fail');
-		expect(review?.detail).toContain('socat is not installed');
-		expect(review?.detail).not.toContain('bubblewrap is not');
-	});
-
-	it('warns on Linux with a sandbox that a Step may not reach serve directly', async () => {
-		m = machine();
-		install('bwrap', 'socat');
-		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
-		const { checked, review } = await checkMachineOn('linux', '');
-		expect(review?.status).toBe('warn');
-		expect(review?.detail).toContain('may not reach it');
-		expect(checked.ready?.workflowProblems).toEqual({});
-	});
-
-	it('warns on WSL2 too', async () => {
-		m = machine();
-		install('bwrap', 'socat');
-		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
-		const { review } = await checkMachineOn('linux', WSL2);
-		expect(review?.status).toBe('warn');
-		expect(review?.detail).toContain('may not reach it');
+		on(['socat']);
+		const { sandbox } = await checkMachineOn('linux', WSL2);
+		expect(sandbox?.status).toBe('fail');
+		expect(sandbox?.detail).toContain('socat is not installed');
+		expect(sandbox?.detail).not.toContain('bubblewrap is not');
 	});
 
 	it('fails on WSL1, which cannot sandbox, even with the tools installed', async () => {
-		m = machine();
-		install('bwrap', 'socat');
-		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
-		const { review } = await checkMachineOn('linux', WSL1);
-		expect(review?.status).toBe('fail');
-		expect(review?.detail).toContain('WSL1');
-		expect(review?.detail).toContain('WSL2');
+		on();
+		const { checked, sandbox } = await checkMachineOn('linux', WSL1);
+		expect(sandbox?.status).toBe('fail');
+		expect(sandbox?.detail).toContain('WSL1');
+		expect(sandbox?.detail).toContain('WSL2');
+		expect(checked.ready).toBeNull();
 	});
 
 	it('passes on macOS, which sandboxes with no install', async () => {
-		const { checked, review } = await lines('darwin');
+		on(['bwrap', 'socat']);
+		const { checked, sandbox, review } = await checkMachineOn('darwin', '');
+		expect(sandbox?.status).toBe('ok');
 		expect(review?.status).toBe('ok');
 		expect(checked.ready?.workflowProblems).toEqual({});
 	});
 
-	it('exits 2 on a machine that cannot sandbox, and 0 with a warning where it can', async () => {
-		m = machine();
-		m.writeConfig({ ...GITHUB, workflows: WORKFLOWS });
+	it('passes on Linux and WSL2 with both tools', async () => {
+		for (const kernel of ['', WSL2]) {
+			on();
+			const { checked, sandbox } = await checkMachineOn('linux', kernel);
+			expect(sandbox?.status).toBe('ok');
+			expect(checked.ready).not.toBeNull();
+			m.remove();
+		}
+		on();
+	});
+
+	it('warns a localNetwork Workflow on Linux that a Step may not reach serve directly', async () => {
+		on();
+		const { checked, review } = await checkMachineOn('linux', WSL2);
+		expect(review?.status).toBe('warn');
+		expect(review?.detail).toContain('may not reach it');
+		expect(checked.ready?.workflowProblems).toEqual({});
+		// a Workflow without localNetwork has nothing to warn of
+		expect(checked.lines.find((l) => l.only === 'quick')?.status).toBe('ok');
+	});
+
+	it('exits 2 from doctor on a machine that cannot sandbox, with a Workflow or without', async () => {
+		on(['bwrap', 'socat'], {});
 		expect(await start()).toBe(2);
-		expect(err.join('\n')).toMatch(/FAIL {2}Workflow review: localNetwork needs the sandbox/);
+		expect(err.join('\n')).toMatch(/FAIL {2}sandbox: bubblewrap and socat are not installed/);
 		out.length = 0;
 		err.length = 0;
-		install('bwrap', 'socat');
+		m.remove();
+		on();
 		expect(await start()).toBe(0);
+		expect(out).toContain('  ok    sandbox: bubblewrap and socat, no network');
 		expect(out.join('\n')).toMatch(
 			/warn {2}Workflow review: 1 Step\n {8}localNetwork: .*may not reach/s
 		);
+	});
+
+	it('refuses to build before any Session on a machine that cannot sandbox', async () => {
+		on(['bwrap'], {});
+		expect(await start({ argv: ['--once'] })).toBe(2);
+		expect(err.join('\n')).toMatch(/nightjar: bubblewrap is not installed/);
+		expect(m.calls('claude')).not.toMatch(/^-p /m);
 	});
 });
