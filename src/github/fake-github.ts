@@ -36,6 +36,41 @@ interface IssueComment {
 	readonly createdAt: string;
 }
 
+// A check run on a commit, as an app reports it.
+export interface NewCheckRun {
+	readonly name: string;
+	// queued, in_progress or completed
+	readonly status: string;
+	// set once completed: success, failure, timed_out, cancelled, skipped and others
+	readonly conclusion?: string | null;
+	// the app that reports it, github-actions by default
+	readonly app?: string;
+	readonly output?: { readonly title?: string; readonly summary?: string };
+}
+
+// A GitHub Actions job, reported as a check run whose id is the job's id.
+export interface NewJob {
+	readonly workflow: string;
+	readonly name: string;
+	readonly status?: string;
+	readonly conclusion?: string | null;
+	readonly steps: readonly { readonly name: string; readonly conclusion: string | null }[];
+	// its whole log, each line stamped with its time as GitHub does; null once it has expired
+	readonly log: string | null;
+}
+
+interface CheckRun extends NewCheckRun {
+	readonly id: number;
+}
+
+// A commit status, the latest of its context.
+export interface CommitStatus {
+	readonly context: string;
+	// error, failure, pending or success
+	readonly state: string;
+	readonly description?: string | null;
+}
+
 const NOT_FOUND = failed('gh: Not Found (HTTP 404)');
 
 const INVALID = (why: string) => failed(`gh: Validation Failed: ${why} (HTTP 422)`);
@@ -60,6 +95,16 @@ export class FakeGitHub {
 	private readonly comments = new Map<number, IssueComment[]>();
 	private readonly permissions = new Map<string, string>();
 	private readonly repoLabels = new Set<string>();
+	// the commit each branch points at, as pushed
+	private readonly heads = new Map<string, string>();
+	// by commit
+	private readonly checkRuns = new Map<string, CheckRun[]>();
+	private readonly statuses = new Map<string, CommitStatus[]>();
+	// by id, the id of its check run
+	private readonly jobs = new Map<number, NewJob>();
+	// by pull request number
+	private readonly reviews = new Map<number, { login: string; state: string }[]>();
+	private checkRunCount = 0;
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -112,6 +157,66 @@ export class FakeGitHub {
 		return (this.comments.get(number) ?? []).map((c) => c.body);
 	}
 
+	// `branch` now points at `commit`, as a push to it leaves it.
+	pushed(branch: string, commit: string): void {
+		this.heads.set(branch, commit);
+	}
+
+	// The commit pull request `number`'s head branch points at.
+	headOf(number: number): string {
+		return this.heads.get(this.pullAt(number).head) ?? '';
+	}
+
+	// An app reports a check run on `commit`; gives back its id.
+	checkRun(commit: string, run: NewCheckRun): number {
+		this.checkRunCount += 1;
+		const id = 70_000 + this.checkRunCount;
+		this.checkRuns.set(commit, [...(this.checkRuns.get(commit) ?? []), { ...run, id }]);
+		return id;
+	}
+
+	// GitHub Actions runs a job on `commit`; gives back its id.
+	actionsJob(commit: string, job: NewJob): number {
+		const id = this.checkRun(commit, {
+			name: job.name,
+			status: job.status ?? 'completed',
+			conclusion: job.conclusion ?? null,
+			app: 'github-actions'
+		});
+		this.jobs.set(id, job);
+		return id;
+	}
+
+	// A commit status on `commit`, in place of the one of its context.
+	commitStatus(commit: string, status: CommitStatus): void {
+		const others = (this.statuses.get(commit) ?? []).filter((s) => s.context !== status.context);
+		this.statuses.set(commit, [...others, status]);
+	}
+
+	// No check run and no commit status on `commit`.
+	clearChecks(commit: string): void {
+		this.checkRuns.delete(commit);
+		this.statuses.delete(commit);
+	}
+
+	// `login` reviews pull request `number`.
+	review(number: number, login: string, state = 'COMMENTED'): void {
+		this.reviews.set(number, [...(this.reviews.get(number) ?? []), { login, state }]);
+	}
+
+	// A person marks pull request `number` ready for review.
+	markReady(number: number): void {
+		const pull = this.pullAt(number);
+		this.change(number, () => ({
+			pull: { head: pull.head, base: pull.base, draft: false }
+		}));
+	}
+
+	// A person closes issue or pull request `number`.
+	close(number: number): void {
+		this.change(number, () => ({ state: 'closed' }));
+	}
+
 	// A label the repo has, as one a team made itself.
 	addRepoLabel(name: string): void {
 		this.repoLabels.add(name);
@@ -154,6 +259,12 @@ export class FakeGitHub {
 		if (method === 'POST' && path === `${repo}/issues`) return this.openIssue(call);
 		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
 		if (method === 'POST' && path === `${repo}/pulls`) return this.openPull(call);
+		const reviewed = new RegExp(`^${repo}/pulls/(\\d+)/reviews$`).exec(path);
+		if (method === 'GET' && reviewed) return this.renderReviews(Number(reviewed[1]));
+		const checked = new RegExp(`^${repo}/commits/([^/]+)/(check-runs|status)$`).exec(path);
+		if (method === 'GET' && checked) return this.renderChecks(checked[1] ?? '', checked[2] ?? '');
+		const job = new RegExp(`^${repo}/actions/jobs/(\\d+)(/logs)?$`).exec(path);
+		if (method === 'GET' && job) return this.renderJob(Number(job[1]), job[2] !== undefined);
 		const pullNumber = new RegExp(`^${repo}/pulls/(\\d+)$`).exec(path);
 		const pull = pullNumber ? this.issues.get(Number(pullNumber[1])) : undefined;
 		if (pull?.pull !== undefined && method === 'GET') return ok(this.renderPull(pull));
@@ -266,22 +377,23 @@ export class FakeGitHub {
 		return ok(this.renderPull(this.get(number)));
 	}
 
-	// GitHub's filters: state open by default, and head as owner:branch.
+	// GitHub's filters: state open by default, head as owner:branch, newest first unless asked otherwise.
 	private pulls(query: URLSearchParams) {
 		const state = query.get('state') ?? 'open';
 		const head = query.get('head');
 		const owner = this.repo.split('/')[0] ?? '';
-		return [...this.issues.values()]
-			.filter(
-				(i) =>
-					i.pull !== undefined &&
-					(state === 'all' || i.state === state) &&
-					(head === null || head === `${owner}:${i.pull.head}`)
-			)
-			.map((i) => this.renderPull(i));
+		const found = [...this.issues.values()].filter(
+			(i) =>
+				i.pull !== undefined &&
+				(state === 'all' || i.state === state) &&
+				(head === null || head === `${owner}:${i.pull.head}`)
+		);
+		if (query.get('direction') !== 'asc') found.reverse();
+		return found.map((i) => this.renderPull(i));
 	}
 
 	private renderPull(issue: Issue) {
+		const head = issue.pull?.head ?? '';
 		return {
 			number: issue.number,
 			html_url: this.url(issue.number),
@@ -289,9 +401,53 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			draft: issue.pull?.draft ?? false,
-			head: { ref: issue.pull?.head ?? '' },
+			head: { ref: head, sha: this.heads.get(head) ?? '', repo: { full_name: this.repo } },
 			base: { ref: issue.pull?.base ?? '' }
 		};
+	}
+
+	private renderReviews(number: number): Run {
+		if (this.issues.get(number)?.pull === undefined) return NOT_FOUND;
+		return ok(
+			(this.reviews.get(number) ?? []).map((r) => ({ user: { login: r.login }, state: r.state }))
+		);
+	}
+
+	// The check runs on a commit, or its combined status: the latest status of each context.
+	private renderChecks(commit: string, what: string): Run {
+		if (what === 'status') {
+			const statuses = this.statuses.get(commit) ?? [];
+			return ok({ sha: commit, total_count: statuses.length, statuses });
+		}
+		const runs = (this.checkRuns.get(commit) ?? []).map((r) => ({
+			id: r.id,
+			name: r.name,
+			head_sha: commit,
+			status: r.status,
+			conclusion: r.status === 'completed' ? (r.conclusion ?? null) : null,
+			app: { slug: r.app ?? 'github-actions' },
+			output: { title: r.output?.title ?? null, summary: r.output?.summary ?? null }
+		}));
+		return ok({ total_count: runs.length, check_runs: runs });
+	}
+
+	// A job, or its log as plain text; GitHub answers 410 for a log that has expired.
+	private renderJob(id: number, log: boolean): Run {
+		const job = this.jobs.get(id);
+		if (job === undefined) return NOT_FOUND;
+		if (log) {
+			return job.log === null
+				? failed('gh: Gone (HTTP 410)')
+				: { ok: true, out: job.log, err: '', missing: false };
+		}
+		return ok({
+			id,
+			name: job.name,
+			workflow_name: job.workflow,
+			status: job.status ?? 'completed',
+			conclusion: job.conclusion ?? null,
+			steps: job.steps.map((s, i) => ({ ...s, number: i + 1 }))
+		});
 	}
 
 	private url(number: number): string {
