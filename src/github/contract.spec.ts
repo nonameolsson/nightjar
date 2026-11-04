@@ -8,8 +8,10 @@ import {
 	DEFAULT_SIGNAL_NAMES,
 	GitHubCodeHost,
 	GitHubTracker,
+	assignContract,
 	codeHostContract,
 	featureWriterContract,
+	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
 	trackerContract,
@@ -198,6 +200,20 @@ describe('GitHubTracker meets the waitingOn contract', () => {
 		describe(`with the ${label} Signal names`, () => {
 			const harness = gitHubTracker(names, trust);
 			for (const c of waitingOnContract) it(c.name, () => c.run(harness));
+		});
+	}
+});
+
+describe('GitHubTracker meets the featuresFrom contract', () => {
+	const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
+	for (const c of sourcesContract) it(c.name, () => c.run(harness));
+});
+
+describe('GitHubTracker meets the assign contract', () => {
+	for (const trust of ['write access', 'trusted list'] as const) {
+		describe(`with ${trust} as trust`, () => {
+			const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, trust);
+			for (const c of assignContract) it(c.name, () => c.run(harness));
 		});
 	}
 });

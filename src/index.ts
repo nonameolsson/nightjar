@@ -5,13 +5,17 @@ export type {
 	Feature,
 	FeatureWriter,
 	ItemText,
+	SourcedFeature,
 	Standing,
 	Ticket,
 	TicketReference,
 	Tracker
 } from './tracker.js';
 export { canCreate } from './tracker.js';
+export { sourceMarker } from './template.js';
 export { featureWriterContract } from './contract/feature-writer.js';
+export { sourcesContract } from './contract/sources.js';
+export { assignContract } from './contract/assign.js';
 export { waitingOnContract } from './contract/waiting-on.js';
 export { ticketCountsContract } from './contract/ticket-counts.js';
 export type { CodeHost, DraftRequest, Feedback, FeedbackKind, Pull } from './code-host.js';

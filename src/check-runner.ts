@@ -10,6 +10,8 @@ export interface Line {
 	readonly summary: string | null;
 	// the one Workflow this line is an error for; it stops no other Workflow and no build of its own
 	readonly only?: string;
+	// the one Source this line is about; a fault in it stops no build, which never reads a Source
+	readonly source?: string;
 }
 
 // What a check that passed found, and what it says.

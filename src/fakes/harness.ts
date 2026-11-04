@@ -89,6 +89,7 @@ export const keyedTrackerHarness =
 	(prefix: string): TrackerHarness =>
 	(world) => {
 		const tracker = new FakeTracker(world.person, () => new Date(), prefix);
+		tracker.trust(...world.trusted);
 		const ids = new Map(world.items.map((item, i) => [item.key, `${prefix}${String(i + 1)}`]));
 		const id = (key: string) => {
 			const found = ids.get(key);

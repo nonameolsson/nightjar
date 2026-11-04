@@ -19,6 +19,7 @@ import { runFeatureDoctor } from './doctor-feature.js';
 import { runInitCommand } from './init.js';
 import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
+import { runIntakeCommand } from './intake.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
@@ -72,9 +73,9 @@ async function preflight(args: Args, host: Host): Promise<Ready> {
 	const { ready, lines } = checked;
 	const { adapters, me, assignee, person } = ready;
 	say(`${adapters.repo}, as ${me}, on ${ready.login ?? 'ANTHROPIC_API_KEY'}`);
-	// with the build ready, a line that failed is a Workflow's own
+	// with the build ready, a line that failed is a Workflow's own; a Source's is for `nightjar intake`, which may run on another machine
 	for (const l of lines) {
-		if (l.status === 'fail') say(`${l.name} cannot run: ${l.detail}`);
+		if (l.status === 'fail' && l.source === undefined) say(`${l.name} cannot run: ${l.detail}`);
 	}
 	const found = lines.flatMap((l) => (l.summary === null ? [] : [l.summary]));
 	say(`checked: ${found.join(', ')}`);
@@ -96,7 +97,7 @@ export interface Host {
 	readonly ask?: Ask;
 	// select and multi-select prompts for init; a terminal gets them unless a spec passes its own
 	readonly prompter?: Prompter;
-	// ends `nightjar ui`; Ctrl-C or SIGTERM unless a spec passes its own
+	// ends `nightjar ui` and `nightjar intake`; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
 }
 
@@ -127,6 +128,7 @@ export async function runNightjar(
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
+	if (argv[0] === 'intake') return runIntakeCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);
@@ -248,6 +250,7 @@ export async function runNightjar(
 		say: runSay,
 		sleep,
 		signal: stop.signal,
+		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 

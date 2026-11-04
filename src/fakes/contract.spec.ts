@@ -1,8 +1,10 @@
 // The in-memory fakes against the Adapter contract suites, taken from the package's own entry.
 import { describe, it } from 'vitest';
 import {
+	assignContract,
 	codeHostContract,
 	featureWriterContract,
+	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
 	trackerContract,
@@ -22,16 +24,26 @@ describe('FakeTracker meets the waitingOn contract', () => {
 	for (const c of waitingOnContract) it(c.name, () => c.run(fakeTrackerHarness));
 });
 
+describe('FakeTracker meets the featuresFrom contract', () => {
+	for (const c of sourcesContract) it(c.name, () => c.run(fakeTrackerHarness));
+});
+
+describe('FakeTracker meets the assign contract', () => {
+	for (const c of assignContract) it(c.name, () => c.run(fakeTrackerHarness));
+});
+
 describe('FakeTracker meets the ticketCounts contract', () => {
 	for (const c of ticketCountsContract) it(c.name, () => c.run(fakeTrackerHarness));
 });
 
-describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn and ticketCounts contracts', () => {
+describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom, assign and ticketCounts contracts', () => {
 	const keyed = keyedTrackerHarness('PROJ-');
 	for (const c of [
 		...trackerContract,
 		...featureWriterContract,
 		...waitingOnContract,
+		...sourcesContract,
+		...assignContract,
 		...ticketCountsContract
 	]) {
 		it(c.name, () => c.run(keyed));
