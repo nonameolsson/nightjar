@@ -54,6 +54,7 @@
 		"format:check": "prettier --check .",
 		"test": "vitest run",
 		"schema": "tsx scripts/schema.ts",
+		"ui:dev": "tsx watch scripts/ui-dev.ts",
 		"leaks": "tsx scripts/leak-check.ts",
 		"pack:check": "tsx scripts/pack-install.ts",
 		"check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build && npm run leaks && npm run pack:check",
