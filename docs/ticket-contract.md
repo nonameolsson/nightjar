@@ -94,6 +94,8 @@ What to build.
 - `**Blocked by:** 1, 2` names Tickets above it by number. It becomes blocking links on the Tracker and leaves the body; a Ticket can only wait for Tickets above it, so the links never form a loop. Leave the line out, or write `none`, for a Ticket that waits for nothing.
 - Every Ticket has acceptance criteria. `**Model:**` and `**Effort:**` lines, when there, have a value, and stay in the body as written.
 
+A Ticket on the Tracker is held to the same contract before its Session. One without acceptance criteria, or with a `**Model:**` or `**Effort:**` line with no value, is handed back with no Session and no spend: the ready Signal comes off, needs info goes on, and a comment lists each fault. Nightjar never edits the issue.
+
 `nightjar create --dry-run FILE` reads the file and says what it would make, making nothing. A file out of this shape is refused before anything is made, with every fault and its line.
 
 `nightjar create` then makes, in order: the Feature, with no Signal; each Ticket as its last child, linked to its blockers and then given the ready Signal. It prints each with the Tracker's reference (`#12`, `AB#12`). If the Tracker fails part way, it names what it made before the fault and undoes nothing. It never assigns the Feature and never gives the Go: that stays with a person.

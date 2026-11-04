@@ -175,7 +175,7 @@ export const createTracker = () => ({
 	feature: async (id) => ({ id, title: items[id].title, body: '' }),
 	standing: async (id) => ({ assignees: ['ann'], signals: [...items[id].signals] }),
 	tickets: async (id) => items[id].children.map((c) => ({
-		id: c, title: items[c].title, body: '', open: true, signals: [...items[c].signals], blockedBy: []
+		id: c, title: items[c].title, body: '## Acceptance criteria\\n- [ ] It works', open: true, signals: [...items[c].signals], blockedBy: []
 	})),
 	comments: async () => [],
 	addSignal: async (id, s) => { items[id].signals.push(s); },
