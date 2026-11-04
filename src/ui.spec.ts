@@ -44,6 +44,9 @@ const get = async (path: string, method = 'GET') => {
 	return { status: got.status, text: await got.text() };
 };
 
+// the page asks the browser whether it is in reflow mode; the specs say it is not
+const noMedia = () => ({ matches: false, addEventListener: () => {} });
+
 describe('nightjar ui page', () => {
 	it('binds 127.0.0.1 only and, with no .factory/, shows the run as off with nothing else', async () => {
 		const { address } = await open();
@@ -358,6 +361,7 @@ describe('nightjar ui page', () => {
 		const since = { dataset: { since: '2026-10-30T06:57:55.000Z' }, textContent: '' };
 		const until = { dataset: { until: '2026-10-30T08:01:12.000Z' }, textContent: '' };
 		runInNewContext(script, {
+			matchMedia: noMedia,
 			document: {
 				getElementById: () => ({ dataset: {} }),
 				querySelectorAll: (q: string) => (q.includes('since') ? [since] : [until])
@@ -748,6 +752,7 @@ describe('nightjar ui board', () => {
 		const panels = { dataset: {} as Record<string, string> };
 		const button = { dataset: { view: 'board' } as Record<string, string>, onclick: () => {} };
 		runInNewContext(script, {
+			matchMedia: noMedia,
 			document: { getElementById: () => panels, querySelectorAll: () => [button] },
 			localStorage: {
 				getItem: (k: string) => store[k] ?? null,
@@ -851,6 +856,7 @@ describe('nightjar ui Table', () => {
 			panels,
 			load: () => {
 				runInNewContext(code, {
+					matchMedia: noMedia,
 					document: {
 						getElementById: () => panels,
 						querySelectorAll: (sel: string) =>
@@ -1020,6 +1026,7 @@ describe('nightjar ui audit fixes', () => {
 		const frames: Array<() => void> = [];
 		const flush = () => frames.splice(0).forEach((f) => f());
 		runInNewContext(script, {
+			matchMedia: noMedia,
 			requestAnimationFrame: (f: () => void) => frames.push(f),
 			document: {
 				getElementById: (id: string) => (id === 'live' ? live : panels),
@@ -1114,6 +1121,7 @@ describe('nightjar ui audit fixes', () => {
 		};
 		let message: ((e: { data: string }) => void) | undefined;
 		runInNewContext(script, {
+			matchMedia: noMedia,
 			requestAnimationFrame: (f: () => void) => f(),
 			document: {
 				getElementById: (id: string) => (id === 'live' ? live : panels),
@@ -1197,6 +1205,7 @@ describe('nightjar ui audit fixes', () => {
 			};
 			let message: ((e: { data: string }) => void) | undefined;
 			runInNewContext(script, {
+				matchMedia: noMedia,
 				requestAnimationFrame: (f: () => void) => f(),
 				document: doc,
 				localStorage: { getItem: () => null, setItem: () => {} },
@@ -1213,6 +1222,72 @@ describe('nightjar ui audit fixes', () => {
 		}
 		expect(focus).toHaveBeenCalledOnce();
 		expect(link.focus).toHaveBeenCalledOnce();
+	});
+
+	it('takes the page region out of the tab order when the whole page scrolls', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const scroller = { tabIndex: 0, dataset: {}, innerHTML: '', textContent: '' };
+		let change: (() => void) | undefined;
+		const media = {
+			matches: true,
+			addEventListener: (_: string, f: () => void) => {
+				change = f;
+			}
+		};
+		runInNewContext(script, {
+			matchMedia: () => media,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				activeElement: null,
+				getElementById: (id: string) =>
+					id === 'scroll' ? scroller : { dataset: {}, innerHTML: '', textContent: '' },
+				querySelectorAll: () => []
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {};
+			},
+			setInterval: () => 0
+		});
+		expect(scroller.tabIndex).toBe(-1);
+		media.matches = false;
+		change?.();
+		expect(scroller.tabIndex).toBe(0);
+	});
+
+	it('puts focus back on the link that had it when several share an href', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const link = () => ({
+			dataset: {},
+			tagName: 'A',
+			focus: vi.fn(),
+			getAttribute: () => 'https://x.test/1'
+		});
+		const [first, second] = [link(), link()];
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			matchMedia: noMedia,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				activeElement: second,
+				getElementById: () => ({ dataset: {}, innerHTML: '', textContent: '' }),
+				querySelectorAll: (s: string) => (s === 'a[href]' ? [first, second] : [])
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		message?.({ data: JSON.stringify('') });
+		expect(second.focus).toHaveBeenCalledOnce();
+		expect(first.focus).not.toHaveBeenCalled();
 	});
 
 	it('offers a skip link to the panels', async () => {
