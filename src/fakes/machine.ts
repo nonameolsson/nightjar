@@ -17,7 +17,7 @@ import { join } from 'node:path';
 // gh for a spec that runs the command as a process, which a Host cannot reach; an in-process spec passes a FakeGitHub
 const GH = String.raw`#!/bin/bash
 echo "$*" >> "$FAKE_GH_CALLS"
-issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
+issue() { printf '{"number":%s,"title":"%s","body":"## Acceptance criteria\\n- [ ] It works","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
 feature() { printf '{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"%s"}],"assignees":[{"login":"%s"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}' "@{FAKE_GH_FEATURE_LABEL:-factory-go}" "@{FAKE_GH_FEATURE_ASSIGNEE:-ann}"; }
 for a in "$@"; do case "$a" in
   user) echo '{"login":"ann"}'; exit 0 ;;

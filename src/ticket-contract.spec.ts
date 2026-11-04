@@ -40,9 +40,9 @@ describe('ticketFaults', () => {
 	});
 
 	it('keeps a checklist under a deeper heading inside the criteria', () => {
-		expect(
-			ticketFaults(BODY.replace('\n\n- [ ] one', '\n\n#### The module\n\n- [ ] one'))
-		).toEqual([]);
+		expect(ticketFaults(BODY.replace('\n\n- [ ] one', '\n\n#### The module\n\n- [ ] one'))).toEqual(
+			[]
+		);
 	});
 
 	it.each([

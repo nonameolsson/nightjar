@@ -91,7 +91,7 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('<export>');
 	});
 
-	it('shows a queued Feature with its Ticket count, 0 of N and a bar', async () => {
+	it('shows a queued Feature with its Ticket count, 0 of N and its eggs', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		file.refreshed(
@@ -107,11 +107,11 @@ describe('nightjar ui page', () => {
 		const card = (title: string) => board.split('<article').find((a) => a.includes(title)) ?? '';
 		expect(card('Saved filters')).toContain('4 Tickets');
 		expect(card('Saved filters')).toContain('0 of 4 built');
-		expect(card('Saved filters')).toContain('class="bar"');
+		expect(card('Saved filters')).toContain('class="eggs"');
 		expect(card('Exports')).toContain('? Tickets');
-		expect(card('Exports')).not.toContain('class="bar"');
+		expect(card('Exports')).not.toContain('class="eggs"');
 		expect(card('Reports')).not.toContain('Tickets');
-		expect(card('Reports')).not.toContain('class="bar"');
+		expect(card('Reports')).not.toContain('class="eggs"');
 	});
 
 	describe('estimate', () => {
@@ -234,16 +234,16 @@ describe('nightjar ui page', () => {
 			html.split('<article').find((a) => a.includes(title)) ?? '';
 		const row = (title: string) => table.split('<tr ').find((a) => a.includes(title)) ?? '';
 		expect(card(board, 'Billing')).toContain('2 of 6 built');
-		expect(card(board, 'Billing')).toContain('class="bar"');
-		expect(card(board, 'Unknown')).toContain('>?<');
-		expect(card(board, 'Unknown')).not.toContain('class="bar"');
+		expect(card(board, 'Billing')).toContain('class="eggs"');
+		expect(card(board, 'Unknown')).toContain('>count unknown<');
+		expect(card(board, 'Unknown')).not.toContain('class="eggs"');
 		// the ledger holds 3 built sessions, but the branch is 3 of the Feature's 4
 		expect(card(board, 'Done one')).toContain('3 of 4 built');
-		expect(card(board, 'Old one')).toContain('>?<');
+		expect(card(board, 'Old one')).toContain('>count unknown<');
 		expect(card(board, 'it broke')).toContain('1 of 5 built');
 		expect(row('Billing')).toContain('2 of 6 built');
 		expect(row('Done one')).toContain('3 of 4 built');
-		expect(row('Unknown')).not.toContain('class="bar"');
+		expect(row('Unknown')).not.toContain('class="eggs"');
 	});
 
 	it('says stopped when the pid is gone, and shows no Queue then, only history', async () => {
@@ -499,8 +499,11 @@ describe('nightjar ui board', () => {
 		expect(page).toContain('Facets <small>needs info</small>');
 		expect(page).toContain('<h2>Current build</h2>');
 		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
-		const card = board.split('<article').find((a) => a.includes('Search')) ?? '';
-		expect(card).toContain('<div class="bar"><i style="width:33%"></i></div>');
+		const card = board.split('<article').find((a) => a.includes('entry building')) ?? '';
+		// one egg per Ticket: built, being built, needs a person
+		expect(card).toContain(
+			'<i class="slot"><i class="egg built"></i></i><i class="slot"><i class="egg building"></i></i><i class="slot"><i class="egg need"></i></i>'
+		);
 		expect(card).toContain('1 of 3 built');
 	});
 
@@ -512,11 +515,25 @@ describe('nightjar ui board', () => {
 		await open();
 		let page = (await get('/')).text;
 		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
-		expect(board.match(/class="fcard failed"/g)).toHaveLength(10);
+		expect(board.match(/class="entry failed"/g)).toHaveLength(10);
 		expect(board.indexOf('#112')).toBeLessThan(board.indexOf('#111'));
 		alive = false;
 		page = (await get('/')).text;
 		expect(page).toContain('not known while nightjar is off');
+	});
+
+	it('explains the eggs in a legend, and shows no tallies while nightjar is off', async () => {
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await open();
+		alive = false;
+		const page = (await get('/')).text;
+		for (const word of ['built', 'building', 'needs a person', 'waiting'])
+			expect(page).toContain(`</i>${word}</span>`);
+		expect(page).toContain('<section class="mat" data-state="queue"');
+		for (const state of ['waiting', 'building', 'queue'])
+			expect(page).toMatch(
+				new RegExp(`data-state="${state}"><div class="tab"><h2>[^<]*</h2></div>`)
+			);
 	});
 
 	it('shows a waiting Ticket on the card of the Feature it belongs to, not the one that ended last', async () => {
@@ -574,6 +591,134 @@ describe('nightjar ui board', () => {
 		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
 		expect(board.match(/<time class="took">14m 00s<\/time>/g)).toHaveLength(2);
 		expect(board.match(/class="took"/g)).toHaveLength(2);
+	});
+
+	it('labels the ledger columns, inlines the banner under a CSP that allows only data images, and says when a count is unknown', async () => {
+		await open();
+		const got = await fetch(`http://127.0.0.1:${String(ui?.port)}/`);
+		const page = await got.text();
+		expect(got.headers.get('content-security-policy')).toContain('img-src data:');
+		expect(page).toContain('.banner { background-image: url(data:image/webp;base64,');
+		expect(page).toContain('<span>Tickets</span><span>State</span>');
+		expect(page).not.toContain('>?<');
+	});
+
+	it('shows the build in flight in a detail panel: its Tickets in order, clock, cost and the Session tail', async () => {
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: '2',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '1', title: 'Schema', state: 'built' },
+				{ id: '2', title: 'Views list', state: 'building' }
+			]
+		});
+		await open();
+		const page = (await get('/')).text;
+		const panel = page.split('<aside class="detail"')[1]?.split('</aside>')[0] ?? '';
+		expect(page).toContain('<div class="cols has-detail">');
+		expect(panel).toContain('Building now');
+		expect(panel).toContain('Custom views');
+		expect(panel).toContain('<li class="built">');
+		expect(panel).toContain('<li class="building">');
+		expect(panel).toContain('data-since');
+	});
+
+	it('puts the detail panel Tickets in their order, with the clock, cost and Session tail', async () => {
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature: '272',
+			ticket: '1',
+			branch: 'b',
+			step: 'build',
+			session: 'sess',
+			costUsd: 1.18,
+			outcome: 'built'
+		});
+		mkdirSync(join(root, '.factory', 'logs'), { recursive: true });
+		writeFileSync(
+			join(root, '.factory', 'logs', 'sess.jsonl'),
+			JSON.stringify({
+				type: 'assistant',
+				message: { content: [{ type: 'text', text: 'tail line <one>' }] }
+			})
+		);
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: '2',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: 'sess',
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '1', title: 'First', state: 'built' },
+				{ id: '2', title: 'Second', state: 'building' },
+				{ id: '3', title: 'Third', state: 'waiting', why: 'waits for #2' }
+			]
+		});
+		await open();
+		const page = (await get('/')).text;
+		const panel = page.split('<aside class="detail"')[1]?.split('</aside>')[0] ?? '';
+		expect(panel).toContain('Ticket 2 of 3, build, round 1 of 3');
+		expect(panel.indexOf('First')).toBeLessThan(panel.indexOf('Second'));
+		expect(panel.indexOf('Second')).toBeLessThan(panel.indexOf('Third'));
+		expect(panel).toContain('waits for #2');
+		expect(panel).toContain('$1.18');
+		expect(panel).toContain('<pre>');
+		expect(panel).toContain('tail line &#60;one&#62;');
+	});
+
+	it('reads the Board with Waiting on you first, then Building, Queue and Completed', async () => {
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await open();
+		const page = (await get('/')).text;
+		const order = ['waiting', 'building', 'queue', 'completed'].map((state) =>
+			page.indexOf(`<section class="mat" data-state="${state}"`)
+		);
+		expect(order.every((i) => i >= 0)).toBe(true);
+		expect(order).toEqual([...order].sort((a, b) => a - b));
+	});
+
+	it('shows at most 16 eggs for a Feature, and how many more there are', async () => {
+		status().doing({
+			kind: 'building',
+			feature: '5',
+			title: 'Big',
+			ticket: '1',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: Array.from({ length: 20 }, (_, i) => ({
+				id: String(i + 1),
+				title: `T${String(i + 1)}`,
+				state: i === 0 ? ('building' as const) : ('waiting' as const)
+			}))
+		});
+		await open();
+		const page = (await get('/')).text;
+		const row = page.split('<span class="eggs"')[1]?.split('</span>')[0] ?? '';
+		expect(row.match(/class="slot"/g)).toHaveLength(16);
+		expect(row).toContain('<small>+4</small>');
+	});
+
+	it('shows no detail panel while nothing is being built', async () => {
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await open();
+		const page = (await get('/')).text;
+		expect(page).not.toContain('<aside class="detail"');
+		expect(page).not.toContain('<div class="cols has-detail">');
 	});
 
 	it('records a session duration in the ledger, and still reads a line without one', () => {
@@ -782,5 +927,68 @@ describe('nightjar ui page, more', () => {
 		const page = (await get('/')).text;
 		expect(page).toContain('<span class="state">paused</span>');
 		expect(page).toContain('daily limit reached');
+	});
+
+	describe('review fixes', () => {
+		const building = () => {
+			const file = status();
+			file.doing({
+				kind: 'building',
+				feature: '5',
+				title: 'Search',
+				ticket: '7',
+				step: 'build',
+				round: 1,
+				rounds: 3,
+				session: null,
+				startedAt: at.toISOString(),
+				tickets: [
+					{ id: '7', title: 'Query', state: 'building' },
+					{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+				]
+			});
+			file.happened({ kind: 'failed', feature: '9', title: 'Retry', why: 'it broke' });
+			return file;
+		};
+
+		it('labels a failed Feature Failed in the Table, not Completed', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			const row =
+				page
+					.split('<tr ')
+					.slice(1)
+					.find((r) => r.includes('Retry')) ?? '';
+			expect(row).toContain('<td>Failed</td>');
+		});
+
+		it('names a waiting Ticket needs a person, not waiting', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<small>needs a person: needs info</small>');
+			expect(page).not.toContain('<small>waiting');
+		});
+
+		it('keys an unbuilt Ticket with the socket the board draws', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<i class="slot"></i>waiting');
+			expect(page).not.toContain('<i class="egg waiting"></i>waiting');
+		});
+
+		it('lets a keyboard scroll the Table and names the banner once', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain(
+				'<div class="scroll" tabindex="0" role="region" aria-label="Features">'
+			);
+			expect(page).toContain('<div class="banner" aria-hidden="true">');
+			expect(page).toContain("'aria-pressed'");
+			expect(page).not.toContain("'aria-current'");
+		});
 	});
 });

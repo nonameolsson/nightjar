@@ -12,7 +12,13 @@ const ERASE_BELOW = '\x1b[J';
 export interface LiveOptions {
 	readonly root: string;
 	readonly repo: string;
-	readonly out: { write: (text: string) => unknown; columns?: number };
+	readonly out: {
+		write: (text: string) => unknown;
+		columns?: number;
+		// a terminal tells of a resize; an `out` without these only redraws each second
+		on?: (event: 'resize', listener: () => void) => unknown;
+		off?: (event: 'resize', listener: () => void) => unknown;
+	};
 	readonly now: () => Date;
 	// whether a pid is alive; the machine's own answer unless a spec passes one
 	readonly alive?: (pid: number) => boolean;
@@ -35,7 +41,7 @@ const everySecond = (redraw: () => void) => {
 export function startLive(o: LiveOptions): Live {
 	const logPath = join(o.root, '.factory', 'nightjar.log');
 	let newest: string | null = null;
-	let height = 0;
+	let last: readonly string[] = [];
 	let stopped = false;
 
 	const draw = () => {
@@ -49,14 +55,21 @@ export function startLive(o: LiveOptions): Live {
 			}
 		);
 		// back over the last block, then each line over the old one, then clear what a shorter block leaves
+		// a narrower terminal wraps the old lines onto more rows, so count rows at the width now
+		const columns = Math.max(1, o.out.columns ?? 80);
+		const height = last.reduce(
+			(rows, l) => rows + Math.max(1, Math.ceil(Array.from(l).length / columns)),
+			0
+		);
 		const up = height > 0 ? `\x1b[${String(height)}A\r` : '';
 		o.out.write(`${up}${lines.map((l) => `${ERASE_LINE}${l}\n`).join('')}${ERASE_BELOW}`);
-		height = lines.length;
+		last = lines;
 	};
 
 	o.out.write(HIDE);
 	draw();
 	const cancel = (o.every ?? everySecond)(draw);
+	o.out.on?.('resize', draw);
 
 	return {
 		say: (line) => {
@@ -73,6 +86,7 @@ export function startLive(o: LiveOptions): Live {
 			if (stopped) return;
 			stopped = true;
 			cancel();
+			o.out.off?.('resize', draw);
 			draw();
 			o.out.write(SHOW);
 		}
