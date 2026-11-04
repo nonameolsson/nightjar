@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError, configJsonSchema, loadConfig, loadRules } from './config.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
@@ -600,5 +601,13 @@ describe('workflows', () => {
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
 		write({ ...VALID, defaultWorkflow: 'design-review' });
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
+	});
+});
+
+describe("this repo's own factory.json", () => {
+	it('installs in setup, since a sandboxed Session cannot fetch', () => {
+		const config = loadConfig(fileURLToPath(new URL('..', import.meta.url)));
+		expect(config.setup).toBe('npm install');
+		expect(config.allowedCommands).not.toContain('npm install');
 	});
 });

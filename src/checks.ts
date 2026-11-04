@@ -6,6 +6,7 @@ import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import { installCommand } from './install-commands.js';
 import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
@@ -260,6 +261,37 @@ export const pullChecksCheck = check({
 	}
 });
 
+// a warning only: an install in allowedCommands cannot fetch in a sandbox, but the build still runs
+export const installsCheck = check({
+	name: 'allowedCommands',
+	needs: ['loaded'],
+	unmet: null,
+	run: ({ loaded }) => {
+		const where = [
+			{ of: '', commands: loaded.config.allowedCommands },
+			...Object.entries(loaded.config.workflows ?? {}).map(([name, w]) => ({
+				of: `Workflow ${name}: `,
+				commands: w.allowedCommands ?? []
+			}))
+		];
+		const lines = where.flatMap(({ of, commands }) =>
+			commands.flatMap((command): Line[] =>
+				installCommand(command) === null
+					? []
+					: [
+							{
+								name: 'allowedCommands',
+								status: 'warn',
+								detail: `${of}"${command}" installs packages, and a Session has no network to fetch them; move it to "setup", which Nightjar runs itself.`,
+								summary: null
+							}
+						]
+			)
+		);
+		return { lines };
+	}
+});
+
 const claudeCheck = check({
 	name: 'claude',
 	needs: ['root'],
@@ -403,6 +435,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	trackerCheck,
 	codeHostCheck,
 	pullChecksCheck,
+	installsCheck,
 	claudeCheck,
 	signingCheck,
 	workflowsCheck,
