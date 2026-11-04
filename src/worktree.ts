@@ -44,7 +44,78 @@ export interface FeatureBranch {
 	readonly base: string;
 }
 
-export class Worktree {
+// What a commit says, so the real and the in-memory worktree word it alike.
+export function ticketCommitMessage(
+	id: string,
+	title: string,
+	summary: string,
+	session: string
+): string {
+	return `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\nFactory-Session: ${session}`;
+}
+
+export interface StepCommit {
+	readonly workflow: string;
+	readonly step: string;
+	readonly key: string;
+	readonly after: string | null;
+	readonly summary: string;
+	readonly session: string;
+}
+
+export function stepCommitMessage(o: StepCommit): string {
+	const subject = `${o.workflow}: ${o.step}${o.after === null ? '' : ` (after #${o.after})`}`;
+	return `${subject}\n\n${o.summary.trim()}\n\n${STEP_TRAILER}: ${o.key}\nFactory-Session: ${o.session}`;
+}
+
+// The side branch a failed attempt at a Ticket is kept on.
+export function attemptBranch(branch: string, ticket: string): string {
+	return `${branch}-attempt-${refPart(ticket)}`;
+}
+
+// The Feature's folder under `worktrees`: its branch name without the prefix.
+export function folderFor(worktrees: string, branch: string): string {
+	return join(worktrees, branch.slice(BRANCH_PREFIX.length));
+}
+
+// The git in a Feature's worktree, behind the seam `Deps.openWorktree` hands the build loop.
+export interface Worktree {
+	readonly at: FeatureBranch;
+	// whether the worktree's setup command ran, and a note that it has
+	isSetUp(): Promise<boolean>;
+	markSetUp(): Promise<void>;
+	// where the branch stands now, as an opaque mark `revert` and `discard` go back to
+	head(): Promise<string>;
+	// how many commits the branch holds that its base does not
+	ahead(): Promise<number>;
+	// The Tickets the branch's own commits built, from their trailers.
+	built(): Promise<Set<string>>;
+	// One commit of everything the session left, or false when it left nothing.
+	commitTicket(id: string, title: string, summary: string, session: string): Promise<boolean>;
+	// The folder the Steps share, made, and kept out of the branch.
+	notes(): Promise<string>;
+	// The Steps the branch's own commits hold, as their trailers name them.
+	stepsDone(): Promise<Set<string>>;
+	// The Feature's diff against its base, cut at `limit` characters.
+	diff(limit: number): Promise<{ text: string; truncated: boolean }>;
+	// One commit of what a Step left; false when it changed no file.
+	commitStep(o: StepCommit): Promise<boolean>;
+	// Throws away what a Step left, keeping nothing: the Step is listed as not done.
+	revert(before: string): Promise<void>;
+	// Keeps what the session left on a side branch, which it names; null when it left nothing.
+	discard(before: string, ticket: string): Promise<string | null>;
+}
+
+// Opens the worktree of a Feature's branch, reusing what a run before left.
+export type OpenWorktree = (
+	root: string,
+	worktrees: string,
+	branch: string,
+	baseBranch: string,
+	env: Env
+) => Promise<Worktree>;
+
+export class GitWorktree implements Worktree {
 	constructor(
 		readonly at: FeatureBranch,
 		private readonly env: Env
@@ -92,8 +163,7 @@ export class Worktree {
 	): Promise<boolean> {
 		await this.git(['add', '-A']);
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
-		const message = `${title} (#${id})\n\n${summary.trim()}\n\n${TICKET_TRAILER}: #${id}\nFactory-Session: ${session}`;
-		await this.git(['commit', '-q', '-m', message]);
+		await this.git(['commit', '-q', '-m', ticketCommitMessage(id, title, summary, session)]);
 		return true;
 	}
 
@@ -131,19 +201,10 @@ export class Worktree {
 	}
 
 	// One commit of what a Step left, naming the Workflow and the Step; false when it changed no file.
-	async commitStep(o: {
-		workflow: string;
-		step: string;
-		key: string;
-		after: string | null;
-		summary: string;
-		session: string;
-	}): Promise<boolean> {
+	async commitStep(o: StepCommit): Promise<boolean> {
 		await this.git(['add', '-A']);
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
-		const subject = `${o.workflow}: ${o.step}${o.after === null ? '' : ` (after #${o.after})`}`;
-		const message = `${subject}\n\n${o.summary.trim()}\n\n${STEP_TRAILER}: ${o.key}\nFactory-Session: ${o.session}`;
-		await this.git(['commit', '-q', '-m', message]);
+		await this.git(['commit', '-q', '-m', stepCommitMessage(o)]);
 		return true;
 	}
 
@@ -171,7 +232,7 @@ export class Worktree {
 					tree
 				])
 			).trim();
-			side = `${this.at.branch}-attempt-${refPart(ticket)}`;
+			side = attemptBranch(this.at.branch, ticket);
 			await this.git(['branch', '-f', side, saved]);
 		}
 		await this.git(['reset', '-q', '--hard', before]);
@@ -188,13 +249,7 @@ const hasRef = async (root: string, ref: string, env: Env) =>
 	(await inRoot(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], env)).ok;
 
 // Reuses the worktree a run before left, else the pushed branch; a worktree a stopped run left dirty is cleaned.
-export async function openWorktree(
-	root: string,
-	worktrees: string,
-	branch: string,
-	baseBranch: string,
-	env: Env
-): Promise<Worktree> {
+export const openWorktree: OpenWorktree = async (root, worktrees, branch, baseBranch, env) => {
 	const must = async (args: readonly string[]) => {
 		const got = await inRoot(root, args, env);
 		if (got.missing) throw new GitFailure('git is not on the PATH.');
@@ -208,8 +263,8 @@ export async function openWorktree(
 		env
 	);
 	const base = `origin/${baseBranch}`;
-	const folder = join(worktrees, branch.slice(BRANCH_PREFIX.length));
-	const tree = new Worktree({ branch, folder, base }, env);
+	const folder = folderFor(worktrees, branch);
+	const tree = new GitWorktree({ branch, folder, base }, env);
 	if (existsSync(folder)) {
 		await tree.git(['reset', '-q', '--hard']);
 		await tree.git(['clean', '-q', '-fd']);
@@ -224,7 +279,7 @@ export async function openWorktree(
 		await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, base]);
 	}
 	return tree;
-}
+};
 
 // The branch origin's HEAD points at, such as main, or null when origin names none.
 export async function defaultBranch(root: string, env: Env): Promise<string | null> {

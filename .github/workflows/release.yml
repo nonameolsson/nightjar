@@ -19,7 +19,7 @@ jobs:
       - name: Tag is a version
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::tag '$TAG' is not vX.Y.Z"; exit 1; }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
           # A deploy key on the Main ruleset's bypass list lets the last step push to main; GITHUB_TOKEN cannot bypass it.

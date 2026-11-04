@@ -3,9 +3,10 @@ import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { basename, join } from 'node:path';
-import { ledgerPath } from './build.js';
-import { lastRepo } from './ledger.js';
-import { readFactory, type FactoryView } from './status-reader.js';
+import { lastRepo, ledgerPath } from './ledger.js';
+import { BANNER } from './ui-banner.js';
+import { readFactory, type Completed, type FactoryView } from './status-reader.js';
+import type { Doing, Queued, TicketCounts, TicketProgress, WaitingItem } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -53,7 +54,7 @@ function header(repo: string, view: FactoryView): string {
 				: doing?.kind === 'paused' && running(view)
 					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
 					: '';
-	return `<header><h1>nightjar</h1> <span class="repo">${escape(repo)}</span> <span class="state">${runState(view)}</span>${poll}</header>`;
+	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}</header>`;
 }
 
 function cards(view: FactoryView): string {
@@ -63,7 +64,7 @@ function cards(view: FactoryView): string {
 			? 'no spend recorded'
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
 	const waiting = status?.waitingOnYou?.items.length;
-	return `<section id="cards"><div class="card"><span>spent today</span> ${spent}</div><div class="card"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="card"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
+	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
 function queue(view: FactoryView): string {
@@ -81,27 +82,38 @@ function queue(view: FactoryView): string {
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
 }
 
+// Where a build stands, in words: `Ticket 2 of 3, step, round 1 of 2`.
+function stepLine(doing: Building): string {
+	const tickets = doing.tickets ?? [];
+	const at = tickets.findIndex((t) => t.id === doing.ticket);
+	const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
+	const round =
+		doing.round === null || doing.rounds === null
+			? ''
+			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
+	return `${where}${doing.step}${round}`;
+}
+
+// One `<li>` per Ticket, in order, with its state and why.
+function ticketItems(tickets: readonly TicketProgress[]): string {
+	return tickets
+		.map(
+			(t) =>
+				`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state === 'waiting' ? 'needs a person' : t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
+		)
+		.join('');
+}
+
 function current(view: FactoryView): string {
 	const doing = view.status?.doing;
 	let body = '<p class="empty">nothing is being built</p>';
 	if (doing?.kind === 'building' && running(view)) {
 		const tickets = doing.tickets ?? [];
-		const at = tickets.findIndex((t) => t.id === doing.ticket);
-		const where = at < 0 ? '' : `Ticket ${String(at + 1)} of ${String(tickets.length)}, `;
-		const round =
-			doing.round === null || doing.rounds === null
-				? ''
-				: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-		const progress = tickets
-			.map(
-				(t) =>
-					`<li class="${t.state}">${idHtml(t.id)} ${escape(t.title)} <small>${t.state}${t.why === undefined ? '' : `: ${escape(t.why)}`}</small></li>`
-			)
-			.join('');
+		const progress = ticketItems(tickets);
 		const tail = view.tail.map(escape).join('\n');
 		body =
 			`<p>${idHtml(doing.feature)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
-			`<p>${where}${doing.step}${round}</p>` +
+			`<p>${stepLine(doing)}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
 			(tail === '' ? '' : `<pre>${tail}</pre>`);
 	}
@@ -132,18 +144,450 @@ const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
 function completed(view: FactoryView): string {
 	const rows = view.completed
-		.map(({ event, costUsd }) => {
-			const outcome =
-				event.kind === 'pull'
-					? safeUrl(event.url)
-						? `<a href="${escape(event.url)}">draft pull request</a>`
-						: escape(event.url)
-					: `failed: ${escape(event.why)}`;
-			return `<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcome} ${dollars(costUsd)}</li>`;
-		})
+		.map(
+			({ event, costUsd }) =>
+				`<li>${idHtml(event.feature)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)}</li>`
+		)
 		.reverse()
 		.join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
+}
+
+// A draft pull request link, or the failure and why; a url that is not http stays text
+const outcomeHtml = (event: Completed['event']) =>
+	event.kind === 'pull'
+		? safeUrl(event.url)
+			? `<a href="${escape(event.url)}">draft pull request</a>`
+			: escape(event.url)
+		: `failed: ${escape(event.why)}`;
+
+// how long the build took; null for an event with no start, or a start that does not read
+function tookMs(event: Completed['event']): number | null {
+	const took =
+		event.startedAt === undefined ? NaN : Date.parse(event.at) - Date.parse(event.startedAt);
+	return Number.isNaN(took) ? null : took;
+}
+
+type Building = Extract<Doing, { kind: 'building' }>;
+
+// A Feature as a view draws it; every view reads this one list.
+interface FeatureCard {
+	readonly id: string;
+	readonly title?: string;
+	// the Tickets that wait on a person, with why
+	readonly waitingTickets: readonly WaitingItem[];
+	// Tickets built of the Feature's Tickets; null when there is no count to show
+	readonly progress: Progress | null;
+}
+interface QueuedCard extends FeatureCard {
+	readonly state: 'queue';
+	// null when the count could not be read; undefined when the Tracker cannot count
+	readonly ticketCounts: TicketCounts | null | undefined;
+	// null when there is nothing to estimate from
+	readonly estimateMs: number | null;
+}
+
+const estimateHtml = (ms: number | null) =>
+	ms === null ? '' : `<time class="est">${elapsed(ms)}</time> <small>est.</small>`;
+interface BuildingCard extends FeatureCard {
+	readonly state: 'building';
+	readonly doing: Building;
+}
+interface Progress {
+	readonly built: number;
+	readonly total: number;
+}
+interface WaitingCard extends FeatureCard {
+	readonly state: 'waiting';
+	readonly why: string;
+}
+interface CompletedCard extends FeatureCard {
+	readonly state: 'completed';
+	readonly done: Completed;
+}
+
+const progressText = (p: Progress | null) =>
+	p === null ? '?' : `${String(p.built)} of ${String(p.total)}`;
+
+// A Ticket as an egg: built, being built, needs a person, or still waiting its turn
+type Egg = 'built' | 'building' | 'need' | 'waiting';
+const EGGS_SHOWN = 16;
+
+const EGG_OF: Record<TicketProgress['state'], Egg> = {
+	built: 'built',
+	building: 'building',
+	waiting: 'need'
+};
+
+// `k of N built` under a row of eggs, one per Ticket; "?" and no eggs without a count
+function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): string {
+	if (p === null) return '<p class="meta progress">count unknown</p>';
+	const slots: Egg[] =
+		tickets !== undefined && tickets.length > 0
+			? tickets.map((t) => EGG_OF[t.state])
+			: Array.from({ length: p.total }, (_, i): Egg => (i < p.built ? 'built' : 'waiting'));
+	const more =
+		slots.length > EGGS_SHOWN ? `<small>+${String(slots.length - EGGS_SHOWN)}</small>` : '';
+	const eggs = slots
+		.slice(0, EGGS_SHOWN)
+		.map((s) => `<i class="slot"><i class="egg ${s}"></i></i>`)
+		.join('');
+	return `<span class="eggs" role="img" aria-label="${progressText(p)} built">${eggs}${more}</span><p class="meta progress">${progressText(p)} built</p>`;
+}
+
+interface Features {
+	// each is undefined while Nightjar is off or has not read it yet
+	readonly queue: readonly QueuedCard[] | undefined;
+	readonly building: BuildingCard | null;
+	readonly waiting: readonly WaitingCard[] | undefined;
+	readonly trackerCannotList: boolean;
+	// newest first
+	readonly completed: readonly CompletedCard[];
+}
+
+// The one list of Features, built from what the reader gives.
+function features(view: FactoryView): Features {
+	const status = view.status;
+	const doing = status?.doing;
+	const on = running(view);
+	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
+	const building: BuildingCard | null =
+		doing?.kind === 'building' && on
+			? {
+					state: 'building',
+					id: doing.feature,
+					...(doing.title === undefined ? {} : { title: doing.title }),
+					waitingTickets: tickets
+						.filter((t) => t.state === 'waiting')
+						.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
+					// from its own Ticket list, which is empty until the Tickets are planned
+					progress:
+						tickets.length === 0
+							? null
+							: { built: tickets.filter((t) => t.state === 'built').length, total: tickets.length },
+					doing
+				}
+			: null;
+	const found = on ? status?.waitingOnYou : undefined;
+	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
+	const totals = new Map<string, number>();
+	if (on) {
+		for (const q of status?.queue ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
+		for (const i of found?.items ?? [])
+			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
+	}
+	const completedCard = (done: Completed): CompletedCard => {
+		const built = done.builtTickets ?? 0;
+		const total = totals.get(done.event.feature) ?? null;
+		return {
+			state: 'completed',
+			id: done.event.feature,
+			...(done.event.title === undefined ? {} : { title: done.event.title }),
+			waitingTickets: [],
+			done,
+			// a pull request says what its branch holds; this run's sessions may have built only part of it
+			progress:
+				done.event.kind === 'pull'
+					? (done.event.tickets ?? null)
+					: total === null
+						? null
+						: { built: Math.min(built, total), total }
+		};
+	};
+	const completed = view.completed.map(completedCard).reverse();
+	let waiting: WaitingCard[] | undefined;
+	if (found !== undefined) {
+		waiting = found.items
+			.filter((i) => i.kind === 'feature')
+			.map((i) => ({
+				state: 'waiting',
+				id: i.id,
+				title: i.title,
+				why: i.why,
+				waitingTickets: [],
+				progress: i.ticketCounts
+					? { built: i.ticketCounts.closed, total: i.ticketCounts.total }
+					: null
+			}));
+		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
+		const owner = (building ?? completed[0])?.id ?? '';
+		const titleOf = (id: string) =>
+			[building, ...completed].find((c) => c?.id === id && c.title !== undefined)?.title;
+		const byFeature = new Map<string, WaitingItem[]>();
+		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
+			const id = t.feature ?? owner;
+			byFeature.set(id, [...(byFeature.get(id) ?? []), t]);
+		}
+		for (const [id, tickets] of byFeature) {
+			const at = waiting.findIndex((w) => w.id === id);
+			const own = at < 0 ? undefined : waiting[at];
+			const title = titleOf(id);
+			if (own !== undefined) waiting[at] = { ...own, waitingTickets: tickets };
+			else
+				waiting.push({
+					state: 'waiting',
+					id,
+					...(title === undefined ? {} : { title }),
+					// Nightjar gives needs info to a Feature whenever one of its Tickets waits
+					why: 'needs info',
+					waitingTickets: tickets,
+					progress: null
+				});
+		}
+	}
+	const queued = (q: Queued): QueuedCard => ({
+		state: 'queue',
+		id: q.id,
+		title: q.title,
+		waitingTickets: [],
+		ticketCounts: q.ticketCounts,
+		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total } : null,
+		// the median Ticket duration times the Feature's Tickets; none without history or a count
+		estimateMs:
+			view.medianTicketMs == null || !q.ticketCounts
+				? null
+				: view.medianTicketMs * q.ticketCounts.total
+	});
+	const queue = on ? status?.queue?.map(queued) : undefined;
+	return {
+		queue,
+		building,
+		waiting,
+		trackerCannotList: found?.trackerCannotList ?? false,
+		completed
+	};
+}
+
+const feature = (card: FeatureCard) =>
+	`<b>${card.id === '' ? '' : idHtml(card.id)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+
+const waitingTicketsHtml = (card: FeatureCard) =>
+	card.waitingTickets.length === 0
+		? ''
+		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id)} ${escape(t.title)} <small>${escape(t.why)}</small></li>`).join('')}</ul>`;
+
+// One Feature as a nest in the ledger: who, its egg row, where it stands, its clock, and what hangs beneath it.
+function nest(
+	cls: string,
+	card: FeatureCard,
+	eggs: string,
+	now: string,
+	meta: string,
+	beneath = ''
+): string {
+	return `<article class="entry ${cls}"><div class="who">${feature(card)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+}
+
+function buildingCard(card: BuildingCard): string {
+	const { doing } = card;
+	const tickets = doing.tickets ?? [];
+	return nest(
+		'building',
+		card,
+		card.progress === null ? '' : progressHtml(card.progress, tickets),
+		`<p class="label">Building</p><p>${stepLine(doing)}</p>`,
+		`<time data-since="${escape(featureStart(doing))}"></time>`
+	);
+}
+
+// What the one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its Session.
+function detail(card: BuildingCard, view: FactoryView): string {
+	const { doing } = card;
+	const tickets = doing.tickets ?? [];
+	const steps = ticketItems(tickets);
+	const tail = view.tail.map(escape).join('\n');
+	return (
+		`<aside class="detail" aria-label="Building now"><p class="dk"><i></i>Building now</p>` +
+		`<h3>${feature(card)}</h3><p class="sub">${stepLine(doing)}</p>` +
+		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
+		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
+		(tail === '' ? '' : `<pre>${tail}</pre>`) +
+		'</aside>'
+	);
+}
+
+// A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
+function queuedCard(card: QueuedCard): string {
+	const counts = card.ticketCounts;
+	let count = '';
+	if (counts === null) count = '<p class="meta count">? Tickets</p>';
+	else if (counts !== undefined)
+		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
+	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
+	return nest('queue', card, count, '<p class="label">Queued</p>', est);
+}
+
+function completedCard(card: CompletedCard): string {
+	const { event, costUsd } = card.done;
+	const took = tookMs(event);
+	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
+	return nest(
+		event.kind === 'failed' ? 'failed' : 'pulled',
+		card,
+		progressHtml(card.progress),
+		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p>`,
+		`${duration}${dollars(costUsd)}`
+	);
+}
+
+function group(state: string, name: string, count: number | null, body: string): string {
+	const shown = count === null ? '' : `<i class="tally">${String(count)}</i>`;
+	return `<section class="mat" data-state="${state}"><div class="tab"><h2>${name}</h2>${shown}</div><div class="lines">${body}</div></section>`;
+}
+
+const OFF = '<p class="empty">not known while nightjar is off</p>';
+
+const LEGEND =
+	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
+
+function board(view: FactoryView): string {
+	const all = features(view);
+	const on = running(view);
+	const none = (text: string) => `<p class="empty">${text}</p>`;
+	const queued = !on
+		? OFF
+		: all.queue === undefined
+			? none('not read yet')
+			: all.queue.length === 0
+				? none('empty')
+				: all.queue.map(queuedCard).join('');
+	const building =
+		all.building === null ? none('nothing is being built') : buildingCard(all.building);
+	let waiting: string;
+	if (!on) waiting = OFF;
+	else if (all.waiting === undefined) waiting = none('not read yet');
+	else {
+		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
+		const cards = all.waiting
+			.map((c) =>
+				nest(
+					'waiting',
+					c,
+					progressHtml(c.progress),
+					`<p class="label"><i class="egg need"></i>${escape(c.why)}</p>`,
+					'',
+					waitingTicketsHtml(c)
+				)
+			)
+			.join('');
+		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
+	}
+	const completed =
+		all.completed.length === 0
+			? none('nothing has finished yet')
+			: all.completed.map(completedCard).join('');
+	const side = all.building === null ? '' : detail(all.building, view);
+	return (
+		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
+		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
+		group('waiting', 'Waiting on you', on ? (all.waiting?.length ?? null) : null, waiting) +
+		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
+		group('queue', 'Queue', on ? (all.queue?.length ?? null) : null, queued) +
+		group('completed', 'Completed', all.completed.length, completed) +
+		`</div>${side}</div></div>`
+	);
+}
+
+const STATES = [
+	['queue', 'Queue'],
+	['building', 'Building'],
+	['waiting', 'Waiting on you'],
+	['completed', 'Completed']
+] as const;
+
+const COLUMNS = [
+	['id', 'Id'],
+	['title', 'Title'],
+	['state', 'State'],
+	['time', 'Time'],
+	['cost', 'Cost'],
+	['outcome', 'Outcome'],
+	['progress', 'Progress']
+] as const;
+
+// One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
+function table(view: FactoryView): string {
+	const all = features(view);
+	interface Row {
+		readonly card: FeatureCard;
+		readonly state: (typeof STATES)[number][0];
+		readonly time: number | null;
+		readonly timeText: string;
+		readonly cost: number | null;
+		readonly outcome: string;
+		readonly outcomeText: string;
+		readonly progress: Progress | null;
+	}
+	const rows: Row[] = [];
+	for (const card of all.queue ?? [])
+		rows.push({
+			card,
+			state: 'queue',
+			time: card.estimateMs,
+			timeText: estimateHtml(card.estimateMs),
+			cost: null,
+			outcome: '',
+			outcomeText: '',
+			progress: card.progress
+		});
+	if (all.building !== null) {
+		// the elapsed time is counted by the browser, so the row stays the same between events
+		rows.push({
+			card: all.building,
+			state: 'building',
+			time: null,
+			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
+			cost: view.featureCostUsd,
+			outcome: '',
+			outcomeText: '',
+			progress: all.building.progress
+		});
+	}
+	for (const card of all.waiting ?? [])
+		rows.push({
+			card,
+			state: 'waiting',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: card.why,
+			outcomeText: escape(card.why),
+			progress: card.progress
+		});
+	for (const card of all.completed) {
+		const { event, costUsd } = card.done;
+		const took = tookMs(event);
+		rows.push({
+			card,
+			state: 'completed',
+			time: took,
+			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
+			cost: costUsd,
+			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
+			outcomeText: outcomeHtml(event),
+			progress: card.progress
+		});
+	}
+	const label = (state: string) => STATES.find(([s]) => s === state)?.[1] ?? state;
+	const chips = STATES.map(
+		([s, name]) => `<button type="button" data-chip="${s}">${name}</button>`
+	).join('');
+	const head = COLUMNS.map(
+		([k, name]) => `<th><button type="button" data-sort="${k}">${name}</button></th>`
+	).join('');
+	const body = rows
+		.map(
+			(r, i) =>
+				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+		)
+		.join('');
+	const note = !running(view)
+		? OFF
+		: all.trackerCannotList
+			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
+			: '';
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Features"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
 }
 
 // The panels, which the page replaces whole each time an event brings new ones.
@@ -151,10 +595,9 @@ export function renderPanels(root: string, view: FactoryView): string {
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
 		cards(view),
-		current(view),
-		queue(view),
-		waiting(view),
-		completed(view)
+		board(view),
+		table(view),
+		`<div class="overview">${[current(view), queue(view), waiting(view), completed(view)].join('\n')}</div>`
 	].join('\n');
 }
 
@@ -164,10 +607,12 @@ const PAGE = (panels: string) => `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nightjar</title>
-<style>${STYLE}</style>
+<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
 </head>
 <body>
-<main id="panels">${panels}</main>
+<div class="banner" aria-hidden="true"></div>
+<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav></div>
+<main id="panels" data-view="board">${panels}</main>
 <script>${SCRIPT}</script>
 </body>
 </html>
@@ -179,31 +624,270 @@ const panels = document.getElementById('panels');
 const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
+const VIEWS = ['board', 'table', 'overview'];
+// the Table's sort and state filter, kept in local storage and applied again after each event
+let tableState = { sort: null, dir: 1, states: [] };
+try {
+	const kept = JSON.parse(localStorage.getItem('nightjar-table'));
+	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states };
+} catch {}
+function saveTable() {
+	try { localStorage.setItem('nightjar-table', JSON.stringify(tableState)); } catch {}
+}
+function rowKey(row, key, now) {
+	const d = row.dataset;
+	if (key === 'time') {
+		if (d.since) return now - Date.parse(d.since);
+		return d.time === '' || d.time === undefined ? null : Number(d.time);
+	}
+	if (key === 'cost') return d.cost === '' || d.cost === undefined ? null : Number(d.cost);
+	if (key === 'progress') return d.progress === '' || d.progress === undefined ? null : Number(d.progress);
+	return d[key] ?? '';
+}
+// default: state, then Queue order; a header sorts by its column, rows without a value last
+function compareRows(a, b, sort, dir, now) {
+	const by = (x, y) => {
+		if (x === y) return 0;
+		if (x === null) return 1;
+		if (y === null) return -1;
+		return typeof x === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+	};
+	if (sort !== null) {
+		const c = by(rowKey(a, sort, now), rowKey(b, sort, now));
+		if (c !== 0) return c * dir;
+	}
+	return Number(a.dataset.rank) - Number(b.dataset.rank) || Number(a.dataset.order) - Number(b.dataset.order);
+}
+// the page's own markup carries these; a stand-in element without them is left alone
+const attr = (el, name, value) => el && el.setAttribute && el.setAttribute(name, value);
+function applyTable() {
+	const now = Date.now();
+	const rows = Array.from(document.querySelectorAll('tr[data-state]'));
+	const parent = rows[0] && rows[0].parentNode;
+	rows.sort((a, b) => compareRows(a, b, tableState.sort, tableState.dir, now));
+	for (const row of rows) {
+		row.hidden = tableState.states.length > 0 && !tableState.states.includes(row.dataset.state);
+		if (parent) parent.appendChild(row);
+	}
+	for (const b of document.querySelectorAll('button[data-sort]')) {
+		b.dataset.on = String(b.dataset.sort === tableState.sort);
+		b.dataset.dir = b.dataset.sort === tableState.sort ? (tableState.dir === 1 ? 'asc' : 'desc') : '';
+		attr(b.parentNode, 'aria-sort', b.dataset.dir === 'asc' ? 'ascending' : b.dataset.dir === 'desc' ? 'descending' : 'none');
+	}
+	for (const b of document.querySelectorAll('button[data-chip]')) {
+		b.dataset.on = String(tableState.states.includes(b.dataset.chip));
+		attr(b, 'aria-pressed', b.dataset.on);
+	}
+}
+panels.onclick = (e) => {
+	const t = e.target && e.target.closest ? e.target : null;
+	const sorter = t && t.closest('[data-sort]');
+	const chip = t && t.closest('[data-chip]');
+	if (sorter) {
+		const key = sorter.dataset.sort;
+		tableState = { ...tableState, sort: key, dir: tableState.sort === key ? -tableState.dir : 1 };
+	} else if (chip) {
+		const s = chip.dataset.chip;
+		tableState = { ...tableState, states: tableState.states.includes(s) ? tableState.states.filter((x) => x !== s) : [...tableState.states, s] };
+	} else return;
+	saveTable();
+	applyTable();
+};
+// the choice lives on the panels element and in local storage, so a refresh of its content keeps it
+function show(view) {
+	panels.dataset.view = view;
+	for (const b of document.querySelectorAll('button[data-view]')) {
+		b.dataset.on = String(b.dataset.view === view);
+		attr(b, 'aria-pressed', b.dataset.on);
+	}
+}
+let saved = null;
+try { saved = localStorage.getItem('nightjar-view'); } catch {}
+show(VIEWS.includes(saved) ? saved : 'board');
+for (const b of document.querySelectorAll('button[data-view]')) {
+	b.onclick = () => {
+		show(b.dataset.view);
+		try { localStorage.setItem('nightjar-view', b.dataset.view); } catch {}
+	};
+}
 function tick() {
 	const now = Date.now();
 	for (const t of document.querySelectorAll('time[data-since]')) t.textContent = elapsed(now - Date.parse(t.dataset.since));
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
+	// a swap drops the focused sort header or chip; put focus back on its twin
+	const was = document.activeElement && document.activeElement.dataset;
+	const key = was && (was.sort ? 'sort' : was.chip ? 'chip' : null);
+	const value = key && was[key];
 	panels.innerHTML = JSON.parse(e.data);
+	if (key) {
+		const back = document.querySelector('[data-' + key + '="' + value + '"]');
+		if (back) back.focus();
+	}
+	applyTable();
 	tick();
 };
+applyTable();
 tick();
 setInterval(tick, 1000);
 `;
 
 const STYLE = `
-:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; }
-@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; } }
-body { font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 auto; max-width: 56rem; padding: 0 16px 32px; }
+:root { color-scheme: dark; --void: #04070b; --panel: #0b131b; --line: #1b3a42; --teal: #22e3d2; --teal2: #14a89c; --amber: #ff9a1f; --slate: #8f98e0; --ok: #3fd17f; --ink: #e6f1f2; --ink2: #9db5b8; --muted: #7f979b; --err: #ff5a5f; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
+* { box-sizing: border-box; }
+body { background: var(--void) linear-gradient(rgba(34, 227, 210, 0.035) 1px, transparent 1px) 0 0 / 32px 32px; background-image: linear-gradient(rgba(34, 227, 210, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34, 227, 210, 0.035) 1px, transparent 1px); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0; scrollbar-color: var(--teal2) var(--void); }
+::selection { background: var(--teal); color: var(--void); }
+a { color: var(--teal); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre { font-variant-numeric: tabular-nums; }
+.banner { background: var(--void) center 40% / cover no-repeat; height: 260px; position: relative; }
+.banner::after { background: linear-gradient(180deg, transparent 60%, var(--void)); content: ""; inset: 0; position: absolute; }
+html { scroll-padding-top: 64px; }
+.bar { align-items: center; background: rgba(4, 7, 11, 0.94); border-bottom: 1px solid var(--line); display: flex; gap: 4px; padding: 10px 32px; position: sticky; top: 0; z-index: 3; }
+.mark { color: var(--teal); font: 700 0.85rem var(--mono); letter-spacing: 0.2em; margin: 0 22px 0 0; text-transform: uppercase; }
+#views { display: flex; gap: 4px; }
+#views button { background: none; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 5px 16px; }
+#views button:hover { color: var(--ink); }
+#views button[data-on="true"] { background: rgba(34, 227, 210, 0.07); border-color: var(--teal2); color: var(--teal); }
+#panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 0 32px 56px; }
 h1, h2 { font-size: 1em; margin: 0; }
-h2 { color: var(--muted); font-weight: normal; margin-top: 1.5em; }
-header { border-bottom: 1px solid var(--line); padding: 16px 0 8px; }
-#cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
-.card span, .empty, small { color: var(--muted); }
-ul { list-style: none; margin: 4px 0; padding: 0; }
-pre { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; overflow-x: auto; padding: 8px; white-space: pre-wrap; }
+header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 24px 0 6px; }
+h1 { font: 700 1.6rem var(--mono); }
+header span { color: var(--muted); font-family: var(--mono); font-size: 0.9rem; }
+header .state { color: var(--teal); font-weight: 600; }
+#cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0 0 10px; }
+.stat b { color: var(--ink); }
+.empty, small, .meta { color: var(--muted); }
+.empty { margin: 10px 0; }
+ul, ol { list-style: none; margin: 4px 0; padding: 0; }
+pre { background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); color: var(--ink2); font: 12px/1.7 var(--mono); margin: 8px 0 0; max-height: 14rem; overflow: auto; padding: 10px 12px; white-space: pre-wrap; }
+.overview { font-family: system-ui, sans-serif; }
+#panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
+.egg { background: radial-gradient(circle at 28% 26%, rgba(0, 0, 0, 0.35) 0 1.4px, transparent 2.4px), radial-gradient(circle at 66% 58%, rgba(0, 0, 0, 0.3) 0 1.8px, transparent 2.8px), var(--teal2); border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%; box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.3); display: inline-block; flex: none; height: 1.2rem; position: relative; width: 0.95rem; }
+.egg.building { background: var(--teal); outline: 2px solid var(--teal); outline-offset: 3px; animation: incubate 2.4s ease-in-out infinite; }
+.egg.need { background: var(--amber); box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.25); margin: 0 0.65rem; }
+.egg.need::before, .egg.need::after { background: var(--amber); border-radius: 2px; content: ""; height: 3px; position: absolute; top: 0.45rem; width: 0.5rem; }
+.egg.need::before { left: -0.65rem; transform: rotate(-20deg); }
+.egg.need::after { right: -0.65rem; transform: rotate(20deg); }
+.egg.waiting { background: none; border: 2px dashed #2f5a63; box-shadow: none; }
+@keyframes incubate { 50% { outline-color: rgba(34, 227, 210, 0.25); } }
+.slot { align-items: center; background: rgba(0, 0, 0, 0.35); border: 1px solid #3f7078; border-radius: 50%; display: inline-grid; height: 1.75rem; place-items: center; width: 1.75rem; }
+.slot > .egg.waiting { display: none; }
+.eggs { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.eggs small { align-self: center; }
+.legend { color: var(--muted); display: flex; flex-wrap: wrap; font: 0.8rem var(--mono); gap: 6px 22px; margin: 0 0 14px; }
+.legend span { align-items: center; display: inline-flex; gap: 8px; }
+.legend .egg { height: 1rem; width: 0.8rem; }
+.legend .egg.need { margin: 0 0.5rem; }
+.legend .egg.need::before, .legend .egg.need::after { top: 0.35rem; width: 0.4rem; }
+.legend .egg.need::before { left: -0.5rem; }
+.legend .egg.need::after { right: -0.5rem; }
+.cols { display: block; }
+.cols.has-detail { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) 340px; }
+.left { min-width: 0; }
+.head { border-bottom: 1px solid var(--line); color: var(--muted); display: grid; font-size: 0.7rem; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; letter-spacing: 0.18em; margin: 0 0 14px 88px; padding: 6px 18px; text-transform: uppercase; }
+.head span:last-child { text-align: right; white-space: nowrap; }
+.mat { --h: var(--teal); background: linear-gradient(90deg, color-mix(in srgb, var(--h) 12%, transparent), transparent 45%), rgba(8, 13, 19, 0.85); border: 1px solid var(--line); display: grid; grid-template-columns: 88px minmax(0, 1fr); margin-bottom: 16px; position: relative; }
+.mat::before, .mat::after { border: 2px solid var(--h); content: ""; height: 16px; pointer-events: none; position: absolute; right: -1px; width: 16px; }
+.mat::before { border-bottom: 0; border-left: 0; top: -1px; }
+.mat::after { border-left: 0; border-top: 0; bottom: -1px; }
+.mat[data-state="waiting"] { --h: var(--amber); }
+.mat[data-state="queue"] { --h: var(--slate); }
+.mat[data-state="completed"] { --h: var(--ok); }
+.tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
+.tab h2 { font: 600 0.72rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
+.tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1.1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
+.lines { padding: 4px 18px; }
+.entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
+.lines > .entry:first-child { border-top: 0; }
+.lines > .empty { padding: 10px 0; }
+.entry p { margin: 0; }
+.who { font-size: 1.05rem; font-weight: 600; }
+.who b { color: var(--ink2); font: 500 0.9rem var(--mono); margin-right: 10px; }
+.eggcell .meta { font: 0.76rem var(--mono); margin-top: 6px; }
+.now .label { align-items: center; color: var(--ink2); display: flex; font: 700 0.78rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.now .label .egg { height: 1rem; margin: 0 0.9rem 0 0.6rem; width: 0.8rem; }
+.now .label .egg.need::before, .now .label .egg.need::after { top: 0.35rem; width: 0.4rem; }
+.now .label .egg.need::before { left: -0.5rem; }
+.now .label .egg.need::after { right: -0.5rem; }
+.now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
+.clock { color: var(--muted); font: 0.8rem var(--mono); text-align: right; }
+.entry > ul { grid-column: 1 / -1; }
+.entry.waiting .now .label { color: var(--amber); }
+.entry.building .now .label { color: var(--teal); }
+.entry.pulled .now .label { color: var(--ok); }
+.entry.failed .now .label, .entry.failed .now p { color: var(--err); }
+.tickets li { font: 0.85rem var(--mono); padding: 2px 0 2px 4px; }
+.tickets li.waiting { color: var(--amber); }
+.detail { background: linear-gradient(180deg, rgba(34, 227, 210, 0.07), transparent 40%), rgba(8, 13, 19, 0.92); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: sticky; top: 60px; }
+.detail::before, .detail::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
+.detail::before { border-bottom: 0; border-right: 0; left: -1px; top: -1px; }
+.detail::after { border-left: 0; border-top: 0; bottom: -1px; right: -1px; }
+.dk { align-items: center; color: var(--teal); display: flex; font-size: 0.72rem; gap: 8px; letter-spacing: 0.18em; margin: 0; text-transform: uppercase; }
+.dk i { animation: blip 2s ease-out infinite; background: var(--teal); border-radius: 50%; height: 8px; width: 8px; }
+@keyframes blip { 0% { box-shadow: 0 0 0 0 rgba(34, 227, 210, 0.6); } 100% { box-shadow: 0 0 0 9px transparent; } }
+.detail h3 { font: 700 1.2rem system-ui, sans-serif; margin: 8px 0 2px; overflow-wrap: anywhere; }
+.detail h3 b { color: var(--ink2); font: 500 0.9rem var(--mono); margin-right: 8px; }
+.sub { color: var(--muted); font-size: 0.78rem; margin: 0; }
+.steps { margin: 16px 0; position: relative; }
+.steps::before { background: var(--line); bottom: 8px; content: ""; left: 8px; position: absolute; top: 8px; width: 1px; }
+.steps li { color: var(--ink2); font-size: 0.85rem; padding: 4px 0 4px 30px; position: relative; }
+.steps li::before { background: var(--void); border: 1.5px solid var(--muted); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); content: ""; height: 13px; left: 2px; position: absolute; top: 8px; width: 13px; }
+.steps li.built { color: var(--muted); }
+.steps li.built::before { background: var(--teal2); border-color: var(--teal2); }
+.steps li.building { color: var(--ink); font-weight: 700; }
+.steps li.building::before { background: var(--teal); border-color: var(--teal); }
+.steps li.waiting { color: var(--amber); }
+.steps li.waiting::before { border-color: var(--amber); }
+.meters { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin-bottom: 14px; }
+.meters div { background: rgba(0, 0, 0, 0.3); border: 1px solid var(--line); padding: 6px 10px; }
+.meters small { display: block; font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; }
+.meters b { font-size: 1rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
+.chips button { background: none; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.9rem; padding: 3px 14px; }
+.chips button[data-on="true"] { background: var(--teal); border-color: var(--teal); color: var(--void); }
+.scroll { overflow-x: auto; }
+td.progress .eggs { display: inline-flex; vertical-align: middle; }
+td.progress p { display: inline; margin: 0 0 0 14px; }
+.scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+tr[data-state] td:first-child { border-left: 3px solid var(--teal); }
+tr[data-state="waiting"] td:first-child { border-left-color: var(--amber); }
+tr[data-state="queue"] td:first-child { border-left-color: var(--slate); }
+tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
+tr[data-failed] td:first-child { border-left-color: var(--err); }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+th button { background: none; border: 0; color: var(--muted); cursor: pointer; font: 600 0.75rem var(--mono); letter-spacing: 0.16em; padding: 0; text-transform: uppercase; }
+th button[data-on="true"] { color: var(--teal); }
+th button[data-dir]::after { border: solid currentColor; border-width: 0 2px 2px 0; content: ""; display: inline-block; height: 0.4em; margin-left: 0.6em; transform: rotate(45deg) translateY(-0.2em); width: 0.4em; }
+th button[data-dir="asc"]::after { transform: rotate(-135deg) translate(-0.1em, -0.1em); }
+tr[hidden] { display: none; }
+td.progress .eggs { margin-bottom: 4px; }
+.overview section { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 12px; }
+.overview h2 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; text-transform: uppercase; }
+.overview li { padding: 3px 0; }
+@media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
+@media (max-width: 1260px) {
+	.cols.has-detail { grid-template-columns: 1fr; }
+	.detail { order: -1; position: static; }
+}
+@media (max-width: 900px) {
+	.entry { grid-template-columns: 1fr; }
+	.head { display: none; }
+	.clock { text-align: left; }
+}
+@media (max-width: 760px) {
+	.mark { display: none; }
+	.banner { background-position: 25% 40%; height: 180px; }
+	.bar { flex-wrap: wrap; padding: 10px 16px; }
+	#panels { padding: 0 12px 40px; }
+	.mat { grid-template-columns: 40px minmax(0, 1fr); }
+	.tab { padding: 10px 4px; }
+	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.9rem; }
+	.lines { padding: 4px 12px; }
+	.scroll table { min-width: 36rem; }
+}
 `;
 
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.
@@ -251,7 +935,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				'content-type': 'text/html; charset=utf-8',
 				'cache-control': 'no-store',
 				'content-security-policy':
-					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 			});
 			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow()));
 		} else {

@@ -25,7 +25,7 @@ export const IssueSchema = z.looseObject({
 		.nullable()
 		.optional(),
 	user: z.looseObject({ login: z.string() }).nullable(),
-	sub_issues_summary: z.looseObject({ total: z.int() }).optional(),
+	sub_issues_summary: z.looseObject({ total: z.int(), completed: z.int().optional() }).optional(),
 	// the issues list also returns pull requests, which carry this
 	pull_request: z.unknown().optional()
 });
@@ -103,6 +103,14 @@ export class GitHubApi {
 		throw new GitHubFailure(`gh could not ${what}: more than ${String(MAX_PAGES)} pages.`);
 	}
 }
+
+const GH_INSTALL = 'https://cli.github.com/';
+
+// A failed call said with how to install gh or sign it in, whichever it may need.
+export const ghFix = (message: string): string =>
+	message.includes('is not on the PATH')
+		? `${message} Install it from ${GH_INSTALL}, then run \`gh auth login\`.`
+		: `${message} If gh is not signed in, run \`gh auth login\`.`;
 
 // owner/name from an origin such as git@github.com:o/r.git or https://github.com/o/r
 export function repoFromRemote(url: string): string | null {

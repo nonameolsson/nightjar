@@ -25,11 +25,11 @@ const nightjar = (input: string) =>
 describe('nightjar init with answers on standard input', () => {
 	it('asks each question, writes factory.json and creates the labels', () => {
 		m = machine();
-		const run = nightjar('github\n\ngithub\n\nmake check\n\n');
+		const run = nightjar('github\n\ngithub\n\nmake check\n\n\n');
 		expect(run.stderr).toBe('');
 		expect(run.status).toBe(0);
 		expect(run.stdout).toContain(
-			'Command that checks the work, run after each Ticket (no default): make check'
+			'Command that checks the work, run after each Ticket (? for more): make check'
 		);
 		expect(m.readConfig()).toMatchObject({ check: 'make check', allowedCommands: ['make check'] });
 		expect(m.calls('gh')).toContain('-X POST repos/o/r/labels -f name=factory-go ');

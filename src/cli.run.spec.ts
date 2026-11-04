@@ -1,106 +1,46 @@
-// `nightjar 1` end to end, the whole chain the other specs cut at the seams, with stand-ins for gh and claude on PATH.
+// `nightjar 1` end to end, the whole chain the other specs cut at the seams, over the machine of stand-ins in src/fakes/machine.ts.
 import { spawnSync } from 'node:child_process';
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	writeFileSync
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { machine, type Machine } from './fakes/machine.js';
 
 const PACKAGE = join(import.meta.dirname, '..');
 const TSX = join(PACKAGE, 'node_modules', '.bin', 'tsx');
 const CLI = join(PACKAGE, 'src', 'cli.ts');
 
-let base: string;
-beforeEach(() => {
-	base = realpathSync(mkdtempSync(join(tmpdir(), 'nightjar-run-')));
-});
-afterEach(() => rmSync(base, { recursive: true, force: true }));
-
-function script(dir: string, name: string, body: string) {
-	const path = join(dir, name);
-	writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
-	chmodSync(path, 0o755);
-}
-
-// gh: one Feature, #1, with one Ticket, #2; every call is kept in $FAKE_GH_CALLS
-const GH = String.raw`
-echo "$*" >> "$FAKE_GH_CALLS"
-issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
-feature() { printf '{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"%s"}],"assignees":[{"login":"%s"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}' "${'$'}{FAKE_GH_FEATURE_LABEL:-factory-go}" "${'$'}{FAKE_GH_FEATURE_ASSIGNEE:-ann}"; }
-for a in "$@"; do case "$a" in
-  user) echo '{"login":"ann"}'; exit 0 ;;
-  repos/o/r/issues\?*) echo "[$(feature)]"; exit 0 ;;
-  repos/o/r/issues/1) feature; exit 0 ;;
-  repos/o/r/issues/1/sub_issues*)
-    [ -n "$FAKE_GH_FAIL_TICKETS" ] && { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
-    echo "[$(issue 2 'Share the escape' '')]"; exit 0 ;;
-  repos/o/r/issues/*/dependencies/*) echo '[]'; exit 0 ;;
-  repos/o/r/issues/*/comments*) echo '[]'; exit 0 ;;
-  repos/o/r/issues/*/labels*) echo '[]'; exit 0 ;;
-  repos/o/r/pulls\?*) echo '[]'; exit 0 ;;
-  repos/o/r/pulls|repos/o/r/pulls/9) echo '{"number":9,"html_url":"https://github.com/o/r/pull/9","body":""}'; exit 0 ;;
-esac; done
-echo "gh: Not Found (HTTP 404)" >&2; exit 1`;
-
-// claude: a build writes a file in the worktree and answers built; a review approves
-const CLAUDE = String.raw`
-[ "$1" = --version ] && { echo "2.1.314 (Claude Code)"; exit 0; }
-[ "$1 $2 $3" = "auth status --json" ] && { echo "{\"loggedIn\":true,\"email\":\"ann@x.io\",\"authMethod\":\"claude.ai\",\"configDirectory\":\"${'$'}{CLAUDE_CONFIG_DIR:-$HOME/.claude}\"}"; exit 0; }
-echo "$*" >> "$FAKE_CLAUDE_CALLS"
-case "$*" in
-  *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
-  *) echo work > built.txt; echo "${'$'}{WEB_PORT:-none}" > port.txt; echo "${'$'}{CLAUDE_CONFIG_DIR:-none} ${'$'}{CLAUDE_CODE_OAUTH_TOKEN:-notoken}" > login.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
-esac
-echo '{"type":"system","subtype":"init","apiKeySource":"none"}'
-echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.5,\"structured_output\":$out}"`;
+let m: Machine;
+afterEach(() => m.remove());
 
 // green, or with FAKE_CHECK_RED red, with colour codes as a real check prints them
 const CHECK = String.raw`[ -z "$FAKE_CHECK_RED" ] || { printf '\033[31mred: a failing check\033[0m\n'; exit 1; }`;
 
 function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
-	const bin = join(base, 'bin');
-	mkdirSync(bin);
-	script(bin, 'gh', GH);
-	script(bin, 'claude', CLAUDE);
-	const gitconfig = join(base, 'gitconfig');
-	writeFileSync(gitconfig, '');
+	m = machine();
+	const { base, root } = m;
 	const env: Record<string, string> = {
 		...Object.fromEntries(
 			Object.entries(process.env).filter(
 				(e): e is [string, string] => e[1] !== undefined && !e[0].startsWith('GIT_')
 			)
 		),
-		PATH: `${bin}:${process.env.PATH ?? ''}`,
-		HOME: join(base, 'home'),
-		GIT_CONFIG_GLOBAL: gitconfig,
-		GIT_CONFIG_NOSYSTEM: '1',
+		...m.env,
+		// the stand-ins first; the real PATH after them holds node and the commands a check runs
+		PATH: `${m.env.PATH ?? ''}:${process.env.PATH ?? ''}`,
 		GIT_AUTHOR_NAME: 'Test',
 		GIT_AUTHOR_EMAIL: 'test@example.com',
 		GIT_COMMITTER_NAME: 'Test',
-		GIT_COMMITTER_EMAIL: 'test@example.com',
-		// the port locks live in the temporary folder, so each run of the spec has its own
-		TMPDIR: base,
-		FAKE_GH_CALLS: join(base, 'gh-calls.txt'),
-		FAKE_CLAUDE_CALLS: join(base, 'claude-calls.txt')
+		GIT_COMMITTER_EMAIL: 'test@example.com'
 	};
 	delete env.ANTHROPIC_API_KEY;
 	// the person's own config.json is read under HOME alone
 	delete env.XDG_CONFIG_HOME;
 	const git = (cwd: string, ...args: string[]) =>
 		spawnSync('git', args, { cwd, env, encoding: 'utf8' }).stdout.trim();
+	// the machine's checkout pushes to a bare origin of its own
 	const origin = join(base, 'origin.git');
-	const root = join(base, 'app');
 	git(base, 'init', '-q', '--bare', '-b', 'main', origin);
-	git(base, 'clone', '-q', origin, root);
+	git(root, 'remote', 'set-url', 'origin', origin);
 	writeFileSync(join(root, 'README.md'), 'hello\n');
 	if (withConfig) {
 		const config = {
@@ -115,7 +55,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 	git(root, 'add', '.');
 	git(root, 'commit', '-q', '-m', 'first');
 	git(root, 'push', '-q', 'origin', 'main');
-	writeFileSync(env.FAKE_CLAUDE_CALLS ?? '', '');
+	// as a clone would leave it, so the base branch is found
+	git(root, 'remote', 'set-head', 'origin', 'main');
 	const nightjar = (args: string[], extra: Record<string, string> = {}) =>
 		spawnSync(TSX, [CLI, ...args], {
 			cwd: root,
@@ -123,8 +64,8 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 			encoding: 'utf8',
 			timeout: 25_000
 		});
-	const calls = () => readFileSync(env.FAKE_GH_CALLS ?? '', 'utf8');
-	const sessions = () => readFileSync(env.FAKE_CLAUDE_CALLS ?? '', 'utf8');
+	const calls = () => m.calls('gh');
+	const sessions = () => m.calls('claude');
 	return { root, env, git, origin, nightjar, calls, sessions };
 }
 
@@ -398,7 +339,7 @@ describe('nightjar --once', () => {
 			`nightjar: checked: no ANTHROPIC_API_KEY, Node ${process.versions.node}, factory.json, gh as ann on o/r, claude 2.1.314 (Claude Code), commits unsigned`
 		);
 		expect(run.stdout).toContain(
-			`nightjar: o/r, as ann, on ann@x.io, claude.ai login, config ${join(env.HOME ?? '', '.claude')}`
+			`nightjar: o/r, as ann, on ann@x.io, Acme, max plan, claude.ai login, config ${join(env.HOME ?? '', '.claude')}`
 		);
 		expect(run.stdout).toContain('nightjar: #1: draft pull request https://github.com/o/r/pull/9');
 		expect(run.status).toBe(0);
@@ -429,7 +370,7 @@ describe('nightjar doctor', () => {
 		const run = nightjar(['doctor']);
 		expect(run.stdout).toContain('  ok    Tracker: gh as ann on o/r');
 		expect(run.stdout).toContain(
-			'  ok    claude: 2.1.314 (Claude Code), ann@x.io, claude.ai login, config'
+			'  ok    claude: 2.1.314 (Claude Code), ann@x.io, Acme, max plan, claude.ai login, config'
 		);
 		expect(run.stdout).toContain('nightjar: would build #1 One escape');
 		expect(run.status).toBe(0);

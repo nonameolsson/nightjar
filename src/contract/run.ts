@@ -5,6 +5,7 @@ import { feedbackContract } from './feedback.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import { why } from '../say.js';
 
@@ -61,17 +62,18 @@ function harnessOf(exports: Record<string, unknown>, name: string): unknown {
 // What the Tracker can do beyond the interface's required methods. A harness that cannot build a Tracker over an empty world has failed every case already, so it is asked nothing more.
 async function optionalSuites(
 	harness: TrackerHarness
-): Promise<{ creates: boolean; waitsOn: boolean }> {
+): Promise<{ creates: boolean; waitsOn: boolean; counts: boolean }> {
 	let subject: TrackerSubject;
 	try {
 		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
 	} catch {
-		return { creates: false, waitsOn: false };
+		return { creates: false, waitsOn: false, counts: false };
 	}
 	try {
 		return {
 			creates: canCreate(subject.tracker),
-			waitsOn: typeof subject.tracker.waitingOn === 'function'
+			waitsOn: typeof subject.tracker.waitingOn === 'function',
+			counts: typeof subject.tracker.ticketCounts === 'function'
 		};
 	} finally {
 		await subject.close?.();
@@ -112,6 +114,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		}
 		if (has.waitsOn) {
 			suites.push(await runSuite('Tracker waiting on', waitingOnContract, tracker as never));
+		}
+		if (has.counts) {
+			suites.push(await runSuite('Tracker ticket counts', ticketCountsContract, tracker as never));
 		}
 	}
 	if (codeHost !== undefined) {

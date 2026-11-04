@@ -2,8 +2,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { spentOn } from './ledger.js';
 import { needsAPerson } from './plan.js';
+import type { Spend } from './spend.js';
 import type {
 	Doing,
 	Event,
@@ -22,16 +22,24 @@ export type {
 	Named,
 	Queued,
 	Status,
+	TicketCounts,
 	TicketProgress,
 	WaitingItem,
 	WaitingOnYou
 } from './status-shape.js';
 
 // The Tickets among `tickets` that need info or a person, as Waiting on you lists them.
-export const waitingTickets = (tickets: readonly (Named & { readonly why?: string })[]) =>
-	tickets
-		.filter(needsAPerson)
-		.map((t): WaitingItem => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' }));
+export const waitingTickets = (
+	tickets: readonly (Named & { readonly why?: string })[],
+	feature: string
+) =>
+	tickets.filter(needsAPerson).map((t): WaitingItem => ({
+		kind: 'ticket',
+		id: t.id,
+		title: t.title,
+		why: t.why ?? '',
+		feature
+	}));
 
 // When the Feature being built began; a file older than featureStartedAt has only the step's start.
 export const featureStart = (doing: Extract<Doing, { kind: 'building' }>) =>
@@ -73,7 +81,7 @@ export class StatusFile implements StatusReport {
 	constructor(
 		private readonly o: {
 			readonly path: string;
-			readonly ledger: string;
+			readonly spend: Spend;
 			readonly now: () => Date;
 			readonly pid: number;
 			readonly dailyUsd: number;
@@ -112,7 +120,7 @@ export class StatusFile implements StatusReport {
 	// While a Feature builds, its own Tickets that need info or a person stand in place of the last Feature's
 	private waitingOnYou(found: WaitingOnYou): WaitingOnYou {
 		if (this.now.kind !== 'building') return found;
-		const tickets = waitingTickets(this.now.tickets ?? []);
+		const tickets = waitingTickets(this.now.tickets ?? [], this.now.feature);
 		return { ...found, items: [...found.items.filter((i) => i.kind === 'feature'), ...tickets] };
 	}
 
@@ -121,7 +129,7 @@ export class StatusFile implements StatusReport {
 		const status: Status = {
 			at: now.toISOString(),
 			pid: this.o.pid,
-			spentTodayUsd: spentOn(this.o.ledger, now),
+			spentTodayUsd: this.o.spend.today(now),
 			dailyUsd: this.o.dailyUsd,
 			doing: this.now,
 			...(this.o.watching === true ? { watching: true } : {}),

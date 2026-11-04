@@ -1,0 +1,83 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`nightjar init explains each prompt > prints help before every prompt on Azure DevOps 1`] = `
+"  The Tracker is where your Features and Tickets live (issues or work items).
+Tracker: github, azure-devops, module [github]: azure-devops
+  The first part of your Azure DevOps address, after dev.azure.com/.
+Azure DevOps organization, as in dev.azure.com/<organization>: contoso
+  The Azure DevOps project that holds the work items.
+Project that holds the Features: Fabrikam
+  The work item type Nightjar reads as a Feature; its children are the Tickets.
+Work item type that plays the Feature, such as Feature, Epic or Product Backlog Item [Feature]: 
+  Only \`nightjar create\` needs this: the type it gives the Tickets it makes, such as User Story.
+Work item type of a Ticket, for \`nightjar create\` (empty to leave out): User Story
+  The Code host is where Nightjar pushes the branch and opens the draft pull request.
+Code host: github, azure-devops, module [azure-devops]: azure-devops
+  The first part of your Azure DevOps address, after dev.azure.com/.
+Azure DevOps organization, as in dev.azure.com/<organization> [contoso]: 
+  The Azure DevOps project that holds the git repo.
+Project that holds the repo [Fabrikam]: 
+  The name of the repo in Azure Repos that the branch is pushed to.
+Git repo on Azure Repos, by name: fabrikam-app
+nightjar: no check command detected in this repo; try a placeholder such as \`make check\`
+  Runs after every Ticket; a non-zero exit means the work failed and the Coding agent retries.
+Command that checks the work, run after each Ticket (? for more): make check
+  The Coding agent may run only these, such as the test runner. Commit, push, network and \`gh\` stay denied, whatever is listed.
+  A pattern ends in \`*\` to take any arguments. Examples: \`make lint *\`, \`npm test\`.
+Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: 
+  Any answer can be edited later in factory.json.
+Write factory.json and go on, y or n [y]: 
+  Doctor reads the Tracker and lists the Features it would build; it changes nothing.
+Run \`nightjar doctor\` now, y or n [y]: <end of input>"
+`;
+
+exports[`nightjar init explains each prompt > prints help before every prompt on GitHub, and shows longer help on ? 1`] = `
+"  The Tracker is where your Features and Tickets live (issues or work items).
+Tracker: github, azure-devops, module [github]: github
+  Written as owner/name, such as acme/widgets. Empty takes the repo of your git origin.
+GitHub repo whose issues are the Features, owner/name [o/r]: 
+  The Code host is where Nightjar pushes the branch and opens the draft pull request.
+Code host: github, azure-devops, module [github]: github
+  Written as owner/name, such as acme/widgets. Empty takes the repo of your git origin.
+GitHub repo the branch is pushed to, owner/name [o/r]: 
+nightjar: no check command detected in this repo; try a placeholder such as \`make check\`
+  Runs after every Ticket; a non-zero exit means the work failed and the Coding agent retries.
+Command that checks the work, run after each Ticket (? for more): ?
+  Runs after every Ticket. A non-zero exit means the work failed, and the Coding agent retries.
+  Keep it fast and deterministic: typecheck, lint and tests.
+  No deploys and no network: it runs many times, and must give the same answer each time.
+  Examples: \`npm run check\`, \`make check\`.
+Command that checks the work, run after each Ticket (? for more): make check
+  The Coding agent may run only these, such as the test runner. Commit, push, network and \`gh\` stay denied, whatever is listed.
+  A pattern ends in \`*\` to take any arguments. Examples: \`make lint *\`, \`npm test\`.
+Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: ?
+  The Coding agent may run only the commands listed here, separated by commas.
+  List everything it needs: the test runner, the linter, and scripts it writes.
+  Commit, push, network and \`gh\` are always denied, whatever is listed.
+  A pattern ends in \`*\` to take any arguments. Examples: \`make lint *\`, \`npm test\`.
+  Type none to allow no command.
+Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: 
+  Any answer can be edited later in factory.json.
+Write factory.json and go on, y or n [y]: 
+  Doctor reads the Tracker and lists the Features it would build; it changes nothing.
+Run \`nightjar doctor\` now, y or n [y]: n"
+`;
+
+exports[`nightjar init explains each prompt > prints help before the module path prompt 1`] = `
+"  The Tracker is where your Features and Tickets live (issues or work items).
+Tracker: github, azure-devops, module [github]: module
+  A JavaScript module in this repo that exports createTracker (or createCodeHost) for your own Tracker.
+Module that builds the Tracker, as a path from the repo's root: ./tracker.mjs
+  The Code host is where Nightjar pushes the branch and opens the draft pull request.
+Code host: github, azure-devops, module [github]: github
+  Written as owner/name, such as acme/widgets. Empty takes the repo of your git origin.
+GitHub repo the branch is pushed to, owner/name [o/r]: 
+nightjar: no check command detected in this repo; try a placeholder such as \`make check\`
+  Runs after every Ticket; a non-zero exit means the work failed and the Coding agent retries.
+Command that checks the work, run after each Ticket (? for more): make check
+  The Coding agent may run only these, such as the test runner. Commit, push, network and \`gh\` stay denied, whatever is listed.
+  A pattern ends in \`*\` to take any arguments. Examples: \`make lint *\`, \`npm test\`.
+Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: 
+  Any answer can be edited later in factory.json.
+Write factory.json and go on, y or n [y]: "
+`;

@@ -13,6 +13,7 @@ export type {
 export { canCreate } from './tracker.js';
 export { featureWriterContract } from './contract/feature-writer.js';
 export { waitingOnContract } from './contract/waiting-on.js';
+export { ticketCountsContract } from './contract/ticket-counts.js';
 export type { CodeHost, DraftRequest, Feedback, FeedbackKind, Pull } from './code-host.js';
 export { FOOTER } from './footer.js';
 export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';

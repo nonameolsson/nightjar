@@ -2,7 +2,13 @@
 import type { FeatureOutcome } from './build.js';
 import { FOOTER } from './footer.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
-import { waitingTickets, type Named, type StatusReport, type WaitingItem } from './status.js';
+import {
+	waitingTickets,
+	type Named,
+	type StatusReport,
+	type TicketCounts,
+	type WaitingItem
+} from './status.js';
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 import type { Newer } from './stale.js';
@@ -26,12 +32,23 @@ export interface QueueDeps {
 }
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
-export async function handBack(deps: QueueDeps, feature: Named, fault: unknown): Promise<void> {
+export async function handBack(
+	deps: QueueDeps,
+	feature: Named,
+	fault: unknown,
+	startedAt?: string
+): Promise<void> {
 	const { tracker } = deps;
 	const { id, title } = feature;
 	const reason = why(fault);
 	deps.say(`#${id} failed: ${reason}`);
-	deps.status.happened({ kind: 'failed', feature: id, title, why: reason });
+	deps.status.happened({
+		kind: 'failed',
+		feature: id,
+		title,
+		why: reason,
+		...(startedAt === undefined ? {} : { startedAt })
+	});
 	try {
 		await tracker.removeSignal(id, 'working');
 		await tracker.addSignal(id, 'needsInfo');
@@ -43,10 +60,11 @@ export async function handBack(deps: QueueDeps, feature: Named, fault: unknown):
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
 export async function buildOne(deps: QueueDeps, feature: Named): Promise<FeatureOutcome | null> {
+	const startedAt = deps.now().toISOString();
 	try {
 		return await deps.build(feature);
 	} catch (fault) {
-		await handBack(deps, feature, fault);
+		await handBack(deps, feature, fault, startedAt);
 		return null;
 	}
 }
@@ -93,18 +111,36 @@ async function readWaitingFeatures(
 function waitingOnYou(deps: QueueDeps) {
 	const canList = deps.tracker.waitingOn !== undefined;
 	let features: WaitingItem[] = [];
+	// null for a Feature whose count could not be read; empty when the Tracker cannot count
+	let counts = new Map<ItemId, TicketCounts | null>();
+	// the counts of the Features in the Queue and in Waiting on you; a fault leaves every one unread, never the refresh broken
+	const readCounts = async (queue: readonly Named[]) => {
+		const count = deps.tracker.ticketCounts?.bind(deps.tracker);
+		if (count === undefined) return;
+		const ids = [...new Set([...queue, ...features].map((f) => f.id))];
+		try {
+			const got = await count(ids);
+			counts = new Map(ids.map((id) => [id, got.get(id) ?? null]));
+		} catch (fault) {
+			deps.say(`could not count the Tickets of the Features: ${why(fault)}`);
+			counts = new Map(ids.map((id) => [id, null]));
+		}
+	};
+	const withCount = <T extends Named>(item: T): T =>
+		counts.has(item.id) ? { ...item, ticketCounts: counts.get(item.id) ?? null } : item;
 	return {
-		read: async () => {
+		read: async (queue: readonly Named[]) => {
 			if (canList) features = await readWaitingFeatures(deps, features);
+			await readCounts(queue);
 		},
-		// `tickets` are the current Feature's, which only a Feature that ended well says
-		tell: (queue: Named[], outcome: FeatureOutcome | null = null) => {
+		// `tickets` are those of `built`, the Feature just built, which only a Feature that ended well says
+		tell: (queue: Named[], outcome: FeatureOutcome | null = null, built: Named | null = null) => {
 			const tickets =
-				outcome?.kind === 'pull' || outcome?.kind === 'nothing'
-					? waitingTickets(outcome.waiting)
+				built !== null && (outcome?.kind === 'pull' || outcome?.kind === 'nothing')
+					? waitingTickets(outcome.waiting, built.id)
 					: [];
-			deps.status.refreshed(queue, {
-				items: [...features, ...tickets],
+			deps.status.refreshed(queue.map(withCount), {
+				items: [...features.map(withCount), ...tickets],
 				trackerCannotList: !canList
 			});
 		}
@@ -149,9 +185,9 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const next = features[0];
-		await waiting.read();
 		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
 		const rest = features.slice(1).map(named);
+		await waiting.read(rest);
 		waiting.tell(rest);
 		if (next === undefined && once) {
 			deps.say(none(deps));
@@ -162,7 +198,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			continue;
 		}
 		const outcome = await buildOne(deps, named(next));
-		waiting.tell(rest, outcome);
+		waiting.tell(rest, outcome, next);
 		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
 		if (outcome?.kind === 'paused') {
 			const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();
@@ -180,10 +216,10 @@ export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOu
 	const rest = (await deps.tracker.assignedFeatures(deps.person))
 		.filter((f) => f.id !== id)
 		.map(named);
-	await waiting.read();
+	await waiting.read(rest);
 	waiting.tell(rest);
 	const outcome = await buildOne(deps, { id, title });
-	waiting.tell(rest, outcome);
+	waiting.tell(rest, outcome, { id, title });
 	return outcome;
 }
 

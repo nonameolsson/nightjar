@@ -10,6 +10,7 @@ import type {
 	ItemText,
 	Standing,
 	Ticket,
+	TicketCount,
 	TicketReference,
 	Tracker
 } from '../tracker.js';
@@ -43,8 +44,17 @@ const toFeature = (raw: RawIssue): Feature => ({
 	body: raw.body ?? ''
 });
 
+// null where GitHub gave no summary, or one without the closed count
+function countOf(raw: RawIssue): TicketCount | null {
+	const summary = raw.sub_issues_summary;
+	if (summary?.completed === undefined) return null;
+	return { total: summary.total, closed: summary.completed };
+}
+
 export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
+	private readonly counts = new Map<ItemId, TicketCount>();
+	private readonly writers = new Map<string, boolean>();
 	private readonly trust: GitHubTrust;
 
 	constructor(
@@ -96,9 +106,41 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 			[`repos/${this.repo}/issues?${query.toString()}`],
 			z.array(IssueSchema)
 		);
+		for (const i of raw) this.remember(i);
 		return raw
 			.filter((i) => i.pull_request === undefined && (i.sub_issues_summary?.total ?? 0) > 0)
 			.map(toFeature);
+	}
+
+	// the sub-issue summary of every issue the lists gave, so counting a listed Feature costs no call
+	private remember(raw: RawIssue): void {
+		const count = countOf(raw);
+		const id = String(raw.number);
+		if (count === null) this.counts.delete(id);
+		else this.counts.set(id, count);
+	}
+
+	// A Feature the lists have not given is read on its own; one that cannot be read has no count.
+	async ticketCounts(ids: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>> {
+		const found = new Map<ItemId, TicketCount | null>();
+		for (const id of ids) {
+			let count = this.counts.get(id) ?? null;
+			if (count === null) {
+				try {
+					const n = issue(id);
+					const raw = await this.api.parse(
+						`read issue #${n}`,
+						[`repos/${this.repo}/issues/${n}`],
+						IssueSchema
+					);
+					count = countOf(raw);
+				} catch {
+					count = null;
+				}
+			}
+			found.set(id, count);
+		}
+		return found;
 	}
 
 	async feature(id: ItemId): Promise<Feature> {

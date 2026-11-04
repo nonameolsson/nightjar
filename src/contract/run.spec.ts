@@ -6,6 +6,7 @@ import { feedbackContract } from './feedback.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
+import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
 import type { FakeCodeHost } from '../fakes/code-host.js';
@@ -27,6 +28,7 @@ describe('runContract', () => {
 			'Tracker',
 			'Tracker creation',
 			'Tracker waiting on',
+			'Tracker ticket counts',
 			'Code host',
 			'Code host feedback'
 		]);
@@ -40,9 +42,12 @@ describe('runContract', () => {
 			waitingOnContract.map((c) => c.name)
 		);
 		expect(report.suites[3]?.results.map((r) => r.name)).toEqual(
-			codeHostContract.map((c) => c.name)
+			ticketCountsContract.map((c) => c.name)
 		);
 		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(
+			codeHostContract.map((c) => c.name)
+		);
+		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
 			feedbackContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
@@ -79,6 +84,7 @@ describe('runContract', () => {
 				createTicket: _b,
 				block: _c,
 				waitingOn: _d,
+				ticketCounts: _e,
 				...only
 			} = tracker as FakeTracker;
 			return { ...rest, tracker: only };
@@ -95,7 +101,11 @@ describe('runContract', () => {
 			return { ...rest, tracker: without };
 		};
 		const report = await runContract({ trackerHarness: lacks });
-		expect(report.suites.map((s) => s.title)).toEqual(['Tracker', 'Tracker creation']);
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Tracker',
+			'Tracker creation',
+			'Tracker ticket counts'
+		]);
 		expect(report.failed).toBe(0);
 	});
 
@@ -111,6 +121,27 @@ describe('runContract', () => {
 		const failing = report.suites.find((s) => s.title === 'Tracker waiting on')?.results ?? [];
 		expect(failing.every((r) => !r.ok)).toBe(true);
 		expect(failing).toHaveLength(waitingOnContract.length);
+	});
+
+	it('names a ticketCounts that miscounts or drops a Feature', async () => {
+		const wrong = (answer: () => Map<string, { total: number; closed: number } | null>) => {
+			const harness: TrackerHarness = async (world) => {
+				const subject = await fakeTrackerHarness(world);
+				return {
+					...subject,
+					tracker: Object.assign(subject.tracker, { ticketCounts: () => Promise.resolve(answer()) })
+				};
+			};
+			return harness;
+		};
+		for (const answer of [
+			() => new Map<string, { total: number; closed: number } | null>(),
+			() => new Map([['1', { total: 9, closed: 9 }]])
+		]) {
+			const report = await runContract({ trackerHarness: wrong(answer) });
+			const suite = report.suites.find((s) => s.title === 'Tracker ticket counts')?.results ?? [];
+			expect(suite.filter((r) => !r.ok).length).toBeGreaterThan(0);
+		}
 	});
 
 	it('runs only the suite whose harness the module exports', async () => {
@@ -129,7 +160,10 @@ describe('runContract', () => {
 		expect(failing[0]?.error).toContain('Expected values to be strictly equal');
 		expect(report.failed).toBe(2);
 		expect(report.total).toBe(
-			trackerContract.length + featureWriterContract.length + waitingOnContract.length
+			trackerContract.length +
+				featureWriterContract.length +
+				waitingOnContract.length +
+				ticketCountsContract.length
 		);
 		const text = formatReport(report);
 		expect(text).toContain('FAIL  names the signed-in person');

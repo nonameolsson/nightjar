@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { record } from './ledger.js';
+import { memorySpend } from './fakes/spend.js';
 import { readStatus, StatusFile, type Doing, type TicketProgress } from './status.js';
 
 let dir: string;
@@ -12,8 +12,9 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const at = new Date(2026, 9, 30, 9, 0);
+const spend = memorySpend();
 const file = (path: string, now = () => at) =>
-	new StatusFile({ path, ledger: join(dir, 'runs.jsonl'), now, pid: 42, dailyUsd: 60 });
+	new StatusFile({ path, spend, now, pid: 42, dailyUsd: 60 });
 
 describe('StatusFile', () => {
 	it('flags newer code in codeMoved, and keeps it on later writes', () => {
@@ -27,7 +28,7 @@ describe('StatusFile', () => {
 
 	it('writes what Nightjar does now, with the day spent so far', () => {
 		const path = join(dir, 'nested', 'status.json');
-		record(join(dir, 'runs.jsonl'), {
+		spend.record({
 			at: new Date(2026, 9, 30, 8).toISOString(),
 			repo: 'o/r',
 			feature: '1',
@@ -120,6 +121,27 @@ describe('StatusFile', () => {
 		expect(off?.refreshedAt).toBeUndefined();
 	});
 
+	it('writes optional Ticket counts with the Queue and Waiting on you, and a file without them still reads', () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const counts = { total: 3, closed: 1 };
+		status.refreshed([{ id: '7', title: 'Saved filters', ticketCounts: counts }], {
+			items: [
+				{ kind: 'feature', id: '8', title: 'Exports', why: 'needs info', ticketCounts: null }
+			],
+			trackerCannotList: false
+		});
+		const read = readStatus(path);
+		expect(read?.queue?.[0]?.ticketCounts).toEqual(counts);
+		expect(read?.waitingOnYou?.items[0]?.ticketCounts).toBeNull();
+		status.refreshed([{ id: '7', title: 'Saved filters' }], {
+			items: [],
+			trackerCannotList: false
+		});
+		expect(readStatus(path)?.queue).toEqual([{ id: '7', title: 'Saved filters' }]);
+	});
+
 	it("lists the building Feature's Tickets that need info or a person in Waiting on you as the build runs, and drops them with the Feature", () => {
 		const path = join(dir, 'status.json');
 		const status = file(path);
@@ -149,8 +171,8 @@ describe('StatusFile', () => {
 		);
 		expect(readStatus(path)?.waitingOnYou?.items).toEqual([
 			feature,
-			{ kind: 'ticket', id: '22', title: 'Asks', why: 'needs info' },
-			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person' }
+			{ kind: 'ticket', id: '22', title: 'Asks', why: 'needs info', feature: '20' },
+			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person', feature: '20' }
 		]);
 		// updated as the build runs
 		status.doing(
@@ -162,7 +184,7 @@ describe('StatusFile', () => {
 		);
 		expect(readStatus(path)?.waitingOnYou?.items).toEqual([
 			feature,
-			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person' }
+			{ kind: 'ticket', id: '23', title: 'Stuck', why: 'needs a person', feature: '20' }
 		]);
 		// the Feature is over: what the loop last said shows again
 		status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
@@ -191,7 +213,7 @@ describe('StatusFile', () => {
 		const path = join(dir, 'status.json');
 		const file = new StatusFile({
 			path,
-			ledger: join(dir, 'runs.jsonl'),
+			spend,
 			now: () => new Date(2026, 9, 30, 9),
 			pid: 42,
 			dailyUsd: 60,

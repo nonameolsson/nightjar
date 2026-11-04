@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Nightjar builds a repo's Features with nobody at the keyboard: it reads Tickets from a Tracker, has a Coding agent build each one, and opens one draft pull request per Feature on a Code host. Specced in #1, with its tickets as that issue's sub-issues.
 
-Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement calls the reviewer holds the code to: `CODING_STANDARDS.md`.
+Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement calls the reviewer holds the code to: `CODING_STANDARDS.md`. UI colors and design principles: `DESIGN.md` (product context: `PRODUCT.md`). `docs/design/color-scheme.md` is the brand palette for the icon, not the page.
 
 ## Build, lint, test
 
@@ -25,7 +25,7 @@ The module map is `docs/architecture.md`. The rules that are not visible from th
 
 - `src/build.ts`, the build loop, talks only to the `Tracker` and `CodeHost` interfaces and speaks of Signals.
 - Only `src/github/` calls `gh` (a lint rule holds this); only `src/azure-devops/` calls Azure DevOps.
-- Specs sit beside their code as `*.spec.ts` and run over `src/fakes/`. `src/cli.run.spec.ts` runs the real command end to end; `src/fakes/machine.ts` is a machine of stand-ins (git checkout, `gh`, `az`, `claude` alone on the PATH), so a stand-in script may use shell builtins only. `cli.run.spec.ts` carries its own `claude` and `gh`: a change to what Nightjar asks `claude` must be made in both `claude` stand-ins.
+- Specs sit beside their code as `*.spec.ts` and run over `src/fakes/`. `src/cli.run.spec.ts` runs the real command end to end; `src/fakes/machine.ts` is a machine of stand-ins (git checkout, `gh`, `az`, `claude` alone on the PATH), so a stand-in script may use shell builtins only. `cli.run.spec.ts`, and the `init` and `doctor` specs, share its one `claude`. A spec that runs `runNightjar` in this process passes a `FakeGitHub` as `Host.gh` (and a `FakeAzureDevOps` as `Host.request`); only `cli.run.spec.ts`, which runs a process, reaches the machine's `gh`.
 - A Workflow only adds Steps to the loop: it can never loosen the deny rules in `src/settings.ts`.
 - Specs use placeholder repo names (`o/app`); `scripts/leak-check.spec.ts` rejects a real one, even from a ticket mockup.
 - A fresh worktree has no `node_modules`: run `npm install` before `npm run check`.
