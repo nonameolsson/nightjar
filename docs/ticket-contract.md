@@ -97,6 +97,16 @@ What to build.
 
 A Ticket on the Tracker is held to the same contract before its Session. One without acceptance criteria, or with a `**Model:**` or `**Effort:**` line with no value, is handed back with no Session and no spend: the ready Signal comes off, needs info goes on, and a comment lists each fault. Nightjar never edits the issue.
 
+`nightjar doctor FEATURE` checks a Feature's open Tickets against that contract, and also what sits across the Feature's Tickets, which the build does not check before a Session. Each is a fault, and any fault makes it exit 1:
+
+- an open blocker that is not one of the Feature's Tickets (a closed blocker, or one among the Feature's Tickets, is no fault), since a build never reaches it;
+- a blocking loop between Tickets, named by each Ticket in it, since none of them is built;
+- an open Ticket without the ready Signal, since a build skips it;
+- a Feature with no open Tickets, since a build has nothing to do;
+- a `**Workflow:**` line naming a Workflow `factory.json` does not have.
+
+It reads only what every Tracker gives (the Feature, its Tickets and their blockers), and changes nothing.
+
 `nightjar create --dry-run FILE` reads the file and says what it would make, making nothing. A file out of this shape is refused before anything is made, with every fault and its line.
 
 `nightjar create` then makes, in order: the Feature, with no Signal; each Ticket as its last child, linked to its blockers and then given the ready Signal. It prints each with the Tracker's reference (`#12`, `AB#12`). If the Tracker fails part way, it names what it made before the fault and undoes nothing. It never assigns the Feature and never gives the Go: that stays with a person. Only a Source with `"go": true`, which makes its Features the same way, then assigns each to its owner and gives the Go.

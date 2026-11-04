@@ -15,6 +15,7 @@ import type { GhRunner } from './github/api.js';
 import type { Ask } from './ask.js';
 import type { Prompter } from './prompter.js';
 import { runDoctor } from './doctor.js';
+import { runFeatureDoctor } from './doctor-feature.js';
 import { runInitCommand } from './init.js';
 import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
@@ -136,6 +137,15 @@ export async function runNightjar(
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	if (args.mode === 'doctor') {
 		const { cwd, request, gh } = host;
+		if (args.feature !== undefined) {
+			return runFeatureDoctor({
+				feature: args.feature,
+				env,
+				cwd,
+				...(request ? { request } : {}),
+				...(gh ? { gh } : {})
+			});
+		}
 		return runDoctor({
 			useApiKey: args.useApiKey,
 			...(args.profile === undefined ? {} : { profile: args.profile }),
