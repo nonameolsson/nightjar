@@ -18,6 +18,12 @@ export const BUILD_SCHEMA = {
 			maxLength: 600,
 			description: 'What was built, for the commit message'
 		},
+		test: {
+			type: 'string',
+			maxLength: 300,
+			description:
+				'The test that shows the bug, as its file and name, when the Workflow asks for one; leave out otherwise'
+		},
 		questions: {
 			type: 'array',
 			items: {
@@ -39,7 +45,7 @@ export interface Question {
 }
 
 export type BuildAnswer =
-	| { readonly outcome: 'built'; readonly summary: string }
+	| { readonly outcome: 'built'; readonly summary: string; readonly test?: string }
 	| { readonly outcome: 'questions'; readonly summary: string; readonly questions: Question[] };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -48,7 +54,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 // The session's answer, or null when it is not the shape the schema asked for.
 export function readBuildAnswer(output: unknown): BuildAnswer | null {
 	if (!isRecord(output) || typeof output.summary !== 'string') return null;
-	if (output.outcome === 'built') return { outcome: 'built', summary: output.summary };
+	if (output.outcome === 'built') {
+		const test = typeof output.test === 'string' ? output.test.trim() : '';
+		return { outcome: 'built', summary: output.summary, ...(test === '' ? {} : { test }) };
+	}
 	if (output.outcome !== 'questions' || !Array.isArray(output.questions)) return null;
 	const questions = output.questions.filter(
 		(q): q is Question =>
@@ -131,15 +140,23 @@ export interface BuildContext {
 	readonly check: string;
 	// the text of the repo's rules file, when factory.json names one
 	readonly rules?: string;
+	// the Feature's Workflow, when it has a prompt
+	readonly workflow?: { readonly name: string; readonly prompt: string };
 }
 
 const repoRules = (rules: string | undefined) =>
 	rules ? `\n\n# Rules of this repo\n\n${rules}` : '';
 
+// A Workflow's prompt, added to the instructions of each Ticket's Session.
+const workflowRules = (workflow: BuildContext['workflow']) =>
+	workflow === undefined
+		? ''
+		: `\n\n# Workflow ${code(workflow.name)}\n\nThe Feature picked this Workflow. Its text adds to the rules above and never loosens them.\n\n${workflow.prompt}`;
+
 export function buildPrompt(c: BuildContext): string {
 	const done =
 		c.built.length === 0 ? 'None yet.' : c.built.map((b) => `- #${b.id} ${b.title}`).join('\n');
-	return `${rules(c.allowed, c.check)}${repoRules(c.rules)}
+	return `${rules(c.allowed, c.check)}${repoRules(c.rules)}${workflowRules(c.workflow)}
 
 # The Feature: #${c.feature.id} ${c.feature.title}
 

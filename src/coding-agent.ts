@@ -95,6 +95,8 @@ export interface BuildRequest extends Work {
 	readonly featureComments: readonly Comment[];
 	readonly ticketComments: readonly Comment[];
 	readonly built: readonly { readonly id: string; readonly title: string }[];
+	// the Feature's Workflow, when it has a prompt, which joins the Session's instructions
+	readonly workflow?: { readonly name: string; readonly prompt: string };
 }
 
 // A Step's fix rounds run with the Step's own extras and model, so a fix can do what the Step could; a Pull-check fix runs as the build it fixes; a Feedback round's fix keeps its answer's shape.
@@ -167,7 +169,8 @@ export type Ended =
 type Outcome<T> = (T | Ended) & { readonly sessionId: string; readonly costUsd: number };
 
 export type BuildOutcome = Outcome<
-	| { readonly kind: 'built'; readonly summary: string }
+	// `test`: the test the Session says shows the bug, when it reports one
+	| { readonly kind: 'built'; readonly summary: string; readonly test?: string }
 	| { readonly kind: 'questions'; readonly questions: readonly Question[] }
 >;
 
@@ -281,7 +284,8 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 					built: req.built,
 					allowed: setup.allowedCommands,
 					check: setup.check,
-					rules: setup.rules
+					rules: setup.rules,
+					...(req.workflow === undefined ? {} : { workflow: req.workflow })
 				}),
 				sessionId: req.sessionId,
 				...pick({
@@ -293,7 +297,11 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				const answer = readBuildAnswer(output);
 				if (answer === null) return null;
 				return answer.outcome === 'built'
-					? { kind: 'built' as const, summary: answer.summary }
+					? {
+							kind: 'built' as const,
+							summary: answer.summary,
+							...(answer.test === undefined ? {} : { test: answer.test })
+						}
 					: { kind: 'questions' as const, questions: answer.questions };
 			}
 		);
