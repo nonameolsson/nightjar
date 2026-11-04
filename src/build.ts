@@ -30,6 +30,7 @@ import {
 	type Worktree
 } from './worktree.js';
 import {
+	DIFF_CHARS,
 	chooseWorkflow,
 	openWorkflow,
 	type FixEnd,
@@ -101,6 +102,8 @@ export interface Deps {
 	readonly openWorktree: OpenWorktree;
 	readonly now: () => Date;
 	readonly newId: () => string;
+	// whether the Coding agent still has the Session of this id on this machine, to resume
+	readonly sessionExists: (id: string) => boolean;
 	readonly say: (line: string) => void;
 	readonly status: StatusReport;
 }
@@ -802,7 +805,7 @@ export type PullFixOutcome =
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
 
-// One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
+// One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
 export async function fixPullChecks(
 	deps: Deps,
 	setup: Setup,
@@ -830,8 +833,7 @@ export async function fixPullChecks(
 	if (![...trailers.keys()].some((k) => k.startsWith(TRAILER_PREFIX))) {
 		return skip("its head commit is not Nightjar's");
 	}
-	const session = trailers.get(SESSION_TRAILER);
-	if (session === undefined) return skip('its head commit names no Session to resume');
+	const headSession = trailers.get(SESSION_TRAILER);
 	// counted from the branch, so neither a new run nor taking needs a person off resets it
 	const used = await tree.pullFixes();
 	const rounds = setup.limits.pullFixRounds;
@@ -843,6 +845,16 @@ export async function fixPullChecks(
 	}
 	const round = used + 1;
 	deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, fix ${String(round)}`);
+	// the head commit's Session where this machine still has it, else a new one
+	const session: PullFixSession =
+		headSession !== undefined && deps.sessionExists(headSession)
+			? { kind: 'resume', id: headSession }
+			: { kind: 'fresh', id: deps.newId() };
+	if (session.kind === 'fresh') {
+		deps.say(
+			`${hash(feature.id)}: ${headSession === undefined ? 'the head commit names no Session' : `Session ${headSession} is not on this machine`}, starting a new one`
+		);
+	}
 	await tracker.addSignal(feature.id, 'working');
 	let got: PullFixOutcome;
 	try {
@@ -897,6 +909,9 @@ async function handOver(
 	deps.say(`${hash(feature)}: handed to a person, ${why}`);
 }
 
+// The Session a Pull-check fix round runs in: the head commit's, resumed, or a new one when this machine has none.
+type PullFixSession = { readonly kind: 'resume' | 'fresh'; readonly id: string };
+
 async function pullFixRound(
 	deps: Deps,
 	setup: Setup,
@@ -904,11 +919,12 @@ async function pullFixRound(
 		feature: Feature;
 		tree: Worktree;
 		draft: NightjarDraft;
-		session: string;
+		session: PullFixSession;
 		round: number;
 	}
 ): Promise<PullFixOutcome> {
-	const { feature, tree, draft, session, round } = o;
+	const { feature, tree, draft, round } = o;
+	const session = o.session.id;
 	const { pull } = draft;
 	const show = buildingOf(feature, deps.now);
 	let sessionStartedAt = deps.now();
@@ -961,10 +977,13 @@ async function pullFixRound(
 		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
 		return `\`${setup.check}\` still fails after the fix rounds`;
 	};
+	// a new Session knows nothing of the work: it is given the Feature and the branch's diff as it stands
+	const fresh =
+		o.session.kind === 'fresh' ? { feature, diff: await tree.diff(DIFF_CHARS) } : undefined;
 	const got = await deps.codingAgent.fix({
 		kind: 'fix',
 		at: tree.at,
-		of: { kind: 'pullChecks' },
+		of: fresh === undefined ? { kind: 'pullChecks' } : { kind: 'pullChecks', fresh },
 		resume: session,
 		round,
 		tail: pullChecksReport(draft.checks.failed),

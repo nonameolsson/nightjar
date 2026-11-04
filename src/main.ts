@@ -39,7 +39,7 @@ import {
 	queue,
 	type QueueDeps
 } from './queue.js';
-import { runSession } from './session.js';
+import { runSession, sessionExists } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -237,6 +237,7 @@ export async function runNightjar(
 		openWorktree,
 		now: () => new Date(),
 		newId: () => randomUUID(),
+		sessionExists: (id) => sessionExists(id, ready.env),
 		say: runSay,
 		status
 	};

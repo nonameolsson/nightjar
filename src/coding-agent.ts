@@ -7,6 +7,7 @@ import {
 	STEP_SCHEMA,
 	buildPrompt,
 	fixPrompt,
+	freshPullChecksPrompt,
 	pullChecksPrompt,
 	readBuildAnswer,
 	readReview,
@@ -95,12 +96,19 @@ export interface BuildRequest extends Work {
 export type Fixing =
 	| { readonly kind: 'build' }
 	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras }
-	| { readonly kind: 'pullChecks' };
+	// `fresh` is given when the head commit's Session is gone: the fix starts a new Session, which has only this to go on
+	| {
+			readonly kind: 'pullChecks';
+			readonly fresh?: {
+				readonly feature: Feature;
+				readonly diff: { readonly text: string; readonly truncated: boolean };
+			};
+	  };
 
 export interface FixRequest extends Work {
 	readonly kind: 'fix';
 	readonly of: Fixing;
-	// the Session of the work it fixes
+	// the Session of the work it fixes, which the fix resumes; a Pull-check fix with `fresh` starts a new Session under this id
 	readonly resume: string;
 	readonly round: number;
 	// the failing check's output; for a Pull-check fix, the failed Pull checks in the gate report's shape
@@ -268,15 +276,29 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 	});
 
 	// A build's fix round keeps the model the Session was resumed on: it names none.
-	const fix = (req: FixRequest) =>
-		outcomeOf(
+	// A fresh Pull-check fix starts a Session of its own, so it runs on the defaults a build would.
+	const fix = (req: FixRequest) => {
+		const fresh = req.of.kind === 'pullChecks' ? req.of.fresh : undefined;
+		const prompt = (): string => {
+			if (req.of.kind !== 'pullChecks') {
+				return fixPrompt(req.round, setup.limits.fixRounds, setup.check, req.tail);
+			}
+			if (fresh === undefined) return pullChecksPrompt(setup.check, req.tail);
+			return freshPullChecksPrompt({
+				feature: fresh.feature,
+				base: req.at.base,
+				diff: fresh.diff,
+				allowed: setup.allowedCommands,
+				check: setup.check,
+				...(setup.rules === undefined ? {} : { rules: setup.rules }),
+				report: req.tail
+			});
+		};
+		return outcomeOf(
 			request(req, {
-				prompt:
-					req.of.kind === 'pullChecks'
-						? pullChecksPrompt(setup.check, req.tail)
-						: fixPrompt(req.round, setup.limits.fixRounds, setup.check, req.tail),
+				prompt: prompt(),
 				sessionId: req.resume,
-				resume: req.resume,
+				...(fresh === undefined ? { resume: req.resume } : pick()),
 				...(req.minutes === undefined ? {} : { minutes: req.minutes }),
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {})
 			}),
@@ -295,6 +317,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 					: { kind: 'gaveUp' as const };
 			}
 		);
+	};
 
 	// A Step without an `until` runs one round, on its first prompt.
 	const step = (req: StepRequest) =>

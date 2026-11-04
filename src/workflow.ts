@@ -180,8 +180,8 @@ interface Undone {
 // How one Step of a Workflow ended.
 type StepEnd = { readonly kind: 'done' } | Undone | Halt;
 
-// The most of a Feature's diff a Step's prompt carries; the rest is in git.
-const DIFF_CHARS = 60_000;
+// The most of a Feature's diff a Step's or a fresh Pull-check fix's prompt carries; the rest is in git.
+export const DIFF_CHARS = 60_000;
 
 // One Feature's Workflow, with the Steps its branch holds already, by their trailers.
 export async function openWorkflow(

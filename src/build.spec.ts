@@ -95,6 +95,8 @@ interface World {
 	settle: (req: Work) => Ending | undefined;
 	checkOk: boolean;
 	setupOk: boolean;
+	// the Sessions this machine has not got, as a Session made on another machine is
+	readonly goneSessions: Set<string>;
 	// what the loop told .factory/status.json, in order
 	readonly doing: Doing[];
 	readonly happened: Happened[];
@@ -218,6 +220,7 @@ function worldOf(o: {
 		settle: () => undefined,
 		checkOk: true,
 		setupOk: true,
+		goneSessions: new Set(),
 		doing: [],
 		happened: []
 	};
@@ -290,6 +293,7 @@ function deps(world: World): Deps {
 		openWorktree: world.git ? openWorktree : world.trees.open,
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
+		sessionExists: (sid) => !world.goneSessions.has(sid),
 		say: () => undefined,
 		status: {
 			doing: (d) => world.doing.push(d),
@@ -1533,6 +1537,92 @@ describe('the Pull-check pass in --watch', () => {
 		// then Feature 10, built as before
 		expect(rest.map((r) => r.kind)).toEqual(['build', 'review']);
 		expect(rest[0]).toMatchObject({ ticket: { id: '11' } });
+	});
+
+	it("resumes the head commit's Session while this machine has it, and starts no new one", async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		await queue(watch(world), false);
+		expect(askedOf(world, 'fix')[0]?.of).toEqual({ kind: 'pullChecks' });
+	});
+
+	describe("when the head commit's Session is gone", () => {
+		// the new Sessions of the run are named fresh-1, fresh-2 and so on
+		function fresh() {
+			let n = 0;
+			return { newId: () => `fresh-${String((n += 1))}` };
+		}
+
+		it("starts a fresh Session given the Feature, the branch's diff and each failed Pull check, and does not fail", async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.goneSessions.add('session-2');
+			expect(await queue(watch(world, { deps: fresh() }), false)).toBe(130);
+
+			const [first] = askedOf(world, 'fix');
+			expect(first).toMatchObject({
+				of: { kind: 'pullChecks', fresh: { feature: { id: '1', title: 'One escape' } } },
+				resume: 'fresh-1',
+				round: 1,
+				budgetUsd: LIMITS.pullFixUsd
+			});
+			const given = first?.of.kind === 'pullChecks' ? first.of.fresh : undefined;
+			// every Ticket's work is in the diff, as the Session that built it is not here to tell
+			expect(given?.diff.text).toContain('ticket-2.txt');
+			expect(given?.diff.text).toContain('ticket-3.txt');
+			for (const f of FAILURES) {
+				expect(first?.tail).toContain(f.check);
+				expect(first?.tail).toContain(`step ${f.step}`);
+				expect(first?.tail).toContain(f.logTail.split('\n').at(-1));
+			}
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+
+		it('then commits with its Factory-Pull-Fix trailer and pushes, as a resumed round does', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.goneSessions.add('session-2');
+			const before = world.trees.messages(tree());
+			await queue(watch(world, { deps: fresh() }), false);
+
+			const after = world.trees.messages(tree());
+			expect(after.slice(1)).toEqual(before);
+			expect(after[0]?.split('\n')[0]).toBe('Fix the Pull checks, round 1');
+			expect(after[0]).toMatch(/\nFactory-Pull-Fix: 1\nFactory-Session: fresh-1$/);
+			expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(2);
+			expect(world.host.pulls[0]?.body).toContain('Pull checks');
+			expect(ledger(world).find((e) => e.step === 'pullChecks')?.session).toBe('fresh-1');
+		});
+
+		it("runs the check's own fix rounds in the new Session", async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.goneSessions.add('session-2');
+			world.checkOk = false;
+			world.fixAgent = (req) => {
+				write(world, req.at.folder, `fix-${String(req.round)}.txt`);
+				if (req.of.kind === 'build') world.checkOk = true;
+				return { kind: 'fixed', summary: 'Fixed.', sessionId: req.resume, costUsd: 1 };
+			};
+			await queue(watch(world, { deps: fresh() }), false);
+			expect(askedOf(world, 'fix').map((f) => [f.of.kind, f.resume])).toEqual([
+				['pullChecks', 'fresh-1'],
+				['build', 'fresh-1']
+			]);
+			expect(world.trees.subjects(tree())[0]).toBe('Fix the Pull checks, round 1');
+		});
+
+		it('starts a fresh Session also when the head commit names no Session', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.trees.commitAsPerson(tree(), 'Tidy\n\nFactory-Ticket: #9', 'tidy.txt');
+			await queue(watch(world, { deps: fresh() }), false);
+			expect(askedOf(world, 'fix')[0]).toMatchObject({
+				of: { kind: 'pullChecks', fresh: {} },
+				resume: 'fresh-1'
+			});
+			expect(world.trees.subjects(tree())[0]).toBe('Fix the Pull checks, round 1');
+		});
 	});
 
 	it('commits a green fix as one new commit with a Factory-Pull-Fix: 1 trailer and pushes it, the earlier commits unchanged', async () => {
