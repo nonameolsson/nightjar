@@ -183,7 +183,9 @@ const triedKey = (d: NightjarDraft) => `${String(d.pull.id)} ${d.headCommit}`;
 async function nextRedDraft(
 	deps: QueueDeps,
 	pass: PullChecksPass,
-	tried: ReadonlySet<string>
+	tried: ReadonlySet<string>,
+	// `nightjar <id>`: only this Feature's draft
+	only?: ItemId
 ): Promise<RedDraft | null> {
 	const drafts = [...(await pass.drafts())].sort((a, b) => a.pull.id - b.pull.id);
 	for (const draft of drafts) {
@@ -193,7 +195,7 @@ async function nextRedDraft(
 		// handed to a person once, it stays theirs when they take needs a person off
 		if (handedOver(draft.body)) continue;
 		const feature = featureOfBody(draft.body);
-		if (feature === undefined) continue;
+		if (feature === undefined || (only !== undefined && feature !== only)) continue;
 		try {
 			const { assignees, signals } = await deps.tracker.standing(feature);
 			if (!assignees.some((a) => samePerson(a, deps.person)) || signals.length > 0) continue;
@@ -210,11 +212,12 @@ async function nextRedDraft(
 async function revisit(
 	deps: QueueDeps,
 	pass: PullChecksPass,
-	tried: Set<string>
+	tried: Set<string>,
+	only?: ItemId
 ): Promise<PullFixOutcome | null> {
 	let red: RedDraft | null;
 	try {
-		red = await nextRedDraft(deps, pass, tried);
+		red = await nextRedDraft(deps, pass, tried, only);
 	} catch (fault) {
 		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
 		return null;
@@ -231,6 +234,24 @@ async function revisit(
 		deps.say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
 		return { kind: 'skipped', why: reason };
 	}
+}
+
+// Whether a round did a piece of work; a skipped one left the pull request alone, so the Queue's next work is still due.
+const didWork = (got: PullFixOutcome | null): got is PullFixOutcome =>
+	got !== null && got.kind !== 'skipped';
+
+// The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
+export function pullFixExit(got: PullFixOutcome): number {
+	return got.kind === 'fixed' || got.kind === 'gaveUp' || got.kind === 'atLimit' ? 0 : 1;
+}
+
+// `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today.
+export async function fixNamed(deps: QueueDeps, id: ItemId): Promise<PullFixOutcome | null> {
+	const pass = deps.pullChecks;
+	if (pass === undefined) return null;
+	const got = await revisit(deps, pass, new Set(), id);
+	if (got?.kind === 'paused') deps.say(got.why);
+	return didWork(got) ? got : null;
 }
 
 const none = (deps: Pick<QueueDeps, 'person'>) =>
@@ -266,12 +287,18 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	// the drafts the revisit pass took this run, at their head commit then
 	const tried = new Set<string>();
 	while (stop?.aborted !== true) {
-		// --watch revisits a red draft before it takes the next Feature, and on each idle tick
-		const pass = once ? undefined : deps.pullChecks;
+		// a red draft is revisited before the next Feature is taken, and on each idle tick in --watch
+		const pass = deps.pullChecks;
 		if (pass !== undefined) {
 			const got = await revisit(deps, pass, tried);
-			if (got?.kind === 'paused') await pause(got.why);
-			if (got !== null) continue;
+			if (once) {
+				// --once is one piece of work: the oldest red draft, else the next Feature
+				if (got?.kind === 'paused') deps.say(got.why);
+				if (didWork(got)) return pullFixExit(got);
+			} else {
+				if (got?.kind === 'paused') await pause(got.why);
+				if (got !== null) continue;
+			}
 		}
 		let features;
 		try {

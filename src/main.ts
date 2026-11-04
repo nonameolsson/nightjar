@@ -32,8 +32,10 @@ import { claimPorts, portEnv } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
+	fixNamed,
 	handBack,
 	pullChecksPass,
+	pullFixExit,
 	queue,
 	type QueueDeps
 } from './queue.js';
@@ -287,6 +289,9 @@ export async function runNightjar(
 
 	try {
 		if (args.mode === 'feature' && args.feature !== undefined) {
+			// a Feature with a red draft is fixed, not built: it holds no Go by now
+			const fixed = await fixNamed(queueDeps, args.feature);
+			if (fixed !== null) return pullFixExit(fixed);
 			let refusal: string | null;
 			try {
 				refusal = await cannotClaim(queueDeps, args.feature);

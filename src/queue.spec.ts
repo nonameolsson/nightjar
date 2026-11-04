@@ -11,7 +11,16 @@ import type { PullChecks } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker, type NewItem } from './fakes/tracker.js';
 import type { Waiting } from './plan.js';
-import { buildNamed, cannotClaim, dryRun, pullChecksPass, queue, type QueueDeps } from './queue.js';
+import {
+	buildNamed,
+	cannotClaim,
+	dryRun,
+	fixNamed,
+	pullChecksPass,
+	pullFixExit,
+	queue,
+	type QueueDeps
+} from './queue.js';
 import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
 
 function world() {
@@ -367,13 +376,85 @@ describe('queue --watch with the Pull-check pass', () => {
 		expect(d.fixed).toEqual(['20', '20']);
 		expect(w.doing[0]).toMatchObject({ kind: 'paused', why: 'the daily limit was reached' });
 	});
+});
 
-	it('takes no draft in --once', async () => {
+describe('queue --once with the Pull-check pass', () => {
+	it('fixes the oldest red draft as its one piece of work, builds no Feature and exits', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		d.done('22');
+		await d.open('20');
+		await d.open('22');
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(d.fixed).toEqual(['20']);
+		expect(w.built).toEqual([]);
+		expect(w.sleeps).toEqual([]);
+	});
+
+	it('builds the next Feature when no draft is red', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20', { pending: false, failed: [] });
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(d.fixed).toEqual([]);
+		expect(w.built).toEqual(['2']);
+	});
+
+	it('builds the next Feature when the draft is not Nightjar to fix after all', async () => {
 		const w = world();
 		const d = withDrafts(w);
 		d.done('20');
 		await d.open('20');
-		await queue(w.deps, true);
+		d.fixWith(() => Promise.resolve({ kind: 'skipped', why: 'its head commit is not Nightjar' }));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(d.fixed).toEqual(['20']);
+		expect(w.built).toEqual(['2']);
+	});
+
+	it('exits 0 when the round gave up and handed the Feature to a person', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1 }));
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.built).toEqual([]);
+	});
+
+	it('exits 1, saying why, when the daily limit holds the round back, and builds nothing', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
+		expect(await queue(w.deps, true)).toBe(1);
+		expect(w.lines).toContain('the daily limit was reached');
+		expect(w.built).toEqual([]);
+	});
+
+	it('builds the next Feature when the Code host cannot list the drafts, saying so', async () => {
+		const w = world();
+		w.deps = {
+			...w.deps,
+			pullChecks: {
+				drafts: () => Promise.reject(new Error('the Code host is down')),
+				fix: () => Promise.reject(new Error('never'))
+			}
+		};
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(w.built).toEqual(['2']);
+		expect(w.lines.some((l) => l.includes('the Code host is down'))).toBe(true);
+	});
+
+	it('takes no draft when the pass is off', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		const { pullChecks: _off, ...off } = w.deps;
+		expect(await queue(off, true)).toBe(0);
 		expect(d.fixed).toEqual([]);
 		expect(w.built).toEqual(['2']);
 	});
@@ -675,5 +756,63 @@ describe('nightjar <id>', () => {
 			why: 'boom',
 			startedAt: new Date(2026, 9, 30, 9).toISOString()
 		});
+	});
+});
+
+describe('nightjar <id> with the Pull-check pass', () => {
+	it("fixes that Feature's red draft, not another Feature's, even when an older one is red", async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		d.done('22');
+		await d.open('20');
+		await d.open('22');
+		const got = await fixNamed(w.deps, '22');
+		expect(got).toMatchObject({ kind: 'fixed' });
+		expect(d.fixed).toEqual(['22']);
+		expect(w.built).toEqual([]);
+		expect(got === null ? 1 : pullFixExit(got)).toBe(0);
+	});
+
+	it('leaves the Feature to be built as today when it has no red draft', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20', { pending: false, failed: [] });
+		d.done('22');
+		await d.open('22');
+		expect(await fixNamed(w.deps, '20')).toBeNull();
+		expect(await fixNamed(w.deps, '4')).toBeNull();
+		expect(d.fixed).toEqual([]);
+	});
+
+	it('leaves the Feature to be built when the round skipped its draft', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'skipped', why: 'nothing to resume' }));
+		expect(await fixNamed(w.deps, '20')).toBeNull();
+	});
+
+	it('exits 1, saying why, when the daily limit holds the round back', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		d.fixWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
+		const got = await fixNamed(w.deps, '20');
+		expect(got === null ? 0 : pullFixExit(got)).toBe(1);
+		expect(w.lines).toContain('the daily limit was reached');
+	});
+
+	it('does nothing when the pass is off', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		await d.open('20');
+		const { pullChecks: _off, ...off } = w.deps;
+		expect(await fixNamed(off, '20')).toBeNull();
+		expect(d.fixed).toEqual([]);
 	});
 });
