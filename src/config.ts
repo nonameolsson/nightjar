@@ -53,7 +53,14 @@ const AzureDevOpsTracker = z
 	});
 
 const GitHubCodeHost = z
-	.strictObject({ type: z.literal('github'), repo })
+	.strictObject({
+		type: z.literal('github'),
+		repo,
+		trustedChecks: z.array(z.string().regex(/\S/, 'a check app is empty')).optional().meta({
+			description:
+				'The slugs of the GitHub Apps whose failed checks on the pull request reach the agent as feedback, besides GitHub Actions, whose checks always do. A check from any other app is left out.'
+		})
+	})
 	.meta({ description: 'GitHub: the branch is pushed to origin and a draft pull request opened' });
 
 const AzureReposCodeHost = z

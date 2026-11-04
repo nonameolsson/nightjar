@@ -2,12 +2,21 @@
 import type { RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
+import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
-import type { Signal } from './signals.js';
+import {
+	featureAfterRunStep,
+	featureStopStep,
+	stoppedStep,
+	ticketStep,
+	type TicketHandBack
+} from './next-step.js';
+import type { Signal, SignalNames } from './signals.js';
+import { ticketFaults } from './ticket-contract.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -91,6 +100,7 @@ export interface Setup extends WorkflowSettings {
 		readonly model?: string;
 		readonly effort?: string;
 	};
+	readonly signals: SignalNames;
 	readonly limits: Limits;
 	readonly signal?: AbortSignal;
 }
@@ -107,7 +117,8 @@ export type FeatureOutcome =
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
 
-export const FOOTER = '\n\n---\n_Built by Nightjar._';
+// A comment for a person: what happened, then what they do next.
+const withNext = (body: string, step: string) => `${body}\n\n${step}${FOOTER}`;
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
@@ -158,7 +169,8 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			id,
 			why,
 			`Nightjar built nothing: ${chosen.why}`,
-			waiting(tickets, new Set())
+			waiting(tickets, new Set()),
+			setup.signals
 		);
 	}
 	const tree = await deps.openWorktree(
@@ -182,7 +194,8 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 				id,
 				why,
 				`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${got.tail}\n\`\`\``,
-				waiting(tickets, built)
+				waiting(tickets, built),
+				setup.signals
 			);
 		}
 		await tree.markSetUp();
@@ -198,12 +211,13 @@ async function needsInfoStop(
 	id: ItemId,
 	why: string,
 	comment: string,
-	left: Waiting[]
+	left: Waiting[],
+	signals: SignalNames
 ): Promise<FeatureOutcome> {
 	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
 	await deps.tracker.removeSignal(id, 'working');
 	await deps.tracker.addSignal(id, 'needsInfo');
-	await deps.tracker.comment(id, `${comment}${FOOTER}`);
+	await deps.tracker.comment(id, withNext(comment, featureStopStep(signals)));
 	return { kind: 'nothing', waiting: left };
 }
 
@@ -232,6 +246,9 @@ class FeatureRun {
 	private steps: WorkflowRun | null = null;
 	// what the status file shows now, so a Ticket built can change its Tickets alone
 	private shown: Doing | null = null;
+	// when the Feature's build began, and when the session now running did
+	private readonly startedAt: Date;
+	private sessionStartedAt: Date;
 
 	constructor(
 		private readonly deps: Deps,
@@ -242,7 +259,10 @@ class FeatureRun {
 		private readonly built: Set<ItemId>,
 		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
 		private readonly show: ShowBuilding
-	) {}
+	) {
+		this.startedAt = deps.now();
+		this.sessionStartedAt = this.startedAt;
+	}
 
 	private get aborted() {
 		return this.setup.signal?.aborted === true;
@@ -300,13 +320,16 @@ class FeatureRun {
 
 	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
 		this.costs.push({ ticket: entry.ticket, work, usd: entry.costUsd });
+		const at = this.deps.now();
 		this.deps.spend.record({
-			at: this.deps.now().toISOString(),
+			at: at.toISOString(),
 			repo: this.setup.repo,
 			feature: this.feature.id,
 			branch: this.tree.at.branch,
+			durationMs: Math.max(0, at.getTime() - this.sessionStartedAt.getTime()),
 			...entry
 		});
+		this.sessionStartedAt = at;
 	}
 
 	// Hands a Ticket to a person: no code kept on the branch, the reason on the Ticket.
@@ -314,9 +337,10 @@ class FeatureRun {
 		ticket: Ticket,
 		before: string,
 		body: string,
-		signal: Signal,
+		kind: TicketHandBack,
 		why: string
 	) {
+		const signal: Signal = kind === 'human' ? 'human' : 'needsInfo';
 		const { tracker } = this.deps;
 		this.deps.status.happened({
 			kind: 'needs-info',
@@ -326,7 +350,10 @@ class FeatureRun {
 		});
 		const side = await this.tree.discard(before, ticket.id);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
-		await tracker.comment(ticket.id, `${body}${kept}${FOOTER}`);
+		await tracker.comment(
+			ticket.id,
+			withNext(`${body}${kept}`, ticketStep(this.setup.signals, kind))
+		);
 		await tracker.removeSignal(ticket.id, 'ready');
 		await tracker.addSignal(ticket.id, signal);
 		const i = this.tickets.indexOf(ticket);
@@ -338,6 +365,17 @@ class FeatureRun {
 
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		const before = await this.tree.head();
+		const faults = ticketFaults(ticket.body);
+		if (faults.length > 0) {
+			await this.handBack(
+				ticket,
+				before,
+				`Nightjar did not start a Session on this Ticket, because it does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+				'retry',
+				`it fails the Ticket contract: ${faults.join(' ')}`
+			);
+			return NEXT;
+		}
 		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
 		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);
@@ -378,7 +416,7 @@ class FeatureRun {
 					ticket,
 					before,
 					`Nightjar could not build this Ticket: ${got.why}.\n\nSession: \`claude --resume ${sessionId}\``,
-					'needsInfo',
+					'retry',
 					got.why
 				);
 				return NEXT;
@@ -403,7 +441,7 @@ class FeatureRun {
 		const limit = this.setup.limits.questionRounds;
 		if (round <= limit) {
 			const asked = `it asked ${String(questions.length)} question${questions.length === 1 ? '' : 's'}, round ${String(round)}`;
-			await this.handBack(ticket, before, questionsComment(questions, round), 'needsInfo', asked);
+			await this.handBack(ticket, before, questionsComment(questions, round), 'answer', asked);
 			return;
 		}
 		const asked = questions.map((q, i) => `${String(i + 1)}. ${q.question}`).join('\n');
@@ -446,7 +484,7 @@ class FeatureRun {
 				ticket,
 				before,
 				`Nightjar's session said it built this Ticket but changed no file.\n\nSession: \`claude --resume ${sessionId}\``,
-				'needsInfo',
+				'retry',
 				'it said it built the Ticket but changed no file'
 			);
 			return NEXT;
@@ -520,6 +558,7 @@ class FeatureRun {
 		session: string,
 		rounds: { readonly round: number; readonly rounds: number }
 	) {
+		this.sessionStartedAt = this.deps.now();
 		this.shown = this.show({
 			ticket,
 			step,
@@ -537,7 +576,10 @@ class FeatureRun {
 		let paused = last.kind === 'paused' ? last.why : null;
 		await tracker.removeSignal(id, 'working');
 		if (this.aborted || last.kind === 'aborted') {
-			await tracker.comment(id, `The Nightjar run was stopped by a person.${FOOTER}`);
+			await tracker.comment(
+				id,
+				withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
+			);
 			return { kind: 'stopped' };
 		}
 		if (paused) await this.pause(paused);
@@ -552,7 +594,10 @@ class FeatureRun {
 			await tracker.addSignal(id, 'needsInfo');
 			await tracker.comment(
 				id,
-				`Nightjar built nothing for this Feature.\n\n${waitingList(left)}${FOOTER}`
+				withNext(
+					`Nightjar built nothing for this Feature.\n\n${waitingList(left)}`,
+					featureAfterRunStep(this.setup.signals, { waiting: left.length > 0, red: false })
+				)
 			);
 			return { kind: 'nothing', waiting: left };
 		}
@@ -613,7 +658,12 @@ class FeatureRun {
 			kind: 'pull',
 			feature: id,
 			title: this.feature.title,
-			url: pull.url
+			url: pull.url,
+			startedAt: this.startedAt.toISOString(),
+			tickets: {
+				built: this.tickets.filter((t) => this.built.has(t.id)).length,
+				total: this.tickets.length
+			}
 		});
 		if (!paused && (left.length > 0 || red)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
@@ -627,7 +677,10 @@ class FeatureRun {
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
 			await tracker.comment(
 				id,
-				`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}${FOOTER}`
+				withNext(
+					`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}`,
+					featureAfterRunStep(this.setup.signals, { waiting: left.length > 0, red: red !== null })
+				)
 			);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };

@@ -8,6 +8,7 @@ import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
 import { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
+import type { Prompter } from './prompter.js';
 
 let out: string[];
 let err: string[];
@@ -196,6 +197,21 @@ describe('nightjar init asks, never guesses', () => {
 		expect(out.join('\n')).toContain('1. make test  (from Makefile "test")');
 		expect(out.join('\n')).toContain('2. go test ./...  (from go.mod)');
 		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
+	});
+
+	it('refuses a list of numbers as the check command, and lists the choices indented', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		await init(['github', '', 'github', '', '1,2', '2', '', '']);
+		expect(out.join('\n')).toContain('pick one number');
+		expect(out).toContain('  1. make test  (from Makefile "test")');
+		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
+	});
+
+	it('refuses a list of numbers as the check command when none is detected', async () => {
+		await init(['github', '', 'github', '', '1,2', 'make check', '', '']);
+		expect(out.join('\n')).toContain('the check is a single command');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
 	it('writes nothing when the input ends before the check command is given', async () => {
@@ -654,5 +670,110 @@ describe('nightjar init with --yes and flags', () => {
 			tracker: { repo: 'acme/widgets' },
 			check: 'make check'
 		});
+	});
+});
+
+describe('nightjar init on a terminal, with select prompts', () => {
+	// scripted picks; a pick is a value, or a list of values for a multi-select
+	function withUi(picks: (string | string[] | boolean | null)[]): Prompter {
+		const left = [...picks];
+		const next = (message: string) => {
+			transcript.push(message);
+			return left.shift();
+		};
+		return {
+			// like a terminal, a refused answer is shown and asked again
+			text: (message, fallback, accept) => {
+				for (;;) {
+					const got = (next(message) as string) || (fallback ?? '');
+					const printed = out.length;
+					const problem = accept(got);
+					// a line printed while a prompt is drawn garbles it
+					if (out.length !== printed) transcript.push('<printed during a prompt>');
+					if (problem === null) return Promise.resolve(got);
+					transcript.push(problem);
+				}
+			},
+			select: (message) => Promise.resolve(next(message) as string),
+			multiselect: (message, choices) => {
+				transcript.push(`${message} [${choices.map((c) => c.value).join(' | ')}]`);
+				return Promise.resolve(left.shift() as string[]);
+			},
+			confirm: (message) => Promise.resolve(next(message) as boolean | null),
+			note: () => undefined
+		};
+	}
+	const initUi = (picks: (string | string[] | boolean | null)[]) =>
+		runNightjar(['init'], {
+			platform: 'linux',
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			prompter: withUi(picks)
+		});
+
+	it('takes a picked check and the ticked allowed commands', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		const code = await initUi([
+			'github',
+			'',
+			'github',
+			'',
+			'go test ./...',
+			['make test'],
+			'make lint',
+			false
+		]);
+		expect(code).toBe(0);
+		expect(m.readConfig()).toMatchObject({
+			check: 'go test ./...',
+			allowedCommands: ['make test', 'make lint']
+		});
+		expect(transcript.join('\n')).toMatch(/Commands the Coding agent may run \[.*make test/);
+	});
+
+	it('refuses a list of numbers typed as my own check', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		const own = '\0own';
+		const picks = ['github', '', 'github', '', own, '1,2', 'make check', [], '', false];
+		expect(await initUi(picks)).toBe(0);
+		expect(transcript.join('\n')).toContain('the check is a single command');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
+	});
+
+	it('shows the longer help for ?, and takes the answer after it', async () => {
+		const picks = ['github', '', 'github', '', '?', 'make check', ['make check'], '', false];
+		expect(await initUi(picks)).toBe(0);
+		expect(transcript.join('\n')).toContain('Keep it fast and deterministic');
+		expect(m.readConfig()).toMatchObject({ check: 'make check' });
+	});
+
+	it('warns about a check that can never fail after the prompt, not inside it', async () => {
+		expect(await initUi(['github', '', 'github', '', 'true', ['true'], '', false])).toBe(0);
+		expect(out.join('\n')).toContain('`true` can never fail');
+		expect(transcript).not.toContain('<printed during a prompt>');
+	});
+
+	it('says it was cancelled when the person cancels the doctor question', async () => {
+		const picks = ['github', '', 'github', '', 'make check', ['make check'], '', 'y', null];
+		expect(await initUi(picks)).toBe(0);
+		expect(out.join('\n')).toContain('cancelled at: Run `nightjar doctor` now?');
+		expect(existsSync(written())).toBe(true);
+	});
+
+	it('writes nothing when the person cancels', async () => {
+		const prompter = withUi([]);
+		const code = await runNightjar(['init'], {
+			platform: 'linux',
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			prompter: { ...prompter, select: () => Promise.resolve(null) }
+		});
+		expect(code).toBe(2);
+		expect(err.join('\n')).toContain('cancelled');
+		expect(existsSync(written())).toBe(false);
 	});
 });

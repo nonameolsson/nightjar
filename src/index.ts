@@ -17,7 +17,9 @@ export { featureWriterContract } from './contract/feature-writer.js';
 export { sourcesContract } from './contract/sources.js';
 export { assignContract } from './contract/assign.js';
 export { waitingOnContract } from './contract/waiting-on.js';
-export type { CodeHost, DraftRequest, Pull } from './code-host.js';
+export { ticketCountsContract } from './contract/ticket-counts.js';
+export type { CodeHost, DraftRequest, Feedback, FeedbackKind, Pull } from './code-host.js';
+export { FOOTER } from './footer.js';
 export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';
 export { DEFAULT_SIGNAL_NAMES, SIGNALS, type Signal, type SignalNames } from './signals.js';
 export { ConfigError, ConfigSchema, configJsonSchema, loadConfig, type Config } from './config.js';
@@ -49,5 +51,8 @@ export {
 	codeHostContract,
 	type CodeHostHarness,
 	type CodeHostSubject,
+	type FeedbackBench,
+	type Given,
 	type PullView
 } from './contract/code-host.js';
+export { feedbackContract } from './contract/feedback.js';

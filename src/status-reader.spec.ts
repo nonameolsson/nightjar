@@ -68,7 +68,8 @@ describe('readFactory', () => {
 			tail: [],
 			completed: [],
 			featureCostUsd: 0,
-			builtToday: 0
+			builtToday: 0,
+			medianTicketMs: null
 		});
 	});
 

@@ -12,8 +12,11 @@ import {
 	codeHostContract,
 	featureWriterContract,
 	sourcesContract,
+	feedbackContract,
+	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
+	type Given,
 	type Pull,
 	type SignalNames,
 	type TrackerWorld
@@ -135,8 +138,41 @@ async function gitHubCodeHost() {
 				comments: github.said(pull.id)
 			});
 		},
+		bench: {
+			give: (pull: Pull, given: Given) => Promise.resolve(giveOnGitHub(github, pull, given)),
+			thread: (_pull: Pull, id: string) => Promise.resolve(github.thread(numberOf(id)))
+		},
 		close: () => rm(base, { recursive: true, force: true })
 	};
+}
+
+const numberOf = (id: string) => Number(id.slice(id.indexOf(':') + 1));
+
+// Feedback as GitHub shows it: a person who is trusted has write access, and a check app is trusted when it is GitHub Actions.
+function giveOnGitHub(github: FakeGitHub, pull: Pull, given: Given): string {
+	if (given.kind === 'check') {
+		const id = github.checkRun(pull.id, {
+			name: given.name,
+			conclusion: given.conclusion,
+			app: given.trusted ? 'github-actions' : 'unknown-app',
+			output: { title: given.conclusion, text: given.output }
+		});
+		return `check:${String(id)}`;
+	}
+	if (given.trusted) github.grant(given.author, 'write');
+	if (given.kind === 'review') {
+		const id = github.review(pull.id, {
+			login: given.author,
+			body: given.body,
+			state: given.approval === true ? 'APPROVED' : 'COMMENTED'
+		});
+		return `review:${String(id)}`;
+	}
+	if (given.on !== undefined) {
+		const id = github.lineComment(pull.id, { login: given.author, body: given.body, ...given.on });
+		return `comment:${String(id)}`;
+	}
+	return `comment:${String(github.say(pull.id, given.author, given.body).id)}`;
 }
 
 describe('GitHubTracker meets the Tracker contract', () => {
@@ -182,7 +218,16 @@ describe('GitHubTracker meets the assign contract', () => {
 	}
 });
 
+describe('GitHubTracker meets the ticketCounts contract', () => {
+	const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
+	for (const c of ticketCountsContract) it(c.name, () => c.run(harness));
+});
+
 // real git on a busy machine is slow
 describe('GitHubCodeHost meets the Code host contract', { timeout: 30_000 }, () => {
 	for (const c of codeHostContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () => {
+	for (const c of feedbackContract) it(c.name, () => c.run(gitHubCodeHost));
 });

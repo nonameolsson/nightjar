@@ -261,6 +261,42 @@ describe('makeAdapters and creating Features', () => {
 			'factory.json: tracker: createTracker in ./half.mjs returned a Tracker that makes Features without these methods: createTicket, block'
 		);
 	});
+
+	it('loads a Code host module without feedback and reply, and one with both', async () => {
+		moduleFile('old.mjs', `export const createCodeHost = () => (${HOST_BODY});`);
+		const answering = HOST_BODY.replace(
+			/\}$/,
+			', feedback: async () => [], reply: async () => {} }'
+		);
+		moduleFile('new.mjs', `export const createCodeHost = () => (${answering});`);
+		for (const path of ['./old.mjs', './new.mjs']) {
+			const { codeHost } = await makeAdapters(
+				config({ codeHost: { type: 'module', path } }),
+				dir,
+				env()
+			);
+			const pull = { id: 1, url: 'u' };
+			expect(codeHost.feedback === undefined).toBe(path === './old.mjs');
+			if (codeHost.feedback) expect(await codeHost.feedback(pull)).toEqual([]);
+		}
+	});
+
+	it('refuses a Code host module with only one of feedback and reply, or one that is no function', async () => {
+		moduleFile(
+			'half.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', feedback: async () => [] }')});`
+		);
+		expect(await refusal(config({ codeHost: { type: 'module', path: './half.mjs' } }))).toBe(
+			'factory.json: codeHost: createCodeHost in ./half.mjs returned a Code host with feedback but without reply'
+		);
+		moduleFile(
+			'odd.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', feedback: 1, reply: async () => {} }')});`
+		);
+		expect(await refusal(config({ codeHost: { type: 'module', path: './odd.mjs' } }))).toBe(
+			'factory.json: codeHost: createCodeHost in ./odd.mjs returned a Code host whose feedback is not a function'
+		);
+	});
 });
 
 // An az signed in with the token the fake Azure DevOps takes, which notes each time it is asked.

@@ -2,3 +2,8 @@ node_modules/
 dist/
 .factory/
 *.tgz
+.impeccable/hook.cache.json
+.impeccable/mocks/
+.impeccable/questions/
+.impeccable/review/
+.impeccable/build/

@@ -47,6 +47,8 @@ Which Signal each item carries, and when it changes, under the default names:
 
 Nightjar never takes `needs-info` or `ready-for-human` off: the person does, and gives the Go again. It never sets a tracker state or a GitHub Project's Status field ([docs/adr/0002](adr/0002-signals-are-labels-or-tags-never-states.md)).
 
+Every comment Nightjar leaves for a person ends with a **Next step**: what to answer, which Signal to take off and put on, and the Go to give again, by the names `factory.json` sets (`src/next-step.ts`).
+
 ## A Feature's Workflow
 
 A Feature may carry a **`**Workflow:**`** line anywhere in its body, on a line of its own, to add the Steps of a Workflow from `factory.json` to its build:
@@ -92,6 +94,8 @@ What to build.
 - Each Ticket starts with `## Ticket N: Title`, numbered 1, 2, 3 in the order they are to be built. A `## Ticket` line inside a fenced code block is text.
 - `**Blocked by:** 1, 2` names Tickets above it by number. It becomes blocking links on the Tracker and leaves the body; a Ticket can only wait for Tickets above it, so the links never form a loop. Leave the line out, or write `none`, for a Ticket that waits for nothing.
 - Every Ticket has acceptance criteria. `**Model:**` and `**Effort:**` lines, when there, have a value, and stay in the body as written.
+
+A Ticket on the Tracker is held to the same contract before its Session. One without acceptance criteria, or with a `**Model:**` or `**Effort:**` line with no value, is handed back with no Session and no spend: the ready Signal comes off, needs info goes on, and a comment lists each fault. Nightjar never edits the issue.
 
 `nightjar create --dry-run FILE` reads the file and says what it would make, making nothing. A file out of this shape is refused before anything is made, with every fault and its line.
 

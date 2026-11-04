@@ -1,4 +1,5 @@
 // A Feature file: one Feature and its Tickets as Markdown, in the shape docs/ticket-contract.md sets.
+import { emptySettings, hasAcceptanceCriteria } from './ticket-contract.js';
 import type { ItemText } from './tracker.js';
 
 export class FeatureFileError extends Error {}
@@ -17,10 +18,6 @@ export interface FeaturePlan {
 const TITLE = /^#\s+(.*\S)\s*$/;
 const TICKET = /^##\s+Ticket\s+(\S+?):\s*(.*?)\s*$/i;
 const BLOCKED_BY = /^(?:\*\*)?Blocked by:(?:\*\*)?(.*)$/i;
-// the lines the build reads a Ticket's model and effort from (ticketLine in coding-agent.ts)
-const SETTING = /^(?:\*\*)?(Model|Effort):(?:\*\*)?(.*)$/i;
-const CRITERIA = /^#{1,6}\s+Acceptance criteria\s*$/i;
-const CHECKBOX = /^\s*[-*]\s+\[[ xX]\]\s+\S/;
 const FENCE = /^\s*(```|~~~)/;
 
 const tidy = (lines: readonly string[]) => lines.join('\n').trim();
@@ -98,16 +95,10 @@ export function readFeatureFile(text: string): FeaturePlan {
 				} else if (!blockedBy.includes(blocker)) blockedBy.push(blocker);
 			}
 		}
-		for (const line of body) {
-			const setting = SETTING.exec(line.trim());
-			if (setting !== null && (setting[2] ?? '').trim() === '') {
-				faults.push(
-					`${at}: ${name} has an empty ${setting[1] ?? ''} line; give it a value or leave it out`
-				);
-			}
+		for (const setting of emptySettings(body)) {
+			faults.push(`${at}: ${name} has an empty ${setting} line; give it a value or leave it out`);
 		}
-		const criteria = body.findIndex((l) => CRITERIA.test(l));
-		if (criteria === -1 || !body.slice(criteria).some((l) => CHECKBOX.test(l))) {
+		if (!hasAcceptanceCriteria(body)) {
 			faults.push(
 				`${at}: ${name} has no acceptance criteria; add an "Acceptance criteria" heading with "- [ ]" items`
 			);

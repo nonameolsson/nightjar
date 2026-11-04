@@ -1,5 +1,6 @@
 // The in-memory fakes as the contract suites' harnesses: each world becomes a fresh fake.
-import type { CodeHostHarness, CodeHostSubject } from '../contract/code-host.js';
+import type { Pull } from '../code-host.js';
+import type { CodeHostHarness, CodeHostSubject, Given } from '../contract/code-host.js';
 import type { TrackerHarness } from '../contract/tracker.js';
 import { FakeCodeHost } from './code-host.js';
 import { FakeTracker } from './tracker.js';
@@ -35,8 +36,50 @@ export function fakeCodeHostSubject(codeHost: FakeCodeHost): CodeHostSubject {
 				references: found.references.map((r) => r.text),
 				comments: found.comments
 			});
+		},
+		bench: {
+			give: (pull, given) => Promise.resolve(giveTo(codeHost, pull, given)),
+			thread: (pull, id) =>
+				Promise.resolve(
+					codeHost.threads.filter((t) => t.pull === pull.id && t.id === id).map((t) => t.body)
+				)
 		}
 	};
+}
+
+// The fake shows an empty approval, or a check that did not fail, as nothing, so it keeps neither.
+function giveTo(codeHost: FakeCodeHost, pull: Pull, given: Given): string {
+	if (given.kind === 'check') {
+		if (given.conclusion !== 'failure' && given.conclusion !== 'timed_out') return 'check:0';
+		return codeHost.giveCheck(pull, {
+			name: given.name,
+			output: given.output,
+			author: given.trusted ? 'github-actions' : 'unknown-app',
+			trusted: given.trusted
+		});
+	}
+	if (given.kind === 'review') {
+		return codeHost.give(pull, {
+			kind: 'review',
+			author: given.author,
+			body: given.body,
+			trusted: given.trusted
+		});
+	}
+	const where = given.on;
+	const place =
+		where === undefined
+			? {}
+			: where.line === null
+				? { path: where.path, outdated: true as const }
+				: { path: where.path, line: where.line };
+	return codeHost.give(pull, {
+		kind: 'comment',
+		author: given.author,
+		body: given.body,
+		trusted: given.trusted,
+		...place
+	});
 }
 
 export const fakeTrackerHarness: TrackerHarness = (world) => keyedTrackerHarness('')(world);

@@ -8,6 +8,7 @@ import type {
 	ItemText,
 	Standing,
 	Ticket,
+	TicketCount,
 	TicketReference,
 	Tracker
 } from '../tracker.js';
@@ -45,7 +46,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 
 	add(item: NewItem): this {
 		this.items.set(item.id, {
-			body: `The body of ${item.title}.`,
+			body: `The body of ${item.title}.\n\n### Acceptance criteria\n\n- [ ] it works`,
 			open: true,
 			assignees: [],
 			signals: [],
@@ -129,6 +130,18 @@ export class FakeTracker implements Tracker, FeatureWriter {
 					open: item.open,
 					at: item.at ?? new Date(Date.UTC(2026, 9, 30, 8, i + 1)).toISOString()
 				}))
+			)
+		);
+
+	ticketCounts = (ids: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>> =>
+		Promise.resolve(
+			new Map(
+				ids.map((id) => {
+					const item = this.items.get(id);
+					if (item === undefined) return [id, null];
+					const closed = item.children.filter((c) => this.items.get(c)?.open === false).length;
+					return [id, { total: item.children.length, closed }];
+				})
 			)
 		);
 

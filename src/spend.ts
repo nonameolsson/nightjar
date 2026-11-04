@@ -11,6 +11,8 @@ export interface Entry {
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;
+	// how long the session ran, in milliseconds; older lines lack it
+	readonly durationMs?: number;
 }
 
 // What a piece of work with a cap may still spend.

@@ -2,13 +2,16 @@
 import { describe, expect, it } from 'vitest';
 import { fakeCodeHostHarness, fakeTrackerHarness } from '../fakes/harness.js';
 import { assignContract } from './assign.js';
-import { codeHostContract } from './code-host.js';
+import { codeHostContract, type CodeHostHarness } from './code-host.js';
+import { feedbackContract } from './feedback.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
 import { sourcesContract } from './sources.js';
+import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
+import type { FakeCodeHost } from '../fakes/code-host.js';
 import type { FakeTracker } from '../fakes/tracker.js';
 
 // A Tracker that never knows who is signed in.
@@ -29,7 +32,9 @@ describe('runContract', () => {
 			'Tracker waiting on',
 			'Tracker sources',
 			'Tracker assign',
-			'Code host'
+			'Tracker ticket counts',
+			'Code host',
+			'Code host feedback'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -45,9 +50,38 @@ describe('runContract', () => {
 		);
 		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(assignContract.map((c) => c.name));
 		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
+			ticketCountsContract.map((c) => c.name)
+		);
+		expect(report.suites[6]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
+		expect(report.suites[7]?.results.map((r) => r.name)).toEqual(
+			feedbackContract.map((c) => c.name)
+		);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no feedback suite over a Code host without feedback and reply, as a module written before them', async () => {
+		const reads: CodeHostHarness = async () => {
+			const { codeHost, ...rest } = await fakeCodeHostHarness();
+			const { feedback: _a, reply: _b, ...only } = codeHost as FakeCodeHost;
+			return { ...rest, codeHost: only };
+		};
+		const report = await runContract({ codeHostHarness: reads });
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.failed).toBe(0);
+	});
+
+	it('fails the feedback suite for a harness without a bench', async () => {
+		const bare: CodeHostHarness = async () => {
+			const { bench: _bench, ...rest } = await fakeCodeHostHarness();
+			return rest;
+		};
+		const report = await runContract({ codeHostHarness: bare });
+		const feedback = report.suites.find((s) => s.title === 'Code host feedback')?.results ?? [];
+		expect(feedback).toHaveLength(feedbackContract.length);
+		expect(feedback.every((r) => !r.ok)).toBe(true);
+		expect(feedback[0]?.error).toContain('the harness gives a bench');
 	});
 
 	it('runs no creation suite over a Tracker that makes no Features, as a module written before it', async () => {
@@ -61,6 +95,7 @@ describe('runContract', () => {
 				featuresFrom: _e,
 				assign: _f,
 				trusts: _g,
+				ticketCounts: _h,
 				...only
 			} = tracker as FakeTracker;
 			return { ...rest, tracker: only };
@@ -81,7 +116,8 @@ describe('runContract', () => {
 			'Tracker',
 			'Tracker creation',
 			'Tracker sources',
-			'Tracker assign'
+			'Tracker assign',
+			'Tracker ticket counts'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -97,7 +133,8 @@ describe('runContract', () => {
 			'Tracker',
 			'Tracker creation',
 			'Tracker waiting on',
-			'Tracker assign'
+			'Tracker assign',
+			'Tracker ticket counts'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -161,9 +198,30 @@ describe('runContract', () => {
 		expect(failing).toHaveLength(waitingOnContract.length);
 	});
 
+	it('names a ticketCounts that miscounts or drops a Feature', async () => {
+		const wrong = (answer: () => Map<string, { total: number; closed: number } | null>) => {
+			const harness: TrackerHarness = async (world) => {
+				const subject = await fakeTrackerHarness(world);
+				return {
+					...subject,
+					tracker: Object.assign(subject.tracker, { ticketCounts: () => Promise.resolve(answer()) })
+				};
+			};
+			return harness;
+		};
+		for (const answer of [
+			() => new Map<string, { total: number; closed: number } | null>(),
+			() => new Map([['1', { total: 9, closed: 9 }]])
+		]) {
+			const report = await runContract({ trackerHarness: wrong(answer) });
+			const suite = report.suites.find((s) => s.title === 'Tracker ticket counts')?.results ?? [];
+			expect(suite.filter((r) => !r.ok).length).toBeGreaterThan(0);
+		}
+	});
+
 	it('runs only the suite whose harness the module exports', async () => {
 		const report = await runContract({ codeHostHarness: fakeCodeHostHarness });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host feedback']);
 	});
 
 	it('names each behaviour that fails, with why, and keeps going', async () => {
@@ -181,7 +239,8 @@ describe('runContract', () => {
 				featureWriterContract.length +
 				waitingOnContract.length +
 				sourcesContract.length +
-				assignContract.length
+				assignContract.length +
+				ticketCountsContract.length
 		);
 		const text = formatReport(report);
 		expect(text).toContain('FAIL  names the signed-in person');

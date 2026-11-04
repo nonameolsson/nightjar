@@ -42,6 +42,7 @@ describe('nightjar contract', () => {
 		expect(run.stderr).toBe('');
 		expect(run.stdout).toContain('Tracker contract');
 		expect(run.stdout).toContain('Code host contract');
+		expect(run.stdout).toContain('Code host feedback contract');
 		expect(run.stdout).toContain('ok    names the signed-in person');
 		expect(run.stdout).toMatch(/All \d+ behaviours pass\./);
 		expect(run.status).toBe(0);
