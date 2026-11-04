@@ -506,18 +506,24 @@ export class FakeGitHub {
 		return found.map((i) => this.render(i));
 	}
 
-	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, and quoted phrases that must all be in it.
+	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, optionally only the open ones, and quoted phrases that must all be in it.
 	private search(query: URLSearchParams): Run {
 		const phrases: string[] = [];
+		let openOnly = false;
 		for (const term of (query.get('q') ?? '').match(/"[^"]*"|\S+/g) ?? []) {
 			if (term.startsWith('"')) phrases.push(term.slice(1, -1).toLowerCase());
+			else if (term === 'is:open') openOnly = true;
 			else if (![`repo:${this.repo}`, 'is:issue', 'in:body'].includes(term)) {
 				return INVALID(`the fake GitHub search does not know ${term}`);
 			}
 		}
 		const found = [...this.issues.values()].filter((i) => {
 			const body = (i.body ?? '').toLowerCase();
-			return i.pull === undefined && phrases.every((p) => body.includes(p));
+			return (
+				i.pull === undefined &&
+				(!openOnly || i.state === 'open') &&
+				phrases.every((p) => body.includes(p))
+			);
 		});
 		if (query.get('order') !== 'asc') found.reverse();
 		const size = Number(query.get('per_page') ?? '30');

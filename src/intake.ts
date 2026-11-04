@@ -29,6 +29,8 @@ export const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 // failed signatures a Source takes in a minute before it answers 429 to everything
 export const FAILED_SIGNATURES = 20;
 const FAILED_WINDOW_MS = 60 * 1000;
+// how long a Feature this process made is trusted over a Tracker search that has not shown it yet
+const SEARCH_LAG_MS = 60 * 60 * 1000;
 
 // the hidden mark on the "happened again" comment, by which the next delivery finds when the last one was
 export const AGAIN_MARKER = '<!-- nightjar:again -->';
@@ -340,6 +342,17 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		}
 	};
 
+	// What this process made lately, by Source: a Tracker's search may not show a new Feature for minutes
+	const recent = new Map<string, SourcedFeature[]>();
+	const withRecent = (name: string, found: SourcedFeature[]): SourcedFeature[] => {
+		const lately = (recent.get(name) ?? []).filter(
+			(f) => now().getTime() - Date.parse(f.at) < SEARCH_LAG_MS
+		);
+		recent.set(name, lately);
+		const known = new Set(found.map((f) => f.id));
+		return [...found, ...lately.filter((f) => !known.has(f.id))];
+	};
+
 	const make = async (
 		name: string,
 		source: Pick<ServedSource, 'template' | 'key' | 'maxPerDay' | 'owner'>,
@@ -366,7 +379,7 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			return { status: 400, outcome: 'template failed' };
 		}
 		try {
-			const found = await tracker.featuresFrom(name);
+			const found = withRecent(name, await tracker.featuresFrom(name));
 			const open = found.filter((f) => f.open && f.key === filled.key).at(-1);
 			if (filled.key !== '' && open !== undefined) {
 				if (scheduled) return { status: 200, outcome: 'still open', feature: open.id };
@@ -377,6 +390,10 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			const madeToday = found.filter((f) => day(new Date(f.at)) === today).length;
 			if (madeToday >= source.maxPerDay) return { status: 200, outcome: 'day limit' };
 			const made = await makeFeature(tracker, filled.plan, () => undefined);
+			recent.set(name, [
+				...(recent.get(name) ?? []),
+				{ id: made.feature, key: filled.key, open: true, at: now().toISOString() }
+			]);
 			if (source.owner !== undefined) return await giveGo(name, made.feature, source.owner);
 			return { status: 201, outcome: 'made', feature: made.feature };
 		} catch (fault) {

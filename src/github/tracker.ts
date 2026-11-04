@@ -101,12 +101,34 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 	// the issues whose body holds the Source's marker, open or closed, oldest first
 	async featuresFrom(source: string): Promise<SourcedFeature[]> {
 		const q = `repo:${this.repo} is:issue in:body "${markerSearch(source)}"`;
+		// a search reaches 1,000 results: newest first keeps today's, and the open ones are asked for alone so an old one is not lost
+		const found = new Map<number, z.infer<typeof SearchSchema>['items'][number]>();
+		for (const query of [q, `${q} is:open`]) {
+			for (const item of await this.searchNewestFirst(source, query)) found.set(item.number, item);
+		}
+		return sourcedFrom(
+			source,
+			[...found.values()]
+				.filter((i) => i.pull_request === undefined)
+				.map((i) => ({
+					id: String(i.number),
+					body: i.body ?? '',
+					open: i.state === 'open',
+					at: i.created_at
+				}))
+		);
+	}
+
+	private async searchNewestFirst(
+		source: string,
+		q: string
+	): Promise<z.infer<typeof SearchSchema>['items']> {
 		const found: z.infer<typeof SearchSchema>['items'] = [];
 		for (let page = 1; page <= SEARCH_PAGES; page += 1) {
 			const query = new URLSearchParams({
 				q,
 				sort: 'created',
-				order: 'asc',
+				order: 'desc',
 				per_page: '100',
 				page: String(page)
 			});
@@ -118,17 +140,7 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 			found.push(...got.items);
 			if (got.items.length < 100) break;
 		}
-		return sourcedFrom(
-			source,
-			found
-				.filter((i) => i.pull_request === undefined)
-				.map((i) => ({
-					id: String(i.number),
-					body: i.body ?? '',
-					open: i.state === 'open',
-					at: i.created_at
-				}))
-		);
+		return found;
 	}
 
 	// the open Features assigned to `person` that carry the label, oldest first

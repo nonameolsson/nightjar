@@ -274,6 +274,30 @@ describe('intake', () => {
 		expect((await post(event('k-1'))).status).toBe(200);
 	});
 
+	describe('over a Tracker whose search lags behind new Features', () => {
+		beforeEach(() => {
+			tracker.featuresFrom = () => Promise.resolve([]);
+		});
+
+		it('makes a Feature once when the sender retries before the search shows it', async () => {
+			await start();
+			expect((await post(event('k-1'))).status).toBe(201);
+			const [made] = features();
+			expect(await post(event('k-1'), signed(event('k-1'), { id: 'msg_2' }))).toEqual({
+				status: 200,
+				json: { outcome: 'again', feature: made?.id }
+			});
+			expect(features()).toHaveLength(1);
+		});
+
+		it('keeps a burst of deliveries to maxPerDay', async () => {
+			await start({ maxPerDay: 3 });
+			for (const key of ['a', 'b', 'c']) expect((await post(event(key))).status).toBe(201);
+			expect(await post(event('d'))).toEqual({ status: 200, json: { outcome: 'day limit' } });
+			expect(features()).toHaveLength(3);
+		});
+	});
+
 	it('answers 503 when the Tracker fails, and the retry makes the Feature once', async () => {
 		const finds = tracker.featuresFrom;
 		let down = true;
