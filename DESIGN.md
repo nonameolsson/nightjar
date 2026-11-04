@@ -51,9 +51,14 @@ typography:
     lineHeight: 1.5
   label:
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
-    fontSize: "0.72rem"
+    fontSize: "0.75rem"
     fontWeight: 600
     letterSpacing: "0.14em"
+  meter-value:
+    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif"
+    fontSize: "1rem"
+    fontWeight: 700
+    lineHeight: 1.5
 rounded:
   none: "0"
   pill: "999px"
@@ -142,10 +147,12 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 - **Socket Border** (#3f7078): the 1px ring of a nest socket; the one border brighter than Line.
 
 ### Overlays
+Every colour is a `:root` token (`--socket-dash`, `--socket-border`, `--bar-overlay`, `--panel-overlay`, `--panel-overlay-strong`, `--teal-wash`, `--shade-soft|mid|deep`); a spec rejects a literal outside `:root`, and translucent teal is `color-mix()` on `--teal`.
+
 Translucent fills laid over the void and its grid; they stand in for a solid surface colour.
 - **Bar Overlay** (rgba(4, 7, 11, 0.94)): the sticky bar. **Panel Overlay** (rgba(8, 13, 19, 0.85)): the mat; **Panel Overlay Strong** (rgba(8, 13, 19, 0.92)): the Building-now panel, which sits above the grid and needs the extra opacity.
 - **Teal Wash** (rgba(34, 227, 210, 0.07)): active view tab fill, and the top tint of the Building-now panel.
-- **Shade** (black at 0.3, 0.35, 0.45): **soft** for meters and egg inset shading (0.25 on the needs-a-person egg, 0.3 on the speckles), **mid** for the socket fill (0.35), **deep** for the session log (0.45). Known drift: egg speckles also use 0.3-0.35 and the amber egg 0.25; collapse to the three steps above if touched.
+- **Shade** (black at 0.3, 0.35, 0.45): **soft** for meters and egg inset shading (0.25 on the needs-a-person egg, 0.3 on the speckles), **mid** for the socket fill (0.35), **deep** for the session log (0.45). Egg shading and speckles use soft (0.3) and mid (0.35); the needs-a-person egg shares soft.
 
 ### Named Rules
 **The Hue-Plus-Shape Rule.** State colour never travels alone: built, building, needs-a-person and waiting each differ in egg form (solid, ringed pulse, wing-flash, dashed empty) as well as colour.
@@ -165,19 +172,19 @@ Translucent fills laid over the void and its grid; they stand in for a solid sur
 - **Panel title** (700, 1.2rem, 1.5, sans): Building-now Ticket name.
 - **Entry name** (600, 1.05rem, 1.5, sans): Ticket and run names on mats.
 - **Body** (400, 15px, 1.5, sans): prose and descriptions; secondary text 0.85rem in Soft Ink.
-- **Data** (400, 0.76-0.9rem, mono): stats, meta, clocks, Ticket lists, session log (12px, 1.7).
-- **Label** (600-700, 0.72-0.78rem, mono, 0.14-0.2em tracking, uppercase): mat tabs, table column heads, meter captions, the sticky-bar mark.
+- **Data** (400, 0.85rem, mono): stats, meta, clocks, Ticket lists, session log (0.75rem, 1.7).
+- **Label** (600-700, 0.75rem, mono, 0.14-0.2em tracking, uppercase): mat tabs, table column heads, meter captions, the sticky-bar mark.
 - **Meter value** (700 inherited, 1rem, sans): elapsed and cost under their captions.
 
-### Known drift: off-ramp sizes
-The CSS carries sizes outside the roles above; none is a token. New work picks a role, not one of these: 0.9rem (view tabs, chips, run-state span, entry ids), 1rem (meter values), 0.78rem (the Now label and `.sub`), 0.66rem (meter captions, below the 0.72rem Label floor), plus 0.7rem (column heads), 0.75rem (table heads, overview headings), 0.8rem (clock, legend) and 1.1rem (hexagon tally). Remove by snapping to 0.72 / 0.85 / 1 rem when the CSS is next touched.
+### Type ramp
+The CSS uses only these sizes: 0.75rem (labels, column heads, meter captions, session log; the floor, nothing smaller), 0.85rem (data, tabs, chips, clocks, legend), 1rem (meter values, tally), 1.05rem (entry name), 1.2rem (panel title), 1.6rem (heading), plus the 15px body. A spec holds the ramp.
 
 ### Named Rules
 **The Mono Means Measured Rule.** Monospace marks counts, ids, times, costs, and column or tab labels. Names and sentences stay in sans.
 
 ## Layout
 
-A sticky bar (view switcher, 4px gaps, 10px/32px padding) sits under a 260px banner (180px on phones) that fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 60px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding. At 1260px and below the detail panel moves above the mats and stops sticking; at 900px the head row hides and entries collapse to one column; at 760px (phone) the mark hides, the banner shrinks and the tab rail narrows to 40px. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
+A sticky bar (view switcher, 4px gaps, 10px/32px padding) sits under a 260px banner (180px on phones) that fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 60px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding. At 1260px and below the detail panel moves above the mats and stops sticking; at 900px the head row hides and entries collapse to one column; at 760px (phone) the mark hides, the banner shrinks and the tab rail narrows to 40px. Beside the detail panel, entries collapse to one column at 1400px and below (the head row hides). Interactive controls (sort buttons, view tabs, chips) are at least 24px tall, 44px on `pointer: coarse`. A visually hidden `role="status"` region announces a rise in waiting or failed Features; a skip link jumps to the panels. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
 
 ## Elevation & Depth
 
@@ -209,7 +216,7 @@ Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal c
 Filter chips are pill outlines in Deep Teal with teal text; on state they fill Signal Teal with void text. Table headers are tracked mono buttons that turn teal when sorted, with a rotated-border chevron for direction; rows have Line bottom borders.
 
 ### Session Log
-Black 45% fill, Line border, 12px mono at 1.7 line-height in Soft Ink, wrapped, capped at 14rem height and scrolling.
+Black 45% fill, Line border, 0.75rem mono at 1.7 line-height in Soft Ink, wrapped, capped at 14rem height and scrolling.
 
 ## Do's and Don'ts
 

@@ -489,7 +489,7 @@ describe('nightjar ui board', () => {
 		});
 		await open();
 		const page = (await get('/')).text;
-		expect(page).toContain('<main id="panels" data-view="board">');
+		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
 		for (const name of ['Queue', 'Building', 'Waiting on you', 'Completed'])
 			expect(page).toContain(`<h2>${name}</h2>`);
 		expect(page).toContain('Exports');
@@ -990,5 +990,118 @@ describe('nightjar ui page, more', () => {
 			expect(page).toContain("'aria-pressed'");
 			expect(page).not.toContain("'aria-current'");
 		});
+	});
+});
+
+describe('nightjar ui audit fixes', () => {
+	const css = async () => {
+		await open();
+		const page = (await get('/')).text;
+		return { page, style: page.split('<style>')[1]?.split('</style>')[0] ?? '' };
+	};
+	const rule = (style: string, selector: string) =>
+		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
+
+	it('has a status region outside the panels that stays out of sight', async () => {
+		const { page, style } = await css();
+		expect(page).toContain('<p id="live" class="sr" role="status"></p>');
+		expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
+		expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
+	});
+
+	it('announces only when the waiting or failed count rises', async () => {
+		await open();
+		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const live = { textContent: '' };
+		const panels = { dataset: {} as Record<string, string>, innerHTML: '' };
+		const counts = { waiting: 1, failed: 0 };
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			document: {
+				getElementById: (id: string) => (id === 'live' ? live : panels),
+				querySelectorAll: (sel: string) =>
+					Array.from({
+						length:
+							sel === 'tr[data-state="waiting"]'
+								? counts.waiting
+								: sel === 'tr[data-failed]'
+									? counts.failed
+									: 0
+					})
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		const push = () => message?.({ data: JSON.stringify('') });
+		expect(live.textContent).toBe('');
+		push();
+		expect(live.textContent).toBe('');
+		counts.waiting = 2;
+		push();
+		expect(live.textContent).toBe('2 waiting on a person');
+		live.textContent = '';
+		counts.waiting = 1;
+		push();
+		expect(live.textContent).toBe('');
+		counts.failed = 1;
+		push();
+		expect(live.textContent).toBe('1 failed');
+	});
+
+	it('gives sort buttons, view tabs and chips a 24px hit area, 44px on touch', async () => {
+		const { style } = await css();
+		for (const s of ['th button', '#views button', '.chips button'])
+			expect(rule(style, s), s).toContain('min-height: 24px');
+		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
+		for (const s of ['th button', '#views button', '.chips button']) expect(coarse, s).toContain(s);
+		expect(coarse).toContain('min-height: 44px');
+	});
+
+	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
+		const { style } = await css();
+		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(rem|px)/g)].map((m) =>
+			m[2] === 'px' ? `${m[1] ?? ''}px` : Number(m[1])
+		);
+		const ramp = [0.75, 0.85, 1, 1.05, 1.2, 1.6, '15px'];
+		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
+	});
+
+	it('collapses entries to one column beside the detail panel below 1400px', async () => {
+		const { style } = await css();
+		const block = style.split('@media (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
+		expect(block).toContain('.cols.has-detail .entry');
+		expect(block).toContain('.cols.has-detail .head');
+	});
+
+	it('draws colours from tokens: no literals outside :root', async () => {
+		const { style } = await css();
+		const rest = style
+			.split('\n')
+			.filter((l) => !l.startsWith(':root'))
+			.join('\n');
+		expect(rest).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+		expect(rest).not.toContain('rgba(');
+		for (const t of ['--socket-dash', '--socket-border', '--panel-overlay', '--shade-soft'])
+			expect(style).toContain(`${t}:`);
+	});
+
+	it('sets the body background once', async () => {
+		const { style } = await css();
+		const body = rule(style, 'body');
+		expect(body).not.toContain('background:');
+		expect(body.match(/linear-gradient/g)).toHaveLength(2);
+	});
+
+	it('offers a skip link to the panels', async () => {
+		const { page } = await css();
+		expect(page).toContain('<a class="skip" href="#panels">Skip to Features</a>');
+		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
 	});
 });

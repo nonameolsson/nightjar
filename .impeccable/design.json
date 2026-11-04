@@ -218,57 +218,43 @@
 				"role": "neutral",
 				"displayName": "Bar Overlay",
 				"canonical": "rgba(4, 7, 11, 0.94)",
-				"tonalRamp": [
-					"rgba(4, 7, 11, 0.94)"
-				]
+				"tonalRamp": ["rgba(4, 7, 11, 0.94)"]
 			},
 			"panel-overlay": {
 				"role": "neutral",
 				"displayName": "Panel Overlay",
 				"canonical": "rgba(8, 13, 19, 0.85)",
-				"tonalRamp": [
-					"rgba(8, 13, 19, 0.85)"
-				]
+				"tonalRamp": ["rgba(8, 13, 19, 0.85)"]
 			},
 			"panel-overlay-strong": {
 				"role": "neutral",
 				"displayName": "Panel Overlay Strong",
 				"canonical": "rgba(8, 13, 19, 0.92)",
-				"tonalRamp": [
-					"rgba(8, 13, 19, 0.92)"
-				]
+				"tonalRamp": ["rgba(8, 13, 19, 0.92)"]
 			},
 			"teal-wash": {
 				"role": "neutral",
 				"displayName": "Teal Wash",
 				"canonical": "rgba(34, 227, 210, 0.07)",
-				"tonalRamp": [
-					"rgba(34, 227, 210, 0.07)"
-				]
+				"tonalRamp": ["rgba(34, 227, 210, 0.07)"]
 			},
 			"shade-soft": {
 				"role": "neutral",
 				"displayName": "Shade Soft",
 				"canonical": "rgba(0, 0, 0, 0.3)",
-				"tonalRamp": [
-					"rgba(0, 0, 0, 0.3)"
-				]
+				"tonalRamp": ["rgba(0, 0, 0, 0.3)"]
 			},
 			"shade-mid": {
 				"role": "neutral",
 				"displayName": "Shade Mid",
 				"canonical": "rgba(0, 0, 0, 0.35)",
-				"tonalRamp": [
-					"rgba(0, 0, 0, 0.35)"
-				]
+				"tonalRamp": ["rgba(0, 0, 0, 0.35)"]
 			},
 			"shade-deep": {
 				"role": "neutral",
 				"displayName": "Shade Deep",
 				"canonical": "rgba(0, 0, 0, 0.45)",
-				"tonalRamp": [
-					"rgba(0, 0, 0, 0.45)"
-				]
+				"tonalRamp": ["rgba(0, 0, 0, 0.45)"]
 			}
 		},
 		"typographyMeta": {
