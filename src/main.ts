@@ -238,6 +238,7 @@ export async function runNightjar(
 		say: runSay,
 		sleep,
 		signal: stop.signal,
+		signals: config.signals,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 

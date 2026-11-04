@@ -11,8 +11,10 @@ import type { Serve } from './serve.js';
 import {
 	featureAfterRunStep,
 	featureStopStep,
+	nextStepText,
 	stoppedStep,
 	ticketStep,
+	type NextStep,
 	type TicketHandBack
 } from './next-step.js';
 import type { Signal, SignalNames } from './signals.js';
@@ -117,7 +119,7 @@ export type FeatureOutcome =
 	| { readonly kind: 'stopped' };
 
 // A comment for a person: what happened, then what they do next.
-const withNext = (body: string, step: string) => `${body}\n\n${step}${FOOTER}`;
+const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
@@ -213,10 +215,11 @@ async function needsInfoStop(
 	left: Waiting[],
 	signals: SignalNames
 ): Promise<FeatureOutcome> {
-	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
+	const next = featureStopStep(signals);
+	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
 	await deps.tracker.removeSignal(id, 'working');
 	await deps.tracker.addSignal(id, 'needsInfo');
-	await deps.tracker.comment(id, withNext(comment, featureStopStep(signals)));
+	await deps.tracker.comment(id, withNext(comment, next));
 	return { kind: 'nothing', waiting: left };
 }
 
@@ -341,18 +344,17 @@ class FeatureRun {
 	) {
 		const signal: Signal = kind === 'human' ? 'human' : 'needsInfo';
 		const { tracker } = this.deps;
+		const next = ticketStep(this.setup.signals, kind);
 		this.deps.status.happened({
 			kind: 'needs-info',
 			feature: this.feature.id,
 			ticket: ticket.id,
-			why
+			why,
+			next
 		});
 		const side = await this.tree.discard(before, ticket.id);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
-		await tracker.comment(
-			ticket.id,
-			withNext(`${body}${kept}`, ticketStep(this.setup.signals, kind))
-		);
+		await tracker.comment(ticket.id, withNext(`${body}${kept}`, next));
 		await tracker.removeSignal(ticket.id, 'ready');
 		await tracker.addSignal(ticket.id, signal);
 		const i = this.tickets.indexOf(ticket);
@@ -573,19 +575,21 @@ class FeatureRun {
 		if (paused) await this.pause(paused);
 		if ((await this.tree.ahead()) === 0) {
 			if (paused) return { kind: 'paused', why: paused };
+			const next = featureAfterRunStep(this.setup.signals, {
+				waiting: left.length > 0,
+				red: false
+			});
 			this.deps.status.happened({
 				kind: 'needs-info',
 				feature: id,
 				ticket: null,
-				why: 'it built nothing'
+				why: 'it built nothing',
+				next
 			});
 			await tracker.addSignal(id, 'needsInfo');
 			await tracker.comment(
 				id,
-				withNext(
-					`Nightjar built nothing for this Feature.\n\n${waitingList(left)}`,
-					featureAfterRunStep(this.setup.signals, { waiting: left.length > 0, red: false })
-				)
+				withNext(`Nightjar built nothing for this Feature.\n\n${waitingList(left)}`, next)
 			);
 			return { kind: 'nothing', waiting: left };
 		}
@@ -655,11 +659,16 @@ class FeatureRun {
 		});
 		if (!paused && (left.length > 0 || red)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
+			const next = featureAfterRunStep(this.setup.signals, {
+				waiting: left.length > 0,
+				red: red !== null
+			});
 			this.deps.status.happened({
 				kind: 'needs-info',
 				feature: id,
 				ticket: null,
-				why: red ? `the check fails after ${hash(red.ticket)}` : waits
+				why: red ? `the check fails after ${hash(red.ticket)}` : waits,
+				next
 			});
 			await tracker.addSignal(id, 'needsInfo');
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
@@ -667,7 +676,7 @@ class FeatureRun {
 				id,
 				withNext(
 					`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}`,
-					featureAfterRunStep(this.setup.signals, { waiting: left.length > 0, red: red !== null })
+					next
 				)
 			);
 		}
