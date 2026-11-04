@@ -11,7 +11,7 @@ The tracker item that holds a spec and that a person gives the go to build. A ro
 _Avoid_: parent issue, epic, story
 
 **Ticket**:
-One buildable child of a Feature, built as one commit.
+One buildable child of a Feature, built as one commit. A Feature with no Tickets is its own Ticket.
 _Avoid_: sub-issue, task, story
 
 **Ticket contract**:

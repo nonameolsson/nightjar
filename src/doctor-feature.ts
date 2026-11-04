@@ -5,6 +5,7 @@ import { ConfigError, loadConfig } from './config.js';
 import type { GhRunner } from './github/api.js';
 import { run, type Env } from './git.js';
 import { featureFaults } from './feature-faults.js';
+import { ownTicket } from './plan.js';
 import { say, why } from './say.js';
 import { ticketFaults } from './ticket-contract.js';
 import type { ItemId, Tracker } from './tracker.js';
@@ -17,7 +18,9 @@ export async function checkFeatureTickets(
 	workflows: readonly string[],
 	tell: (line: string) => void
 ): Promise<number> {
-	const [item, tickets] = await Promise.all([tracker.feature(feature), tracker.tickets(feature)]);
+	const [item, listed] = await Promise.all([tracker.feature(feature), tracker.tickets(feature)]);
+	// a Feature with no Tickets is its own Ticket, as a build takes it
+	const tickets = listed.length === 0 ? [ownTicket(item)] : listed;
 	const ref = (id: ItemId) => tracker.reference(id).text;
 	const across = featureFaults(item, tickets, workflows, ref);
 	let failing = 0;

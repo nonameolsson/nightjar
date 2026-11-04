@@ -1,6 +1,16 @@
 // The Build order (GLOSSARY.md): the first Ticket in the Feature's order whose blockers are closed or built on the branch.
 import type { TicketProgress } from './status-shape.js';
-import type { ItemId, Ticket } from './tracker.js';
+import type { Feature, ItemId, Ticket } from './tracker.js';
+
+// The one Ticket of a Feature that has none: the Feature itself, its body the Ticket's body, ready and blocked by nothing.
+export const ownTicket = (feature: Feature): Ticket => ({
+	id: feature.id,
+	title: feature.title,
+	body: feature.body,
+	open: true,
+	signals: ['ready'],
+	blockedBy: []
+});
 
 const unblocked = (ticket: Ticket, built: ReadonlySet<ItemId>) =>
 	ticket.blockedBy.every((b) => !b.open || built.has(b.id));

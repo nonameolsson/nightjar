@@ -446,7 +446,7 @@ The open Features and the day's count are read from the Tracker, so two intakes 
 
 ## The Ticket contract
 
-Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it.
+Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it. A Feature with no Tickets is its own Ticket, so its body holds them.
 
 ## Give the Go
 
@@ -474,6 +474,8 @@ On Azure DevOps Boards the same steps read:
 5. Assign the Feature to yourself and add the Go tag. Signals are tags, which appear on first use, so there is nothing to create first.
 
 A work item counts as closed once Azure DevOps has stamped its Closed Date, which it does when the item reaches a closed state of your process; Nightjar reads that date and never the state ([ADR 0002](docs/adr/0002-signals-are-labels-or-tags-never-states.md)). A known limit follows: a **Removed** work item has no Closed Date, so Nightjar counts it as open. A removed Ticket that still carries the ready Signal is built, and one that blocks others keeps them waiting. Take the ready Signal off a Ticket before you remove it, and the Predecessor links from it.
+
+**A Feature without Tickets is its own Ticket.** When a Feature has no Tickets, the build makes one Ticket of the Feature itself, with the Feature's body as the Ticket's body, and builds it as one commit. So the body holds an `Acceptance criteria` checklist, and may hold the `**Model:**` and `**Effort:**` lines; without the checklist the Feature gets needs info and a comment saying so, with no Session. A Feature with Tickets is built as above, from its Tickets alone. `nightjar doctor FEATURE` reports a Feature without Tickets as `ok` when its body holds the checklist.
 
 **A standing Go from a Source.** A Source with `"go": true` and an `owner` gives each Feature it makes the Go: intake assigns the Feature to the owner, then adds the Go, and the owner's `--watch` builds it. This is the one place Nightjar gives the Go. Whoever commits such a Source to `factory.json` gives a standing Go, ahead of time, to every Feature it makes ([ADR 0003](docs/adr/0003-a-source-may-give-a-standing-go.md)). It is bounded by the Source's `maxPerDay`, the [limits](#limits) of each Ticket, and the owner's own `dailyUsd`.
 

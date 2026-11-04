@@ -198,6 +198,35 @@ describe('nightjar doctor FEATURE', () => {
 		});
 	});
 
+	describe('a Feature with no Tickets', () => {
+		// Issue #1 with no sub-issue at all
+		const bare = (body: string) => {
+			const github = new FakeGitHub('o/r', 'ann');
+			github.issue({
+				title: 'A Feature',
+				body,
+				state: 'open',
+				labels: ['factory-go'],
+				assignees: ['ann']
+			});
+			return github;
+		};
+
+		it('says ok when its body holds the acceptance criteria, as it is its own Ticket', async () => {
+			const github = bare(GOOD);
+			expect(await doctor(github, ['doctor', '1'])).toBe(0);
+			expect(out).toEqual(['nightjar: #1: ok']);
+			expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+		});
+
+		it('says what its body lacks when it holds no checklist', async () => {
+			const github = bare('Just do it.');
+			expect(await doctor(github, ['doctor', '1'])).toBe(1);
+			expect(out).toHaveLength(1);
+			expect(out[0]).toMatch(/^nightjar: #1: .*Acceptance criteria/);
+		});
+	});
+
 	it('runs no machine check', async () => {
 		const github = feature([GOOD]);
 		expect(await doctor(github, ['doctor', '1', '--use-api-key'])).toBe(0);

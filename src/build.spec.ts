@@ -40,6 +40,7 @@ import { FakeCodeHost } from './fakes/code-host.js';
 import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
+import { ticketLine } from './coding-agent.js';
 import { featureAfterRunStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK } from './prompt.js';
 import type { Spend } from './spend.js';
@@ -947,6 +948,89 @@ describe('buildFeature', () => {
 		const build = askedOf(world, 'build')[0];
 		expect(build?.featureComments.map((c) => c.body)).toEqual(['One at a time.']);
 		expect(build?.ticketComments.map((c) => c.body)).toEqual(['Keep it small.']);
+	});
+});
+
+describe('a Feature with no Tickets', () => {
+	const BODY =
+		'A crash on empty input.\n\n**Model:** opus\n**Effort:** low\n\n### Acceptance criteria\n\n- [ ] it does not crash';
+	const own = (world: World, body = BODY) => {
+		world.tracker.add({
+			id: '9',
+			title: 'Fix the crash',
+			body,
+			assignees: ['ann'],
+			signals: ['go']
+		});
+		world.asked.length = 0;
+	};
+	const worktree = (world: World) => join(world.worktrees, '9-fix-the-crash');
+
+	it('is built as one Ticket, its body the Ticket body, in one commit and one draft', async () => {
+		const world = makeWorld();
+		own(world);
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['9'], waiting: [] });
+		const [build, ...more] = askedOf(world, 'build');
+		expect(more).toEqual([]);
+		expect(build?.ticket).toMatchObject({ id: '9', title: 'Fix the crash', body: BODY });
+		expect(build?.feature.id).toBe('9');
+		expect(world.trees.subjects(worktree(world))).toEqual(['Fix the crash (#9)']);
+		expect(world.host.pulls).toHaveLength(1);
+		expect(world.host.pulls[0]?.body).toContain('Nightjar built all of #9 Fix the crash.');
+		expect(world.host.pulls[0]?.body).toContain('- #9 Fix the crash');
+		expect(refs(world)).toEqual(['#9']);
+		expect(world.tracker.signalsOf('9')).toEqual([]);
+	});
+
+	it("runs on the Feature's own Model and Effort lines", async () => {
+		const world = makeWorld();
+		own(world);
+		await buildFeature(deps(world), setup(world), '9');
+		const body = askedOf(world, 'build')[0]?.ticket.body ?? '';
+		expect([ticketLine(body, 'Model'), ticketLine(body, 'Effort')]).toEqual(['opus', 'low']);
+	});
+
+	it('gets needs info and a comment, and no Session, when its body holds no acceptance criteria', async () => {
+		const world = makeWorld();
+		own(world, 'Fix the crash on empty input.');
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.asked).toEqual([]);
+		expect(world.host.pulls).toEqual([]);
+		expect(world.tracker.signalsOf('9')).toEqual(['needsInfo']);
+		expect(world.tracker.said('9')).toHaveLength(1);
+		const said = world.tracker.said('9')[0] ?? '';
+		expect(said).toContain('no Tickets');
+		expect(said).toContain('Acceptance criteria');
+		expect(ledger(world)).toEqual([]);
+	});
+
+	it('is handed back on the Feature itself once, with the Feature as the place to answer', async () => {
+		const world = makeWorld();
+		own(world);
+		world.acts['9'] = 'ask';
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.tracker.signalsOf('9')).toEqual(['needsInfo']);
+		const said = world.tracker.said('9');
+		expect(said).toHaveLength(1);
+		expect(said[0]).toContain('Which file?');
+		expect(said[0]).toContain('On this Feature, remove `needs-info` and add `factory-go`');
+		expect(said[0]).not.toContain('On this Ticket');
+	});
+
+	it('goes on from the branch when it is built already, and builds nothing twice', async () => {
+		const world = makeWorld();
+		own(world);
+		await buildFeature(deps(world), setup(world), '9');
+		await world.tracker.addSignal('9', 'go');
+		world.asked.length = 0;
+		await buildFeature(deps(world), setup(world), '9');
+		expect(askedOf(world, 'build')).toEqual([]);
 	});
 });
 

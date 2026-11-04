@@ -7,7 +7,7 @@ import { pullChecksReport } from './gate.js';
 import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
-import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { needsAPerson, nextTicket, ownTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
@@ -15,6 +15,7 @@ import {
 	featureAfterRunStep,
 	featureStopStep,
 	nextStepText,
+	ownTicketStep,
 	pullChecksStep,
 	stoppedStep,
 	ticketStep,
@@ -201,7 +202,10 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			...(tickets === undefined ? {} : { tickets })
 		});
 	deps.status.doing(settingUp());
-	const tickets = await tracker.tickets(id);
+	const listed = await tracker.tickets(id);
+	// a Feature with no Tickets is its own Ticket, built as one commit
+	const alone = listed.length === 0;
+	const tickets = alone ? [ownTicket(feature)] : listed;
 	const chosen = chooseWorkflow(setup, feature.body);
 	if (chosen.kind === 'refused') {
 		const why = `its Workflow cannot be used: ${chosen.why}`;
@@ -211,6 +215,17 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			why,
 			`Nightjar built nothing: ${chosen.why}`,
 			waiting(tickets, new Set()),
+			setup.signals
+		);
+	}
+	const faults = alone ? ticketFaults(feature.body) : [];
+	if (faults.length > 0) {
+		return needsInfoStop(
+			deps,
+			id,
+			`it has no Tickets, and its body fails the Ticket contract: ${faults.join(' ')}`,
+			`Nightjar built nothing: this Feature has no Tickets, so it is built as one Ticket, and its body does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+			[],
 			setup.signals
 		);
 	}
@@ -306,6 +321,11 @@ class FeatureRun {
 		this.sessionStartedAt = this.startedAt;
 	}
 
+	// whether the Feature has no Tickets, so its own Ticket is the only one
+	private get alone() {
+		return this.tickets.length === 1 && this.tickets[0]?.id === this.feature.id;
+	}
+
 	private get aborted() {
 		return this.setup.signal?.aborted === true;
 	}
@@ -384,18 +404,20 @@ class FeatureRun {
 	) {
 		const signal: Signal = kind === 'human' ? 'human' : 'needsInfo';
 		const { tracker } = this.deps;
-		const next = ticketStep(this.setup.signals, kind);
+		// a Feature that is its own Ticket carries the Signal itself, and was never given the ready one
+		const own = ticket.id === this.feature.id;
+		const next = (own ? ownTicketStep : ticketStep)(this.setup.signals, kind);
 		this.deps.status.happened({
 			kind: 'needs-info',
 			feature: this.feature.id,
-			ticket: ticket.id,
+			ticket: own ? null : ticket.id,
 			why,
 			next
 		});
 		const side = await this.tree.discard(before, ticket.id);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
 		await tracker.comment(ticket.id, withNext(`${body}${kept}`, next));
-		await tracker.removeSignal(ticket.id, 'ready');
+		if (!own) await tracker.removeSignal(ticket.id, 'ready');
 		await tracker.addSignal(ticket.id, signal);
 		const i = this.tickets.indexOf(ticket);
 		this.tickets[i] = {
@@ -593,6 +615,8 @@ class FeatureRun {
 		if (paused) await this.pause(paused);
 		if ((await this.tree.ahead()) === 0) {
 			if (paused) return { kind: 'paused', why: paused };
+			// a Feature that is its own Ticket was handed back on itself, with its own comment
+			if (this.alone && left.some(needsAPerson)) return { kind: 'nothing', waiting: left };
 			const next = featureAfterRunStep(this.setup.signals, {
 				waiting: left.length > 0,
 				red: false
@@ -657,7 +681,8 @@ class FeatureRun {
 			workflow
 		});
 		const pull = await this.openDraft(body);
-		const linked = [...(complete ? [id] : []), ...done.map((t) => t.id)];
+		// a Feature that is its own Ticket is named once
+		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
 			pull,
 			linked.map((n) => tracker.reference(n))
