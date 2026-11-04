@@ -306,7 +306,7 @@ To start on a repo:
 2. Run `nightjar doctor` and fix each `FAIL`.
 3. Pick the few issues worth automating. Leave the rest alone.
 4. Turn each pick into a Feature with Tickets that meet the [Ticket contract](#the-ticket-contract). An old issue rarely does: it has no acceptance criteria and no blocking links. Write it as a Feature file, link the old issue from the spec, and make it with `nightjar create --dry-run FILE`, then `nightjar create FILE` ([Write a Feature](#write-a-feature)). Close the old issue once the Feature carries its work.
-5. Run `nightjar doctor FEATURE` before the Go. It prints each open Ticket as `ok` or with what it lacks (an `Acceptance criteria` checklist, a value on each `Model` and `Effort` line), changes nothing on the Tracker, and exits 1 when any Ticket fails. Link the blockers and put the ready Signal on each Ticket yourself.
+5. Run `nightjar doctor FEATURE` before the Go. It prints each open Ticket as `ok` or with what it lacks (an `Acceptance criteria` checklist, a value on each `Model` and `Effort` line), changes nothing on the Tracker, and exits 1 when any Ticket fails. It also says what sits across the Tickets: an open blocker outside the Feature, a blocking loop, an open Ticket without the ready Signal, no open Ticket, a `**Workflow:**` line no Workflow answers to. Link the blockers and put the ready Signal on each Ticket yourself.
 6. Assign the Feature to yourself and add the Go ([Give the Go](#give-the-go)).
 
 Never let an agent that does not know Nightjar add the Signal labels. If an agent files issues in this repo, have it write a Feature file and run `nightjar create` instead, or copy the `nightjar-feature` skill into the repo for it to use.
@@ -392,7 +392,7 @@ nightjar doctor
 | ---------------------- | ------------------------------------------------------------------------------------------------------ |
 | `init`                 | Asks for the Tracker and Code host, writes `factory.json`, creates the Signal labels, checks the logins. See [Set up](#set-up-nightjar-init). |
 | `doctor`               | Checks this machine and `factory.json`, lists the Features it would build, builds nothing. Start here, and run it any time something is wrong. `--dry-run` is its old name and still works. |
-| `doctor FEATURE`       | Checks that Feature's open Tickets against the Ticket contract, with no machine check, and prints one line per Ticket: `ok` or each fault. Writes nothing to the Tracker; exits 1 when any Ticket fails. |
+| `doctor FEATURE`       | Checks that Feature's open Tickets against the Ticket contract, with no machine check, and prints one line per Ticket: `ok` or each fault. Also reports faults across the Tickets (see [the Ticket contract](docs/ticket-contract.md)). Writes nothing to the Tracker; exits 1 when any fails. |
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
 | `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes.        |
 | `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). It refuses a Feature not assigned to you, without the Go, or already carrying the working Signal. |
