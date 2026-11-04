@@ -10,6 +10,7 @@ import type {
 	ItemText,
 	Standing,
 	Ticket,
+	TicketCount,
 	TicketReference,
 	Tracker
 } from '../tracker.js';
@@ -23,6 +24,7 @@ import {
 	type GhRunner,
 	type RawIssue
 } from './api.js';
+import { GitHubTrust } from './trust.js';
 
 const CommentSchema = z.looseObject({
 	body: z.string().nullable(),
@@ -38,11 +40,6 @@ const SearchSchema = z.looseObject({
 // GitHub's search pages hold 100 at most and reach no further than 1,000 results.
 const SEARCH_PAGES = 10;
 
-// Stand in for write access when the permission call is refused; a COLLABORATOR may hold only read.
-const TIED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-
-const WRITE = ['admin', 'maintain', 'write'];
-
 // The issue number an id names; GitHub has no other kind of id.
 function issue(id: ItemId): string {
 	if (!/^\d+$/.test(id)) throw new GitHubFailure(`${id} is no GitHub issue number.`);
@@ -55,18 +52,27 @@ const toFeature = (raw: RawIssue): Feature => ({
 	body: raw.body ?? ''
 });
 
+// null where GitHub gave no summary, or one without the closed count
+function countOf(raw: RawIssue): TicketCount | null {
+	const summary = raw.sub_issues_summary;
+	if (summary?.completed === undefined) return null;
+	return { total: summary.total, closed: summary.completed };
+}
+
 export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
-	private readonly writers = new Map<string, boolean>();
+	private readonly counts = new Map<ItemId, TicketCount>();
+	private readonly trust: GitHubTrust;
 
 	constructor(
 		readonly repo: string,
 		gh: GhRunner,
 		private readonly names: SignalNames,
 		// factory.json's trusted list; when set it replaces the write-access default
-		private readonly trusted?: readonly string[]
+		trusted?: readonly string[]
 	) {
 		this.api = new GitHubApi(repo, gh);
+		this.trust = new GitHubTrust(this.api, trusted);
 	}
 
 	private signalsOf(raw: RawIssue): Signal[] {
@@ -140,9 +146,41 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 			[`repos/${this.repo}/issues?${query.toString()}`],
 			z.array(IssueSchema)
 		);
+		for (const i of raw) this.remember(i);
 		return raw
 			.filter((i) => i.pull_request === undefined && (i.sub_issues_summary?.total ?? 0) > 0)
 			.map(toFeature);
+	}
+
+	// the sub-issue summary of every issue the lists gave, so counting a listed Feature costs no call
+	private remember(raw: RawIssue): void {
+		const count = countOf(raw);
+		const id = String(raw.number);
+		if (count === null) this.counts.delete(id);
+		else this.counts.set(id, count);
+	}
+
+	// A Feature the lists have not given is read on its own; one that cannot be read has no count.
+	async ticketCounts(ids: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>> {
+		const found = new Map<ItemId, TicketCount | null>();
+		for (const id of ids) {
+			let count = this.counts.get(id) ?? null;
+			if (count === null) {
+				try {
+					const n = issue(id);
+					const raw = await this.api.parse(
+						`read issue #${n}`,
+						[`repos/${this.repo}/issues/${n}`],
+						IssueSchema
+					);
+					count = countOf(raw);
+				} catch {
+					count = null;
+				}
+			}
+			found.set(id, count);
+		}
+		return found;
 	}
 
 	async feature(id: ItemId): Promise<Feature> {
@@ -207,14 +245,14 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 				author,
 				body: c.body ?? '',
 				at: c.created_at,
-				trusted: await this.isTrusted(author, c.author_association)
+				trusted: await this.trust.isTrusted(author, c.author_association)
 			});
 		}
 		return comments;
 	}
 
 	trusts(person: string): Promise<boolean> {
-		return this.isTrusted(person);
+		return this.trust.isTrusted(person);
 	}
 
 	// GitHub drops an assignee it cannot assign without a word, so the answer is read for them.
@@ -231,36 +269,6 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 				`GitHub did not assign #${n} to ${person}, who cannot be assigned issues on ${this.repo}.`
 			);
 		}
-	}
-
-	// On the configured list, else may push; the comment's own association answers when a proxy refuses the permission call.
-	private async isTrusted(login: string, association?: string): Promise<boolean> {
-		// GitHub logins are case-insensitive
-		if (this.trusted !== undefined) {
-			return this.trusted.some((t) => t.toLowerCase() === login.toLowerCase());
-		}
-		const known = this.writers.get(login);
-		if (known !== undefined) return known;
-		const got = await this.api.raw([
-			`repos/${this.repo}/collaborators/${encodeURIComponent(login)}/permission`
-		]);
-		// 404 means no collaborator; reading any other refusal as no access would drop the person's own answers unsaid
-		if (!got.ok && !/HTTP 404/.test(got.err)) {
-			if (association !== undefined) return TIED.includes(association);
-			throw new GitHubFailure(
-				`gh could not read the permission of ${login}: ${firstLine(got.err)}`
-			);
-		}
-		let value: unknown = null;
-		try {
-			value = got.ok ? JSON.parse(got.out) : null;
-		} catch {
-			// no JSON reads as no permission
-		}
-		const parsed = z.looseObject({ permission: z.string() }).safeParse(value);
-		const can = parsed.success && WRITE.includes(parsed.data.permission);
-		this.writers.set(login, can);
-		return can;
 	}
 
 	async addSignal(id: ItemId, signal: Signal): Promise<void> {

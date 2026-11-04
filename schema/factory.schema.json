@@ -114,6 +114,14 @@
 							"description": "owner/name on GitHub; when left out, read from the origin remote",
 							"type": "string",
 							"pattern": "^[^/\\s]+\\/[^/\\s]+$"
+						},
+						"trustedChecks": {
+							"description": "The slugs of the GitHub Apps whose failed checks on the pull request reach the agent as feedback, besides GitHub Actions, whose checks always do. A check from any other app is left out.",
+							"type": "array",
+							"items": {
+								"type": "string",
+								"pattern": "\\S"
+							}
 						}
 					},
 					"required": [

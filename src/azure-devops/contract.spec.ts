@@ -5,6 +5,7 @@ import {
 	assignContract,
 	featureWriterContract,
 	sourcesContract,
+	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
 	type SignalNames,
@@ -107,6 +108,11 @@ describe('AzureBoardsTracker meets the assign contract', () => {
 			for (const c of assignContract) it(c.name, () => c.run(harness));
 		});
 	}
+});
+
+describe('AzureBoardsTracker meets the ticketCounts contract', () => {
+	const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, 'Contributors');
+	for (const c of ticketCountsContract) it(c.name, () => c.run(harness));
 });
 
 describe('AzureBoardsTracker meets the waitingOn contract', () => {

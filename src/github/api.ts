@@ -25,7 +25,7 @@ export const IssueSchema = z.looseObject({
 		.nullable()
 		.optional(),
 	user: z.looseObject({ login: z.string() }).nullable(),
-	sub_issues_summary: z.looseObject({ total: z.int() }).optional(),
+	sub_issues_summary: z.looseObject({ total: z.int(), completed: z.int().optional() }).optional(),
 	// the issues list also returns pull requests, which carry this
 	pull_request: z.unknown().optional()
 });
@@ -33,7 +33,12 @@ export const IssueSchema = z.looseObject({
 export type RawIssue = z.infer<typeof IssueSchema>;
 
 // A Feature with more than 100 Tickets or comments is no Feature for one run.
-export const PAGE = 'per_page=100';
+const PAGE_SIZE = 100;
+
+export const PAGE = `per_page=${String(PAGE_SIZE)}`;
+
+// A list that long is no list a build can read.
+const MAX_PAGES = 100;
 
 export class GitHubApi {
 	constructor(
@@ -48,8 +53,7 @@ export class GitHubApi {
 		return got;
 	}
 
-	async call(what: string, args: readonly string[]): Promise<unknown> {
-		const got = await this.raw(args);
+	private json(what: string, got: Run): unknown {
 		if (!got.ok) throw new GitHubFailure(`gh could not ${what}: ${firstLine(got.err)}`);
 		if (got.out.trim() === '') return null;
 		try {
@@ -59,10 +63,44 @@ export class GitHubApi {
 		}
 	}
 
-	async parse<T>(what: string, args: readonly string[], schema: z.ZodType<T>): Promise<T> {
-		const parsed = schema.safeParse(await this.call(what, args));
+	private shaped<T>(what: string, value: unknown, schema: z.ZodType<T>): T {
+		const parsed = schema.safeParse(value);
 		if (!parsed.success) throw new GitHubFailure(`GitHub answered ${what} in a shape not known.`);
 		return parsed.data;
+	}
+
+	async call(what: string, args: readonly string[]): Promise<unknown> {
+		return this.json(what, await this.raw(args));
+	}
+
+	async parse<T>(what: string, args: readonly string[], schema: z.ZodType<T>): Promise<T> {
+		return this.shaped(what, await this.call(what, args), schema);
+	}
+
+	// null when GitHub has no such thing (404); any other refusal is a failure.
+	async find<T>(what: string, args: readonly string[], schema: z.ZodType<T>): Promise<T | null> {
+		const got = await this.raw(args);
+		if (!got.ok && /HTTP 404/.test(got.err)) return null;
+		return this.shaped(what, this.json(what, got), schema);
+	}
+
+	// Every page of a list, a hundred to a page; `items` takes a page's items out of what GitHub answers.
+	async everyPage<P, T>(
+		what: string,
+		path: string,
+		schema: z.ZodType<P>,
+		items: (page: P) => readonly T[]
+	): Promise<T[]> {
+		const joined = path.includes('?') ? '&' : '?';
+		const all: T[] = [];
+		for (let page = 1; page <= MAX_PAGES; page += 1) {
+			const got = items(
+				await this.parse(what, [`${path}${joined}${PAGE}&page=${String(page)}`], schema)
+			);
+			all.push(...got);
+			if (got.length < PAGE_SIZE) return all;
+		}
+		throw new GitHubFailure(`gh could not ${what}: more than ${String(MAX_PAGES)} pages.`);
 	}
 }
 

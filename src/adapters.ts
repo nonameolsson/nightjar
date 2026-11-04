@@ -59,6 +59,7 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 	const featuresFrom = tracker.featuresFrom?.bind(tracker);
 	const assign = tracker.assign?.bind(tracker);
 	const trusts = tracker.trusts?.bind(tracker);
+	const ticketCounts = tracker.ticketCounts?.bind(tracker);
 	return {
 		me: () => tracker.me(),
 		assignedFeatures: (person) => tracker.assignedFeatures(person),
@@ -74,7 +75,8 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 		...(waitingOn === undefined ? {} : { waitingOn }),
 		...(featuresFrom === undefined ? {} : { featuresFrom }),
 		...(assign === undefined ? {} : { assign }),
-		...(trusts === undefined ? {} : { trusts })
+		...(trusts === undefined ? {} : { trusts }),
+		...(ticketCounts === undefined ? {} : { ticketCounts })
 	};
 }
 
@@ -186,7 +188,10 @@ const CODE_HOSTS: {
 	github: async (spec, m) => {
 		const repo = spec.repo ?? (await m.fromOrigin('codeHost.repo'));
 		return {
-			codeHost: new GitHubCodeHost(repo, m.gh, (args, cwd) => run('git', args, cwd, m.env)),
+			codeHost: new GitHubCodeHost(repo, m.gh, (args, cwd) => run('git', args, cwd, m.env), {
+				trusted: m.config.trusted,
+				trustedChecks: spec.trustedChecks
+			}),
 			repo,
 			// the branch is pushed and the pull request opened as the person gh is signed in as
 			reachCodeHost: async () => {

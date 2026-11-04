@@ -47,6 +47,8 @@ Which Signal each item carries, and when it changes, under the default names:
 
 Nightjar never takes `needs-info` or `ready-for-human` off: the person does, and gives the Go again. It never sets a tracker state or a GitHub Project's Status field ([docs/adr/0002](adr/0002-signals-are-labels-or-tags-never-states.md)).
 
+Every comment Nightjar leaves for a person ends with a **Next step**: what to answer, which Signal to take off and put on, and the Go to give again, by the names `factory.json` sets (`src/next-step.ts`).
+
 ## A Feature's Workflow
 
 A Feature may carry a **`**Workflow:**`** line anywhere in its body, on a line of its own, to add the Steps of a Workflow from `factory.json` to its build:

@@ -114,6 +114,14 @@ export interface Tracker {
 	assign?(id: ItemId, person: string): Promise<void>;
 	// optional, so a Tracker module written before it still loads: whether `person` is trusted, by factory.json's trusted list when set, else the Tracker's own default (GitHub: write access; Azure DevOps: the project's Contributors group)
 	trusts?(person: string): Promise<boolean>;
+	// optional, so a Tracker module written before it still loads: how many Tickets each Feature has and how many are closed; every id asked about is answered, null for one whose count cannot be read
+	ticketCounts?(featureIds: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>>;
+}
+
+// How many Tickets a Feature has, and how many of them are closed.
+export interface TicketCount {
+	readonly total: number;
+	readonly closed: number;
 }
 
 // The title and body of a Feature or Ticket to be made.

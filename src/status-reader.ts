@@ -3,7 +3,14 @@ import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { logsPath } from './coding-agent.js';
-import { builtOn, ledgerPath, spends, spentOnFeature } from './ledger.js';
+import {
+	builtOn,
+	builtOnFeature,
+	ledgerPath,
+	medianTicketMs,
+	spends,
+	spentOnFeature
+} from './ledger.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;
@@ -12,6 +19,8 @@ export interface Completed {
 	readonly event: Done;
 	// what this build's sessions cost: those after the Feature's previous outcome, up to this one
 	readonly costUsd: number;
+	// the ledger's built events for this build, counted over the same sessions; absent in a hand-made view
+	readonly builtTickets?: number;
 }
 
 export interface FactoryView {
@@ -26,6 +35,8 @@ export interface FactoryView {
 	readonly featureCostUsd: number;
 	// Tickets built on the local day
 	readonly builtToday: number;
+	// the median duration of a recorded Ticket build; null with none recorded; absent in a hand-made view
+	readonly medianTicketMs?: number | null;
 }
 
 export interface ReadOptions {
@@ -129,6 +140,7 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 				? // a session recorded the moment the build starts is its own
 					spentOnFeature(spent, doing.feature, Date.parse(featureStart(doing)) - 1, null)
 				: 0,
+		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
@@ -137,7 +149,8 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 			const after = before === undefined ? null : Date.parse(before.at);
 			return {
 				event,
-				costUsd: spentOnFeature(spent, event.feature, after, Date.parse(event.at))
+				costUsd: spentOnFeature(spent, event.feature, after, Date.parse(event.at)),
+				builtTickets: builtOnFeature(spent, event.feature, after, Date.parse(event.at))
 			};
 		})
 	};

@@ -5,6 +5,8 @@ import {
 	codeHostContract,
 	featureWriterContract,
 	sourcesContract,
+	feedbackContract,
+	ticketCountsContract,
 	trackerContract,
 	waitingOnContract
 } from '../index.js';
@@ -30,14 +32,19 @@ describe('FakeTracker meets the assign contract', () => {
 	for (const c of assignContract) it(c.name, () => c.run(fakeTrackerHarness));
 });
 
-describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom and assign contracts', () => {
+describe('FakeTracker meets the ticketCounts contract', () => {
+	for (const c of ticketCountsContract) it(c.name, () => c.run(fakeTrackerHarness));
+});
+
+describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom, assign and ticketCounts contracts', () => {
 	const keyed = keyedTrackerHarness('PROJ-');
 	for (const c of [
 		...trackerContract,
 		...featureWriterContract,
 		...waitingOnContract,
 		...sourcesContract,
-		...assignContract
+		...assignContract,
+		...ticketCountsContract
 	]) {
 		it(c.name, () => c.run(keyed));
 	}
@@ -45,4 +52,8 @@ describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, fe
 
 describe('FakeCodeHost meets the Code host contract', () => {
 	for (const c of codeHostContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the feedback contract', () => {
+	for (const c of feedbackContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });
