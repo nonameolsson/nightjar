@@ -207,6 +207,77 @@ describe('nightjar doctor over the Pull-check pass', () => {
 	});
 });
 
+describe('nightjar doctor over install commands in allowedCommands', () => {
+	async function over(allowedCommands: string[], more: Record<string, unknown> = {}) {
+		m = machine();
+		m.writeConfig({ ...GITHUB, allowedCommands, ...more });
+		return start();
+	}
+
+	it('warns on each install command, bare or with arguments, naming it and pointing at setup', async () => {
+		const installs = [
+			'npm install',
+			'npm install --legacy-peer-deps',
+			'npm ci',
+			'pnpm install',
+			'pnpm install *',
+			'yarn',
+			'yarn install',
+			'yarn --frozen-lockfile',
+			'bun install',
+			'pip install -r requirements.txt',
+			'uv sync',
+			'uv pip install *',
+			'poetry install',
+			'bundle install',
+			'go mod download',
+			'cargo fetch',
+			'composer install'
+		];
+		for (const command of installs) {
+			out = [];
+			err = [];
+			// a warning, not a failure
+			expect(await over(['make check', command]), command).toBe(0);
+			expect(err, command).toEqual([]);
+			const warned = out.filter((line) => line.startsWith('  warn  allowedCommands: '));
+			expect(warned, command).toHaveLength(1);
+			expect(warned[0], command).toContain(`"${command}"`);
+			expect(warned[0], command).toContain('move it to "setup"');
+			m.remove();
+		}
+	});
+
+	it('does not warn on commands that only look alike', async () => {
+		const code = await over([
+			'make check',
+			'npm test',
+			'npm run install-hooks',
+			'npm run ci',
+			'yarn test',
+			'yarn *',
+			'pip list',
+			'uv run pytest',
+			'go mod tidy',
+			'cargo test',
+			'bundle exec rspec'
+		]);
+		expect(code).toBe(0);
+		expect(out.join('\n')).not.toContain('allowedCommands');
+	});
+
+	it('warns on an install command in a Workflow too, naming the Workflow', async () => {
+		const workflows = {
+			quick: {
+				allowedCommands: ['npm ci'],
+				steps: [{ name: 'tidy', prompt: 'tidy up', point: 'afterAllTickets' }]
+			}
+		};
+		expect(await over(['make check'], { workflows })).toBe(0);
+		expect(out.join('\n')).toMatch(/warn {2}allowedCommands: .*Workflow quick.*"npm ci"/);
+	});
+});
+
 describe('nightjar doctor over Sources', () => {
 	const SOURCES = {
 		sentry: {
