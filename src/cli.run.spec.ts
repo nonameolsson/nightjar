@@ -31,11 +31,14 @@ function script(dir: string, name: string, body: string) {
 	chmodSync(path, 0o755);
 }
 
-// gh: one Feature, #1, with one Ticket, #2; every call is kept in $FAKE_GH_CALLS
+// gh: one Feature, #1, with one Ticket, #2; every call is kept in $FAKE_GH_CALLS.
+// With FAKE_GH_OPEN_PULL, the branch has an open pull request, #9, with one line comment by ann, comment:5.
 const GH = String.raw`
 echo "$*" >> "$FAKE_GH_CALLS"
 issue() { printf '{"number":%s,"title":"%s","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
 feature() { printf '{"number":1,"title":"One escape","body":"","state":"open","labels":[{"name":"%s"}],"assignees":[{"login":"%s"}],"user":{"login":"ann"},"sub_issues_summary":{"total":1}}' "${'$'}{FAKE_GH_FEATURE_LABEL:-factory-go}" "${'$'}{FAKE_GH_FEATURE_ASSIGNEE:-ann}"; }
+pull='{"number":9,"html_url":"https://github.com/o/r/pull/9","body":"","head":{"sha":"abc"}}'
+line='{"id":5,"body":"Rename it.","user":{"login":"ann"},"created_at":"2026-10-31T00:00:00Z","path":"built.txt","line":1,"pull_request_url":"https://api.github.com/repos/o/r/pulls/9"}'
 for a in "$@"; do case "$a" in
   user) echo '{"login":"ann"}'; exit 0 ;;
   repos/o/r/issues\?*) echo "[$(feature)]"; exit 0 ;;
@@ -46,18 +49,24 @@ for a in "$@"; do case "$a" in
   repos/o/r/issues/*/dependencies/*) echo '[]'; exit 0 ;;
   repos/o/r/issues/*/comments*) echo '[]'; exit 0 ;;
   repos/o/r/issues/*/labels*) echo '[]'; exit 0 ;;
-  repos/o/r/pulls\?*) echo '[]'; exit 0 ;;
-  repos/o/r/pulls|repos/o/r/pulls/9) echo '{"number":9,"html_url":"https://github.com/o/r/pull/9","body":""}'; exit 0 ;;
+  repos/o/r/pulls\?*) if [ -n "$FAKE_GH_OPEN_PULL" ]; then echo "[$pull]"; else echo '[]'; fi; exit 0 ;;
+  repos/o/r/pulls|repos/o/r/pulls/9) echo "$pull"; exit 0 ;;
+  repos/o/r/pulls/9/comments/5/replies) echo '{}'; exit 0 ;;
+  repos/o/r/pulls/9/comments\?*) echo "[$line]"; exit 0 ;;
+  repos/o/r/pulls/comments/5) echo "$line"; exit 0 ;;
+  repos/o/r/pulls/9/reviews\?*) echo '[]'; exit 0 ;;
+  repos/o/r/commits/abc/check-runs\?*) echo '{"check_runs":[]}'; exit 0 ;;
 esac; done
 echo "gh: Not Found (HTTP 404)" >&2; exit 1`;
 
-// claude: a build writes a file in the worktree and answers built; a review approves
+// claude: a build writes a file in the worktree and answers built; a review approves; a Feedback round, by its schema's "answers", answers the id in $FAKE_CLAUDE_ANSWERS
 const CLAUDE = String.raw`
 [ "$1" = --version ] && { echo "2.1.314 (Claude Code)"; exit 0; }
 [ "$1 $2 $3" = "auth status --json" ] && { echo "{\"loggedIn\":true,\"email\":\"ann@x.io\",\"authMethod\":\"claude.ai\",\"configDirectory\":\"${'$'}{CLAUDE_CONFIG_DIR:-$HOME/.claude}\"}"; exit 0; }
 echo "$*" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
   *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
+  *'"answers"'*) echo answered > feedback.txt; out="{\"outcome\":\"answered\",\"summary\":\"Answered it.\",\"answers\":[{\"id\":\"${'$'}{FAKE_CLAUDE_ANSWERS:-}\",\"answered\":true,\"note\":\"Done.\"}],\"blocker\":\"\"}" ;;
   *) echo work > built.txt; echo "${'$'}{WEB_PORT:-none}" > port.txt; echo "${'$'}{CLAUDE_CONFIG_DIR:-none} ${'$'}{CLAUDE_CODE_OAUTH_TOKEN:-notoken}" > login.txt; out='{"outcome":"built","summary":"Shared it.","questions":[]}' ;;
 esac
 echo '{"type":"system","subtype":"init","apiKeySource":"none"}'
@@ -219,6 +228,28 @@ describe('nightjar FEATURE', () => {
 			recent: unknown[];
 		};
 		expect(status.recent).toMatchObject([{ kind: 'failed', feature: '1' }]);
+	}, 30_000);
+
+	it('answers a trusted line comment on its open pull request when the Feature gets the Go again', () => {
+		const { root, git, origin, nightjar, calls, sessions } = world(true, { trusted: ['ann'] });
+		expect(nightjar(['1']).status).toBe(0);
+		const run = nightjar(['1'], { FAKE_GH_OPEN_PULL: '1', FAKE_CLAUDE_ANSWERS: 'comment:5' });
+		expect(run.stderr).toBe('');
+		expect(run.status).toBe(0);
+
+		const branch = 'factory/1-one-escape';
+		expect(git(origin, 'log', '-1', '--format=%B', branch)).toContain(
+			'Factory-Feedback: comment:5'
+		);
+		expect(sessions()).toContain('Rename it.');
+		const sha = git(origin, 'rev-parse', '--short', branch);
+		expect(calls()).toContain(`pulls/9/comments/5/replies -f body=Done.\n\nAnswered in ${sha}.`);
+		expect(calls()).toMatch(/-X PATCH repos\/o\/r\/pulls\/9 -f body=[\s\S]*## Feedback/);
+		const steps = readFileSync(join(root, '.factory', 'runs.jsonl'), 'utf8')
+			.trim()
+			.split('\n')
+			.map((l) => (JSON.parse(l) as { step: string }).step);
+		expect(steps).toEqual(['build', 'review', 'feedback', 'review']);
 	}, 30_000);
 });
 

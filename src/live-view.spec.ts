@@ -202,6 +202,15 @@ describe('renderBlock', () => {
 		expect(review).toContain('  2/5 Tickets built  review');
 	});
 
+	it('shows a Feedback round, and its fix rounds, with no Ticket of its own', () => {
+		const round = render(
+			view(status(building({ ticket: null, step: 'feedback', round: null, rounds: null })))
+		);
+		expect(round).toContain('  2/5 Tickets built  feedback');
+		const fix = render(view(status(building({ ticket: null, step: 'fix', round: 2, rounds: 3 }))));
+		expect(fix).toContain('  2/5 Tickets built  fix, round 2/3');
+	});
+
 	it('shows the newest say() line at the foot, and holds every line to the width', () => {
 		const lines = render(
 			view(status(building()), { tail: ['x'.repeat(200)] }),

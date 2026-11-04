@@ -13,6 +13,9 @@ export const TICKET_TRAILER = 'Factory-Ticket';
 // Names the Workflow Step a commit holds, so a later run knows it is done.
 export const STEP_TRAILER = 'Factory-Step';
 
+// Lists the feedback a Feedback round's commit answered: the branch is the record of what is answered.
+export const FEEDBACK_TRAILER = 'Factory-Feedback';
+
 // The notes the Steps of a run share, in the worktree and never committed.
 const NOTES = '.factory/notes';
 
@@ -120,6 +123,28 @@ export class Worktree {
 			`${this.at.base}..HEAD`
 		]);
 		return new Set(out.split('\n').flatMap((l) => (l.trim() === '' ? [] : [l.trim()])));
+	}
+
+	// The feedback ids the branch's own commits name as answered, from their trailers.
+	async feedbackAnswered(): Promise<Set<string>> {
+		const out = await this.git([
+			'log',
+			`--format=%(trailers:key=${FEEDBACK_TRAILER},valueonly)`,
+			`${this.at.base}..HEAD`
+		]);
+		return new Set(out.split(/[\s,]+/).filter((id) => id !== ''));
+	}
+
+	// The Feedback round's one commit, naming the feedback it answered; it may change no file, as an answer can be a reply alone. Its short SHA.
+	async commitFeedback(o: {
+		ids: readonly string[];
+		summary: string;
+		session: string;
+	}): Promise<string> {
+		await this.git(['add', '-A']);
+		const message = `Answer feedback on the pull request\n\n${o.summary.trim()}\n\n${FEEDBACK_TRAILER}: ${o.ids.join(', ')}\nFactory-Session: ${o.session}`;
+		await this.git(['commit', '-q', '--allow-empty', '-m', message]);
+		return (await this.git(['rev-parse', '--short', 'HEAD'])).trim();
 	}
 
 	// The Feature's diff against its base, cut at `limit` characters.

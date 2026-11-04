@@ -1,14 +1,20 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
 import { join } from 'node:path';
 import type { CheckResult, RunCheck } from './check.js';
-import type { CodeHost, Pull } from './code-host.js';
+import type { CodeHost, Feedback, Pull } from './code-host.js';
 import { envOf, type CodingAgent, type Fixing } from './coding-agent.js';
 import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
-import { record, spentOn, type Entry } from './ledger.js';
+import { feedbackRounds, record, spentOn, type Entry } from './ledger.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
-import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
+import {
+	feedbackPlace,
+	questionRounds,
+	questionsComment,
+	type Question,
+	type Review
+} from './prompt.js';
 import type { Serve, Served } from './serve.js';
 import type { Signal } from './signals.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
@@ -110,11 +116,12 @@ export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl')
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
+const pieces = (n: number) => `${String(n)} piece${n === 1 ? '' : 's'} of feedback`;
 
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
-// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps'.
-type Work = 'build' | 'fix' | 'steps' | 'review';
+// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback'.
+type Work = 'build' | 'fix' | 'steps' | 'review' | 'feedback';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -124,6 +131,9 @@ interface Cost {
 }
 
 const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
+
+// The kind of work the fix rounds of each piece of work count under.
+const FIXES: Record<Fixing['kind'], Work> = { build: 'fix', step: 'steps', feedback: 'feedback' };
 
 // What building one Ticket left the run to do next.
 type Step =
@@ -136,6 +146,28 @@ const NEXT: Step = { kind: 'next' };
 
 // What ends a piece of work before its own end: the run goes on later, or a person stopped it.
 type Halt = Extract<Step, { kind: 'paused' | 'aborted' }>;
+
+// A piece of feedback a Feedback round did not answer, and why.
+interface Unanswered {
+	readonly feedback: Feedback;
+	readonly why: string;
+}
+
+// How this run's Feedback round ended: one commit to reply with, or thrown away.
+type FeedbackEnd =
+	| {
+			readonly kind: 'committed';
+			readonly sha: string;
+			readonly answered: readonly { readonly feedback: Feedback; readonly note: string }[];
+			readonly left: readonly Unanswered[];
+	  }
+	| {
+			readonly kind: 'thrown';
+			readonly why: string;
+			// the failing check's output, when that is why
+			readonly tail?: string;
+			readonly left: readonly Unanswered[];
+	  };
 
 export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promise<FeatureOutcome> {
 	const { tracker } = deps;
@@ -244,6 +276,8 @@ class FeatureRun {
 	private readonly reports: StepReport[] = [];
 	// what the status file shows now, so a Ticket built can change its Tickets alone
 	private shown: Doing | null = null;
+	// this run's Feedback round, once it ran to an end of its own
+	private answered: FeedbackEnd | null = null;
 
 	constructor(
 		private readonly deps: Deps,
@@ -279,6 +313,7 @@ class FeatureRun {
 		if (last.kind === 'next' && !this.aborted && whole) {
 			last = await this.runSteps('afterAllTickets', null);
 		}
+		if (last.kind === 'next' && !this.aborted) last = await this.answerFeedback();
 		return this.finish(last);
 	}
 
@@ -477,7 +512,7 @@ class FeatureRun {
 	}): Promise<{ check: CheckResult; spent: number; summaries: string[]; halt?: Halt }> {
 		const { limits, check: command } = this.setup;
 		const summaries: string[] = [];
-		const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
+		const work = FIXES[o.of.kind];
 		let { check, spent } = o;
 		for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
 			const budget = o.cap - spent;
@@ -521,9 +556,9 @@ class FeatureRun {
 
 	private building(
 		ticket: ItemId | null,
-		step: 'build' | 'fix' | 'step',
+		step: 'build' | 'fix' | 'step' | 'feedback',
 		session: string,
-		rounds: { readonly round: number; readonly rounds: number }
+		rounds: { readonly round: number | null; readonly rounds: number | null }
 	) {
 		this.shown = this.show({
 			ticket,
@@ -702,6 +737,123 @@ class FeatureRun {
 		return { kind: 'done' };
 	}
 
+	// One Feedback round on the branch's open pull request, when it has trusted feedback no trailer on the branch names.
+	private async answerFeedback(): Promise<Step> {
+		const { codeHost, codingAgent } = this.deps;
+		if (codeHost.feedback === undefined || codeHost.reply === undefined) return NEXT;
+		const pull = await codeHost.openPull(this.tree.at.branch);
+		if (pull === null) return NEXT;
+		const done = await this.tree.feedbackAnswered();
+		const todo = (await codeHost.feedback(pull)).filter((f) => f.trusted && !done.has(f.id));
+		if (todo.length === 0) return NEXT;
+		const paused = this.dailyPause();
+		if (paused !== null) return { kind: 'paused', why: paused };
+
+		const { setup } = this;
+		const before = await this.tree.head();
+		const sessionId = this.deps.newId();
+		const cap = setup.limits.ticketUsd;
+		const name = `${hash(this.feature.id)} feedback`;
+		this.deps.say(`${name}: ${pieces(todo.length)} on ${pull.url}, session ${sessionId}`);
+		this.building(null, 'feedback', sessionId, { round: null, rounds: null });
+		const got = await codingAgent.feedback({
+			kind: 'feedback',
+			at: this.tree.at,
+			sessionId,
+			feature: this.feature,
+			feedback: todo,
+			diff: await this.tree.diff(DIFF_CHARS),
+			budgetUsd: cap
+		});
+		const entry = {
+			ticket: null,
+			step: 'feedback' as const,
+			session: sessionId,
+			costUsd: got.costUsd
+		};
+		const throwAway = async (why: string, left: readonly Unanswered[], tail?: string) => {
+			await this.tree.revert(before);
+			this.answered = { kind: 'thrown', why, left, ...(tail === undefined ? {} : { tail }) };
+			this.deps.say(`${name}: thrown away, ${why}`);
+			return NEXT;
+		};
+		const all = (why: string) => todo.map((feedback) => ({ feedback, why }));
+		switch (got.kind) {
+			case 'aborted':
+				this.log({ ...entry, outcome: 'stopped by a person' });
+				await this.tree.revert(before);
+				return { kind: 'aborted' };
+			case 'paused':
+				await this.tree.revert(before);
+				this.log({ ...entry, outcome: `paused: ${got.why}` });
+				return { kind: 'paused', why: got.why };
+			case 'failed':
+				this.log({ ...entry, outcome: `failed: ${got.why}` });
+				return throwAway(got.why, all(got.why));
+			case 'blocked': {
+				this.log({ ...entry, outcome: 'blocked' });
+				const why = `it reported itself blocked${got.blocker ? `: ${got.blocker}` : ''}`;
+				return throwAway(why, all(why));
+			}
+			case 'answered':
+				break;
+		}
+		const said = (f: Feedback) => got.answers.find((a) => a.id === f.id);
+		const answered = todo.flatMap((feedback) => {
+			const a = said(feedback);
+			return a?.answered === true ? [{ feedback, note: a.note }] : [];
+		});
+		const left = todo.flatMap((feedback): Unanswered[] => {
+			const a = said(feedback);
+			if (a?.answered === true) return [];
+			return [{ feedback, why: a === undefined ? 'the round said nothing of it' : a.note }];
+		});
+		this.log({
+			...entry,
+			outcome: `answered ${String(answered.length)} of ${String(todo.length)}`
+		});
+		if (answered.length === 0) return throwAway('it answered none of the feedback', left);
+		const checked = await this.fixUntilGreen({
+			ticket: null,
+			name,
+			sessionId,
+			cap,
+			spent: got.costUsd,
+			check: await this.deps.runCheck(setup.check, this.tree.at.folder, envOf(setup)),
+			of: { kind: 'feedback' }
+		});
+		if (checked.halt !== undefined) {
+			await this.tree.revert(before);
+			return checked.halt;
+		}
+		if (!checked.check.ok) {
+			const why = 'its changes leave the check failing after the fix rounds';
+			return throwAway(why, all(why), checked.check.tail);
+		}
+		const sha = await this.tree.commitFeedback({
+			ids: answered.map((a) => a.feedback.id),
+			summary: [got.summary, ...checked.summaries].join('\n\n'),
+			session: sessionId
+		});
+		this.answered = { kind: 'committed', sha, answered, left };
+		return NEXT;
+	}
+
+	// Each piece of feedback the round answered gets a reply naming its commit; one that cannot be answered any more is said and skipped.
+	private async reply(pull: Pull, end: Extract<FeedbackEnd, { kind: 'committed' }>) {
+		const { codeHost } = this.deps;
+		if (codeHost.reply === undefined) return;
+		for (const { feedback, note } of end.answered) {
+			const body = `${note.trim() === '' ? '' : `${note.trim()}\n\n`}Answered in ${end.sha}.`;
+			try {
+				await codeHost.reply(pull, feedback.id, body);
+			} catch (e) {
+				const why = e instanceof Error ? e.message : String(e);
+				this.deps.say(`could not reply to ${feedback.id}: ${why}`);
+			}
+		}
+	}
+
 	private async finish(last: Step): Promise<FeatureOutcome> {
 		const { tracker, codeHost } = this.deps;
 		const id = this.feature.id;
@@ -757,6 +909,11 @@ class FeatureRun {
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
 		const complete = left.length === 0 && red === null && paused === null;
 		const workflow = this.workflowSection(done);
+		const answered = this.answered;
+		const feedback = feedbackSection(
+			feedbackRounds(ledgerPath(this.setup.root), this.setup.repo, this.tree.at.branch),
+			answered
+		);
 		const body = pullBody({
 			tracker,
 			feature: this.feature,
@@ -770,7 +927,8 @@ class FeatureRun {
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,
-			workflow
+			workflow,
+			feedback
 		});
 		const pull = await this.openDraft(body);
 		const linked = [...(complete ? [id] : []), ...done.map((t) => t.id)];
@@ -779,6 +937,7 @@ class FeatureRun {
 			linked.map((n) => tracker.reference(n))
 		);
 		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
+		if (answered?.kind === 'committed') await this.reply(pull, answered);
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
 		this.deps.status.happened({
 			kind: 'pull',
@@ -786,20 +945,23 @@ class FeatureRun {
 			title: this.feature.title,
 			url: pull.url
 		});
-		if (!paused && (left.length > 0 || red)) {
+		const unanswered = answered === null || answered.left.length === 0 ? null : answered;
+		if (!paused && (left.length > 0 || red || unanswered)) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
-			this.deps.status.happened({
-				kind: 'needs-info',
-				feature: id,
-				ticket: null,
-				why: red ? `the check fails after ${hash(red.ticket)}` : waits
-			});
+			const why = red
+				? `the check fails after ${hash(red.ticket)}`
+				: left.length > 0
+					? waits
+					: unanswered?.kind === 'thrown'
+						? `its Feedback round was thrown away: ${unanswered.why}`
+						: `${pieces(unanswered?.left.length ?? 0)} left unanswered`;
+			this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why });
 			await tracker.addSignal(id, 'needsInfo');
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
-			await tracker.comment(
-				id,
-				`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}${FOOTER}`
-			);
+			const feedbackLeft = unanswered === null ? '' : `${unansweredText(unanswered)}\n\n`;
+			const tickets = unanswered !== null && left.length === 0 ? '' : waitingList(left);
+			const said = `Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${feedbackLeft}${tickets}`;
+			await tracker.comment(id, `${said.trimEnd()}${FOOTER}`);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
 	}
@@ -917,6 +1079,8 @@ function pullBody(p: {
 	paused: string | null;
 	// the Workflow's section, when it ran or left a Step
 	workflow: string | null;
+	// the Feedback section, once a Feedback round ran on the branch
+	feedback: string | null;
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
@@ -934,6 +1098,7 @@ function pullBody(p: {
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
 	if (p.workflow !== null) parts.push(p.workflow);
+	if (p.feedback !== null) parts.push(p.feedback);
 	if (p.review !== 'off')
 		parts.push(
 			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
@@ -968,9 +1133,49 @@ function costSection(
 		return `- ${ref(id)}${title === undefined ? '' : ` ${title}`}: ${parts.join(', ')}`;
 	});
 	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
+	if (has(null, 'feedback')) lines.push(`- Feedback: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
+}
+
+const START = 80;
+
+// A piece of feedback as a list names it: its id, where it was given, and the start of what it said.
+function feedbackLine(f: Feedback): string {
+	const first = Array.from(f.body.trim().split('\n')[0] ?? '');
+	const start = first.slice(0, START).join('') + (first.length > START ? '…' : '');
+	return `\`${f.id}\`, ${feedbackPlace(f)}${start === '' ? '' : ` ("${start}")`}`;
+}
+
+function unansweredList(left: readonly Unanswered[]): string {
+	return left.map((u) => `- ${feedbackLine(u.feedback)}: ${u.why}`).join('\n');
+}
+
+// What a Feedback round left a person to answer: the round thrown away and why, or what it did not answer.
+function unansweredText(end: FeedbackEnd): string {
+	if (end.kind === 'committed') {
+		return `The Feedback round answered ${pieces(end.answered.length)} in ${end.sha} and left this unanswered:\n\n${unansweredList(end.left)}`;
+	}
+	const tail = end.tail === undefined ? '' : `\n\n\`\`\`\n${end.tail}\n\`\`\``;
+	return `The Feedback round was thrown away, so this feedback is still unanswered: ${end.why}.${tail}\n\n${unansweredList(end.left)}`;
+}
+
+// The Feedback rounds on the branch, and what this run's round did.
+function feedbackSection(
+	total: { readonly rounds: number; readonly costUsd: number },
+	end: FeedbackEnd | null
+): string | null {
+	if (total.rounds === 0) return null;
+	const rounds = `${String(total.rounds)} Feedback round${total.rounds === 1 ? '' : 's'}`;
+	const head = `## Feedback\n\nNightjar ran ${rounds} on this pull request, at an estimated ${dollars(total.costUsd)}.`;
+	if (end === null) return head;
+	if (end.kind === 'thrown') {
+		return `${head}\n\nThis run's round was thrown away: ${end.why}.\n\n${unansweredList(end.left)}`;
+	}
+	const answered = end.answered.map((a) => `- ${feedbackLine(a.feedback)}`).join('\n');
+	const left = end.left.length === 0 ? '' : `\n\nLeft unanswered:\n\n${unansweredList(end.left)}`;
+	return `${head}\n\nThis run answered, in ${end.sha}:\n\n${answered}${left}`;
 }
 
 function reviewComment(review: Review): string {

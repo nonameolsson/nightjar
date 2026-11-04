@@ -10,7 +10,7 @@ const EntrySchema = z.looseObject({
 	feature: z.union([z.string(), z.int()]),
 	ticket: z.union([z.string(), z.int()]).nullable(),
 	branch: z.string(),
-	step: z.enum(['build', 'fix', 'review', 'step']),
+	step: z.enum(['build', 'fix', 'review', 'step', 'feedback']),
 	session: z.string(),
 	costUsd: z.number(),
 	outcome: z.string()
@@ -22,7 +22,7 @@ export interface Entry {
 	readonly feature: string;
 	readonly ticket: string | null;
 	readonly branch: string;
-	readonly step: 'build' | 'fix' | 'review' | 'step';
+	readonly step: 'build' | 'fix' | 'review' | 'step' | 'feedback';
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;
@@ -75,6 +75,20 @@ export function builtOn(path: string, now: Date): number {
 	return readEntries(path).filter(
 		(e) => e.step === 'build' && e.outcome === 'built' && localDay(new Date(e.at)) === day
 	).length;
+}
+
+// The Feedback rounds of every run on one branch of a repo, and what they and their fix rounds cost: a round logs one line, and its fix rounds log its Session and no Ticket.
+export function feedbackRounds(
+	path: string,
+	repo: string,
+	branch: string
+): { readonly rounds: number; readonly costUsd: number } {
+	const own = readEntries(path).filter((e) => e.repo === repo && e.branch === branch);
+	const rounds = own.filter((e) => e.step === 'feedback');
+	const sessions = new Set(rounds.map((e) => e.session));
+	const fixes = own.filter((e) => e.step === 'fix' && e.ticket === null && sessions.has(e.session));
+	const costUsd = [...rounds, ...fixes].reduce((n, e) => n + e.costUsd, 0);
+	return { rounds: rounds.length, costUsd };
 }
 
 // The repo the ledger's latest line names, or null with no line.

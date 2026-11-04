@@ -4,6 +4,7 @@ import {
 	codingAgent,
 	type AgentSetup,
 	type CodingAgent,
+	type FeedbackRequest,
 	type FixRequest,
 	type ReviewRequest,
 	type StepRequest
@@ -399,6 +400,84 @@ describe('the review', () => {
 	});
 });
 
+const feedbackRequest = (): FeedbackRequest => ({
+	kind: 'feedback',
+	at,
+	sessionId: 's-7',
+	feature,
+	feedback: [
+		{
+			id: 'comment:12',
+			kind: 'comment',
+			author: 'ann',
+			body: 'Rename x.',
+			at: '2026-10-31T00:00:00.000Z',
+			trusted: true,
+			path: 'src/a.ts',
+			line: 4
+		}
+	],
+	diff: { text: '+x', truncated: false },
+	budgetUsd: 15
+});
+
+const answered = {
+	outcome: 'answered',
+	summary: 'Renamed x',
+	answers: [{ id: 'comment:12', answered: true, note: 'Renamed.' }],
+	blocker: ''
+};
+
+describe('a Feedback round', () => {
+	it('starts a new Session on the feedback and the diff, with the build tools, on the Ticket limits', async () => {
+		const { sent, session } = fakeSession(done(answered));
+		await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).feedback(feedbackRequest());
+		const req = sent[0];
+		expect(req?.sessionId).toBe('s-7');
+		expect(req?.resume).toBeUndefined();
+		expect(req?.prompt).toContain('## `comment:12`: a line comment by ann on `src/a.ts:4`');
+		expect(req?.prompt).toContain("# The Feature's diff against origin/main");
+		expect(req?.prompt).toContain('# Rules of this repo\n\nTabs.');
+		expect(req?.schema).toHaveProperty('properties.answers');
+		expect(req?.tools).toContain('Edit');
+		expect(req?.budgetUsd).toBe(15);
+		expect(req?.minutes).toBe(60);
+		expect(JSON.stringify(req?.settings)).toContain('Bash(make test)');
+	});
+
+	it('reads what it answered', async () => {
+		const { session } = fakeSession(done(answered));
+		expect(await codingAgent(SETUP, session).feedback(feedbackRequest())).toEqual({
+			kind: 'answered',
+			summary: 'Renamed x',
+			answers: answered.answers,
+			sessionId: 's-7',
+			costUsd: 2.5
+		});
+	});
+
+	it('reads a round that reported itself blocked', async () => {
+		const { session } = fakeSession(
+			done({ outcome: 'blocked', summary: '', answers: [], blocker: 'Which x?' })
+		);
+		expect(await codingAgent(SETUP, session).feedback(feedbackRequest())).toEqual({
+			kind: 'blocked',
+			blocker: 'Which x?',
+			sessionId: 's-7',
+			costUsd: 2.5
+		});
+	});
+
+	it('resumes its Session for a fix round, on its own schema, and reads a blocked fix as giving up', async () => {
+		const { sent, session } = fakeSession(
+			done({ outcome: 'blocked', summary: '', answers: [], blocker: 'Which x?' })
+		);
+		const got = await codingAgent(SETUP, session).fix(fixRequest({ kind: 'feedback' }));
+		expect(sent[0]?.schema).toHaveProperty('properties.answers');
+		expect(got).toEqual({ kind: 'gaveUp', sessionId: 's-1', costUsd: 2.5 });
+	});
+});
+
 type Call = (agent: CodingAgent) => Promise<{ readonly kind: string; readonly sessionId: string }>;
 
 // Each kind of work, with the Session its request starts or resumes.
@@ -411,7 +490,9 @@ const kinds: [string, Call, string][] = [
 		's-1'
 	],
 	['a Step round', (agent) => agent.step(stepRequest()), 's-1'],
-	['the review', (agent) => agent.review(reviewRequest()), 's-9']
+	['the review', (agent) => agent.review(reviewRequest()), 's-9'],
+	['a Feedback round', (agent) => agent.feedback(feedbackRequest()), 's-7'],
+	["a Feedback round's fix round", (agent) => agent.fix(fixRequest({ kind: 'feedback' })), 's-1']
 ];
 
 describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) => {

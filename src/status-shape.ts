@@ -35,9 +35,9 @@ export type Doing =
 			readonly feature: string;
 			// the Feature's title; older files lack it
 			readonly title?: string;
-			// null while the Feature is set up and reviewed, and during a Step that runs after all Tickets
+			// null while the Feature is set up and reviewed, during a Step that runs after all Tickets, and during a Feedback round
 			readonly ticket: string | null;
-			readonly step: 'setup' | 'build' | 'fix' | 'review' | 'step';
+			readonly step: 'setup' | 'build' | 'fix' | 'review' | 'step' | 'feedback';
 			// a build's question round or a fix round, of how many there may be
 			readonly round: number | null;
 			readonly rounds: number | null;

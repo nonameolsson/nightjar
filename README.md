@@ -367,6 +367,16 @@ A work item counts as closed once Azure DevOps has stamped its Closed Date, whic
 
 While it works, Nightjar puts the working Signal (`agent-working`) on the Feature. When it cannot build a Ticket it takes the ready Signal off, puts on needs info (`needs-info`) or needs a person (`ready-for-human`), and comments with why. Answer by commenting on the Ticket, put the ready Signal back on it, and give the Go again: the next run continues on the same branch and pull request. Only Trusted comments reach the agent. Nightjar never closes a Ticket and never sets a tracker state.
 
+### Feedback on the draft pull request
+
+Review the draft pull request as you would any other: line comments, comments in the conversation, a review with a body. A check that failed on the pull request's head commit counts too, when GitHub Actions ran it or an app in `codeHost.trustedChecks`. Then give the Feature the Go again.
+
+When the Feature's branch has an open pull request with trusted feedback that no commit on the branch answers yet, the run gives it one **Feedback round** before the review. The agent gets only the trusted feedback, each line comment with its file and line (one on code that has changed since is marked as on an earlier version), and the Feature's diff. Trust is the Tracker's rule: factory.json's `trusted` list when set, else write access. The round's changes go through the check and its fix rounds and land as one commit whose `Factory-Feedback:` trailer lists the ids of the feedback it answered (`comment:123`, `review:45`, `check:678`). The branch is the record: feedback a trailer names is answered and starts no round again.
+
+After the push, Nightjar replies to each piece it answered, naming the commit: a line comment in its thread, anything else in the conversation, quoting it. Its replies end with its footer, and nothing that ends with the footer is ever read as feedback, so a later Go starts no round from them. A round that cannot get the check green, runs out of budget, or reports itself blocked is thrown away: the Feature gets needs info, with a comment naming the feedback left unanswered and why. Feedback the round chose not to answer is named the same way. The pull request's Feedback section counts the rounds run on it and what they cost.
+
+The GitHub Code host answers feedback; Azure Repos, and a Code host module without `feedback` and `reply`, build as before and get no Feedback rounds.
+
 ## Run
 
 From anywhere inside the repo:
@@ -398,7 +408,7 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 - **One branch** per Feature, `factory/<id>-<title-slug>`, with one commit per Ticket, pushed to `origin` on GitHub, or to the repo `factory.json` names on Azure Repos.
 - **One draft pull request** per Feature. On GitHub each built GitHub issue is placed as `Closes #N`, so GitHub closes it on merge; any other Ticket by its plain reference, `AB#N` for an Azure DevOps work item (which the [Azure Boards app](https://learn.microsoft.com/azure/devops/boards/github/) links once it is installed on the repo) or a Tracker module's own text. On Azure Repos each built Ticket from Azure DevOps Boards in the same organization is attached as a linked work item and named `#N`; a Ticket from anywhere else is named in the description by a link to its page, because Azure Repos reads `#N` as one of its own work items. Azure Repos keeps 4000 characters of a description, so a longer one is cut, never its references. When every Ticket is built and the check passes, the Feature itself is placed as a reference too, the same way, so it closes or links with its Tickets. Nightjar never completes, abandons or publishes the pull request. When the review is on, its summary is the pull request's first comment.
 - **`.factory/status.json`**: what Nightjar is doing now and what it did last, rewritten at every change.
-- **`.factory/runs.jsonl`**: one line per session, with its outcome and cost. Each session's log is in `.factory/logs/`.
+- **`.factory/runs.jsonl`**: one line per session, with its outcome and cost; a Feedback round's line has `step: feedback`. Each session's log is in `.factory/logs/`.
 - **Worktrees** under `~/.nightjar/worktrees/`, outside your checkout, which is never touched. Add `.factory/` to the repo's `.gitignore`.
 
 ## Limits
@@ -411,6 +421,9 @@ Built in; only the spend per day is yours to set, as `dailyUsd` in [your config.
 | Minutes per Ticket        | 60           |
 | Fix rounds per Ticket     | 3            |
 | Question rounds per Ticket | 2           |
+| Spend per Feedback round  | $15          |
+| Minutes per Feedback round | 60          |
+| Fix rounds per Feedback round | 3        |
 | Spend per review          | $3           |
 | Minutes per review        | 10           |
 | Spend per day             | $60, or `dailyUsd` |

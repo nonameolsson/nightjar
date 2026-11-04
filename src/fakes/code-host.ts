@@ -99,11 +99,26 @@ export class FakeCodeHost implements CodeHost {
 				new Error(`the fake Code host has no feedback ${feedbackId} on ${String(pull.id)}`)
 			);
 		}
+		const posted = answered.path === undefined ? answerText(answered.body, body) : withFooter(body);
 		if (answered.path === undefined) {
-			this.change(pull.id, (p) => ({ comments: [...p.comments, answerText(answered.body, body)] }));
+			this.change(pull.id, (p) => ({ comments: [...p.comments, posted] }));
 		} else {
-			this.threads.push({ pull: pull.id, id: feedbackId, body: withFooter(body) });
+			this.threads.push({ pull: pull.id, id: feedbackId, body: posted });
 		}
+		// as on a real host, the reply is a comment of its own, by the signed-in person, whom the host trusts
+		this.lastId += 1;
+		const own: Feedback = {
+			id: `comment:${String(this.lastId)}`,
+			kind: 'comment',
+			author: 'you',
+			body: posted,
+			at: new Date(Date.UTC(2026, 9, 31, 0, this.lastId)).toISOString(),
+			trusted: true,
+			...(answered.path === undefined ? {} : { path: answered.path }),
+			...(answered.line === undefined ? {} : { line: answered.line }),
+			...(answered.outdated === true ? { outdated: true } : {})
+		};
+		this.given.set(pull.id, [...(this.given.get(pull.id) ?? []), own]);
 		return Promise.resolve();
 	};
 }

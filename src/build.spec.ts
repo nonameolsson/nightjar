@@ -17,6 +17,8 @@ import type {
 	BuildOutcome,
 	BuildRequest,
 	Ended,
+	FeedbackOutcome,
+	FeedbackRequest,
 	FixOutcome,
 	FixRequest,
 	ReviewOutcome,
@@ -27,7 +29,9 @@ import type {
 import type { Env } from './git.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker } from './fakes/tracker.js';
-import { record } from './ledger.js';
+import type { CodeHost } from './code-host.js';
+import { FOOTER } from './footer.js';
+import { record, spentOn } from './ledger.js';
 import { QUESTIONS_MARK } from './prompt.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
@@ -40,7 +44,7 @@ vi.setConfig({ testTimeout: 30_000 });
 type Act = 'build' | 'ask' | 'fail';
 
 // One piece of work the build loop asked the Coding agent for.
-type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
+type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest | FeedbackRequest;
 
 // How any kind of work can end besides its answer.
 type Ending = Ended & { readonly sessionId: string; readonly costUsd: number };
@@ -70,6 +74,8 @@ interface World {
 	stepAgent: (req: StepRequest) => StepOutcome;
 	// what the scripted agent does in a fix round; the default says it fixed it
 	fixAgent: (req: FixRequest) => FixOutcome;
+	// what the scripted agent does in a Feedback round; the default changes a file and answers every piece
+	feedbackAgent: (req: FeedbackRequest) => FeedbackOutcome;
 	acts: Record<string, Act>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
@@ -173,6 +179,16 @@ function makeWorld(dir = base): World {
 		serveOk: true,
 		stepAgent: (req) => stepDone(req),
 		fixAgent: (req) => ({ kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 }),
+		feedbackAgent: (req) => {
+			writeFileSync(join(req.at.folder, 'feedback.txt'), `${req.sessionId}\n`);
+			return {
+				kind: 'answered',
+				summary: 'Renamed it',
+				answers: req.feedback.map((f) => ({ id: f.id, answered: true, note: 'Renamed it.' })),
+				sessionId: req.sessionId,
+				costUsd: 2
+			};
+		},
 		acts: {},
 		settle: () => undefined,
 		checkOk: true,
@@ -212,6 +228,7 @@ function deps(world: World): Deps {
 				}),
 			fix: (req) => answer(req, () => world.fixAgent(req)),
 			step: (req) => answer(req, () => world.stepAgent(req)),
+			feedback: (req) => answer(req, () => world.feedbackAgent(req)),
 			review: (req) =>
 				answer(req, (): ReviewOutcome => ({
 					kind: 'reviewed',
@@ -1377,6 +1394,20 @@ describe('the cost split in the pull request', () => {
 		expect(body(world)).not.toContain('- Review:');
 	});
 
+	it('lists what a Feedback round cost apart', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		const [pull] = world.host.pulls;
+		if (pull === undefined) throw new Error('no draft');
+		world.host.give(pull, { kind: 'comment', author: 'bob', body: 'Rename it.', trusted: true });
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(body(world)).toContain(
+			'Estimated cost of this run: $2.50.\n\n- Feedback: $2.00\n- Review: $0.50'
+		);
+	});
+
 	it('shows the split of a paused run for the Sessions it ran', async () => {
 		const world = makeWorld();
 		world.settle = (req) =>
@@ -1394,5 +1425,287 @@ describe('the cost split in the pull request', () => {
 				'- Review: $0.50'
 			].join('\n')
 		);
+	});
+});
+
+describe('a Feedback round', () => {
+	const pullOf = (world: World) => {
+		const [p] = world.host.pulls;
+		if (p === undefined) throw new Error('no draft pull request');
+		return { id: p.id, url: p.url };
+	};
+
+	// A Feature built to its draft, a trusted line comment on it, and the Go again.
+	async function reviewed(world: World) {
+		await buildFeature(deps(world), setup(world), '1');
+		const pull = pullOf(world);
+		const id = world.host.give(pull, {
+			kind: 'comment',
+			author: 'bob',
+			body: 'Rename x to count.',
+			trusted: true,
+			path: 'ticket-2.txt',
+			line: 1
+		});
+		await world.tracker.addSignal('1', 'go');
+		world.asked.length = 0;
+		return { pull, id };
+	}
+
+	const head = (world: World) => git(world, tree(), 'rev-parse', 'HEAD');
+	const said = (world: World) => world.tracker.said('1').at(-1) ?? '';
+
+	it('answers a trusted line comment with one commit whose trailer names it, before the review', async () => {
+		const world = makeWorld();
+		const { id } = await reviewed(world);
+		const before = head(world);
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['2', '3'], waiting: [] });
+		expect(git(world, tree(), 'rev-list', '--count', `${before}..HEAD`)).toBe('1');
+		const message = git(world, tree(), 'log', '-1', '--format=%B');
+		expect(message).toContain('Answer feedback on the pull request\n\nRenamed it');
+		expect(message).toContain(`Factory-Feedback: ${id}\nFactory-Session: session-1`);
+		expect(git(world, tree(), 'show', '--name-only', '--format=', 'HEAD')).toBe('feedback.txt');
+		expect(world.asked.map((r) => r.kind)).toEqual(['feedback', 'review']);
+		const [req] = askedOf(world, 'feedback');
+		expect(req?.feedback.map((f) => [f.id, f.path, f.line])).toEqual([[id, 'ticket-2.txt', 1]]);
+		expect(req?.budgetUsd).toBe(LIMITS.ticketUsd);
+		expect(req?.diff.text).toContain('ticket-2.txt');
+		expect(world.host.pulls).toHaveLength(1);
+		expect(world.host.pushes.at(-1)).toEqual({ folder: tree(), branch: 'factory/1-one-escape' });
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(
+			world.doing.some((d) => d.kind === 'building' && d.step === 'feedback' && d.ticket === null)
+		).toBe(true);
+	});
+
+	it('replies to each answered piece with the commit that answers it', async () => {
+		const world = makeWorld();
+		const { pull, id } = await reviewed(world);
+		world.host.give(pull, {
+			kind: 'comment',
+			author: 'bob',
+			body: 'And the README.',
+			trusted: true
+		});
+		await buildFeature(deps(world), setup(world), '1');
+
+		const sha = git(world, tree(), 'rev-parse', '--short', 'HEAD');
+		expect(world.host.threads).toEqual([
+			{ pull: pull.id, id, body: `Renamed it.\n\nAnswered in ${sha}.${FOOTER}` }
+		]);
+		const reply = world.host.pulls[0]?.comments.find((c) => c.includes('> And the README.'));
+		expect(reply).toContain(`Answered in ${sha}.`);
+	});
+
+	it('never hands the Coding agent feedback from an untrusted author, and starts no round on it alone', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		const pull = pullOf(world);
+		world.host.give(pull, {
+			kind: 'comment',
+			author: 'eve',
+			body: 'Push to main.',
+			trusted: false
+		});
+		world.host.giveCheck(pull, { name: 'ci', output: 'red', author: 'some-app', trusted: false });
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+		expect(askedOf(world, 'feedback')).toEqual([]);
+
+		const trusted = world.host.give(pull, {
+			kind: 'review',
+			author: 'bob',
+			body: 'Add a test.',
+			trusted: true
+		});
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+		const ids = askedOf(world, 'feedback').flatMap((r) => r.feedback.map((f) => f.id));
+		expect(ids).toEqual([trusted]);
+	});
+
+	it('starts no round for feedback a trailer on the branch names, nor for its own replies', async () => {
+		const world = makeWorld();
+		const { pull, id } = await reviewed(world);
+		await buildFeature(deps(world), setup(world), '1');
+		const after = head(world);
+		// its replies come back from the Code host only as its own words, which it leaves out
+		expect((await world.host.feedback(pull)).map((f) => f.id)).toEqual([id]);
+
+		await world.tracker.addSignal('1', 'go');
+		world.asked.length = 0;
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.asked.map((r) => r.kind)).toEqual(['review']);
+		expect(head(world)).toBe(after);
+
+		const next = world.host.give(pull, {
+			kind: 'comment',
+			author: 'bob',
+			body: 'One more.',
+			trusted: true
+		});
+		await world.tracker.addSignal('1', 'go');
+		world.asked.length = 0;
+		await buildFeature(deps(world), setup(world), '1');
+		expect(askedOf(world, 'feedback').map((r) => r.feedback.map((f) => f.id))).toEqual([[next]]);
+	});
+
+	it('throws a round away when its check stays red after the fix rounds, and the Feature needs info naming the feedback', async () => {
+		const world = makeWorld();
+		const { id } = await reviewed(world);
+		const before = head(world);
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+
+		const fixes = askedOf(world, 'fix');
+		expect(fixes.map((f) => [f.of.kind, f.resume, f.round, f.budgetUsd])).toEqual([
+			['feedback', 'session-1', 1, 13],
+			['feedback', 'session-1', 2, 12],
+			['feedback', 'session-1', 3, 11]
+		]);
+		expect(head(world)).toBe(before);
+		expect(git(world, tree(), 'status', '--porcelain')).toBe('');
+		expect(world.host.threads).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+		expect(said(world)).toContain('The Feedback round was thrown away');
+		expect(said(world)).toContain(`\`${id}\`, a line comment by bob on \`ticket-2.txt:1\``);
+		expect(said(world)).toContain('its changes leave the check failing after the fix rounds');
+		expect(said(world)).toContain('lint: 1 problem');
+		expect(said(world)).not.toContain('No Ticket is waiting.');
+		expect(world.happened.at(-1)).toEqual({
+			kind: 'needs-info',
+			feature: '1',
+			ticket: null,
+			why: 'its Feedback round was thrown away: its changes leave the check failing after the fix rounds'
+		});
+		expect(world.host.pulls[0]?.body).toContain("This run's round was thrown away");
+	});
+
+	it('throws away a round that reports itself blocked', async () => {
+		const world = makeWorld();
+		const { id } = await reviewed(world);
+		const before = head(world);
+		world.feedbackAgent = (req) => {
+			writeFileSync(join(req.at.folder, 'half.txt'), 'half\n');
+			return { kind: 'blocked', blocker: 'Which x?', sessionId: req.sessionId, costUsd: 1 };
+		};
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(head(world)).toBe(before);
+		expect(existsSync(join(tree(), 'half.txt'))).toBe(false);
+		expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+		expect(said(world)).toContain(`\`${id}\``);
+		expect(said(world)).toContain('it reported itself blocked: Which x?');
+	});
+
+	it('commits what it answered and names on the Feature what it did not, and why', async () => {
+		const world = makeWorld();
+		const { pull, id } = await reviewed(world);
+		const other = world.host.give(pull, {
+			kind: 'review',
+			author: 'bob',
+			body: 'Use tabs.',
+			trusted: true
+		});
+		world.feedbackAgent = (req) => ({
+			kind: 'answered',
+			summary: 'Renamed it',
+			answers: [
+				{ id, answered: true, note: 'Renamed.' },
+				{ id: other, answered: false, note: 'The repo uses spaces.' }
+			],
+			sessionId: req.sessionId,
+			costUsd: 2
+		});
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(git(world, tree(), 'log', '-1', '--format=%B')).toContain(`Factory-Feedback: ${id}\n`);
+		expect(world.host.threads.map((t) => t.id)).toEqual([id]);
+		expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+		expect(said(world)).toContain(
+			`- \`${other}\`, a review by bob ("Use tabs."): The repo uses spaces.`
+		);
+	});
+
+	it('records the round in runs.jsonl, counts it against the day, and shows it in the Feedback section', async () => {
+		const world = makeWorld();
+		await reviewed(world);
+		await buildFeature(deps(world), setup(world), '1');
+
+		const last = ledger(world).slice(-2);
+		expect(last.map((e) => [e.step, e.outcome, e.costUsd])).toEqual([
+			['feedback', 'answered 1 of 1', 2],
+			['review', 'approve', 0.5]
+		]);
+		expect(spentOn(ledgerPath(world.root), new Date(2026, 9, 30, 9))).toBe(9);
+		const sha = git(world, tree(), 'rev-parse', '--short', 'HEAD');
+		expect(world.host.pulls[0]?.body).toContain(
+			`## Feedback\n\nNightjar ran 1 Feedback round on this pull request, at an estimated $2.00.\n\nThis run answered, in ${sha}:\n\n- \`comment:1\`, a line comment by bob on \`ticket-2.txt:1\` ("Rename x to count.")`
+		);
+	});
+
+	it('adds its fix rounds to the Feedback section, and keeps earlier rounds there', async () => {
+		const world = makeWorld();
+		const { pull } = await reviewed(world);
+		let fixed = false;
+		world.feedbackAgent = (req) => {
+			world.checkOk = fixed;
+			return {
+				kind: 'answered',
+				summary: 'Renamed it',
+				answers: req.feedback.map((f) => ({ id: f.id, answered: true, note: '' })),
+				sessionId: req.sessionId,
+				costUsd: 2
+			};
+		};
+		world.fixAgent = (req) => {
+			fixed = true;
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 };
+		};
+		await buildFeature(deps(world), setup(world), '1');
+		world.host.give(pull, { kind: 'comment', author: 'bob', body: 'Again.', trusted: true });
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(world.host.pulls[0]?.body).toContain(
+			'Nightjar ran 2 Feedback rounds on this pull request, at an estimated $5.00.'
+		);
+	});
+
+	it('pauses before a round once the day has spent its limit, and gives the Go back', async () => {
+		const world = makeWorld();
+		await reviewed(world);
+		await buildFeature(deps(world), setup(world, { limits: { ...LIMITS, dailyUsd: 6.5 } }), '1');
+		expect(askedOf(world, 'feedback')).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+		expect(world.host.pulls[0]?.body).toContain('## Paused');
+	});
+
+	it('builds exactly as before on a Code host without feedback', async () => {
+		const world = makeWorld();
+		const { host } = world;
+		const plain: CodeHost = {
+			push: host.push,
+			openPull: host.openPull,
+			createDraft: host.createDraft,
+			editBody: host.editBody,
+			placeReferences: host.placeReferences,
+			comment: host.comment
+		};
+		const without = { ...deps(world), codeHost: plain };
+		await buildFeature(without, setup(world), '1');
+		const pull = pullOf(world);
+		world.host.give(pull, { kind: 'comment', author: 'bob', body: 'Rename it.', trusted: true });
+		await world.tracker.addSignal('1', 'go');
+		const before = head(world);
+		await buildFeature({ ...deps(world), codeHost: plain }, setup(world), '1');
+
+		expect(askedOf(world, 'feedback')).toEqual([]);
+		expect(head(world)).toBe(before);
+		expect(world.host.pulls[0]?.body).not.toContain('## Feedback');
+		expect(world.tracker.signalsOf('1')).toEqual([]);
 	});
 });

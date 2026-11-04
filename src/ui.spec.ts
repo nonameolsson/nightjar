@@ -161,6 +161,35 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('line 5\n');
 	});
 
+	it('shows a Feedback round as the step, with its cost in the Feature', async () => {
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature: '272',
+			ticket: null,
+			branch: 'b',
+			step: 'feedback',
+			session: 'fb',
+			costUsd: 2.25,
+			outcome: 'answered 1 of 1'
+		});
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			ticket: null,
+			step: 'feedback',
+			round: null,
+			rounds: null,
+			session: 'fb',
+			featureStartedAt: '2026-10-30T06:00:00.000Z',
+			startedAt: '2026-10-30T06:40:00.000Z'
+		});
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('<p>feedback</p>');
+		expect(page).toContain('$2.25');
+	});
+
 	it("counts the Feature's elapsed time from its start, not the step's", async () => {
 		status().doing({
 			kind: 'building',

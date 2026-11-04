@@ -1,18 +1,23 @@
 // Starts a Session for one piece of work and says how it ended; what the Coding agent is told and allowed lives here.
 import { join, relative } from 'node:path';
+import type { Feedback } from './code-host.js';
 import type { Env } from './git.js';
 import {
 	BUILD_SCHEMA,
+	FEEDBACK_SCHEMA,
 	REVIEW_SCHEMA,
 	STEP_SCHEMA,
 	buildPrompt,
+	feedbackPrompt,
 	fixPrompt,
 	readBuildAnswer,
+	readFeedbackAnswer,
 	readReview,
 	readStepAnswer,
 	reviewPrompt,
 	stepPrompt,
 	stepRoundPrompt,
+	type FeedbackAnswerItem,
 	type Question,
 	type Review
 } from './prompt.js';
@@ -93,7 +98,8 @@ export interface BuildRequest extends Work {
 // A Step's fix rounds run with the Step's own extras and model, so a fix can do what the Step could.
 export type Fixing =
 	| { readonly kind: 'build' }
-	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras };
+	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras }
+	| { readonly kind: 'feedback' };
 
 export interface FixRequest extends Work {
 	readonly kind: 'fix';
@@ -130,6 +136,15 @@ export interface ReviewRequest extends Work {
 	readonly tickets: readonly Ticket[];
 }
 
+export interface FeedbackRequest extends Work {
+	readonly kind: 'feedback';
+	readonly sessionId: string;
+	readonly feature: Feature;
+	// only trusted feedback, none of it answered on the branch yet
+	readonly feedback: readonly Feedback[];
+	readonly diff: { readonly text: string; readonly truncated: boolean };
+}
+
 // How any Session can end besides its answer.
 export type Ended =
 	| { readonly kind: 'failed'; readonly why: string }
@@ -160,11 +175,21 @@ export type StepOutcome = Outcome<
 
 export type ReviewOutcome = Outcome<{ readonly kind: 'reviewed'; readonly review: Review }>;
 
+export type FeedbackOutcome = Outcome<
+	| {
+			readonly kind: 'answered';
+			readonly summary: string;
+			readonly answers: readonly FeedbackAnswerItem[];
+	  }
+	| { readonly kind: 'blocked'; readonly blocker: string }
+>;
+
 export interface CodingAgent {
 	build(req: BuildRequest): Promise<BuildOutcome>;
 	fix(req: FixRequest): Promise<FixOutcome>;
 	step(req: StepRequest): Promise<StepOutcome>;
 	review(req: ReviewRequest): Promise<ReviewOutcome>;
+	feedback(req: FeedbackRequest): Promise<FeedbackOutcome>;
 }
 
 const API_KEY_PAUSE =
@@ -270,13 +295,21 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				prompt: fixPrompt(req.round, setup.limits.fixRounds, setup.check, req.tail),
 				sessionId: req.resume,
 				resume: req.resume,
-				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {})
+				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {}),
+				...(req.of.kind === 'feedback' ? { schema: FEEDBACK_SCHEMA } : {})
 			}),
 			(output) => {
 				if (req.of.kind === 'build') {
 					const answer = readBuildAnswer(output);
 					if (answer === null) return null;
 					return answer.outcome === 'built'
+						? { kind: 'fixed' as const, summary: answer.summary }
+						: { kind: 'gaveUp' as const };
+				}
+				if (req.of.kind === 'feedback') {
+					const answer = readFeedbackAnswer(output);
+					if (answer === null) return null;
+					return answer.outcome === 'answered'
 						? { kind: 'fixed' as const, summary: answer.summary }
 						: { kind: 'gaveUp' as const };
 				}
@@ -344,6 +377,31 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				(output) => {
 					const review = readReview(output);
 					return review === null ? null : { kind: 'reviewed' as const, review };
+				}
+			),
+		// on the Ticket limits and the build's tools, as a Feedback round may change any file a Ticket could
+		feedback: (req) =>
+			outcomeOf(
+				request(req, {
+					prompt: feedbackPrompt({
+						feature: req.feature,
+						feedback: req.feedback,
+						allowed: setup.allowedCommands,
+						check: setup.check,
+						...(setup.rules === undefined ? {} : { rules: setup.rules }),
+						base: req.at.base,
+						diff: req.diff
+					}),
+					sessionId: req.sessionId,
+					schema: FEEDBACK_SCHEMA,
+					...pick()
+				}),
+				(output) => {
+					const answer = readFeedbackAnswer(output);
+					if (answer === null) return null;
+					return answer.outcome === 'answered'
+						? { kind: 'answered' as const, summary: answer.summary, answers: answer.answers }
+						: { kind: 'blocked' as const, blocker: answer.blocker };
 				}
 			)
 	};

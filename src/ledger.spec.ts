@@ -2,7 +2,7 @@ import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { builtOn, record, spentOn, type Entry } from './ledger.js';
+import { builtOn, feedbackRounds, record, spentOn, type Entry } from './ledger.js';
 
 let dir: string;
 beforeEach(() => {
@@ -43,6 +43,33 @@ describe('spentOn', () => {
 
 	it('reads no file as nothing spent', () => {
 		expect(spentOn(join(dir, 'none.jsonl'), new Date())).toBe(0);
+	});
+});
+
+describe('feedbackRounds', () => {
+	it("counts a branch's Feedback rounds, with what they and their fix rounds cost, on every day", () => {
+		const path = join(dir, 'runs.jsonl');
+		const at = new Date(2026, 9, 30, 8, 0);
+		const round = (
+			session: string,
+			step: Entry['step'],
+			costUsd: number,
+			over: Partial<Entry> = {}
+		) => record(path, { ...entry(at, costUsd), ticket: null, step, session, ...over });
+		round('s', 'build', 3);
+		round('f1', 'feedback', 2, { at: new Date(2026, 9, 29).toISOString() });
+		round('f1', 'fix', 1);
+		// a Ticket's fix round is the Ticket's, whatever its Session
+		round('f1', 'fix', 7, { ticket: '2' });
+		round('f2', 'feedback', 1.5);
+		round('r', 'review', 0.5);
+		round('f3', 'feedback', 9, { branch: 'factory/2-b' });
+		round('f4', 'feedback', 9, { repo: 'o/other' });
+		expect(feedbackRounds(path, 'o/r', 'factory/1-a')).toEqual({ rounds: 2, costUsd: 4.5 });
+		expect(feedbackRounds(join(dir, 'none.jsonl'), 'o/r', 'factory/1-a')).toEqual({
+			rounds: 0,
+			costUsd: 0
+		});
 	});
 });
 

@@ -50,6 +50,14 @@ _Avoid_: ready-for-agent (on a Feature), start, trigger
 A comment on a Feature or Ticket whose author Nightjar trusts, so it reaches the Coding agent. No other comment does.
 _Avoid_: approved comment
 
+**Feedback**:
+What is said on a Feature's draft pull request for the Coding agent to answer: a trusted line comment or conversation comment, a trusted review with a body, or a failed check from a trusted app on the head commit. Each piece has an id that carries its kind (`comment:123`, `review:45`, `check:678`). Nightjar's own words, which end with its footer, are never Feedback.
+_Avoid_: review comments (when checks are meant too), PR feedback
+
+**Feedback round**:
+The Session that answers a Feature's unanswered Feedback, when the Feature has an open draft pull request and gets the Go again. It runs before the review, goes through the check and its fix rounds, and lands as one commit whose `Factory-Feedback:` trailer names the Feedback it answered; Nightjar then replies to each piece. A round that fails is thrown away.
+_Avoid_: review round, fix round (a fix round is a Session of its own)
+
 ### Where things are
 
 **Tracker**:
@@ -65,7 +73,7 @@ The program that builds one Ticket in the Feature's worktree, in a Session Night
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes.
+One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Feedback round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes.
 _Avoid_: run, conversation, chat, job
 
 **Adapter**:
