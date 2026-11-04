@@ -1,13 +1,15 @@
 // The runner behind `nightjar contract`: the contract suites over the harnesses a module exports.
 import { describe, expect, it } from 'vitest';
 import { fakeCodeHostHarness, fakeTrackerHarness } from '../fakes/harness.js';
-import { codeHostContract } from './code-host.js';
+import { codeHostContract, type CodeHostHarness } from './code-host.js';
+import { feedbackContract } from './feedback.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
+import type { FakeCodeHost } from '../fakes/code-host.js';
 import type { FakeTracker } from '../fakes/tracker.js';
 
 // A Tracker that never knows who is signed in.
@@ -27,7 +29,8 @@ describe('runContract', () => {
 			'Tracker creation',
 			'Tracker waiting on',
 			'Tracker ticket counts',
-			'Code host'
+			'Code host',
+			'Code host feedback'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -44,7 +47,33 @@ describe('runContract', () => {
 		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
+		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
+			feedbackContract.map((c) => c.name)
+		);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no feedback suite over a Code host without feedback and reply, as a module written before them', async () => {
+		const reads: CodeHostHarness = async () => {
+			const { codeHost, ...rest } = await fakeCodeHostHarness();
+			const { feedback: _a, reply: _b, ...only } = codeHost as FakeCodeHost;
+			return { ...rest, codeHost: only };
+		};
+		const report = await runContract({ codeHostHarness: reads });
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.failed).toBe(0);
+	});
+
+	it('fails the feedback suite for a harness without a bench', async () => {
+		const bare: CodeHostHarness = async () => {
+			const { bench: _bench, ...rest } = await fakeCodeHostHarness();
+			return rest;
+		};
+		const report = await runContract({ codeHostHarness: bare });
+		const feedback = report.suites.find((s) => s.title === 'Code host feedback')?.results ?? [];
+		expect(feedback).toHaveLength(feedbackContract.length);
+		expect(feedback.every((r) => !r.ok)).toBe(true);
+		expect(feedback[0]?.error).toContain('the harness gives a bench');
 	});
 
 	it('runs no creation suite over a Tracker that makes no Features, as a module written before it', async () => {
@@ -117,7 +146,7 @@ describe('runContract', () => {
 
 	it('runs only the suite whose harness the module exports', async () => {
 		const report = await runContract({ codeHostHarness: fakeCodeHostHarness });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host feedback']);
 	});
 
 	it('names each behaviour that fails, with why, and keeps going', async () => {

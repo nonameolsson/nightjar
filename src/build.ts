@@ -2,6 +2,7 @@
 import type { RunCheck } from './check.js';
 import type { CodeHost, Pull } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
+import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
@@ -114,8 +115,6 @@ export type FeatureOutcome =
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
-
-export const FOOTER = '\n\n---\n_Built by Nightjar._';
 
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: string) => `${body}\n\n${step}${FOOTER}`;

@@ -23,6 +23,7 @@ import {
 	type GhRunner,
 	type RawIssue
 } from './api.js';
+import { GitHubTrust } from './trust.js';
 
 const CommentSchema = z.looseObject({
 	body: z.string().nullable(),
@@ -30,11 +31,6 @@ const CommentSchema = z.looseObject({
 	created_at: z.string(),
 	author_association: z.string().optional()
 });
-
-// Stand in for write access when the permission call is refused; a COLLABORATOR may hold only read.
-const TIED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-
-const WRITE = ['admin', 'maintain', 'write'];
 
 // The issue number an id names; GitHub has no other kind of id.
 function issue(id: ItemId): string {
@@ -58,16 +54,17 @@ function countOf(raw: RawIssue): TicketCount | null {
 export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
 	private readonly counts = new Map<ItemId, TicketCount>();
-	private readonly writers = new Map<string, boolean>();
+	private readonly trust: GitHubTrust;
 
 	constructor(
 		readonly repo: string,
 		gh: GhRunner,
 		private readonly names: SignalNames,
 		// factory.json's trusted list; when set it replaces the write-access default
-		private readonly trusted?: readonly string[]
+		trusted?: readonly string[]
 	) {
 		this.api = new GitHubApi(repo, gh);
+		this.trust = new GitHubTrust(this.api, trusted);
 	}
 
 	private signalsOf(raw: RawIssue): Signal[] {
@@ -207,40 +204,10 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 				author,
 				body: c.body ?? '',
 				at: c.created_at,
-				trusted: await this.isTrusted(author, c.author_association)
+				trusted: await this.trust.isTrusted(author, c.author_association)
 			});
 		}
 		return comments;
-	}
-
-	// On the configured list, else may push; the comment's own association answers when a proxy refuses the permission call.
-	private async isTrusted(login: string, association?: string): Promise<boolean> {
-		// GitHub logins are case-insensitive
-		if (this.trusted !== undefined) {
-			return this.trusted.some((t) => t.toLowerCase() === login.toLowerCase());
-		}
-		const known = this.writers.get(login);
-		if (known !== undefined) return known;
-		const got = await this.api.raw([
-			`repos/${this.repo}/collaborators/${encodeURIComponent(login)}/permission`
-		]);
-		// 404 means no collaborator; reading any other refusal as no access would drop the person's own answers unsaid
-		if (!got.ok && !/HTTP 404/.test(got.err)) {
-			if (association !== undefined) return TIED.includes(association);
-			throw new GitHubFailure(
-				`gh could not read the permission of ${login}: ${firstLine(got.err)}`
-			);
-		}
-		let value: unknown = null;
-		try {
-			value = got.ok ? JSON.parse(got.out) : null;
-		} catch {
-			// no JSON reads as no permission
-		}
-		const parsed = z.looseObject({ permission: z.string() }).safeParse(value);
-		const can = parsed.success && WRITE.includes(parsed.data.permission);
-		this.writers.set(login, can);
-		return can;
 	}
 
 	async addSignal(id: ItemId, signal: Signal): Promise<void> {

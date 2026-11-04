@@ -13,6 +13,27 @@ export interface DraftRequest {
 	readonly body: string;
 }
 
+export type FeedbackKind = 'comment' | 'review' | 'check';
+
+// Something said on a pull request that a Coding agent may be asked to answer.
+export interface Feedback {
+	// the kind, a colon and the host's own id (`comment:123`, `review:45`, `check:678`): ids from different lists of one host never clash
+	readonly id: string;
+	readonly kind: FeedbackKind;
+	// the person, or for a check the app that ran it
+	readonly author: string;
+	// a check's is its name and the end of its output
+	readonly body: string;
+	readonly at: string;
+	// whether its author is trusted, so it may reach the Coding agent
+	readonly trusted: boolean;
+	// a line comment: its file, and its line while the line is on the head commit
+	readonly path?: string;
+	readonly line?: number;
+	// a line comment on a line the head commit no longer has; it comes with `path` and no `line`
+	readonly outdated?: true;
+}
+
 export interface CodeHost {
 	// pushes the worktree's HEAD in `folder` to `branch` on the host
 	push(folder: string, branch: string): Promise<void>;
@@ -24,4 +45,8 @@ export interface CodeHost {
 	// links each Ticket not linked yet; never closes one or sets its state
 	placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void>;
 	comment(pull: Pull, body: string): Promise<void>;
+	// Optional, both or neither. Every page of each list; whatever ends with the footer is left out, whoever wrote it.
+	feedback?(pull: Pull): Promise<Feedback[]>;
+	// A line comment is answered in its thread, anything else in the conversation quoting its start; the body ends with the footer.
+	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
 }

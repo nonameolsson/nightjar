@@ -36,7 +36,7 @@ const TRACKER_METHODS: Record<Exclude<keyof Tracker, 'waitingOn' | 'ticketCounts
 	reference: true
 };
 
-const CODE_HOST_METHODS: Record<keyof CodeHost, true> = {
+const CODE_HOST_METHODS: Record<Exclude<keyof CodeHost, 'feedback' | 'reply'>, true> = {
 	push: true,
 	openPull: true,
 	createDraft: true,
@@ -44,6 +44,8 @@ const CODE_HOST_METHODS: Record<keyof CodeHost, true> = {
 	placeReferences: true,
 	comment: true
 };
+
+const FEEDBACK_METHODS = ['feedback', 'reply'] as const;
 
 export interface ModuleSpec {
 	readonly path: string;
@@ -122,6 +124,22 @@ async function build(kind: Kind, spec: ModuleSpec, context: AdapterContext): Pro
 		if (kind === TRACKER && have[lone] !== undefined && typeof have[lone] !== 'function') {
 			throw new ConfigError(
 				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${lone} is not a function`
+			);
+		}
+	}
+	if (kind === CODE_HOST) {
+		// feedback and reply come together or not at all
+		const given = FEEDBACK_METHODS.filter((name) => have[name] !== undefined);
+		const notFunctions = given.filter((name) => typeof have[name] !== 'function');
+		if (notFunctions.length > 0) {
+			throw new ConfigError(
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} whose ${notFunctions.join(' and ')} is not a function`
+			);
+		}
+		if (given.length === 1) {
+			const other = FEEDBACK_METHODS.find((name) => !given.includes(name));
+			throw new ConfigError(
+				`${where} ${kind.factory} in ${spec.path} returned a ${kind.noun} with ${given[0] ?? ''} but without ${other ?? ''}`
 			);
 		}
 	}

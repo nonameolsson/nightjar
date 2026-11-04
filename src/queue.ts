@@ -1,5 +1,6 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, and what happens to one whose build fails on a fault.
-import { FOOTER, type FeatureOutcome } from './build.js';
+import type { FeatureOutcome } from './build.js';
+import { FOOTER } from './footer.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import {
 	waitingTickets,
