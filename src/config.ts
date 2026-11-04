@@ -363,6 +363,18 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					'Ports reserved for each run and held for its whole life, so that two runs on one machine never share a port. Left out, no port is held.'
+			}),
+		pullChecks: z
+			.strictObject({
+				enabled: z.boolean().optional().meta({
+					description:
+						'true has Nightjar fix the failed Pull checks of its own draft pull requests before it takes the next Feature; off by default'
+				})
+			})
+			.optional()
+			.meta({
+				description:
+					"The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request"
 			})
 	})
 	.refine(

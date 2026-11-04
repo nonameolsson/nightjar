@@ -87,6 +87,18 @@ To let Waiting on you in the live views list Features, give the Tracker one more
 
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
+To let Nightjar fix the failed Pull checks of its own draft pull requests (`pullChecks.enabled` in `factory.json`), give the Code host one more optional method. A Code host without it builds as before, and gets no Pull-check pass.
+
+```js
+		// the open draft pull requests whose head branch starts with factory/, oldest first, each as
+		// { pull: { id, url }, branch, headCommit, body,
+		//   checks: { pending, failed: [{ check, job, step, logTail }] }, personEngaged }:
+		// `pending` while any check on the head commit runs, `failed` every check that finished red,
+		// `personEngaged` once any account but the signed-in one reviewed or commented on it.
+		// Leave out pull requests marked ready for review, closed or merged.
+		nightjarDrafts: todo('nightjarDrafts'),
+```
+
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
 ## Test the module
@@ -119,7 +131,7 @@ export async function trackerHarness(world) {
 }
 ```
 
-`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*` and `PullView` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
+`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld` and `PullView` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
 
 Then run, from the repo:
 
@@ -127,7 +139,7 @@ Then run, from the repo:
 nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, and the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, and the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`; over a Code host, the `nightjarDrafts` suite (`nightjarDraftsContract`) runs when it has `nightjarDrafts`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -140,6 +152,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `ticketCountsContract` and `codeHostContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `ticketCountsContract`, `codeHostContract` and `nightjarDraftsContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

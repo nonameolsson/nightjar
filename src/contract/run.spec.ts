@@ -1,7 +1,9 @@
 // The runner behind `nightjar contract`: the contract suites over the harnesses a module exports.
 import { describe, expect, it } from 'vitest';
 import { fakeCodeHostHarness, fakeTrackerHarness } from '../fakes/harness.js';
-import { codeHostContract } from './code-host.js';
+import { codeHostContract, type CodeHostHarness } from './code-host.js';
+import { nightjarDraftsContract } from './nightjar-drafts.js';
+import type { FakeCodeHost } from '../fakes/code-host.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
@@ -27,7 +29,8 @@ describe('runContract', () => {
 			'Tracker creation',
 			'Tracker waiting on',
 			'Tracker ticket counts',
-			'Code host'
+			'Code host',
+			'Code host Nightjar drafts'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -44,7 +47,35 @@ describe('runContract', () => {
 		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
+		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
+			nightjarDraftsContract.map((c) => c.name)
+		);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no nightjarDrafts suite over a Code host without the method, as a module written before it', async () => {
+		const lacks: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			const { nightjarDrafts: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			return { ...subject, codeHost: without };
+		};
+		const report = await runContract({ codeHostHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.failed).toBe(0);
+	});
+
+	it('names a nightjarDrafts that is wrong', async () => {
+		const wrong: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			return {
+				...subject,
+				codeHost: Object.assign(subject.codeHost, { nightjarDrafts: () => Promise.resolve([]) })
+			};
+		};
+		const report = await runContract({ codeHostHarness: wrong });
+		const suite = report.suites.find((s) => s.title === 'Code host Nightjar drafts')?.results ?? [];
+		expect(suite).toHaveLength(nightjarDraftsContract.length);
+		expect(suite.every((r) => !r.ok)).toBe(true);
 	});
 
 	it('runs no creation suite over a Tracker that makes no Features, as a module written before it', async () => {
@@ -117,7 +148,7 @@ describe('runContract', () => {
 
 	it('runs only the suite whose harness the module exports', async () => {
 		const report = await runContract({ codeHostHarness: fakeCodeHostHarness });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host']);
+		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host Nightjar drafts']);
 	});
 
 	it('names each behaviour that fails, with why, and keeps going', async () => {

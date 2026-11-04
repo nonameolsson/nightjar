@@ -1,4 +1,5 @@
 // What a fix round and the pull request get when the check stays red: the red stages, every failing test once, then the end of the output.
+import type { FailedCheck } from './code-host.js';
 
 export interface Gate {
 	// a line naming a failing test; its first group is the name
@@ -63,5 +64,21 @@ export function gateReport(
 	}
 	const cut = lines.length > TAIL ? ` (last ${String(TAIL)} lines)` : '';
 	parts.push(`End of the output${cut}:\n${lines.slice(-TAIL).join('\n')}`);
+	return parts.join('\n\n');
+}
+
+// The failed Pull checks in the gate report's shape: the red checks, then each one's job, step and the end of its log.
+export function pullChecksReport(failed: readonly FailedCheck[]): string {
+	const parts = [`Red: ${failed.map((f) => f.check).join(', ')}`];
+	for (const f of failed) {
+		const lines = plain(f.logTail).trimEnd().split('\n');
+		const cut = lines.length > TAIL ? ` (last ${String(TAIL)} lines)` : '';
+		const where = [f.job === '' ? null : `job ${f.job}`, f.step === '' ? null : `step ${f.step}`]
+			.filter((w) => w !== null)
+			.join(', ');
+		parts.push(
+			`${f.check}${where === '' ? '' : `: ${where}`}\nEnd of the log${cut}:\n${lines.slice(-TAIL).join('\n')}`
+		);
+	}
 	return parts.join('\n\n');
 }

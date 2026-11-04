@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
-import { buildFeature, LIMITS, type Deps, type Setup } from './build.js';
+import { buildFeature, fixPullChecks, LIMITS, type Deps, type Setup } from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
@@ -22,7 +22,14 @@ import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
 import { claimPorts, portEnv } from './ports.js';
-import { buildNamed, cannotClaim, handBack, queue, type QueueDeps } from './queue.js';
+import {
+	buildNamed,
+	cannotClaim,
+	handBack,
+	pullChecksPass,
+	queue,
+	type QueueDeps
+} from './queue.js';
 import { runSession } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
@@ -222,6 +229,9 @@ export async function runNightjar(
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: Named | null = null;
+	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
+		fixPullChecks(deps, setup, red)
+	);
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
@@ -238,6 +248,7 @@ export async function runNightjar(
 		say: runSay,
 		sleep,
 		signal: stop.signal,
+		...(pullChecks === null ? {} : { pullChecks }),
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 

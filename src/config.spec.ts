@@ -89,6 +89,20 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/off/);
 	});
 
+	it('loads the Pull-check pass, and leaves it out, so off, when not set', () => {
+		write({ ...VALID, pullChecks: { enabled: true } });
+		expect(loadConfig(root)).toMatchObject({ pullChecks: { enabled: true } });
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('pullChecks');
+	});
+
+	it('refuses a Pull-check setting that is not one it knows', () => {
+		write({ ...VALID, pullChecks: { enabled: 'yes' } });
+		expect(refusal()).toMatch(/^factory\.json: pullChecks\.enabled: /m);
+		write({ ...VALID, pullChecks: { enabled: true, rerun: true } });
+		expect(refusal()).toMatch(/rerun/);
+	});
+
 	it('loads a Tracker and a Code host named as a module path, with their options', () => {
 		const modules = {
 			tracker: { type: 'module', path: './adapters/tracker.js', options: { project: 'x' } },

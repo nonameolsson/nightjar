@@ -7,6 +7,7 @@ import {
 	STEP_SCHEMA,
 	buildPrompt,
 	fixPrompt,
+	pullChecksPrompt,
 	readBuildAnswer,
 	readReview,
 	readStepAnswer,
@@ -90,10 +91,11 @@ export interface BuildRequest extends Work {
 	readonly built: readonly { readonly id: string; readonly title: string }[];
 }
 
-// A Step's fix rounds run with the Step's own extras and model, so a fix can do what the Step could.
+// A Step's fix rounds run with the Step's own extras and model, so a fix can do what the Step could; a Pull-check fix runs as the build it fixes.
 export type Fixing =
 	| { readonly kind: 'build' }
-	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras };
+	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras }
+	| { readonly kind: 'pullChecks' };
 
 export interface FixRequest extends Work {
 	readonly kind: 'fix';
@@ -101,7 +103,7 @@ export interface FixRequest extends Work {
 	// the Session of the work it fixes
 	readonly resume: string;
 	readonly round: number;
-	// the failing check's output
+	// the failing check's output; for a Pull-check fix, the failed Pull checks in the gate report's shape
 	readonly tail: string;
 }
 
@@ -267,13 +269,16 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 	const fix = (req: FixRequest) =>
 		outcomeOf(
 			request(req, {
-				prompt: fixPrompt(req.round, setup.limits.fixRounds, setup.check, req.tail),
+				prompt:
+					req.of.kind === 'pullChecks'
+						? pullChecksPrompt(setup.check, req.tail)
+						: fixPrompt(req.round, setup.limits.fixRounds, setup.check, req.tail),
 				sessionId: req.resume,
 				resume: req.resume,
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {})
 			}),
 			(output) => {
-				if (req.of.kind === 'build') {
+				if (req.of.kind !== 'step') {
 					const answer = readBuildAnswer(output);
 					if (answer === null) return null;
 					return answer.outcome === 'built'

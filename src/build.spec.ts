@@ -12,7 +12,15 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildFeature, featureOfBody, LIMITS, type Deps, type Setup } from './build.js';
+import {
+	buildFeature,
+	featureOfBody,
+	fixPullChecks,
+	LIMITS,
+	type Deps,
+	type Setup
+} from './build.js';
+import { pullChecksPass, queue, type QueueDeps } from './queue.js';
 import type {
 	BuildOutcome,
 	BuildRequest,
@@ -1426,5 +1434,220 @@ describe('the next step in each comment', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.host.pulls[0]?.comments[0]).toContain('Nightjar review');
 		expect(world.host.pulls[0]?.comments[0]).not.toContain('Next step');
+	});
+});
+
+describe('the Pull-check pass in --watch', () => {
+	const FAILURES = [
+		{
+			check: 'CI / test',
+			job: 'test',
+			step: 'Run npm test',
+			logTail: 'FAIL src/a.spec.ts\nError: TZ is not set'
+		},
+		{ check: 'CI / lint', job: 'lint', step: 'Run eslint', logTail: 'src/b.ts: 1 problem' }
+	];
+
+	// Feature 1 built into a draft whose Pull checks then failed, and Feature 10 in the Queue after it.
+	async function redDraft(world: World) {
+		await buildFeature(deps(world), setup(world), '1');
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		world.host.setChecks(pull, { pending: false, failed: FAILURES });
+		world.tracker.add({
+			id: '10',
+			title: 'Next',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['11']
+		});
+		world.tracker.add({ id: '11', title: 'Ticket 11', signals: ['ready'] });
+		// the fix Session changes a file, as one that fixes something does
+		world.fixAgent = (req) => {
+			if (req.of.kind === 'pullChecks') write(world, req.at.folder, 'ci.txt');
+			return {
+				kind: 'fixed',
+				summary: 'Set TZ in the test job.',
+				sessionId: req.resume,
+				costUsd: 1
+			};
+		};
+		// what happened from here on
+		world.asked.length = 0;
+		return pull;
+	}
+
+	function watch(world: World, on = true): QueueDeps {
+		const d = deps(world);
+		const stop = new AbortController();
+		const s = setup(world);
+		const pass = pullChecksPass({ enabled: on }, world.host, (red) => fixPullChecks(d, s, red));
+		return {
+			tracker: world.tracker,
+			person: 'ann',
+			build: ({ id }) => buildFeature(d, s, id),
+			status: d.status,
+			now: d.now,
+			say: () => undefined,
+			// the first idle tick stops the run
+			sleep: () => {
+				stop.abort();
+				return Promise.resolve();
+			},
+			signal: stop.signal,
+			...(pass === null ? {} : { pullChecks: pass })
+		};
+	}
+
+	it("fixes a red draft before the next Feature: one Session that resumes the head commit's, given each failure", async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		expect(await queue(watch(world), false)).toBe(130);
+
+		const [first, ...rest] = world.asked;
+		// the head commit is Ticket 3's, built in the second Session
+		expect(first).toMatchObject({
+			kind: 'fix',
+			of: { kind: 'pullChecks' },
+			resume: 'session-2',
+			round: 1,
+			at: { branch: 'factory/1-one-escape', folder: tree() },
+			budgetUsd: LIMITS.pullFixUsd
+		});
+		const tail = first?.kind === 'fix' ? first.tail : '';
+		for (const f of FAILURES) {
+			expect(tail).toContain(f.check);
+			expect(tail).toContain(`job ${f.job}`);
+			expect(tail).toContain(`step ${f.step}`);
+			expect(tail).toContain(f.logTail.split('\n').at(-1));
+		}
+		// then Feature 10, built as before
+		expect(rest.map((r) => r.kind)).toEqual(['build', 'review']);
+		expect(rest[0]).toMatchObject({ ticket: { id: '11' } });
+	});
+
+	it('commits a green fix as one new commit with a Factory-Pull-Fix: 1 trailer and pushes it, the earlier commits unchanged', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		const before = world.trees.messages(tree());
+		await queue(watch(world), false);
+
+		const after = world.trees.messages(tree());
+		expect(after.slice(1)).toEqual(before);
+		expect(after[0]?.split('\n')[0]).toBe('Fix the Pull checks, round 1');
+		expect(after[0]).toContain('Set TZ in the test job.');
+		expect(after[0]).toMatch(/\nFactory-Pull-Fix: 1\nFactory-Session: session-2$/);
+		expect(world.checks.map((c) => c.cwd)).toContain(tree());
+		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(2);
+		// Feature 1 holds no Signal again, and Feature 10 was built after it
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(world.host.pulls.map((p) => p.head)).toEqual([
+			'factory/1-one-escape',
+			'factory/10-next'
+		]);
+	});
+
+	it('runs no review and no Step after the fix', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		await queue(watch(world), false);
+		const reviews = askedOf(world, 'review');
+		expect(reviews.map((r) => r.feature.id)).toEqual(['10']);
+		expect(askedOf(world, 'step')).toEqual([]);
+		expect(world.host.pulls[0]?.comments).toHaveLength(1);
+	});
+
+	it('holds the Feature as working while the fix runs', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		const signals: string[][] = [];
+		world.fixAgent = (req) => {
+			signals.push([...world.tracker.signalsOf('1')]);
+			write(world, req.at.folder, 'ci.txt');
+			return { kind: 'fixed', summary: 'Fixed.', sessionId: req.resume, costUsd: 1 };
+		};
+		await queue(watch(world), false);
+		expect(signals[0]).toEqual(['working']);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it('runs the check with the usual fix rounds, in the same Session, before it pushes', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		let checks = 0;
+		const d = watch(world);
+		world.checkOk = false;
+		world.fixAgent = (req) => {
+			write(world, req.at.folder, `fix-${String(req.round)}.txt`);
+			// the check is green after the first of its own fix rounds
+			if (req.of.kind === 'build') world.checkOk = true;
+			checks += 1;
+			return {
+				kind: 'fixed',
+				summary: `Fix ${String(checks)}.`,
+				sessionId: req.resume,
+				costUsd: 1
+			};
+		};
+		await queue(d, false);
+		const fixes = askedOf(world, 'fix');
+		expect(fixes.map((f) => [f.of.kind, f.resume])).toEqual([
+			['pullChecks', 'session-2'],
+			['build', 'session-2']
+		]);
+		expect(world.trees.subjects(tree())[0]).toBe('Fix the Pull checks, round 1');
+		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(2);
+	});
+
+	it('keeps a fix that leaves the check red on an attempt branch, and pushes nothing', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		const before = world.trees.messages(tree());
+		world.checkOk = false;
+		await queue(watch(world), false);
+		expect(world.trees.messages(tree())).toEqual(before);
+		expect(world.trees.sides.get('factory/1-one-escape-attempt-pull-fix-1')).toContain('ci.txt');
+		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it("leaves alone a draft whose head commit is not Nightjar's", async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		world.trees.commitAsPerson(tree(), 'Fix a typo', 'typo.txt');
+		await queue(watch(world), false);
+		expect(askedOf(world, 'fix')).toEqual([]);
+		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		// the Queue still goes on
+		expect(askedOf(world, 'build').map((b) => b.ticket.id)).toEqual(['11']);
+	});
+
+	it('leaves a red draft alone with the pass off', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		await queue(watch(world, false), false);
+		expect(askedOf(world, 'fix')).toEqual([]);
+		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
+	});
+
+	it("takes no draft once the day's spend has reached the daily limit", async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: 1 } });
+		const got = await fixPullChecks(deps(world), s, {
+			feature: '1',
+			draft: {
+				pull: { id: pull.id, url: pull.url },
+				branch: pull.head,
+				headCommit: '',
+				body: pull.body,
+				checks: pull.checks,
+				personEngaged: false
+			}
+		});
+		expect(got).toMatchObject({ kind: 'paused' });
+		expect(world.asked).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
 	});
 });

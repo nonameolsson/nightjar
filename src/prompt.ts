@@ -158,6 +158,15 @@ export function fixPrompt(round: number, rounds: number, check: string, tail: st
 ${tail}`;
 }
 
+// The Session that made the branch's head commit, resumed after the draft pull request's Pull checks failed; `report` is in the gate report's shape.
+export function pullChecksPrompt(check: string, report: string): string {
+	return `The draft pull request of this branch is open, and its Pull checks fail. The Code host runs them on the head commit in its own environment, apart from the repo's check, ${code(check)}, which passed here; they can fail where it passed, such as on a missing setting, another OS or a step the repo's check leaves out. Fix the cause in the code or in the repo's own files, so that the Pull checks pass and ${code(check)} still does. Nightjar runs ${code(check)} after you and pushes only a green fix, as a new commit.
+
+The same rules hold: do not commit or push, and answer with the same structured output: outcome "built" with a summary of what you changed, or outcome "questions" when you cannot fix it from here, each question with the answer you recommend.
+
+${report}`;
+}
+
 export function reviewPrompt(
 	feature: Feature,
 	base: string,

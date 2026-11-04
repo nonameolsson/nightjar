@@ -10,8 +10,19 @@ export const fakeCodeHostHarness: CodeHostHarness = () =>
 // The fake keeps no commits, so each commit gets a folder of its own that names it.
 export function fakeCodeHostSubject(codeHost: FakeCodeHost): CodeHostSubject {
 	const commits = new Map<string, string>();
+	codeHost.commitAt = (folder) => commits.get(folder) ?? folder;
+	const done = (act: () => void) => {
+		act();
+		return Promise.resolve();
+	};
 	return {
 		codeHost,
+		drafts: {
+			checks: (pull, checks) => done(() => codeHost.setChecks(pull, checks)),
+			engage: (pull) => done(() => codeHost.engage(pull)),
+			ready: (pull) => done(() => codeHost.markReady(pull)),
+			closePull: (pull) => done(() => codeHost.close(pull))
+		},
 		base: 'main',
 		commit: () => {
 			const n = String(commits.size + 1);

@@ -1,6 +1,7 @@
 // Runs the contract suites with no test runner, so an installed Nightjar can check a repo's own Adapter.
 import type { ContractCase } from './case.js';
-import { codeHostContract } from './code-host.js';
+import { codeHostContract, type CodeHostHarness, type CodeHostSubject } from './code-host.js';
+import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
@@ -79,6 +80,21 @@ async function optionalSuites(
 	}
 }
 
+// Whether the Code host has nightjarDrafts; a harness that cannot build one has failed every case already.
+async function listsDrafts(harness: CodeHostHarness): Promise<boolean> {
+	let subject: CodeHostSubject;
+	try {
+		subject = await harness();
+	} catch {
+		return false;
+	}
+	try {
+		return typeof subject.codeHost.nightjarDrafts === 'function';
+	} finally {
+		await subject.close?.();
+	}
+}
+
 // The creation suite runs too when the Tracker makes Features, and the waitingOn suite when it has waitingOn.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
@@ -102,6 +118,11 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 	}
 	if (codeHost !== undefined) {
 		suites.push(await runSuite('Code host', codeHostContract, codeHost as never));
+		if (await listsDrafts(codeHost as CodeHostHarness)) {
+			suites.push(
+				await runSuite('Code host Nightjar drafts', nightjarDraftsContract, codeHost as never)
+			);
+		}
 	}
 	const all = suites.flatMap((s) => s.results);
 	return { suites, total: all.length, failed: all.filter((r) => !r.ok).length };

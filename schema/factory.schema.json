@@ -465,6 +465,17 @@
 				"env"
 			],
 			"additionalProperties": false
+		},
+		"pullChecks": {
+			"description": "The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request",
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"description": "true has Nightjar fix the failed Pull checks of its own draft pull requests before it takes the next Feature; off by default",
+					"type": "boolean"
+				}
+			},
+			"additionalProperties": false
 		}
 	},
 	"required": [
