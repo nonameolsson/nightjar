@@ -233,6 +233,28 @@ export const codeHostCheck = check({
 	}
 });
 
+// a warning only: the pass never runs, but every build still does
+export const pullChecksCheck = check({
+	name: 'Pull checks',
+	needs: ['adapters', 'loaded'],
+	unmet: null,
+	run: ({ adapters, loaded }) => {
+		if (loaded.config.pullChecks?.enabled !== true) return {};
+		if (typeof adapters.codeHost.nightjarDrafts === 'function') return {};
+		return {
+			lines: [
+				{
+					name: 'Pull checks',
+					status: 'warn',
+					detail:
+						'pullChecks.enabled is on, but this Code host cannot report Pull checks (its Adapter has no nightjarDrafts), so the pass will not run.',
+					summary: null
+				}
+			]
+		};
+	}
+});
+
 const claudeCheck = check({
 	name: 'claude',
 	needs: ['root'],
@@ -315,6 +337,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	adaptersCheck,
 	trackerCheck,
 	codeHostCheck,
+	pullChecksCheck,
 	claudeCheck,
 	signingCheck,
 	workflowsCheck

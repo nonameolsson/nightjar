@@ -3,7 +3,7 @@ import { checkMachine, type CheckOptions, type Line } from './checks.js';
 import { dryRun } from './queue.js';
 import { say, why } from './say.js';
 
-const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip' } as const;
+const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip', warn: 'warn' } as const;
 
 // Failures go to stderr, the rest to stdout; a line that wraps is indented under its name.
 export function printLines(lines: readonly Line[]): void {

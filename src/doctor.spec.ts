@@ -4,7 +4,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { oneEscape } from './fakes/github.js';
 import { machine, type Machine, type Tool } from './fakes/machine.js';
-import { checkMachine } from './checks.js';
+import type { Adapters } from './adapters.js';
+import { checkMachine, pullChecksCheck, type CheckOptions } from './checks.js';
+import { loadConfig, type Config } from './config.js';
+import { failures, printLines } from './doctor.js';
 import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
 
@@ -167,6 +170,40 @@ describe('nightjar doctor', () => {
 		});
 		expect(await start({ env: { FAKE_AZ_SIGNED_OUT: '1' } })).toBe(2);
 		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*az login.*AZURE_DEVOPS_EXT_PAT/);
+	});
+});
+
+describe('nightjar doctor over the Pull-check pass', () => {
+	it('says nothing with the pass off, or a Code host that reports Pull checks', async () => {
+		expect(await doctor()).toBe(0);
+		expect(out.join('\n')).not.toContain('Pull checks');
+		out = [];
+		m.writeConfig({ ...GITHUB, pullChecks: { enabled: true } });
+		expect(await start()).toBe(0);
+		expect(out.join('\n')).not.toContain('Pull checks');
+		expect(err).toEqual([]);
+	});
+
+	it('warns, without failing, when the pass is on and the Code host cannot report Pull checks', async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, pullChecks: { enabled: true } });
+		const config = loadConfig(m.root);
+		const without = { codeHost: {} } as unknown as Adapters;
+		const run = (adapters: Adapters, loaded: { config: Config; rules: null }) =>
+			pullChecksCheck.run({ adapters, loaded }, {} as CheckOptions);
+		const passed = await run(without, { config, rules: null });
+		const lines = passed.lines ?? [];
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.status).toBe('warn');
+		expect(lines[0]?.detail).toMatch(/will not run/);
+		expect(failures(lines)).toBe(0);
+		printLines(lines);
+		expect(err).toEqual([]);
+		expect(out.join('\n')).toMatch(/warn {2}Pull checks: .*will not run/);
+		// the pass off: no line, though the Code host lacks the method
+		m.writeConfig(GITHUB);
+		const off = loadConfig(m.root);
+		expect((await run(without, { config: off, rules: null })).lines ?? []).toEqual([]);
 	});
 });
 
