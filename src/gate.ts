@@ -67,15 +67,20 @@ export function gateReport(
 	return parts.join('\n\n');
 }
 
+// Where a Pull check failed, such as `job test, step Run npm test`; empty when the Code host names neither.
+export function failedAt(f: FailedCheck): string {
+	return [f.job === '' ? null : `job ${f.job}`, f.step === '' ? null : `step ${f.step}`]
+		.filter((w) => w !== null)
+		.join(', ');
+}
+
 // The failed Pull checks in the gate report's shape: the red checks, then each one's job, step and the end of its log.
 export function pullChecksReport(failed: readonly FailedCheck[]): string {
 	const parts = [`Red: ${failed.map((f) => f.check).join(', ')}`];
 	for (const f of failed) {
 		const lines = plain(f.logTail).trimEnd().split('\n');
 		const cut = lines.length > TAIL ? ` (last ${String(TAIL)} lines)` : '';
-		const where = [f.job === '' ? null : `job ${f.job}`, f.step === '' ? null : `step ${f.step}`]
-			.filter((w) => w !== null)
-			.join(', ');
+		const where = failedAt(f);
 		parts.push(
 			`${f.check}${where === '' ? '' : `: ${where}`}\nEnd of the log${cut}:\n${lines.slice(-TAIL).join('\n')}`
 		);

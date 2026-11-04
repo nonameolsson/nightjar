@@ -90,6 +90,9 @@ const effortField = z.string().regex(/\S/, 'an effort is empty').optional();
 
 const oneLine = (what: string) => z.string().regex(/^[^\r\n]*\S[^\r\n]*$/, `${what} is one line`);
 
+// The Pull-check pass's limits when factory.json names none.
+export const DEFAULT_PULL_CHECKS = { fixRounds: 2, fixUsd: 5, fixMinutes: 30 } as const;
+
 // How many rounds a Step with an `until` runs when it names no maxRounds.
 export const DEFAULT_ROUNDS = 3;
 
@@ -369,7 +372,30 @@ export const ConfigSchema = z
 				enabled: z.boolean().optional().meta({
 					description:
 						'true has Nightjar fix the failed Pull checks of its own draft pull requests before it takes the next Feature; off by default'
-				})
+				}),
+				fixRounds: z
+					.number()
+					.int()
+					.min(1)
+					.max(10)
+					.optional()
+					.meta({
+						description: `How many Pull-check fix rounds one pull request may get, counted from its branch's commits; ${String(DEFAULT_PULL_CHECKS.fixRounds)} when left out. After them, the Feature gets the needs-a-person Signal`
+					}),
+				fixUsd: z
+					.number()
+					.positive()
+					.optional()
+					.meta({
+						description: `The most one Pull-check fix round may cost in dollars, its check's fix rounds too; ${String(DEFAULT_PULL_CHECKS.fixUsd)} when left out`
+					}),
+				fixMinutes: z
+					.number()
+					.positive()
+					.optional()
+					.meta({
+						description: `The most minutes one Pull-check fix round may run, its check's fix rounds too; ${String(DEFAULT_PULL_CHECKS.fixMinutes)} when left out`
+					})
 			})
 			.optional()
 			.meta({

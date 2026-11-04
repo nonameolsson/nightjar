@@ -1,6 +1,12 @@
 // --once, --watch and --dry-run over the in-memory Tracker, with the build loop scripted.
 import { describe, expect, it } from 'vitest';
-import { featureMarker, type FeatureOutcome, type PullFixOutcome, type RedDraft } from './build.js';
+import {
+	featureMarker,
+	markHandedOver,
+	type FeatureOutcome,
+	type PullFixOutcome,
+	type RedDraft
+} from './build.js';
 import type { PullChecks } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker, type NewItem } from './fakes/tracker.js';
@@ -279,6 +285,18 @@ describe('queue --watch with the Pull-check pass', () => {
 		await d.open('28');
 		d.done('30', { signals: ['human'] });
 		await d.open('30');
+		await queue(w.deps, false);
+		expect(d.fixed).toEqual([]);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it('leaves alone a draft the pass handed to a person, after the Signal comes off too', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		const body = d.host.pulls.find((p) => p.id === pull.id)?.body ?? '';
+		await d.host.editBody(pull, markHandedOver(body));
 		await queue(w.deps, false);
 		expect(d.fixed).toEqual([]);
 		expect(w.built).toEqual(['2', '4']);

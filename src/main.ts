@@ -6,7 +6,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
-import { buildFeature, fixPullChecks, LIMITS, type Deps, type Setup } from './build.js';
+import {
+	buildFeature,
+	fixPullChecks,
+	LIMITS,
+	pullFixLimits,
+	type Deps,
+	type Setup
+} from './build.js';
 import { runCheck } from './check.js';
 import { checkMachine, Refusal, type Ready } from './checks.js';
 import { codingAgent } from './coding-agent.js';
@@ -210,7 +217,11 @@ export async function runNightjar(
 		env: ready.env,
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.effort === undefined ? {} : { effort: args.effort }),
-		limits: { ...LIMITS, dailyUsd: ready.person.dailyUsd },
+		limits: {
+			...LIMITS,
+			dailyUsd: ready.person.dailyUsd,
+			...pullFixLimits(config.pullChecks)
+		},
 		signal: stop.signal
 	};
 	const deps: Deps = {

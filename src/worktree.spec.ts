@@ -280,6 +280,20 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		});
 	});
 
+	it('counts the Pull-check fixes again in a later run, from the trailers alone', async () => {
+		const { world, branch, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		world.write(tree, 'ci.txt');
+		await tree.commitPullFix(1, 'Pinned the Node version.', 's1');
+		world.write(tree, 'ci2.txt');
+		await tree.commitPullFix(2, 'Set TZ.', 's1');
+
+		const again = await world.open('/unused', world.worktrees, branch, 'main', {});
+		expect(await again.pullFixes()).toBe(2);
+		expect((await again.headTrailers()).get('Factory-Pull-Fix')).toBe('2');
+	});
+
 	it("reads the head commit's trailers, and none from a person's own commit", async () => {
 		const { world, tree } = await fresh();
 		world.write(tree, 'a.txt');

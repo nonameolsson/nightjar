@@ -43,6 +43,12 @@ Which Signal each item carries, and when it changes, under the default names:
 | A person stops the run                                           | `agent-working` off                                 | no change                                                    |
 | The run ends with a draft pull request                           | `agent-working` off; `needs-info` on while a Ticket waits or the check is red | no change                          |
 | The run builds nothing, its Workflow is refused, its setup fails, or a fault stops it | `agent-working` off, `needs-info` on | no change                                               |
+| The Pull-check pass fixes its red draft pull request (`pullChecks.enabled`) | `agent-working` on for the round, then off | no change                                            |
+| A Pull-check fix round gives up: the check stays red, the Session gives up, or the round runs over `fixUsd` or `fixMinutes` | `ready-for-human` on, with a comment naming the pull request and each failing Pull check | no change |
+| The pull request is red again after `fixRounds` Pull-check fix rounds | `ready-for-human` on, with the same comment; no Session runs | no change                  |
+| A person takes `ready-for-human` off after the pass handed the Feature over | no change: the pass leaves the pull request alone, and the rounds it had still count | no change |
+
+The pass counts a pull request's rounds from the `Factory-Pull-Fix` trailers on its branch, so neither a new run nor taking `ready-for-human` off resets them. Once it hands a Feature to a person it marks the pull request's body, and leaves the pull request alone from then on; the Go runs a normal build on the branch, which writes the body afresh.
 
 Nightjar never takes `needs-info` or `ready-for-human` off: the person does, and gives the Go again. It never sets a tracker state or a GitHub Project's Status field ([docs/adr/0002](adr/0002-signals-are-labels-or-tags-never-states.md)).
 

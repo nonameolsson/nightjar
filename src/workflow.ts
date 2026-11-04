@@ -116,6 +116,8 @@ export interface FixWork {
 	readonly spent: number;
 	readonly check: CheckResult;
 	readonly of: Fixing;
+	// when the whole piece of work must stop, in epoch milliseconds; left out, only each Session's own minutes hold
+	readonly deadline?: number;
 }
 
 // How the fix rounds ended: the last check, what the work has spent, and each round's summary.

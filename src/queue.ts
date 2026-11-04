@@ -2,6 +2,7 @@
 import {
 	FOOTER,
 	featureOfBody,
+	handedOver,
 	type FeatureOutcome,
 	type PullFixOutcome,
 	type RedDraft
@@ -178,7 +179,7 @@ const named = ({ id, title }: Named): Named => ({ id, title });
 // A draft is taken once per head commit in a run: a new commit, such as a pushed fix, makes it new again.
 const triedKey = (d: NightjarDraft) => `${String(d.pull.id)} ${d.headCommit}`;
 
-// The oldest draft the revisit pass may take: its Pull checks done and one red, no person engaged, its body naming a Feature assigned to the person that holds no Signal.
+// The oldest draft the revisit pass may take: its Pull checks done and one red, no person engaged, not handed to a person, its body naming a Feature assigned to the person that holds no Signal.
 async function nextRedDraft(
 	deps: QueueDeps,
 	pass: PullChecksPass,
@@ -189,6 +190,8 @@ async function nextRedDraft(
 		const { checks } = draft;
 		if (checks.pending || checks.failed.length === 0 || draft.personEngaged) continue;
 		if (tried.has(triedKey(draft))) continue;
+		// handed to a person once, it stays theirs when they take needs a person off
+		if (handedOver(draft.body)) continue;
 		const feature = featureOfBody(draft.body);
 		if (feature === undefined) continue;
 		try {

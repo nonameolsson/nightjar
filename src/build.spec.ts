@@ -16,7 +16,9 @@ import {
 	buildFeature,
 	featureOfBody,
 	fixPullChecks,
+	handedOver,
 	LIMITS,
+	pullFixLimits,
 	type Deps,
 	type Setup
 } from './build.js';
@@ -33,6 +35,7 @@ import type {
 	StepRequest
 } from './coding-agent.js';
 import type { Env } from './git.js';
+import type { Pull } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
@@ -1477,11 +1480,17 @@ describe('the Pull-check pass in --watch', () => {
 		return pull;
 	}
 
-	function watch(world: World, on = true): QueueDeps {
-		const d = deps(world);
+	// a new run of --watch, its seams and setup changed by `o`
+	function watch(
+		world: World,
+		o: { on?: boolean; deps?: Partial<Deps>; setup?: Partial<Setup> } = {}
+	): QueueDeps {
+		const d = { ...deps(world), ...o.deps };
 		const stop = new AbortController();
-		const s = setup(world);
-		const pass = pullChecksPass({ enabled: on }, world.host, (red) => fixPullChecks(d, s, red));
+		const s = setup(world, o.setup);
+		const pass = pullChecksPass({ enabled: o.on ?? true }, world.host, (red) =>
+			fixPullChecks(d, s, red)
+		);
 		return {
 			tracker: world.tracker,
 			person: 'ann',
@@ -1608,7 +1617,7 @@ describe('the Pull-check pass in --watch', () => {
 		expect(world.trees.messages(tree())).toEqual(before);
 		expect(world.trees.sides.get('factory/1-one-escape-attempt-pull-fix-1')).toContain('ci.txt');
 		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
-		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
 	});
 
 	it("leaves alone a draft whose head commit is not Nightjar's", async () => {
@@ -1626,7 +1635,7 @@ describe('the Pull-check pass in --watch', () => {
 	it('leaves a red draft alone with the pass off', async () => {
 		const world = makeWorld();
 		await redDraft(world);
-		await queue(watch(world, false), false);
+		await queue(watch(world, { on: false }), false);
 		expect(askedOf(world, 'fix')).toEqual([]);
 		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
 	});
@@ -1649,5 +1658,252 @@ describe('the Pull-check pass in --watch', () => {
 		expect(got).toMatchObject({ kind: 'paused' });
 		expect(world.asked).toEqual([]);
 		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+});
+
+describe('the limits of the Pull-check pass', () => {
+	const FAILURES = [
+		{ check: 'CI / test', job: 'test', step: 'Run npm test', logTail: 'Error: TZ is not set' },
+		{ check: 'CI / lint', job: 'lint', step: 'Run eslint', logTail: 'src/b.ts: 1 problem' }
+	];
+	const BRANCH = 'factory/1-one-escape';
+
+	// Feature 1 built into a draft whose Pull checks then failed; each fix Session changes a file of its round.
+	async function redDraft(world: World) {
+		await buildFeature(deps(world), setup(world), '1');
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		world.host.setChecks(pull, { pending: false, failed: FAILURES });
+		world.fixAgent = (req) => {
+			write(world, req.at.folder, `ci-${String(req.round)}-${req.of.kind}.txt`);
+			return { kind: 'fixed', summary: 'Set TZ.', sessionId: req.resume, costUsd: 1 };
+		};
+		world.asked.length = 0;
+		return pull;
+	}
+
+	// a new run of --watch that ends on its first idle tick
+	function watch(world: World, o: { deps?: Partial<Deps>; setup?: Partial<Setup> } = {}) {
+		const d = { ...deps(world), ...o.deps };
+		const s = setup(world, o.setup);
+		const stop = new AbortController();
+		const pass = pullChecksPass({ enabled: true }, world.host, (red) => fixPullChecks(d, s, red));
+		return queue(
+			{
+				tracker: world.tracker,
+				person: 'ann',
+				build: ({ id }) => buildFeature(d, s, id),
+				status: d.status,
+				now: d.now,
+				say: () => undefined,
+				sleep: () => {
+					stop.abort();
+					return Promise.resolve();
+				},
+				signal: stop.signal,
+				...(pass === null ? {} : { pullChecks: pass })
+			},
+			false
+		);
+	}
+
+	const fixes = (world: World) => askedOf(world, 'fix');
+	const pushes = (world: World) => world.host.pushes.filter((p) => p.branch === BRANCH);
+	const lastSaid = (world: World) => world.tracker.said('1').at(-1) ?? '';
+	const failRed = (world: World, pull: Pull) =>
+		world.host.setChecks(pull, { pending: false, failed: FAILURES });
+
+	it('hands the Feature to a person when the check stays red: needs a person, and a comment naming the pull request and each failing Pull check', async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		const before = world.tracker.said('1').length;
+		world.checkOk = false;
+		await watch(world);
+
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(world.tracker.said('1')).toHaveLength(before + 1);
+		const comment = lastSaid(world);
+		expect(comment).toContain(
+			`Nightjar could not make the Pull checks of ${pull.url} green: Pull-check fix 1 gave up: \`make check\` still fails after the fix rounds.`
+		);
+		expect(comment).toContain('- `CI / test`: job test, step Run npm test');
+		expect(comment).toContain('- `CI / lint`: job lint, step Run eslint');
+		expect(comment).toContain('**Next step**');
+		expect(comment).toContain('remove `ready-for-human` and add `factory-go`');
+		// the body keeps what Nightjar wrote, with the hidden mark at its end
+		const body = world.host.pulls[0]?.body ?? '';
+		expect(body.startsWith(pull.body)).toBe(true);
+		expect(handedOver(body)).toBe(true);
+	});
+
+	it('hands the Feature to a person when the Session gives up, and pushes nothing', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		world.fixAgent = (req) => ({ kind: 'gaveUp', sessionId: req.resume, costUsd: 1 });
+		await watch(world);
+		expect(fixes(world)).toHaveLength(1);
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain(
+			'Pull-check fix 1 gave up: the Session could not fix the Pull checks.'
+		);
+	});
+
+	it('stops a round at its fixUsd cap, counts it as given up, and keeps its work on the attempt branch', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		world.checkOk = false;
+		await watch(world, { setup: { limits: { ...LIMITS, pullFixUsd: 1.5 } } });
+		// the Pull-check Session cost $1, and the $0.50 left buys no fix round of the check
+		expect(fixes(world).map((f) => [f.of.kind, f.budgetUsd])).toEqual([['pullChecks', 1.5]]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.trees.sides.get(`${BRANCH}-attempt-pull-fix-1`)).toEqual(['ci-1-pullChecks.txt']);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain('Pull-check fix 1 gave up: it reached its cap of $1.50.');
+	});
+
+	it('gives each Session what is left of fixMinutes, and stops a round that runs past them as given up', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		world.checkOk = false;
+		let clock = new Date(2026, 9, 30, 9).getTime();
+		const { fixAgent } = world;
+		world.fixAgent = (req) => {
+			// the Pull-check Session takes 10 minutes, the check's first fix round 25
+			clock += (req.of.kind === 'pullChecks' ? 10 : 25) * 60_000;
+			return fixAgent(req);
+		};
+		await watch(world, { deps: { now: () => new Date(clock) } });
+		expect(fixes(world).map((f) => [f.of.kind, f.minutes])).toEqual([
+			['pullChecks', 30],
+			['build', 20]
+		]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain('Pull-check fix 1 gave up: it ran past its 30 minutes.');
+	});
+
+	it('runs the round on fixUsd and fixMinutes as factory.json sets them', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		const limits = { ...LIMITS, ...pullFixLimits({ fixUsd: 8, fixMinutes: 45 }) };
+		await watch(world, { setup: { limits } });
+		expect(fixes(world)[0]).toMatchObject({ budgetUsd: 8, minutes: 45 });
+	});
+
+	it('counts the rounds from the branch across runs, and gives a pull request that has used fixRounds no further Session', async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		await watch(world);
+		// a new run, after the Pull checks of the pushed fix failed too
+		failRed(world, pull);
+		await watch(world);
+		expect(fixes(world).map((f) => [f.of.kind, f.round])).toEqual([
+			['pullChecks', 1],
+			['pullChecks', 2]
+		]);
+		expect(world.trees.messages(tree())[0]).toContain('Factory-Pull-Fix: 2');
+		expect(pushes(world)).toHaveLength(3);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+
+		failRed(world, pull);
+		await watch(world);
+		expect(fixes(world)).toHaveLength(2);
+		expect(pushes(world)).toHaveLength(3);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain(
+			`Nightjar could not make the Pull checks of ${pull.url} green: it has had its 2 Pull-check fix rounds.`
+		);
+		expect(lastSaid(world)).toContain('- `CI / lint`: job lint, step Run eslint');
+	});
+
+	it('holds to fixRounds as factory.json sets it', async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		const limits = { ...LIMITS, ...pullFixLimits({ fixRounds: 1 }) };
+		await watch(world, { setup: { limits } });
+		failRed(world, pull);
+		await watch(world, { setup: { limits } });
+		expect(fixes(world)).toHaveLength(1);
+		expect(lastSaid(world)).toContain('it has had its 1 Pull-check fix round.');
+	});
+
+	it('takes the pull request no more once needs a person comes off, its round count kept', async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		const limits = { ...LIMITS, ...pullFixLimits({ fixRounds: 1 }) };
+		await watch(world, { setup: { limits } });
+		failRed(world, pull);
+		await watch(world, { setup: { limits } });
+		const said = world.tracker.said('1').length;
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+
+		await world.tracker.removeSignal('1', 'human');
+		await watch(world, { setup: { limits } });
+		expect(fixes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(world.tracker.said('1')).toHaveLength(said);
+	});
+
+	it('takes a given-up pull request no more once needs a person comes off, though rounds are left', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		world.fixAgent = (req) => ({ kind: 'gaveUp', sessionId: req.resume, costUsd: 1 });
+		await watch(world);
+		const said = world.tracker.said('1').length;
+
+		await world.tracker.removeSignal('1', 'human');
+		await watch(world);
+		expect(fixes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(world.tracker.said('1')).toHaveLength(said);
+	});
+
+	it('leaves the pass and the Feature alone on a day over the daily limit', async () => {
+		const world = makeWorld();
+		await redDraft(world);
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: 1 } });
+		const d = deps(world);
+		const stop = new AbortController();
+		const pass = pullChecksPass({ enabled: true }, world.host, (red) => fixPullChecks(d, s, red));
+		const sleeps: number[] = [];
+		await queue(
+			{
+				tracker: world.tracker,
+				person: 'ann',
+				build: ({ id }) => buildFeature(d, s, id),
+				status: d.status,
+				now: d.now,
+				say: () => undefined,
+				sleep: (ms) => {
+					sleeps.push(ms);
+					stop.abort();
+					return Promise.resolve();
+				},
+				signal: stop.signal,
+				...(pass === null ? {} : { pullChecks: pass })
+			},
+			false
+		);
+		expect(fixes(world)).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(sleeps).toEqual([30 * 60_000]);
+	});
+});
+
+describe('pullFixLimits', () => {
+	it('takes each Pull-check limit factory.json sets, and the default for one it leaves out', () => {
+		expect(pullFixLimits(undefined)).toEqual({
+			pullFixRounds: 2,
+			pullFixUsd: 5,
+			pullFixMinutes: 30
+		});
+		expect(pullFixLimits({ fixRounds: 4, fixMinutes: 10 })).toEqual({
+			pullFixRounds: 4,
+			pullFixUsd: 5,
+			pullFixMinutes: 10
+		});
 	});
 });

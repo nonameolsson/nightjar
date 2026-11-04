@@ -105,6 +105,8 @@ export interface FixRequest extends Work {
 	readonly round: number;
 	// the failing check's output; for a Pull-check fix, the failed Pull checks in the gate report's shape
 	readonly tail: string;
+	// the most minutes the Session may run, what is left of its work's own minutes; left out, a Ticket's minutes
+	readonly minutes?: number;
 }
 
 export interface StepRequest extends Work {
@@ -275,6 +277,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 						: fixPrompt(req.round, setup.limits.fixRounds, setup.check, req.tail),
 				sessionId: req.resume,
 				resume: req.resume,
+				...(req.minutes === undefined ? {} : { minutes: req.minutes }),
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {})
 			}),
 			(output) => {
