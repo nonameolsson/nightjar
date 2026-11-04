@@ -26,11 +26,13 @@ import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
+import { NOTES_FOLDER } from './settings.js';
 import {
 	featureAfterRunStep,
 	featureStopStep,
 	feedbackStep,
 	nextStepText,
+	noteStep,
 	pullChecksStep,
 	stoppedStep,
 	ticketStep,
@@ -361,6 +363,12 @@ class FeatureRun {
 		return this.setup.signal?.aborted === true;
 	}
 
+	// "note" when the Feature's Workflow writes a note under docs/research/, not code
+	private get output(): { readonly output?: 'note' } {
+		const output = this.workflow?.workflow.output;
+		return output === undefined ? {} : { output };
+	}
+
 	async build(): Promise<FeatureOutcome> {
 		this.featureComments = await this.trusted(this.feature.id);
 		if (this.workflow !== null) this.steps = await this.openSteps(this.workflow);
@@ -601,8 +609,9 @@ class FeatureRun {
 					featureComments: this.featureComments,
 					ticketComments,
 					built: this.tickets.filter((t) => this.built.has(t.id)),
-						...(workflow === null ? {} : { workflow }),
-						budgetUsd
+					...(workflow === null ? {} : { workflow }),
+					...this.output,
+					budgetUsd
 				});
 			},
 			record: (failed) =>
@@ -706,7 +715,7 @@ class FeatureRun {
 			cap: limits.ticketUsd,
 			spent: cost,
 			check: first,
-			of: { kind: 'build' }
+			of: { kind: 'build', ...this.output }
 		});
 		const { check } = fixed;
 		const summary = [built, ...fixed.summaries].join('\n\n');
@@ -864,6 +873,7 @@ class FeatureRun {
 			paused,
 			workflow,
 			feedback: rounds.rounds === 0 ? null : feedbackSection(rounds, this.unanswered),
+			note: this.workflow?.workflow.output === 'note' ? this.workflow.name : null,
 			tests: done.flatMap((t) => {
 				const test = this.tests.get(t.id);
 				return test === undefined ? [] : [{ ticket: t.id, test }];
@@ -916,8 +926,31 @@ class FeatureRun {
 					next
 				)
 			);
+		} else if (complete && this.workflow?.workflow.output === 'note') {
+			await this.handNote(pull);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
+	private async handNote(pull: Pull): Promise<void> {
+		const id = this.feature.id;
+		const next = noteStep(pull.url);
+		this.deps.status.happened({
+			kind: 'needs-info',
+			feature: id,
+			ticket: null,
+			why: 'its note is for a person to read',
+			next
+		});
+		await this.deps.tracker.addSignal(id, 'human');
+		await this.deps.tracker.comment(
+			id,
+			withNext(
+				`Nightjar wrote a note for this Feature, under \`${NOTES_FOLDER}/\` in ${pull.url}. It holds findings, not code, so it waits for a person to read it.`,
+				next
+			)
+		);
 	}
 
 	// The Go back, so a later run goes on from the branch.
@@ -1415,12 +1448,19 @@ function pullBody(p: {
 	feedback: string | null;
 	// the tests the Sessions said show a bug, by Ticket
 	tests: readonly { ticket: ItemId; test: string }[];
+	// the name of the Workflow, when its output is a note rather than code
+	note: string | null;
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
 		`Nightjar built ${p.complete ? 'all of' : 'part of'} ${ref(p.feature.id)} ${p.feature.title}.`,
 		`## Built\n\n${p.done.map((t) => `- ${ref(t.id)} ${t.title}`).join('\n')}`
 	];
+	if (p.note !== null) {
+		parts.push(
+			`## A note, not code\n\nThe Workflow \`${p.note}\` writes findings, not code: this pull request holds a note under \`${NOTES_FOLDER}/\`. Read it, then close the Feature or follow up on what it recommends. It is not meant to be merged unread.`
+		);
+	}
 	if (p.red) {
 		parts.push(
 			`## The check fails\n\nAfter ${ref(p.red.ticket)}, \`${p.check}\` still fails after the fix rounds:\n\n\`\`\`\n${p.red.tail}\n\`\`\``

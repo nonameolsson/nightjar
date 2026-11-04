@@ -28,6 +28,7 @@ import {
 	BUILD_TOOLS,
 	REVIEW_TOOLS,
 	buildSettings,
+	noteSettings,
 	reviewSettings,
 	stepTools,
 	type StepExtras
@@ -97,11 +98,14 @@ export interface BuildRequest extends Work {
 	readonly built: readonly { readonly id: string; readonly title: string }[];
 	// the Feature's Workflow, when it has a prompt, which joins the Session's instructions
 	readonly workflow?: { readonly name: string; readonly prompt: string };
+	// "note": the Feature's Workflow has `output: "note"`, so the Session may write only a note under docs/research/
+	readonly output?: 'note';
 }
 
 // A Step's fix rounds run with the Step's own extras and model, so a fix can do what the Step could; a Pull-check fix runs as the build it fixes; a Feedback round's fix keeps its answer's shape.
+// A build's fix rounds keep its `output`, so a note's fix may write only the note too.
 export type Fixing =
-	| { readonly kind: 'build' }
+	| { readonly kind: 'build'; readonly output?: 'note' }
 	| { readonly kind: 'feedback' }
 	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras }
 	// `fresh` is given when the head commit's Session is gone: the fix starts a new Session, which has only this to go on
@@ -273,6 +277,10 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		return { ...answer, ...ended };
 	}
 
+	// A note's Session runs none of the repo's commands, which could write outside the note's folder.
+	const noting = (output: 'note' | undefined) =>
+		output === 'note' ? { settings: noteSettings() } : {};
+
 	const build = (req: BuildRequest) =>
 		outcomeOf(
 			request(req, {
@@ -282,11 +290,13 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 					featureComments: req.featureComments,
 					ticketComments: req.ticketComments,
 					built: req.built,
-					allowed: setup.allowedCommands,
+					allowed: req.output === 'note' ? [] : setup.allowedCommands,
 					check: setup.check,
 					rules: setup.rules,
-					...(req.workflow === undefined ? {} : { workflow: req.workflow })
+					...(req.workflow === undefined ? {} : { workflow: req.workflow }),
+					...(req.output === undefined ? {} : { output: req.output })
 				}),
+				...noting(req.output),
 				sessionId: req.sessionId,
 				...pick({
 					model: ticketLine(req.ticket.body, 'Model'),
@@ -340,7 +350,8 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				...(fresh === undefined ? { resume: req.resume } : pick()),
 				...(req.minutes === undefined ? {} : { minutes: req.minutes }),
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {}),
-				...(req.of.kind === 'feedback' ? { schema: FEEDBACK_SCHEMA } : {})
+				...(req.of.kind === 'feedback' ? { schema: FEEDBACK_SCHEMA } : {}),
+				...(req.of.kind === 'build' ? noting(req.of.output) : {})
 			}),
 			(output) => {
 				if (req.of.kind === 'feedback') {

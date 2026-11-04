@@ -33,7 +33,7 @@ _Avoid_: backlog, next up
 ### Workflows
 
 **Workflow**:
-A named list of Steps that a repo adds to Nightjar's fixed build loop, chosen per Feature.
+A named list of Steps that a repo adds to Nightjar's fixed build loop, chosen per Feature. It may also add a prompt to each Ticket's Session, and make the Feature's output a note under `docs/research/` in place of code (`output: "note"`); it never loosens the deny rules.
 _Avoid_: Flow, pipeline, process
 
 **Step**:

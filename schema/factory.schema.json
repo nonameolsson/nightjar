@@ -351,6 +351,11 @@
 						"type": "string",
 						"pattern": "\\S"
 					},
+					"output": {
+						"description": "\"note\": each Ticket's Session may write only a note under docs/research/, never code, and the Feature ends handed to a person to read it. Left out, the Workflow builds code.",
+						"type": "string",
+						"const": "note"
+					},
 					"steps": {
 						"type": "array",
 						"items": {

@@ -158,6 +158,10 @@ const Workflow = z
 			description:
 				"Text added to the build Session's instructions for each Ticket of a Feature that picks the Workflow, such as how to build a bug fix. A Workflow with a prompt may have no Steps."
 		}),
+		output: z.literal('note', { error: 'output can only be "note"' }).optional().meta({
+			description:
+				'"note": each Ticket\'s Session may write only a note under docs/research/, never code, and the Feature ends handed to a person to read it. Left out, the Workflow builds code.'
+		}),
 		steps: z
 			.array(Step, { error: missingOr('list the Steps') })
 			.refine((steps) => new Set(steps.map((s) => s.name)).size === steps.length, {

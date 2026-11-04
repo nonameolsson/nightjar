@@ -650,6 +650,31 @@ describe('workflows', () => {
 		expect(prompt).toMatch(/final answer/);
 	});
 
+	it('takes an output of "note" and nothing else, and leaves it out of a Workflow that names none', () => {
+		write({ ...VALID, workflows: { explore: { prompt: 'p', output: 'note' } } });
+		expect(loadConfig(root).workflows?.explore?.output).toBe('note');
+		write({ ...VALID, workflows: WORKFLOWS });
+		expect(loadConfig(root).workflows?.['design-review']).not.toHaveProperty('output');
+		write({ ...VALID, workflows: { w: { prompt: 'p', output: 'code' } } });
+		expect(refusal()).toContain('output: output can only be "note"');
+	});
+
+	it('accepts the exploration Workflow Nightjar ships: a note of findings, sources and a recommendation, no code', () => {
+		const exploration: unknown = JSON.parse(
+			readFileSync(new URL('../templates/workflows/exploration.json', import.meta.url), 'utf8')
+		);
+		write({ ...VALID, workflows: { exploration } });
+		const flow = loadConfig(root).workflows?.exploration;
+		expect(flow?.output).toBe('note');
+		expect(flow?.steps).toEqual([]);
+		const prompt = flow?.prompt ?? '';
+		expect(prompt).toMatch(/docs\/research\//);
+		expect(prompt).toMatch(/Findings/);
+		expect(prompt).toMatch(/Sources/);
+		expect(prompt).toMatch(/Recommendation/);
+		expect(prompt).toMatch(/no code change/);
+	});
+
 	it('refuses a default that names no Workflow', () => {
 		write({ ...VALID, workflows: WORKFLOWS, defaultWorkflow: 'nope' });
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
