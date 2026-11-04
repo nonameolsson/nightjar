@@ -170,6 +170,147 @@ describe('nightjar doctor', () => {
 	});
 });
 
+describe('nightjar doctor over Sources', () => {
+	const SOURCES = {
+		sentry: {
+			type: 'sentry',
+			template: 'sentry',
+			key: 'data.event.issue_id',
+			secretEnv: 'SENTRY_HOOK_SECRET'
+		},
+		'weekly-deps': { type: 'schedule', cron: '0 6 * * 1', template: 'weekly-deps' }
+	};
+
+	function withSources(sources: Record<string, unknown> = SOURCES) {
+		m = machine();
+		m.writeConfig({ ...GITHUB, sources });
+	}
+
+	it('lists each Source with its template, and passes when all is as it should be', async () => {
+		withSources();
+		expect(await start({ env: { SENTRY_HOOK_SECRET: 'whsec' } })).toBe(0);
+		expect(err).toEqual([]);
+		expect(out).toContain('  ok    Source sentry: sentry, template sentry is in shape');
+		expect(out.join('\n')).toMatch(
+			/^ {2}ok {4}Source weekly-deps: schedule 0 6 \* \* 1, next due \d{4}-\d\d-\d\d 06:00, template weekly-deps is in shape$/m
+		);
+	});
+
+	it("prints each schedule's next due time, in local time", async () => {
+		withSources({
+			'weekly-deps': { type: 'schedule', cron: '0 6 * * 1', template: 'weekly-deps' },
+			daily: { type: 'schedule', cron: '@daily', template: 'weekly-deps' }
+		});
+		// a Tuesday, local noon
+		const checked = await checkMachine({
+			useApiKey: false,
+			env: m.env,
+			cwd: m.root,
+			failFast: false,
+			gh: github.gh,
+			now: () => new Date(2026, 10, 3, 12, 0)
+		});
+		const detail = (name: string) => checked.lines.find((l) => l.source === name)?.detail;
+		expect(detail('weekly-deps')).toBe(
+			'schedule 0 6 * * 1, next due 2026-11-09 06:00, template weekly-deps is in shape'
+		);
+		expect(detail('daily')).toBe(
+			'schedule @daily, next due 2026-11-04 00:00, template weekly-deps is in shape'
+		);
+	});
+
+	it('refuses a Source whose secretEnv variable is unset or empty, and names it', async () => {
+		withSources();
+		for (const env of [{} as Record<string, string>, { SENTRY_HOOK_SECRET: '' }]) {
+			err = [];
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/FAIL {2}Source sentry: SENTRY_HOOK_SECRET is not set/);
+			expect(err.join('\n')).toContain('nightjar: a Source cannot run');
+		}
+		expect(out.join('\n')).toContain('ok    Source weekly-deps');
+	});
+
+	it('refuses a webhook Source that names no secretEnv', async () => {
+		withSources({ hook: { type: 'webhook', template: 'sentry' } });
+		expect(await start()).toBe(2);
+		expect(err.join('\n')).toMatch(
+			/FAIL {2}Source hook: name the variable that holds its webhook secret/
+		);
+	});
+
+	it('names what is out of shape in a template, and a template that is not there', async () => {
+		withSources({
+			bad: { type: 'schedule', cron: '@daily', template: 'bad.md' },
+			gone: { type: 'schedule', cron: '@daily', template: 'gone.md' },
+			unshipped: { type: 'schedule', cron: '@daily', template: 'nothing-shipped' }
+		});
+		writeFileSync(join(m.root, 'bad.md'), '# A title\n\n## Ticket 1: No criteria\n');
+		expect(await start()).toBe(2);
+		const said = err.join('\n');
+		expect(said).toMatch(/FAIL {2}Source bad: template bad\.md: .*no acceptance criteria/);
+		expect(said).toContain('Source gone: template gone.md: cannot read the template gone.md');
+		expect(said).toContain('Source unshipped: template nothing-shipped: Nightjar ships no');
+	});
+
+	it('reads a template of the repo by its path from the root', async () => {
+		withSources({ own: { type: 'schedule', cron: '@weekly', template: '.nightjar/own.md' } });
+		mkdirSync(join(m.root, '.nightjar'));
+		writeFileSync(
+			join(m.root, '.nightjar', 'own.md'),
+			'# {{ date }}\n\n## Ticket 1: Do it\n\n### Acceptance criteria\n\n- [ ] done\n'
+		);
+		expect(await start()).toBe(0);
+		expect(out.join('\n')).toMatch(
+			/^ {2}ok {4}Source own: schedule @weekly, next due \d{4}-\d\d-\d\d 00:00, template \.nightjar\/own\.md is in shape$/m
+		);
+	});
+
+	describe('with a go: true Source', () => {
+		const GOING = {
+			weekly: { type: 'schedule', cron: '@weekly', template: 'weekly-deps', go: true, owner: 'bob' }
+		};
+
+		it('passes when the owner has write access, and says the Source gives the Go', async () => {
+			withSources(GOING);
+			github.grant('bob', 'write');
+			expect(await start()).toBe(0);
+			expect(out.join('\n')).toMatch(
+				/^ {2}ok {4}Source weekly: schedule @weekly, .*, template weekly-deps is in shape, gives the Go for bob$/m
+			);
+		});
+
+		it('refuses an owner the Tracker does not trust, as intake does', async () => {
+			withSources(GOING);
+			github.grant('bob', 'read');
+			expect(await start()).toBe(2);
+			expect(err.join('\n')).toMatch(
+				/FAIL {2}Source weekly: the owner bob is not trusted by the Tracker \(write access on GitHub/
+			);
+			expect(err.join('\n')).toContain('nightjar: a Source cannot run');
+		});
+
+		it("reads the owner from factory.json's trusted list when it has one", async () => {
+			m = machine();
+			m.writeConfig({ ...GITHUB, trusted: ['bob'], sources: GOING });
+			expect(await start()).toBe(0);
+			expect(out.join('\n')).toContain('gives the Go for bob');
+		});
+	});
+
+	it('does not stop a build, which never reads a Source', async () => {
+		withSources();
+		const checked = await checkMachine({
+			useApiKey: false,
+			env: m.env,
+			cwd: m.root,
+			failFast: true,
+			gh: github.gh
+		});
+		expect(checked.ready).not.toBeNull();
+		expect(checked.lines.find((l) => l.source === 'sentry')?.status).toBe('fail');
+	});
+});
+
 describe('nightjar doctor over Workflows', () => {
 	const step = (name: string, prompt: string) => ({ name, prompt, point: 'afterAllTickets' });
 	const WORKFLOWS = {

@@ -294,6 +294,7 @@ export class FakeGitHub {
 			return this.repoLabels.has(decodeURIComponent(named[1] ?? '')) ? ok({}) : NOT_FOUND;
 		}
 		if (method === 'GET' && path === `${repo}/issues`) return ok(this.list(call.query));
+		if (method === 'GET' && path === 'search/issues') return this.search(call.query);
 		if (method === 'POST' && path === `${repo}/issues`) return this.openIssue(call);
 		if (method === 'GET' && path === `${repo}/pulls`) return ok(this.pulls(call.query));
 		if (method === 'POST' && path === `${repo}/pulls`) return this.openPull(call);
@@ -334,6 +335,7 @@ export class FakeGitHub {
 			);
 		}
 		if (method === 'POST' && rest === '/labels') return this.label(issue, call);
+		if (method === 'POST' && rest === '/assignees') return this.assign(issue, call);
 		const label = /^\/labels\/([^/]+)$/.exec(rest);
 		if (method === 'DELETE' && label)
 			return this.unlabel(issue, decodeURIComponent(label[1] ?? ''));
@@ -457,6 +459,18 @@ export class FakeGitHub {
 		return ok(labels.map((name) => ({ name })));
 	}
 
+	// GitHub assigns only the signed-in person and the repo's collaborators, and drops anyone else without a word.
+	private assign(issue: Issue, call: GhCall): Run {
+		const asked = call.fields['assignees[]'];
+		const added = (Array.isArray(asked) ? asked : []).filter(
+			(login) =>
+				!issue.assignees.includes(login) &&
+				(login === this.person || (this.permissions.get(login) ?? 'none') !== 'none')
+		);
+		this.change(issue.number, (i) => ({ assignees: [...i.assignees, ...added] }));
+		return ok(this.render(this.get(issue.number)));
+	}
+
 	// GitHub answers 404 for a label the issue lacks.
 	private unlabel(issue: Issue, name: string): Run {
 		if (!issue.labels.includes(name)) {
@@ -490,6 +504,40 @@ export class FakeGitHub {
 		);
 		if (query.get('direction') !== 'asc') found.reverse();
 		return found.map((i) => this.render(i));
+	}
+
+	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, optionally only the open ones, and quoted phrases that must all be in it.
+	private search(query: URLSearchParams): Run {
+		const phrases: string[] = [];
+		let openOnly = false;
+		for (const term of (query.get('q') ?? '').match(/"[^"]*"|\S+/g) ?? []) {
+			if (term.startsWith('"')) phrases.push(term.slice(1, -1).toLowerCase());
+			else if (term === 'is:open') openOnly = true;
+			else if (![`repo:${this.repo}`, 'is:issue', 'in:body'].includes(term)) {
+				return INVALID(`the fake GitHub search does not know ${term}`);
+			}
+		}
+		const found = [...this.issues.values()].filter((i) => {
+			const body = (i.body ?? '').toLowerCase();
+			return (
+				i.pull === undefined &&
+				(!openOnly || i.state === 'open') &&
+				phrases.every((p) => body.includes(p))
+			);
+		});
+		if (query.get('order') !== 'asc') found.reverse();
+		const size = Number(query.get('per_page') ?? '30');
+		const from = (Number(query.get('page') ?? '1') - 1) * size;
+		return ok({
+			total_count: found.length,
+			incomplete_results: false,
+			items: found.slice(from, from + size).map((i) => this.render(i))
+		});
+	}
+
+	// each issue is made a minute after the one before
+	private createdAt(number: number): string {
+		return new Date(Date.UTC(2026, 9, 30, 8, number)).toISOString();
 	}
 
 	private renderComment(comment: IssueComment, number: number) {
@@ -606,6 +654,7 @@ export class FakeGitHub {
 			title: issue.title,
 			body: issue.body,
 			state: issue.state,
+			created_at: this.createdAt(issue.number),
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },

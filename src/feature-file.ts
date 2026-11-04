@@ -30,6 +30,16 @@ interface Section {
 	readonly lines: string[];
 }
 
+// The index of the line where the first Ticket begins, outside a code fence; the number of lines when there is none.
+export function firstTicketLine(lines: readonly string[]): number {
+	let fenced = false;
+	for (const [i, line] of lines.entries()) {
+		if (FENCE.test(line)) fenced = !fenced;
+		if (!fenced && TICKET.test(line)) return i;
+	}
+	return lines.length;
+}
+
 // The Feature and its Tickets, or a FeatureFileError that names every fault with its line.
 export function readFeatureFile(text: string): FeaturePlan {
 	const lines = text.replace(/\r\n/g, '\n').split('\n');

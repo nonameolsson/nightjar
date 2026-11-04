@@ -1,11 +1,13 @@
 // The runner behind `nightjar contract`: the contract suites over the harnesses a module exports.
 import { describe, expect, it } from 'vitest';
 import { fakeCodeHostHarness, fakeTrackerHarness } from '../fakes/harness.js';
+import { assignContract } from './assign.js';
 import { codeHostContract, type CodeHostHarness } from './code-host.js';
 import { feedbackContract } from './feedback.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
+import { sourcesContract } from './sources.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
@@ -28,6 +30,8 @@ describe('runContract', () => {
 			'Tracker',
 			'Tracker creation',
 			'Tracker waiting on',
+			'Tracker sources',
+			'Tracker assign',
 			'Tracker ticket counts',
 			'Code host',
 			'Code host feedback'
@@ -42,12 +46,16 @@ describe('runContract', () => {
 			waitingOnContract.map((c) => c.name)
 		);
 		expect(report.suites[3]?.results.map((r) => r.name)).toEqual(
+			sourcesContract.map((c) => c.name)
+		);
+		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(assignContract.map((c) => c.name));
+		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
 			ticketCountsContract.map((c) => c.name)
 		);
-		expect(report.suites[4]?.results.map((r) => r.name)).toEqual(
+		expect(report.suites[6]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
-		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
+		expect(report.suites[7]?.results.map((r) => r.name)).toEqual(
 			feedbackContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
@@ -84,7 +92,10 @@ describe('runContract', () => {
 				createTicket: _b,
 				block: _c,
 				waitingOn: _d,
-				ticketCounts: _e,
+				featuresFrom: _e,
+				assign: _f,
+				trusts: _g,
+				ticketCounts: _h,
 				...only
 			} = tracker as FakeTracker;
 			return { ...rest, tracker: only };
@@ -104,9 +115,73 @@ describe('runContract', () => {
 		expect(report.suites.map((s) => s.title)).toEqual([
 			'Tracker',
 			'Tracker creation',
+			'Tracker sources',
+			'Tracker assign',
 			'Tracker ticket counts'
 		]);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no sources suite over a Tracker without featuresFrom', async () => {
+		const lacks: TrackerHarness = async (world) => {
+			const { tracker, ...rest } = await fakeTrackerHarness(world);
+			const { featuresFrom: _gone, ...without } = tracker as FakeTracker;
+			return { ...rest, tracker: without };
+		};
+		const report = await runContract({ trackerHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Tracker',
+			'Tracker creation',
+			'Tracker waiting on',
+			'Tracker assign',
+			'Tracker ticket counts'
+		]);
+		expect(report.failed).toBe(0);
+	});
+
+	it('runs no assign suite over a Tracker without assign', async () => {
+		const lacks: TrackerHarness = async (world) => {
+			const { tracker, ...rest } = await fakeTrackerHarness(world);
+			const { assign: _gone, ...without } = tracker as FakeTracker;
+			return { ...rest, tracker: without };
+		};
+		const report = await runContract({ trackerHarness: lacks });
+		expect(report.suites.map((s) => s.title)).not.toContain('Tracker assign');
+		expect(report.failed).toBe(0);
+	});
+
+	it('names an assign or trusts that is wrong', async () => {
+		const wrong: TrackerHarness = async (world) => {
+			const subject = await fakeTrackerHarness(world);
+			return {
+				...subject,
+				tracker: Object.assign(subject.tracker, {
+					assign: () => Promise.resolve(),
+					trusts: () => Promise.resolve(true)
+				})
+			};
+		};
+		const report = await runContract({ trackerHarness: wrong });
+		const failing = report.suites.find((s) => s.title === 'Tracker assign')?.results ?? [];
+		expect(failing.filter((r) => !r.ok).map((r) => r.name)).toEqual(
+			assignContract.map((c) => c.name)
+		);
+	});
+
+	it('names a featuresFrom that is wrong', async () => {
+		const wrong: TrackerHarness = async (world) => {
+			const subject = await fakeTrackerHarness(world);
+			return {
+				...subject,
+				tracker: Object.assign(subject.tracker, { featuresFrom: () => Promise.resolve([]) })
+			};
+		};
+		const report = await runContract({ trackerHarness: wrong });
+		const failing = report.suites.find((s) => s.title === 'Tracker sources')?.results ?? [];
+		expect(failing.filter((r) => !r.ok).map((r) => r.name)).toEqual([
+			sourcesContract[0]?.name,
+			sourcesContract[2]?.name
+		]);
 	});
 
 	it('names a waitingOn that is wrong', async () => {
@@ -163,6 +238,8 @@ describe('runContract', () => {
 			trackerContract.length +
 				featureWriterContract.length +
 				waitingOnContract.length +
+				sourcesContract.length +
+				assignContract.length +
 				ticketCountsContract.length
 		);
 		const text = formatReport(report);

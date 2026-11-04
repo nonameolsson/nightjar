@@ -12,7 +12,7 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { waitingFrom, type WaitingFeature } from '../tracker.js';
+import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
 
 export interface FakeItem {
 	readonly id: ItemId;
@@ -25,12 +25,16 @@ export interface FakeItem {
 	readonly children: readonly ItemId[];
 	readonly blockedBy: readonly ItemId[];
 	readonly comments: readonly Comment[];
+	// when it was made, as an ISO date; left out, the order it was added in says
+	readonly at?: string;
 }
 
 export type NewItem = Pick<FakeItem, 'id' | 'title'> & Partial<FakeItem>;
 
 export class FakeTracker implements Tracker, FeatureWriter {
 	readonly items = new Map<ItemId, FakeItem>();
+	// the people it trusts besides the signed-in person
+	private readonly trustedPeople = new Set<string>();
 
 	constructor(
 		// the signed-in person, whose comments are trusted
@@ -59,6 +63,12 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		const item = this.get(id);
 		const at = comment.at ?? this.now().toISOString();
 		this.items.set(id, { ...item, comments: [...item.comments, { ...comment, at }] });
+		return this;
+	}
+
+	// People it trusts, as write access does on GitHub.
+	trust(...people: readonly string[]): this {
+		for (const person of people) this.trustedPeople.add(person);
 		return this;
 	}
 
@@ -106,6 +116,20 @@ export class FakeTracker implements Tracker, FeatureWriter {
 							i.signals.includes(signal)
 					)
 					.map(({ id, title, body }) => ({ id, title, body }))
+			)
+		);
+
+	// each item is taken as made a minute after the one added before it, unless it says when
+	featuresFrom = (source: string): Promise<SourcedFeature[]> =>
+		Promise.resolve(
+			sourcedFrom(
+				source,
+				[...this.items.values()].map((item, i) => ({
+					id: item.id,
+					body: item.body,
+					open: item.open,
+					at: item.at ?? new Date(Date.UTC(2026, 9, 30, 8, i + 1)).toISOString()
+				}))
 			)
 		);
 
@@ -169,11 +193,22 @@ export class FakeTracker implements Tracker, FeatureWriter {
 
 	reference = (id: ItemId): TicketReference => ({ id, text: `#${id}` });
 
+	assign = (id: ItemId, person: string): Promise<void> => {
+		const item = this.get(id);
+		if (!item.assignees.includes(person)) {
+			this.items.set(id, { ...item, assignees: [...item.assignees, person] });
+		}
+		return Promise.resolve();
+	};
+
+	trusts = (person: string): Promise<boolean> =>
+		Promise.resolve(person === this.person || this.trustedPeople.has(person));
+
 	createFeature = ({ title, body }: ItemText): Promise<ItemId> => {
 		let n = this.items.size + 1;
 		while (this.items.has(`${this.prefix}${String(n)}`)) n += 1;
 		const id = `${this.prefix}${String(n)}`;
-		this.add({ id, title, body });
+		this.add({ id, title, body, at: this.now().toISOString() });
 		return Promise.resolve(id);
 	};
 

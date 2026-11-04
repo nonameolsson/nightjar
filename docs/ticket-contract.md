@@ -25,7 +25,7 @@ A Ticket is one child of a Feature, built as one commit. It holds:
 
   The first word after the colon is read, in any case; the bold is optional. A Ticket without them runs on `model` and `effort` from `factory.json`; `--model` and `--effort` on the command line win over both.
 
-A Ticket is built only while it carries the ready Signal (`ready-for-agent` by default). Its Feature carries no Signal until a person assigns it to themselves and gives it the Go (`factory-go` by default).
+A Ticket is built only while it carries the ready Signal (`ready-for-agent` by default). Its Feature carries no Signal until a person assigns it to themselves and gives it the Go (`factory-go` by default). The one exception is a Source with `"go": true` in `factory.json`: intake assigns each Feature it makes to the Source's trusted `owner` and gives it the Go, a standing Go from whoever committed that Source ([docs/adr/0003](adr/0003-a-source-may-give-a-standing-go.md)).
 
 ## Signals through a build
 
@@ -35,6 +35,7 @@ Which Signal each item carries, and when it changes, under the default names:
 | ---------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
 | `nightjar create` makes it                                       | none                                                | `ready-for-agent`                                            |
 | A person assigns the Feature and gives the Go                    | `factory-go` on                                     | no change                                                    |
+| A Source with `"go": true` makes it (instead of the two rows above) | none, then assigned to the owner and `factory-go` on | `ready-for-agent`                                       |
 | Nightjar claims it                                               | `agent-working` on, `factory-go` off                | no change                                                    |
 | A Ticket is being built                                          | no change                                           | no change: only the Feature shows the work                   |
 | A Ticket is built (its commit lands, even when the check is red) | no change                                           | keeps `ready-for-agent`; the branch's `Factory-Ticket` trailer is the only record, and the Ticket closes when the pull request merges |
@@ -98,7 +99,7 @@ A Ticket on the Tracker is held to the same contract before its Session. One wit
 
 `nightjar create --dry-run FILE` reads the file and says what it would make, making nothing. A file out of this shape is refused before anything is made, with every fault and its line.
 
-`nightjar create` then makes, in order: the Feature, with no Signal; each Ticket as its last child, linked to its blockers and then given the ready Signal. It prints each with the Tracker's reference (`#12`, `AB#12`). If the Tracker fails part way, it names what it made before the fault and undoes nothing. It never assigns the Feature and never gives the Go: that stays with a person.
+`nightjar create` then makes, in order: the Feature, with no Signal; each Ticket as its last child, linked to its blockers and then given the ready Signal. It prints each with the Tracker's reference (`#12`, `AB#12`). If the Tracker fails part way, it names what it made before the fault and undoes nothing. It never assigns the Feature and never gives the Go: that stays with a person. Only a Source with `"go": true`, which makes its Features the same way, then assigns each to its owner and gives the Go.
 
 | Tracker               | The Feature                    | Each Ticket                                       | Blocking links      |
 | --------------------- | ------------------------------ | ------------------------------------------------- | ------------------- |
