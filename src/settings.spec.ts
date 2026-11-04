@@ -33,6 +33,22 @@ describe('buildSettings', () => {
 	it('refuses anything not allowed, as nobody is there to approve it', () => {
 		expect(buildSettings([])).toMatchObject({ permissions: { defaultMode: 'dontAsk' } });
 	});
+
+	it('has no sandbox unless the Workflow asks for localNetwork', () => {
+		expect(buildSettings([])).not.toHaveProperty('sandbox');
+		expect(buildSettings([], { localNetwork: false })).not.toHaveProperty('sandbox');
+	});
+
+	it('fails closed under localNetwork: no Step runs unsandboxed, by start or by retry', () => {
+		expect(buildSettings([], { localNetwork: true })).toMatchObject({
+			sandbox: {
+				enabled: true,
+				failIfUnavailable: true,
+				allowUnsandboxedCommands: false,
+				network: { allowedDomains: ['localhost', '127.0.0.1'] }
+			}
+		});
+	});
 });
 
 describe('reviewSettings', () => {

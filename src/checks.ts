@@ -14,6 +14,7 @@ import { firstLine, run, type Env } from './git.js';
 import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
+import { readKernel, sandboxFinding } from './sandbox.js';
 import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
@@ -70,6 +71,10 @@ export interface CheckOptions {
 	readonly skills?: LoadedSkills;
 	// the clock a schedule's next due time is counted from; a spec passes its own
 	readonly now?: () => Date;
+	// what the sandbox check reads of the machine; the running process's own unless a spec passes its own
+	readonly platform?: NodeJS.Platform;
+	// the text of /proc/version
+	readonly kernel?: string;
 }
 
 // What the checks find, each for the checks after it and for Ready.
@@ -325,9 +330,14 @@ const workflowsCheck = check({
 	run: async ({ root, loaded }, o) => {
 		const named = Object.entries(loaded?.config.workflows ?? {}).map(([name, w]) => ({
 			name,
+			localNetwork: w.localNetwork === true,
 			steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
 		}));
 		if (named.length === 0) return { found: { workflowProblems: {} } };
+		// only a Workflow with localNetwork needs the sandbox, so the machine is asked only then
+		const sandbox = named.some((w) => w.localNetwork)
+			? await sandboxFinding(o.platform ?? process.platform, o.env, o.kernel ?? readKernel(), root)
+			: { fault: null, caution: null };
 		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
 		const skills = wanted
 			? await (o.skills ?? loadedSkills)(
@@ -345,19 +355,31 @@ const workflowsCheck = check({
 					.map((k) => `step ${s.step} names /${k}`)
 			);
 			const used = [...new Set(w.steps.flatMap((s) => s.skills))];
+			const faults: string[] = [];
 			if (skills === null && used.length > 0) {
-				const detail =
-					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked';
-				workflowProblems[w.name] = detail;
-				return { ...said, status: 'fail', detail };
+				faults.push(
+					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked'
+				);
 			}
 			if (missing.length > 0) {
-				const detail = `${missing.join(' and ')}, which a headless claude session does not load. Sessions load no skill from the repo's own .claude/skills; add the folder that holds it to "plugins" in factory.json (for example [".claude"]), then run \`nightjar doctor\` again.`;
+				faults.push(
+					`${missing.join(' and ')}, which a headless claude session does not load. Sessions load no skill from the repo's own .claude/skills; add the folder that holds it to "plugins" in factory.json (for example [".claude"]), then run \`nightjar doctor\` again.`
+				);
+			}
+			// a Step with localNetwork must not run unsandboxed, so a machine that cannot sandbox refuses the Workflow
+			if (w.localNetwork && sandbox.fault !== null) {
+				faults.push(`localNetwork needs the sandbox, and ${sandbox.fault}`);
+			}
+			if (faults.length > 0) {
+				const detail = faults.join('\n');
 				workflowProblems[w.name] = detail;
 				return { ...said, status: 'fail', detail };
 			}
 			const count = `${String(w.steps.length)} Step${w.steps.length === 1 ? '' : 's'}`;
 			const detail = `${count}${used.length > 0 ? `, skills found: ${used.map((k) => `/${k}`).join(', ')}` : ''}`;
+			if (w.localNetwork && sandbox.caution !== null) {
+				return { ...said, status: 'warn', detail: `${detail}\nlocalNetwork: ${sandbox.caution}` };
+			}
 			return { ...said, status: 'ok', detail };
 		});
 		return { found: { workflowProblems }, lines };

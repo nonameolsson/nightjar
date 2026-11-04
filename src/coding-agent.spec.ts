@@ -181,7 +181,9 @@ describe('a fix round', () => {
 		const req = sent[0];
 		expect(req?.tools).toContain('mcp__pw');
 		expect(JSON.stringify(req?.settings)).toContain('Bash(npx playwright *)');
-		expect(req?.settings).toHaveProperty('sandbox');
+		expect(req?.settings).toMatchObject({
+			sandbox: { failIfUnavailable: true, allowUnsandboxedCommands: false }
+		});
 		expect(req?.schema).toHaveProperty('properties.untilHolds');
 	});
 
@@ -360,7 +362,12 @@ describe('a Step round', () => {
 			])
 		);
 		expect(sent[0]?.settings).toMatchObject({
-			sandbox: { enabled: true, network: { allowedDomains: ['localhost', '127.0.0.1'] } }
+			sandbox: {
+				enabled: true,
+				failIfUnavailable: true,
+				allowUnsandboxedCommands: false,
+				network: { allowedDomains: ['localhost', '127.0.0.1'] }
+			}
 		});
 	});
 

@@ -293,6 +293,14 @@ A Step has:
 
 A Workflow can also have `serve`, a command started in the background in the worktree before its Steps and stopped after them (it reads its port from the variables of `ports.env`, so `ports` is required); `allowedCommands` and `allowedTools`, which its Steps may use besides the usual ones; and `localNetwork`, which lets its Steps reach localhost and nothing else. The fixed deny rules (committing, pushing, switching branches, the outside network, `gh`) cannot be loosened by any of these.
 
+`localNetwork` runs the Step's commands in Claude Code's sandbox, set to fail closed: if the sandbox cannot start, the command does not run, and a failed command is never retried outside it. What it holds depends on the machine:
+
+| Machine | What `localNetwork` does |
+| --- | --- |
+| macOS | Commands reach localhost, including the `serve` Nightjar started, and nothing else. The design-review example above has been shown to work here. |
+| Linux, WSL2 | Needs `bubblewrap` and `socat` (`sudo apt-get install bubblewrap socat`); without them the Step fails rather than run unsandboxed, and `nightjar doctor` fails the Workflow. A sandboxed command has its own private loopback, so a direct connection to `127.0.0.1:$APP_PORT` may not reach `serve`; only HTTP clients that honour the sandbox's proxy variables may. This has not yet been checked for `curl`, Playwright or a raw TCP client, and `nightjar doctor` warns about it. |
+| WSL1, native Windows | Claude Code cannot sandbox here, so a Workflow with `localNetwork` fails. (Nightjar does not run on native Windows.) |
+
 Steps share one notes folder, `.factory/notes/` in the worktree, which is never committed. Nightjar passes nothing else from one Step to the next, so a Step that needs what an earlier one found reads it there.
 
 What a Step changes goes through the check command and its fix rounds, then is committed on its own, with a message naming the Workflow and the Step. Steps count against the daily spend limit and show in the cost of the pull request. A Step that hits its budget or time limit, cannot get the check green, answers in a shape not known, or reports itself blocked has its changes thrown away; the later Steps still run, and the pull request opens with that Step listed as not done. A Step the branch already holds is not run again when a later run goes on.
