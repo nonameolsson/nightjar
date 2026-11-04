@@ -51,6 +51,9 @@ export interface FeedbackBench {
 	readonly give: (pull: Pull, given: Given) => Promise<string>;
 	// the bodies of the replies in the thread of line comment `id`, oldest first
 	readonly thread: (pull: Pull, id: string) => Promise<readonly string[]>;
+	// Set by a host whose reviews are votes, which hold no text of their own (Azure Repos): only a vote that asks for changes is feedback,
+	// in words of the host's own, and an approval never is. The harness then gives each review as one that asks for changes.
+	readonly reviewsAreVotes?: true;
 }
 
 export interface CodeHostSubject {

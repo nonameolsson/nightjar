@@ -4,10 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
 import { run } from '../git.js';
-import { codeHostContract, type Pull } from '../index.js';
+import {
+	codeHostContract,
+	feedbackContract,
+	openPullsContract,
+	type Given,
+	type Pull
+} from '../index.js';
 import { AzureDevOpsApi } from './api.js';
 import { AzureReposCodeHost, REFERENCES_MARK, type ReferencesAs } from './code-host.js';
-import { FakeAzureDevOps } from './fake-azure-devops.js';
+import { FakeAzureDevOps, type StatusKind } from './fake-azure-devops.js';
 
 // A project and a repo name with spaces, as many have, so every address must encode them.
 const PROJECT = 'Fabrikam Fiber';
@@ -25,6 +31,44 @@ function referencesShown(body: string, linked: readonly number[]): string[] {
 					.map((l) => l.trim().replace(/^- /, ''))
 					.filter((l) => l !== '');
 	return [...lines, ...linked.map((id) => `#${String(id)}`)];
+}
+
+// What a check's conclusion is as the state of a pull request status.
+const STATES: Readonly<Record<Extract<Given, { kind: 'check' }>['conclusion'], StatusKind>> = {
+	failure: 'failed',
+	timed_out: 'error',
+	success: 'succeeded',
+	skipped: 'notApplicable',
+	neutral: 'notSet'
+};
+
+// Feedback as Azure Repos shows it: a person who is trusted is a Contributor, and a status is trusted when Azure Pipelines posted it.
+function giveOnAzure(ado: FakeAzureDevOps, pull: Pull, given: Given): string {
+	if (given.kind === 'check') {
+		const id = ado.pullStatus(pull.id, {
+			name: given.name,
+			genre: given.trusted ? 'Azure Pipelines' : 'unknown-app',
+			state: STATES[given.conclusion],
+			description: given.output
+		});
+		return `check:${String(id)}`;
+	}
+	ado.join(given.author, { contributor: given.trusted });
+	if (given.kind === 'review') {
+		// a vote is for or against: there is none that only comments
+		if (given.approval !== true && given.changes !== true) {
+			throw new Error('a review on Azure Repos is an approval or asks for changes');
+		}
+		const vote = given.changes === true ? -5 : 10;
+		return `review:${String(ado.pullVote(pull.id, given.author, vote))}`;
+	}
+	return `comment:${ado.pullComment(pull.id, given.author, given.body, given.on)}`;
+}
+
+// The replies in the thread of comment `id`, which is `comment:<thread>.<comment>`.
+function repliesOf(ado: FakeAzureDevOps, pull: Pull, id: string): string[] {
+	if (!id.startsWith('comment:')) return [];
+	return ado.pullReplies(pull.id, Number(id.slice('comment:'.length).split('.')[0]));
 }
 
 const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
@@ -97,6 +141,11 @@ const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
 				comments: shown.comments
 			});
 		},
+		bench: {
+			reviewsAreVotes: true as const,
+			give: (pull: Pull, given: Given) => Promise.resolve(giveOnAzure(ado, pull, given)),
+			thread: (pull: Pull, id: string) => Promise.resolve(repliesOf(ado, pull, id))
+		},
 		close: () => rm(base, { recursive: true, force: true })
 	};
 };
@@ -110,4 +159,12 @@ describe('AzureReposCodeHost meets the Code host contract', { timeout: 30_000 },
 	describe('placing references from another Tracker in the body', () => {
 		for (const c of codeHostContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 	});
+});
+
+describe('AzureReposCodeHost meets the feedback contract', { timeout: 30_000 }, () => {
+	for (const c of feedbackContract) it(c.name, () => c.run(azureReposCodeHost('work items')));
+});
+
+describe('AzureReposCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
+	for (const c of openPullsContract) it(c.name, () => c.run(azureReposCodeHost('work items')));
 });

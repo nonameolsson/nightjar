@@ -91,7 +91,10 @@ export const openPullsContract: readonly ContractCase<CodeHostHarness>[] = [
 				trusted: false,
 				changes: true
 			});
-			await bench.give(pull, { kind: 'review', author: 'bob', body: 'Hm.', trusted: true });
+			// a vote is for or against: there is none that only comments
+			if (bench.reviewsAreVotes !== true) {
+				await bench.give(pull, { kind: 'review', author: 'bob', body: 'Hm.', trusted: true });
+			}
 			await bench.give(pull, {
 				kind: 'review',
 				author: 'bob',

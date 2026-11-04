@@ -253,6 +253,20 @@ describe('loadConfig', () => {
 		expect(loadConfig(root).codeHost).toEqual(codeHost);
 	});
 
+	it('loads the apps whose failed statuses count on Azure Repos, and refuses an empty name', () => {
+		const codeHost = {
+			type: 'azure-devops',
+			organization: 'contoso',
+			project: 'Fabrikam',
+			repo: 'app',
+			trustedChecks: ['lint-bot']
+		};
+		write({ ...VALID, codeHost });
+		expect(loadConfig(root).codeHost).toEqual(codeHost);
+		write({ ...VALID, codeHost: { ...codeHost, trustedChecks: [' '] } });
+		expect(refusal()).toMatch(/^factory\.json: codeHost\.trustedChecks/m);
+	});
+
 	it.each([
 		['organization', 'codeHost.organization'],
 		['project', 'codeHost.project'],

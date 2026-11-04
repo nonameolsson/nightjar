@@ -72,6 +72,12 @@ const startOf = (body: string) => body.split('\n')[0]?.slice(0, 30) ?? '';
 
 const CONCLUSIONS = ['failure', 'timed_out', 'success', 'skipped', 'neutral'] as const;
 
+type Review = Extract<Given, { kind: 'review' }>;
+
+// A review as the host holds it: a vote has no text, and only one that asks for changes is feedback.
+const asHeld = (bench: FeedbackBench, review: Review): Given =>
+	bench.reviewsAreVotes === true ? { ...review, changes: true } : review;
+
 const CHECK = 'ci / test';
 
 const failing = (output = '1 test failed', trusted = true): Given => ({
@@ -99,12 +105,10 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 				body: 'Why a loop?',
 				trusted: true
 			});
-			const review = await bench.give(pull, {
-				kind: 'review',
-				author: 'bob',
-				body: 'Needs a test.',
-				trusted: true
-			});
+			const review = await bench.give(
+				pull,
+				asHeld(bench, { kind: 'review', author: 'bob', body: 'Needs a test.', trusted: true })
+			);
 			const check = await bench.give(pull, failing());
 			assert.deepEqual(
 				[line, talk, review, check].map((id) => id.split(':')[0]),
@@ -126,10 +130,12 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 				['comment', 'ann', 'Why a loop?', undefined, undefined, undefined]
 			);
 			const inReview = seen(got, review);
-			assert.deepEqual(
-				[inReview.kind, inReview.author, inReview.body],
-				['review', 'bob', 'Needs a test.']
-			);
+			assert.deepEqual([inReview.kind, inReview.author], ['review', 'bob']);
+			if (bench.reviewsAreVotes === true) {
+				assert.ok(inReview.body.trim() !== '', 'a vote reads as words of the host');
+			} else {
+				assert.equal(inReview.body, 'Needs a test.');
+			}
 			const inCheck = seen(got, check);
 			assert.equal(inCheck.kind, 'check');
 			assert.ok(inCheck.body.includes(CHECK), `a check's body names it:\n${inCheck.body}`);
@@ -154,12 +160,15 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 					body: 'Talk.',
 					trusted: yes
 				}),
-				review: await bench.give(pull, {
-					kind: 'review',
-					author: yes ? 'ann' : 'mallory',
-					body: 'Review.',
-					trusted: yes
-				}),
+				review: await bench.give(
+					pull,
+					asHeld(bench, {
+						kind: 'review',
+						author: yes ? 'ann' : 'mallory',
+						body: 'Review.',
+						trusted: yes
+					})
+				),
 				check: await bench.give(pull, failing('Output.', yes))
 			});
 			const yes = await trusted(true);
@@ -211,7 +220,11 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 				trusted: true,
 				approval: true
 			});
-			assert.deepEqual(idsOf(await host.feedback(pull)), [nit]);
+			// a vote holds no body, so an approval says nothing to answer
+			assert.deepEqual(
+				idsOf(await host.feedback(pull)),
+				bench.reviewsAreVotes === true ? [] : [nit]
+			);
 		}
 	),
 
@@ -222,7 +235,10 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 			for (const author of ['ann', 'mallory']) {
 				const trusted = author === 'ann';
 				await bench.give(pull, { kind: 'comment', author, body: own, trusted });
-				await bench.give(pull, { kind: 'review', author, body: own, trusted });
+				// a vote holds no body for Nightjar to sign
+				if (bench.reviewsAreVotes !== true) {
+					await bench.give(pull, { kind: 'review', author, body: own, trusted });
+				}
 				await bench.give(pull, {
 					kind: 'comment',
 					author,
@@ -315,7 +331,7 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 	),
 
 	feedbackCase(
-		"answers anything else in the pull request's conversation, quoting the start of it and ending with the footer",
+		"answers anything else in the pull request's conversation, quoting the start of it and ending with the footer; a comment may be answered in its own thread instead",
 		async ({ subject, host, bench, pull }) => {
 			const asked: Given[] = [
 				{
@@ -324,12 +340,12 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 					body: 'Why a loop and not a map?',
 					trusted: true
 				},
-				{
+				asHeld(bench, {
 					kind: 'review',
 					author: 'ann',
 					body: 'Please add a test for the empty case.',
 					trusted: true
-				},
+				}),
 				failing()
 			];
 			for (const given of asked) {
@@ -338,6 +354,16 @@ export const feedbackContract: readonly ContractCase<CodeHostHarness>[] = [
 				assert.notEqual(quoted, '');
 				const before = (await subject.pull(pull)).comments;
 				await host.reply(pull, id, `Fixed, see ${id}.`);
+				if (given.kind === 'comment') {
+					const replies = await bench.thread(pull, id);
+					if (replies.length > 0) {
+						const reply = only(replies, `reply in the thread of ${id}`);
+						assert.ok(reply.includes(`Fixed, see ${id}.`), `the reply:\n${reply}`);
+						assert.ok(endsWithFooter(reply), `the reply ends with the footer:\n${reply}`);
+						assert.deepEqual((await subject.pull(pull)).comments, before);
+						continue;
+					}
+				}
 				const added = (await subject.pull(pull)).comments.slice(before.length);
 				const reply = only(added, `comment on the pull request after answering ${id}`);
 				assert.ok(reply.includes(`Fixed, see ${id}.`), `the reply:\n${reply}`);

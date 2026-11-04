@@ -16,6 +16,7 @@ import type {
 import { waitingFrom, type WaitingFeature } from '../tracker.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
+import { AzureDevOpsTrust, kept, same } from './trust.js';
 
 export interface AzureBoardsSettings {
 	readonly project: string;
@@ -76,17 +77,6 @@ const CommentsSchema = z.looseObject({
 	)
 });
 
-const IdentitiesSchema = z.looseObject({
-	value: z.array(
-		z
-			.looseObject({
-				descriptor: z.string().nullish(),
-				memberOf: z.array(z.string()).nullish()
-			})
-			.nullable()
-	)
-});
-
 // The work item number an id names; Azure DevOps has no other kind of id.
 export function workItem(id: ItemId): number {
 	if (!/^\d+$/.test(id)) throw new AzureDevOpsFailure(`${id} is no Azure DevOps work item number.`);
@@ -101,9 +91,6 @@ const tagsOf = (item: Item): string[] =>
 		.split(';')
 		.map((t) => t.trim())
 		.filter((t) => t !== '');
-
-// Azure DevOps keeps tags without regard to case.
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 // The id a link names, from its address .../_apis/wit/workItems/<id>.
 const linked = (item: Item, rel: string): number[] =>
@@ -125,20 +112,6 @@ const rankOf = (item: Item): number => {
 
 const quoted = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
-// One answer per key, read once and kept; a read that failed is forgotten, so the next asks again.
-function kept<T>(read: (key: string) => Promise<T>): (key: string) => Promise<T> {
-	const known = new Map<string, Promise<T>>();
-	return (key) => {
-		let got = known.get(key);
-		if (got === undefined) {
-			got = read(key);
-			known.set(key, got);
-			got.catch(() => known.delete(key));
-		}
-		return got;
-	};
-}
-
 export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	private readonly project: string;
 	private readonly signedIn = kept(() =>
@@ -153,17 +126,17 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 				id: c.authenticatedUser.id
 			}))
 	);
-	private readonly contributors = kept(() => this.contributorsGroup());
-	private readonly members = kept((id) => this.isContributor(id));
+	private readonly trust: AzureDevOpsTrust;
 
 	constructor(
 		private readonly api: AzureDevOpsApi,
 		private readonly settings: AzureBoardsSettings,
 		private readonly names: SignalNames,
 		// factory.json's trusted list; when set it replaces the Contributors default
-		private readonly trusted?: readonly string[]
+		trusted?: readonly string[]
 	) {
 		this.project = encodeURIComponent(settings.project);
+		this.trust = new AzureDevOpsTrust(api, settings.project, trusted);
 	}
 
 	private signalsOf(item: Item): Signal[] {
@@ -325,49 +298,10 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 				author,
 				body: plainText(c.text ?? '', c.format),
 				at: c.createdDate,
-				trusted: await this.isTrusted(author, by?.id ?? null)
+				trusted: await this.trust.isTrusted(author, by?.id ?? null)
 			});
 		}
 		return comments;
-	}
-
-	// Whether a comment's author is trusted: on the configured list, else in the project's Contributors group.
-	private async isTrusted(author: string, id: string | null): Promise<boolean> {
-		if (this.trusted !== undefined) return this.trusted.some((t) => same(t, author));
-		return id === null ? false : this.members(id);
-	}
-
-	private async isContributor(id: string): Promise<boolean> {
-		const group = await this.contributors('');
-		const got = await this.api.parse(
-			`read the groups of ${id}`,
-			{
-				method: 'GET',
-				url: this.api.identities(
-					`_apis/identities?identityIds=${encodeURIComponent(id)}&queryMembership=ExpandedUp&${API}`
-				)
-			},
-			IdentitiesSchema
-		);
-		return (got.value[0]?.memberOf ?? []).some((d) => same(d, group));
-	}
-
-	// The descriptor of the project's Contributors group, which every member of the project's teams is in.
-	private async contributorsGroup(): Promise<string> {
-		const name = `[${this.settings.project}]\\Contributors`;
-		const got = await this.api.parse(
-			`find the group ${name}`,
-			{
-				method: 'GET',
-				url: this.api.identities(
-					`_apis/identities?searchFilter=General&filterValue=${encodeURIComponent(name)}&queryMembership=None&${API}`
-				)
-			},
-			IdentitiesSchema
-		);
-		const descriptor = got.value[0]?.descriptor;
-		if (!descriptor) throw new AzureDevOpsFailure(`Azure DevOps has no group ${name}.`);
-		return descriptor;
 	}
 
 	// Tags are one field, so a change writes the whole list back.

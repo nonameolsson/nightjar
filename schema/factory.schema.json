@@ -158,6 +158,14 @@
 							"type": "string",
 							"pattern": "\\S",
 							"description": "The Git repo on Azure Repos, by name"
+						},
+						"trustedChecks": {
+							"description": "The names of the apps whose failed statuses on the pull request reach the agent as feedback, besides Azure Pipelines, whose statuses always do. A status's app is its genre, else who posted it. A status from any other app is left out.",
+							"type": "array",
+							"items": {
+								"type": "string",
+								"pattern": "\\S"
+							}
 						}
 					},
 					"required": [

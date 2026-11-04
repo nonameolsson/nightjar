@@ -67,7 +67,11 @@ const AzureReposCodeHost = z
 		type: z.literal('azure-devops'),
 		organization,
 		project: named('name the project').meta({ description: 'The project that holds the repo' }),
-		repo: named('name the repo').meta({ description: 'The Git repo on Azure Repos, by name' })
+		repo: named('name the repo').meta({ description: 'The Git repo on Azure Repos, by name' }),
+		trustedChecks: z.array(z.string().regex(/\S/, 'a check app is empty')).optional().meta({
+			description:
+				"The names of the apps whose failed statuses on the pull request reach the agent as feedback, besides Azure Pipelines, whose statuses always do. A status's app is its genre, else who posted it. A status from any other app is left out."
+		})
 	})
 	.meta({
 		description:

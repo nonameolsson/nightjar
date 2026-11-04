@@ -45,7 +45,7 @@ interface StoredComment {
 	readonly createdDate: string;
 }
 
-// A pull request on Azure Repos, as the fake keeps it.
+// A pull request on Azure Repos, as a person sees it.
 export interface FakePullRequest {
 	readonly pullRequestId: number;
 	readonly repository: string;
@@ -55,8 +55,58 @@ export interface FakePullRequest {
 	readonly description: string;
 	readonly isDraft: boolean;
 	readonly status: 'active';
-	// the first comment of each thread, oldest first
+	// the first comment of each thread on the conversation, oldest first: a thread on a file and Azure DevOps's own threads are left out
 	readonly comments: readonly string[];
+}
+
+interface ThreadComment {
+	readonly id: number;
+	readonly parent: number;
+	readonly content: string;
+	readonly author: Person;
+	readonly publishedDate: string;
+	// `system` for Azure DevOps's own words, such as a vote
+	readonly type: 'text' | 'system';
+}
+
+interface Thread {
+	readonly id: number;
+	readonly publishedDate: string;
+	readonly comments: ThreadComment[];
+	// a thread on a file; a null line is one the file lost, and none is a comment on the whole file
+	readonly on?: { readonly path: string; readonly line?: number | null };
+	// what Azure DevOps marks its own threads with, such as the vote of a vote update
+	readonly properties?: Readonly<Record<string, string>>;
+}
+
+// the `state` of a pull request status
+export type StatusKind = 'succeeded' | 'failed' | 'error' | 'pending' | 'notApplicable' | 'notSet';
+
+export interface NewStatus {
+	readonly name: string;
+	// the app that posted it, as Azure DevOps names a status's genre
+	readonly genre: string;
+	readonly state: StatusKind;
+	readonly description?: string;
+	// who posted it; the build service when left out
+	readonly by?: string;
+}
+
+interface StoredStatus extends Omit<NewStatus, 'by'> {
+	readonly id: number;
+	readonly creationDate: string;
+	readonly by: Person;
+}
+
+// A pull request as the fake keeps it.
+interface StoredPull extends Omit<FakePullRequest, 'comments'> {
+	readonly creationDate: string;
+	// the repo a fork's branch is in; none for a branch of the repo itself
+	readonly fork?: string;
+	readonly threads: Thread[];
+	// each reviewer's vote, by person id
+	readonly votes: Map<string, number>;
+	readonly statuses: StoredStatus[];
 }
 
 interface Repository {
@@ -69,6 +119,9 @@ export interface Asked {
 	readonly url: string;
 	readonly body: unknown;
 }
+
+// the pull requests a list gives when it names no `$top`
+const PAGE = 100;
 
 const TOKEN = 'Bearer fake-azure-devops';
 const API = '7.1';
@@ -103,7 +156,7 @@ export class FakeAzureDevOps {
 	readonly asked: Asked[] = [];
 	private readonly faults: { match: RegExp; status: number }[] = [];
 	private readonly repositories = new Map<string, Repository>();
-	private readonly pulls: FakePullRequest[] = [];
+	private readonly pulls: StoredPull[] = [];
 	// the artifact links on each work item, such as one to a pull request
 	private readonly artifacts = new Map<number, string[]>();
 
@@ -184,16 +237,114 @@ export class FakeAzureDevOps {
 		this.repositories.set(name.toLowerCase(), { id, name });
 	}
 
-	// A pull request as the fake keeps it.
+	// A pull request as a person sees it.
 	pullRequestAt(id: number): FakePullRequest {
+		const { threads, ...shown } = this.stored(id);
+		const conversation = threads.flatMap((t) => {
+			const first = t.comments[0];
+			return t.on === undefined && first?.type === 'text' ? [first.content] : [];
+		});
+		return { ...shown, comments: conversation };
+	}
+
+	private stored(id: number): StoredPull {
 		const found = this.pulls.find((p) => p.pullRequestId === id);
 		if (found === undefined) throw fault(`no pull request ${String(id)}`);
 		return found;
 	}
 
+	// A pull request someone opened from a branch of their fork `from`. Gives its id.
+	forkedPull(repo: string, from: string, sourceBranch: string, title: string): number {
+		const home = this.repositories.get(repo.toLowerCase());
+		if (home === undefined) throw fault(`no repo ${repo}`);
+		const made = this.makePull(home, {
+			sourceRefName: `refs/heads/${sourceBranch}`,
+			targetRefName: 'refs/heads/main',
+			title,
+			description: '',
+			isDraft: false,
+			fork: from
+		});
+		return made.pullRequestId;
+	}
+
+	// A person's comment on pull request `pull`, in a thread of its own: on a file when `on` is given, on a line of it unless `line` is left out (a null line is one the file lost). Gives the thread and the comment as `thread.comment`.
+	pullComment(
+		pull: number,
+		author: string,
+		content: string,
+		on?: { path: string; line?: number | null }
+	): string {
+		const made = this.stored(pull);
+		const thread: Thread = {
+			id: made.threads.length + 1,
+			publishedDate: this.tick(),
+			comments: [],
+			...(on === undefined ? {} : { on })
+		};
+		thread.comments.push({
+			id: 1,
+			parent: 0,
+			content,
+			author: this.who(author),
+			publishedDate: thread.publishedDate,
+			type: 'text'
+		});
+		made.threads.push(thread);
+		return `${String(thread.id)}.1`;
+	}
+
+	// `reviewer` votes on pull request `pull`: 10 approved, 5 approved with suggestions, 0 none, -5 waiting for author, -10 rejected. Azure DevOps adds a thread of its own to say so; gives its id.
+	pullVote(pull: number, reviewer: string, vote: number): number {
+		const made = this.stored(pull);
+		const person = this.who(reviewer);
+		made.votes.set(person.id, vote);
+		const thread: Thread = {
+			id: made.threads.length + 1,
+			publishedDate: this.tick(),
+			comments: [],
+			properties: {
+				CodeReviewThreadType: 'VoteUpdate',
+				CodeReviewVotedByIdentity: person.id,
+				CodeReviewVoteResult: String(vote)
+			}
+		};
+		thread.comments.push({
+			id: 1,
+			parent: 0,
+			content: `${person.uniqueName} voted ${String(vote)}`,
+			author: person,
+			publishedDate: thread.publishedDate,
+			type: 'system'
+		});
+		made.threads.push(thread);
+		return thread.id;
+	}
+
+	// A status on pull request `pull`. Gives its id.
+	pullStatus(pull: number, status: NewStatus): number {
+		const made = this.stored(pull);
+		const id = made.statuses.length + 1;
+		const { by, ...rest } = status;
+		made.statuses.push({
+			...rest,
+			id,
+			creationDate: this.tick(),
+			by: this.who(by ?? `Project Collection Build Service (${this.organization})`)
+		});
+		return id;
+	}
+
+	// The bodies of the comments after the first in thread `thread` of pull request `pull`, oldest first.
+	pullReplies(pull: number, thread: number): string[] {
+		const found = this.stored(pull).threads.find((t) => t.id === thread);
+		if (found === undefined) throw fault(`no thread ${String(thread)}`);
+		return found.comments.slice(1).map((c) => c.content);
+	}
+
 	// The work items linked to a pull request, by id.
 	linkedWorkItems(pullId: number): number[] {
-		const link = this.artifactOf(this.pullRequestAt(pullId));
+		const link = this.artifactOf(this.stored(pullId));
 		return [...this.artifacts.entries()]
 			.filter(([, links]) => links.some((l) => l.toLowerCase() === link.toLowerCase()))
 			.map(([id]) => id)
@@ -300,13 +451,15 @@ export class FakeAzureDevOps {
 		project: string
 	): AzureDevOpsReply | null {
 		const shape = new RegExp(
-			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads))?)?)?$`,
+			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads|statuses)(?:/(\\d+)/comments)?)?)?)?$`,
 			'i'
 		).exec(url.pathname);
 		if (!shape) return null;
 		this.query(url, { 'api-version': API }, [
 			'searchCriteria.sourceRefName',
-			'searchCriteria.status'
+			'searchCriteria.status',
+			'$top',
+			'$skip'
 		]);
 		const repo = this.repositories.get(decodeURIComponent(shape[1] ?? '').toLowerCase());
 		if (repo === undefined) {
@@ -315,7 +468,7 @@ export class FakeAzureDevOps {
 				`TF401019: The Git repository with name or identifier ${shape[1] ?? ''} does not exist.`
 			);
 		}
-		const [, , pulls, idText, part] = shape;
+		const [, , pulls, idText, part, threadText] = shape;
 		if (pulls === undefined) {
 			if (call.method !== 'GET') throw fault(`${call.method} on a repo`);
 			return json(200, this.renderRepository(repo));
@@ -340,12 +493,18 @@ export class FakeAzureDevOps {
 				url: this.itemUrl(id)
 			}));
 			return json(200, { count: value.length, value });
-		} else if (part.toLowerCase() === 'threads' && call.method === 'POST') {
-			const content = (body as { comments?: { content?: unknown }[] } | null)?.comments?.[0]
-				?.content;
-			if (typeof content !== 'string') throw fault('a thread carries { comments: [{ content }] }');
-			this.replacePull({ ...pull, comments: [...pull.comments, content] });
-			return json(200, { id: pull.comments.length + 1, comments: [{ id: 1, content }] });
+		} else if (part.toLowerCase() === 'statuses' && call.method === 'GET') {
+			const value = pull.statuses.map((s) => this.renderStatus(s));
+			return json(200, { count: value.length, value });
+		} else if (part.toLowerCase() === 'threads') {
+			if (threadText === undefined && call.method === 'GET') {
+				const value = pull.threads.map((t) => this.renderThread(t));
+				return json(200, { count: value.length, value });
+			}
+			if (threadText === undefined && call.method === 'POST') return this.startThread(pull, body);
+			if (threadText !== undefined && call.method === 'POST') {
+				return this.addToThread(pull, Number(threadText), body);
+			}
 		}
 		throw fault(`no route answers ${call.method} ${url.href}`);
 	}
@@ -354,10 +513,47 @@ export class FakeAzureDevOps {
 		const source = search.get('searchCriteria.sourceRefName');
 		const status = search.get('searchCriteria.status') ?? 'active';
 		if (status !== 'active') throw fault(`searchCriteria.status=${status}`);
+		const top = Number(search.get('$top') ?? PAGE);
+		const skip = Number(search.get('$skip') ?? 0);
 		const value = this.pulls
 			.filter((p) => p.repository === repo.id && (source === null || p.sourceRefName === source))
+			.slice(skip, skip + top)
 			.map((p) => this.renderPull(p));
 		return json(200, { count: value.length, value });
+	}
+
+	private startThread(pull: StoredPull, body: unknown): AzureDevOpsReply {
+		const first = (body as { comments?: { content?: unknown }[] } | null)?.comments?.[0];
+		if (typeof first?.content !== 'string') {
+			throw fault('a thread carries { comments: [{ content }] }');
+		}
+		const at = this.pullComment(pull.pullRequestId, this.person, first.content);
+		const thread = pull.threads.find((t) => `${String(t.id)}.1` === at);
+		if (thread === undefined) throw fault('the thread was not kept');
+		return json(200, this.renderThread(thread));
+	}
+
+	// A reply names the comment it answers, which must be in the thread.
+	private addToThread(pull: StoredPull, id: number, body: unknown): AzureDevOpsReply {
+		const thread = pull.threads.find((t) => t.id === id);
+		if (thread === undefined)
+			return refusal(404, `TF401289: The thread ${String(id)} was not found.`);
+		const got = (body ?? {}) as { content?: unknown; parentCommentId?: unknown };
+		if (typeof got.content !== 'string') throw fault('a comment carries { content }');
+		const parent = Number(got.parentCommentId);
+		if (!thread.comments.some((c) => c.id === parent)) {
+			return refusal(400, `TF401290: The parent comment ${String(parent)} was not found.`);
+		}
+		const made: ThreadComment = {
+			id: thread.comments.length + 1,
+			parent,
+			content: got.content,
+			author: this.who(this.person),
+			publishedDate: this.tick(),
+			type: 'text'
+		};
+		thread.comments.push(made);
+		return json(200, this.renderThreadComment(made));
 	}
 
 	private createPull(repo: Repository, body: unknown): AzureDevOpsReply {
@@ -390,23 +586,39 @@ export class FakeAzureDevOps {
 				'TF401179: An active pull request for the source and target branch already exists.'
 			);
 		}
-		const made: FakePullRequest = {
-			pullRequestId: 100 + this.pulls.length + 1,
-			repository: repo.id,
+		const made = this.makePull(repo, {
 			sourceRefName,
 			targetRefName,
 			title,
 			description,
-			isDraft: isDraft === true,
-			status: 'active',
-			comments: []
-		};
-		this.pulls.push(made);
+			isDraft: isDraft === true
+		});
 		return json(201, this.renderPull(made));
 	}
 
+	private makePull(
+		repo: Repository,
+		fields: Pick<
+			StoredPull,
+			'sourceRefName' | 'targetRefName' | 'title' | 'description' | 'isDraft' | 'fork'
+		>
+	): StoredPull {
+		const made: StoredPull = {
+			...fields,
+			pullRequestId: 100 + this.pulls.length + 1,
+			repository: repo.id,
+			status: 'active',
+			creationDate: this.tick(),
+			threads: [],
+			votes: new Map(),
+			statuses: []
+		};
+		this.pulls.push(made);
+		return made;
+	}
+
 	// Only the title and description are Nightjar's to change: a pull request is never completed, abandoned or published.
-	private updatePull(pull: FakePullRequest, body: unknown): AzureDevOpsReply {
+	private updatePull(pull: StoredPull, body: unknown): AzureDevOpsReply {
 		const got = (body ?? {}) as Record<string, unknown>;
 		for (const name of Object.keys(got)) {
 			if (!['title', 'description'].includes(name))
@@ -461,12 +673,12 @@ export class FakeAzureDevOps {
 		return json(200, this.render(changed, undefined, false));
 	}
 
-	private replacePull(pull: FakePullRequest): void {
+	private replacePull(pull: StoredPull): void {
 		const at = this.pulls.findIndex((p) => p.pullRequestId === pull.pullRequestId);
 		this.pulls[at] = pull;
 	}
 
-	private artifactOf(pull: FakePullRequest): string {
+	private artifactOf(pull: StoredPull): string {
 		return `vstfs:///Git/PullRequestId/${PROJECT_ID}%2F${pull.repository}%2F${String(pull.pullRequestId)}`;
 	}
 
@@ -481,20 +693,102 @@ export class FakeAzureDevOps {
 		};
 	}
 
-	private renderPull(pull: FakePullRequest) {
+	private renderPull(pull: StoredPull) {
 		const repo = [...this.repositories.values()].find((r) => r.id === pull.repository);
 		if (repo === undefined) throw fault('a pull request without its repo');
+		const reviewers = [...pull.votes].map(([id, vote]) => {
+			const person = [...this.people.values()].find((p) => p.id === id);
+			return {
+				id,
+				uniqueName: person?.uniqueName,
+				displayName: person?.uniqueName,
+				vote,
+				isContainer: false
+			};
+		});
 		return {
 			pullRequestId: pull.pullRequestId,
 			repository: this.renderRepository(repo),
 			status: pull.status,
+			creationDate: pull.creationDate,
 			title: pull.title,
 			description: pull.description,
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
 			isDraft: pull.isDraft,
+			reviewers,
+			...(pull.fork === undefined ? {} : { forkSource: { repository: { name: pull.fork } } }),
 			artifactId: this.artifactOf(pull),
 			url: `https://dev.azure.com/${encodeURIComponent(this.organization)}/_apis/git/repositories/${repo.id}/pullRequests/${String(pull.pullRequestId)}`
+		};
+	}
+
+	private renderThread(thread: Thread) {
+		return {
+			id: thread.id,
+			status: 'active',
+			isDeleted: false,
+			publishedDate: thread.publishedDate,
+			lastUpdatedDate: thread.publishedDate,
+			comments: thread.comments.map((c) => this.renderThreadComment(c)),
+			...this.renderProperties(thread),
+			...this.renderContext(thread)
+		};
+	}
+
+	// What Azure DevOps marks its own threads with, each value wrapped with its type.
+	private renderProperties(thread: Thread) {
+		if (thread.properties === undefined) return {};
+		const properties: Record<string, unknown> = {};
+		for (const [name, value] of Object.entries(thread.properties)) {
+			properties[name] = { $type: 'System.String', $value: value };
+		}
+		return { properties };
+	}
+
+	// Where a thread on a file sits: a line it lost has no place now, and is remembered by where it was first made.
+	private renderContext(thread: Thread) {
+		const { on } = thread;
+		if (on === undefined) return {};
+		const line = on.line;
+		const here = line == null ? {} : { rightFileStart: { line, offset: 1 } };
+		const first = { trackingCriteria: { origRightFileStart: { line: 1, offset: 1 } } };
+		return {
+			threadContext: { filePath: `/${on.path}`, ...here },
+			pullRequestThreadContext: {
+				changeTrackingId: 1,
+				iterationContext: { firstComparingIteration: 1, secondComparingIteration: 1 },
+				...(line === null ? first : {})
+			}
+		};
+	}
+
+	private renderThreadComment(c: ThreadComment) {
+		return {
+			id: c.id,
+			parentCommentId: c.parent,
+			content: c.content,
+			author: {
+				id: c.author.id,
+				displayName: c.author.uniqueName,
+				uniqueName: c.author.uniqueName
+			},
+			publishedDate: c.publishedDate,
+			lastUpdatedDate: c.publishedDate,
+			commentType: c.type,
+			isDeleted: false
+		};
+	}
+
+	private renderStatus(s: StoredStatus) {
+		return {
+			id: s.id,
+			state: s.state,
+			description: s.description ?? '',
+			context: { name: s.name, genre: s.genre },
+			creationDate: s.creationDate,
+			updatedDate: s.creationDate,
+			createdBy: { id: s.by.id, displayName: s.by.uniqueName, uniqueName: s.by.uniqueName }
 		};
 	}
 

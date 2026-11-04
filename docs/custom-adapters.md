@@ -114,7 +114,7 @@ What `feedback` returns: line comments, comments in the pull request's conversat
 
 **Nightjar's own words are never feedback.** Every comment and reply Nightjar posts ends with its footer (`FOOTER`, exported from `@nonameolsson/nightjar`: a blank line, `---`, then `_Built by Nightjar._`). Nightjar posts as the person signed in, often the same login as the reviewer, so the author cannot tell its words from theirs. Leave out every comment and review that ends with the footer, whoever its author. Your own `reply` must end its body with the footer too, or Nightjar would read its answers as new feedback.
 
-Trust follows the Tracker's rule: the logins of `trusted` in `factory.json` when it is set, else your host's own default (write access on GitHub). A check's author is the app that ran it; the GitHub Code host trusts GitHub Actions, and the apps named in `codeHost.trustedChecks`.
+Trust follows the Tracker's rule: the logins of `trusted` in `factory.json` when it is set, else your host's own default (write access on GitHub, the Contributors group on Azure Repos). A check's author is the app that ran it; the GitHub Code host trusts GitHub Actions, and the Azure Repos Code host Azure Pipelines, and both the apps named in `codeHost.trustedChecks`.
 
 `reply(pull, feedbackId, body)` answers a line comment in its thread. Anything else it answers as a comment on the pull request's conversation, which quotes the start of what it answers so the reader can tell which piece it is for. It fails when the host has no such feedback.
 
