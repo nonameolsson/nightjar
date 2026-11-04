@@ -794,7 +794,7 @@ const MARKER = /<!-- nightjar-feature: (\S+) -->/;
 
 // The hidden line that names the Feature a pull request belongs to.
 function featureMarker(id: ItemId): string {
-	return `<!-- nightjar-feature: ${String(id)} -->`;
+	return `<!-- nightjar-feature: ${id} -->`;
 }
 
 // The Feature id a pull request body names; nothing for a body written without the marker.
