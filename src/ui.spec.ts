@@ -928,4 +928,67 @@ describe('nightjar ui page, more', () => {
 		expect(page).toContain('<span class="state">paused</span>');
 		expect(page).toContain('daily limit reached');
 	});
+
+	describe('review fixes', () => {
+		const building = () => {
+			const file = status();
+			file.doing({
+				kind: 'building',
+				feature: '5',
+				title: 'Search',
+				ticket: '7',
+				step: 'build',
+				round: 1,
+				rounds: 3,
+				session: null,
+				startedAt: at.toISOString(),
+				tickets: [
+					{ id: '7', title: 'Query', state: 'building' },
+					{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+				]
+			});
+			file.happened({ kind: 'failed', feature: '9', title: 'Retry', why: 'it broke' });
+			return file;
+		};
+
+		it('labels a failed Feature Failed in the Table, not Completed', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			const row =
+				page
+					.split('<tr ')
+					.slice(1)
+					.find((r) => r.includes('Retry')) ?? '';
+			expect(row).toContain('<td>Failed</td>');
+		});
+
+		it('names a waiting Ticket needs a person, not waiting', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<small>needs a person: needs info</small>');
+			expect(page).not.toContain('<small>waiting');
+		});
+
+		it('keys an unbuilt Ticket with the socket the board draws', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<i class="slot"></i>waiting');
+			expect(page).not.toContain('<i class="egg waiting"></i>waiting');
+		});
+
+		it('lets a keyboard scroll the Table and names the banner once', async () => {
+			building();
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain(
+				'<div class="scroll" tabindex="0" role="region" aria-label="Features">'
+			);
+			expect(page).toContain('<div class="banner" aria-hidden="true">');
+			expect(page).toContain("'aria-pressed'");
+			expect(page).not.toContain("'aria-current'");
+		});
+	});
 });
