@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_SIGNAL_NAMES, type SignalNames } from '../signals.js';
 import { GitHubFailure } from './api.js';
 import { failed, fakeGh, ok, on } from './fake-gh.js';
+import { sourceMarker } from '../template.js';
 import { GitHubTracker } from './tracker.js';
 
 const rawIssue = (number: number, over: Record<string, unknown> = {}) => ({
@@ -91,6 +92,31 @@ describe('GitHubTracker', () => {
 		expect(await tracker(gh).trusts('eve')).toBe(false);
 		expect(await tracker(gh, DEFAULT_SIGNAL_NAMES, ['Eve']).trusts('eve')).toBe(true);
 		expect(await tracker(gh, DEFAULT_SIGNAL_NAMES, ['Eve']).trusts('bob')).toBe(false);
+	});
+
+	it('finds the newest and the open Features of a Source once it has made more than GitHub search reaches', async () => {
+		// 1,200 Features of Source sentry: #1 is open and the oldest, #1200 the newest; a search reaches only 1,000 results
+		const all = Array.from({ length: 1200 }, (_, i) => i + 1).map((n) => ({
+			...rawIssue(n, {
+				body: sourceMarker('sentry', `key-${String(n)}`),
+				state: n === 1 || n === 1200 ? 'open' : 'closed',
+				created_at: new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString()
+			})
+		}));
+		const { gh } = fakeGh(
+			on('GET', 'search/issues', (call) => {
+				const open = (call.query.get('q') ?? '').includes('is:open');
+				const pool = open ? all.filter((i) => i.state === 'open') : [...all];
+				if (call.query.get('order') === 'desc') pool.reverse();
+				const reach = pool.slice(0, 1000);
+				const from = (Number(call.query.get('page')) - 1) * 100;
+				return ok({ items: reach.slice(from, from + 100) });
+			})
+		);
+		const found = await tracker(gh).featuresFrom('sentry');
+		expect(found.map((f) => f.id)).toContain('1200');
+		expect(found.find((f) => f.id === '1')?.open).toBe(true);
+		expect(found.map((f) => f.at)).toEqual([...found.map((f) => f.at)].sort());
 	});
 
 	it('counts the Tickets of a Feature it has listed from the sub-issue summary, with no further call', async () => {
