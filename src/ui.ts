@@ -9,7 +9,14 @@ import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
 import { linksFor, NO_LINKS, type Links } from './ui-links.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
-import type { Doing, Queued, TicketCounts, TicketProgress, WaitingItem } from './status-shape.js';
+import type {
+	Doing,
+	HandBack,
+	Queued,
+	TicketCounts,
+	TicketProgress,
+	WaitingItem
+} from './status-shape.js';
 import { featureStart } from './status.js';
 import {
 	countdown,
@@ -145,7 +152,10 @@ function waiting(view: FactoryView, links: Links): string {
 				? '<p class="empty">nothing</p>'
 				: '';
 		const items = found.items
-			.map((i) => `<li>${idHtml(i.id, links)} ${escape(i.title)}: ${escape(i.why)}</li>`)
+			.map((i) => {
+				const back = lastHandBack(view, i.feature ?? i.id, i.kind === 'ticket' ? i.id : null);
+				return `<li>${idHtml(i.id, links)} ${escape(i.title)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
+			})
 			.join('');
 		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
 	}
@@ -156,13 +166,9 @@ function waiting(view: FactoryView, links: Links): string {
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
 function completed(view: FactoryView, links: Links): string {
-	const rows = view.completed
-		.map(
-			({ event, costUsd }) =>
-				`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)}</li>`
-		)
-		.reverse()
-		.join('');
+	const li = ({ done: { event, costUsd }, runs }: CompletedCard) =>
+		`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
+	const rows = features(view).completed.map(li).join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
 
@@ -183,12 +189,28 @@ function tookMs(event: Completed['event']): number | null {
 
 type Building = Extract<Doing, { kind: 'building' }>;
 
+// The last hand-back of a Feature (ticket null) or of a Ticket, which says why it waits and what to do.
+function lastHandBack(
+	view: FactoryView,
+	feature: string,
+	ticket: string | null
+): HandBack | undefined {
+	const same = (h: HandBack) =>
+		ticket === null ? h.ticket === null && h.feature === feature : h.ticket === ticket;
+	return view.status?.handedBack?.findLast(same);
+}
+
+// A Ticket that waits on a person, with why Nightjar handed it back when it did
+interface WaitingTicket extends WaitingItem {
+	readonly handBack?: HandBack;
+}
+
 // A Feature as a view draws it; every view reads this one list.
 interface FeatureCard {
 	readonly id: string;
 	readonly title?: string;
 	// the Tickets that wait on a person, with why
-	readonly waitingTickets: readonly WaitingItem[];
+	readonly waitingTickets: readonly WaitingTicket[];
 	// Tickets built of the Feature's Tickets; null when there is no count to show
 	readonly progress: Progress | null;
 }
@@ -209,18 +231,36 @@ interface BuildingCard extends FeatureCard {
 interface Progress {
 	readonly built: number;
 	readonly total: number;
+	// what the bar counts, after `k of N`: built now, or built in a past run
+	readonly counts: string;
 }
+// the Tickets built as things stand
+const BUILT_NOW = 'built now';
+// the Tickets a failed run's own sessions built
+const BUILT_IN_RUN = 'built in this run';
+// the Tickets a pull request's branch held when its run ended, earlier runs' among them
+const BUILT_BY_RUN_END = 'built by the end of this run';
+
 interface WaitingCard extends FeatureCard {
 	readonly state: 'waiting';
 	readonly why: string;
+	// why Nightjar handed the Feature itself back, and what to do; absent when nothing recorded it
+	readonly handBack?: HandBack;
 }
 interface CompletedCard extends FeatureCard {
 	readonly state: 'completed';
+	// the Feature's latest run
 	readonly done: Completed;
+	// how many of the runs still in status.json's recent events were the Feature's
+	readonly runs: number;
 }
 
 const progressText = (p: Progress | null) =>
-	p === null ? '?' : `${String(p.built)} of ${String(p.total)}`;
+	p === null ? '?' : `${String(p.built)} of ${String(p.total)} ${p.counts}`;
+
+// counted from status.json's recent events only, so older runs are not in it
+const runsText = (runs: number) =>
+	runs === 1 ? '1 recent run' : `latest of ${String(runs)} recent runs`;
 
 // A Ticket as an egg: built, being built, needs a person, or still waiting its turn
 type Egg = 'built' | 'building' | 'need' | 'waiting';
@@ -232,7 +272,7 @@ const EGG_OF: Record<TicketProgress['state'], Egg> = {
 	waiting: 'need'
 };
 
-// `k of N built` under a row of eggs, one per Ticket; "?" and no eggs without a count
+// `k of N` and what it counts under a row of eggs, one per Ticket; "?" and no eggs without a count
 function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): string {
 	if (p === null) return '<p class="meta progress">count unknown</p>';
 	const slots: Egg[] =
@@ -245,7 +285,7 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 		.slice(0, EGGS_SHOWN)
 		.map((s) => `<i class="slot"><i class="egg ${s}"></i></i>`)
 		.join('');
-	return `<span class="eggs" role="img" aria-label="${progressText(p)} built">${eggs}${more}</span><p class="meta progress">${progressText(p)} built</p>`;
+	return `<span class="eggs" role="img" aria-label="${progressText(p)}">${eggs}${more}</span><p class="meta progress">${progressText(p)}</p>`;
 }
 
 interface Features {
@@ -277,7 +317,11 @@ function features(view: FactoryView): Features {
 					progress:
 						tickets.length === 0
 							? null
-							: { built: tickets.filter((t) => t.state === 'built').length, total: tickets.length },
+							: {
+									built: tickets.filter((t) => t.state === 'built').length,
+									total: tickets.length,
+									counts: BUILT_NOW
+								},
 					doing
 				}
 			: null;
@@ -289,52 +333,72 @@ function features(view: FactoryView): Features {
 		for (const i of found?.items ?? [])
 			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
 	}
-	const completedCard = (done: Completed): CompletedCard => {
+	const completedCard = (done: Completed, runs: number): CompletedCard => {
+		const { event } = done;
 		const built = done.builtTickets ?? 0;
-		const total = totals.get(done.event.feature) ?? null;
+		const total = totals.get(event.feature) ?? null;
+		// a pull request says what its branch holds; this run's sessions may have built only part of it
+		let progress: Progress | null = null;
+		if (event.kind === 'pull') {
+			if (event.tickets !== undefined) progress = { ...event.tickets, counts: BUILT_BY_RUN_END };
+		} else if (total !== null) {
+			progress = { built: Math.min(built, total), total, counts: BUILT_IN_RUN };
+		}
 		return {
 			state: 'completed',
-			id: done.event.feature,
-			...(done.event.title === undefined ? {} : { title: done.event.title }),
+			id: event.feature,
+			...(event.title === undefined ? {} : { title: event.title }),
 			waitingTickets: [],
 			done,
-			// a pull request says what its branch holds; this run's sessions may have built only part of it
-			progress:
-				done.event.kind === 'pull'
-					? (done.event.tickets ?? null)
-					: total === null
-						? null
-						: { built: Math.min(built, total), total }
+			runs,
+			progress
 		};
 	};
-	const completed = view.completed.map(completedCard).reverse();
+	// one card per Feature: its latest run, and how many runs it had
+	const latest = new Map<string, { done: Completed; runs: number }>();
+	for (const done of view.completed) {
+		const id = done.event.feature;
+		const runs = (latest.get(id)?.runs ?? 0) + 1;
+		// moved to the end, so the Map keeps the Features in the order of their latest run
+		latest.delete(id);
+		latest.set(id, { done, runs });
+	}
+	const completed = [...latest.values()].map((l) => completedCard(l.done, l.runs)).reverse();
+	const backOf = (feature: string) => lastHandBack(view, feature, null);
 	let waiting: WaitingCard[] | undefined;
 	if (found !== undefined) {
 		waiting = found.items
 			.filter((i) => i.kind === 'feature')
-			.map((i) => ({
-				state: 'waiting',
-				id: i.id,
-				title: i.title,
-				why: i.why,
-				waitingTickets: [],
-				progress: i.ticketCounts
-					? { built: i.ticketCounts.closed, total: i.ticketCounts.total }
-					: null
-			}));
+			.map((i): WaitingCard => {
+				const handBack = backOf(i.id);
+				return {
+					state: 'waiting',
+					id: i.id,
+					title: i.title,
+					why: i.why,
+					...(handBack === undefined ? {} : { handBack }),
+					waitingTickets: [],
+					progress: i.ticketCounts
+						? { built: i.ticketCounts.closed, total: i.ticketCounts.total, counts: BUILT_NOW }
+						: null
+				};
+			});
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
 		const owner = (building ?? completed[0])?.id ?? '';
 		const titleOf = (id: string) =>
 			[building, ...completed].find((c) => c?.id === id && c.title !== undefined)?.title;
-		const byFeature = new Map<string, WaitingItem[]>();
+		const byFeature = new Map<string, WaitingTicket[]>();
 		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
 			const id = t.feature ?? owner;
-			byFeature.set(id, [...(byFeature.get(id) ?? []), t]);
+			const handBack = lastHandBack(view, id, t.id);
+			const ticket: WaitingTicket = handBack === undefined ? t : { ...t, handBack };
+			byFeature.set(id, [...(byFeature.get(id) ?? []), ticket]);
 		}
 		for (const [id, tickets] of byFeature) {
 			const at = waiting.findIndex((w) => w.id === id);
 			const own = at < 0 ? undefined : waiting[at];
 			const title = titleOf(id);
+			const handBack = backOf(id);
 			if (own !== undefined) waiting[at] = { ...own, waitingTickets: tickets };
 			else
 				waiting.push({
@@ -343,6 +407,7 @@ function features(view: FactoryView): Features {
 					...(title === undefined ? {} : { title }),
 					// Nightjar gives needs info to a Feature whenever one of its Tickets waits
 					why: 'needs info',
+					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: tickets,
 					progress: null
 				});
@@ -354,7 +419,7 @@ function features(view: FactoryView): Features {
 		title: q.title,
 		waitingTickets: [],
 		ticketCounts: q.ticketCounts,
-		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total } : null,
+		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total, counts: 'built' } : null,
 		// the median Ticket duration times the Feature's Tickets; none without history or a count
 		estimateMs:
 			view.medianTicketMs == null || !q.ticketCounts
@@ -374,10 +439,41 @@ function features(view: FactoryView): Features {
 const feature = (card: FeatureCard, links: Links) =>
 	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
 
+// A Next step as the Tracker comment numbers it, a Signal's `name` set as code
+function nextStepHtml(back: HandBack | undefined): string {
+	if (back?.next === undefined || back.next.length === 0) return '';
+	const lines = back.next
+		.map((l) => `<li>${escape(l).replace(/`([^`]*)`/g, '<code>$1</code>')}</li>`)
+		.join('');
+	return `<div class="next"><p>Next step</p><ol>${lines}</ol></div>`;
+}
+
 const waitingTicketsHtml = (card: FeatureCard, links: Links) =>
 	card.waitingTickets.length === 0
 		? ''
-		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id, links)} ${escape(t.title)} <small>${escape(t.why)}</small></li>`).join('')}</ul>`;
+		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id, links)} ${escape(t.title)} <small>${escape(t.why)}</small>${t.handBack === undefined ? '' : ` <span class="reason">${escape(t.handBack.why)}</span>`}${nextStepHtml(t.handBack)}</li>`).join('')}</ul>`;
+
+// A Feature that waits on a person; its own Next step comes last, as it speaks of the Tickets above
+function waitingCard(card: WaitingCard, links: Links): string {
+	const back = card.handBack;
+	const known = back !== undefined || card.waitingTickets.some((t) => t.handBack !== undefined);
+	const why =
+		back !== undefined
+			? `<p>${escape(back.why)}</p>`
+			: known
+				? ''
+				: '<p class="meta">no reason recorded; see its comments on the Tracker</p>';
+	const u = unblock(card, links);
+	return nest(
+		'waiting',
+		card,
+		links,
+		progressHtml(card.progress),
+		whyHtml(card, u) + why,
+		actionLink(u, links),
+		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
+	);
+}
 
 // One Feature as a nest in the ledger: who, its egg row, where it stands, its clock, and what hangs beneath it.
 function nest(
@@ -441,7 +537,7 @@ function completedCard(card: CompletedCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p>`,
+		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
 		`${duration}${dollars(costUsd)}`
 	);
 }
@@ -543,20 +639,7 @@ function board(view: FactoryView, links: Links): string {
 	else if (all.waiting === undefined) waiting = none('not read yet');
 	else {
 		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
-		const cards = all.waiting
-			.map((c) => {
-				const u = unblock(c, links);
-				return nest(
-					'waiting',
-					c,
-					links,
-					progressHtml(c.progress),
-					whyHtml(c, u),
-					actionLink(u, links),
-					waitingTicketsHtml(c, links) + helpHtml(c, u, links)
-				);
-			})
-			.join('');
+		const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
 	}
 	const completed =
@@ -630,17 +713,19 @@ function table(view: FactoryView, links: Links): string {
 			progress: all.building.progress
 		});
 	}
-	for (const card of all.waiting ?? [])
+	for (const card of all.waiting ?? []) {
+		const outcome = card.handBack === undefined ? card.why : `${card.why}: ${card.handBack.why}`;
 		rows.push({
 			card,
 			state: 'waiting',
 			time: null,
 			timeText: '',
 			cost: null,
-			outcome: card.why,
-			outcomeText: `${escape(card.why)} ${actionLink(unblock(card, links), links)}`,
+			outcome,
+			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}`,
 			progress: card.progress
 		});
+	}
 	for (const card of all.completed) {
 		const { event, costUsd } = card.done;
 		const took = tookMs(event);
@@ -651,7 +736,7 @@ function table(view: FactoryView, links: Links): string {
 			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
 			cost: costUsd,
 			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
-			outcomeText: outcomeHtml(event),
+			outcomeText: `${outcomeHtml(event)} <small>${runsText(card.runs)}</small>`,
 			progress: card.progress
 		});
 	}
@@ -995,7 +1080,14 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .now .label .egg.need::after { right: -0.5rem; }
 .now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
 .clock { color: var(--muted); font: 0.85rem var(--mono); text-align: right; }
-.entry > ul { grid-column: 1 / -1; }
+.entry > ul, .entry > .next { grid-column: 1 / -1; }
+.next { color: var(--ink2); font: 0.85rem/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 2px 0 0; }
+.next p { color: var(--muted); margin: 6px 0 2px; }
+.next ol { list-style: decimal; margin: 0; padding-left: 1.6em; }
+.next li { padding: 1px 0; }
+.next code { color: var(--ink); font: 0.85rem var(--mono); }
+.tickets .reason { color: var(--ink2); font: 0.85rem system-ui, -apple-system, 'Segoe UI', sans-serif; }
+.tickets .next { margin-left: 4px; }
 .entry.waiting .now .label { color: var(--amber); }
 .entry.building .now .label { color: var(--teal); }
 .entry.pulled .now .label { color: var(--ok); }

@@ -7,6 +7,7 @@ import type { Spend } from './spend.js';
 import type {
 	Doing,
 	Event,
+	HandBack,
 	Happened,
 	Named,
 	Queued,
@@ -18,6 +19,7 @@ import type {
 export type {
 	Doing,
 	Event,
+	HandBack,
 	Happened,
 	Named,
 	Queued,
@@ -58,6 +60,11 @@ export interface StatusReport {
 }
 
 const KEEP = 10;
+// hand-backs outlive `recent`, one per Feature and Ticket, so a view can say why long after
+const KEEP_HANDED_BACK = 50;
+
+type Item = Pick<HandBack, 'feature' | 'ticket'>;
+const sameItem = (a: Item, b: Item) => a.feature === b.feature && a.ticket === b.ticket;
 
 const StatusSchema = z.looseObject({
 	recent: z.array(z.looseObject({ seq: z.int() }))
@@ -76,6 +83,7 @@ export class StatusFile implements StatusReport {
 	private now: Doing = { kind: 'off' };
 	private moved: string | null = null;
 	private recent: Event[];
+	private handedBack: HandBack[];
 	private refresh: { queue: Queued[]; waitingOnYou: WaitingOnYou; at: string } | null = null;
 
 	constructor(
@@ -89,11 +97,24 @@ export class StatusFile implements StatusReport {
 			readonly watching?: boolean;
 		}
 	) {
+		const last = readStatus(o.path);
 		// the events go on from the last run's, so a reader that saw them does not toast them again
-		this.recent = readStatus(o.path)?.recent ?? [];
+		this.recent = last?.recent ?? [];
+		this.handedBack = last?.handedBack ?? [];
 	}
 
 	readonly doing = (doing: Doing) => {
+		// a Feature that starts building again is no longer handed back; its waiting Tickets still are
+		const was = this.now;
+		if (doing.kind === 'building' && !(was.kind === 'building' && was.feature === doing.feature)) {
+			const own: Item = { feature: doing.feature, ticket: null };
+			this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
+		}
+		// a Ticket Nightjar builds again is no longer handed back; its reason would be stale
+		if (doing.kind === 'building' && doing.ticket !== null) {
+			const own: Item = { feature: doing.feature, ticket: doing.ticket };
+			this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
+		}
 		this.now = doing;
 		// with no run going there is no Queue
 		if (doing.kind === 'off') this.refresh = null;
@@ -104,6 +125,17 @@ export class StatusFile implements StatusReport {
 		const seq = (this.recent.at(-1)?.seq ?? 0) + 1;
 		const at = this.o.now().toISOString();
 		this.recent = [...this.recent, { ...event, seq, at }].slice(-KEEP);
+		if (event.kind === 'needs-info' || event.kind === 'failed') {
+			const handBack: HandBack = {
+				feature: event.feature,
+				ticket: event.kind === 'needs-info' ? event.ticket : null,
+				why: event.why,
+				...(event.next === undefined ? {} : { next: event.next }),
+				at
+			};
+			const others = this.handedBack.filter((h) => !sameItem(h, handBack));
+			this.handedBack = [...others, handBack].slice(-KEEP_HANDED_BACK);
+		}
 		this.write();
 	};
 
@@ -134,6 +166,7 @@ export class StatusFile implements StatusReport {
 			doing: this.now,
 			...(this.o.watching === true ? { watching: true } : {}),
 			recent: this.recent,
+			...(this.handedBack.length === 0 ? {} : { handedBack: this.handedBack }),
 			codeMoved: this.moved,
 			...(this.refresh === null
 				? {}

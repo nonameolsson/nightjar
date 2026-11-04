@@ -40,6 +40,7 @@ import { FakeCodeHost } from './fakes/code-host.js';
 import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
+import { featureAfterRunStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK } from './prompt.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
@@ -698,9 +699,22 @@ describe('buildFeature', () => {
 		expect(world.tracker.signalsOf('2')).toEqual(['needsInfo']);
 		expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
 		expect(world.tracker.said('1')[0]).toContain('#3 Use it in marks: blocked by #2');
+		// each event carries the Next step its comment gives
 		expect(world.happened).toEqual([
-			{ kind: 'needs-info', feature: '1', ticket: '2', why: 'it asked 1 question, round 1' },
-			{ kind: 'needs-info', feature: '1', ticket: null, why: 'it built nothing' }
+			{
+				kind: 'needs-info',
+				feature: '1',
+				ticket: '2',
+				why: 'it asked 1 question, round 1',
+				next: ticketStep(DEFAULT_SIGNAL_NAMES, 'answer')
+			},
+			{
+				kind: 'needs-info',
+				feature: '1',
+				ticket: null,
+				why: 'it built nothing',
+				next: featureAfterRunStep(DEFAULT_SIGNAL_NAMES, { waiting: true, red: false })
+			}
 		]);
 		expect(ledger(world).map((e) => e.outcome)).toEqual(['questions, round 1']);
 		// the file the session wrote is gone from the branch
@@ -800,7 +814,8 @@ describe('buildFeature', () => {
 			kind: 'needs-info',
 			feature: '1',
 			ticket: null,
-			why: 'the check fails after #2'
+			why: 'the check fails after #2',
+			next: featureAfterRunStep(DEFAULT_SIGNAL_NAMES, { waiting: true, red: true })
 		});
 	});
 
@@ -837,7 +852,8 @@ describe('buildFeature', () => {
 			kind: 'needs-info',
 			feature: '1',
 			ticket: '2',
-			why: 'it reached its budget'
+			why: 'it reached its budget',
+			next: ticketStep(DEFAULT_SIGNAL_NAMES, 'retry')
 		});
 		expect(ledger(world)[0]).toMatchObject({
 			outcome: 'failed: it reached its budget',

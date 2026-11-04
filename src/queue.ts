@@ -8,7 +8,9 @@ import {
 } from './build.js';
 import type { CodeHost, NightjarDraft } from './code-host.js';
 import { FOOTER } from './footer.js';
+import { featureStopStep, nextStepText } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
+import type { SignalNames } from './signals.js';
 import {
 	waitingTickets,
 	type Named,
@@ -40,6 +42,8 @@ export interface QueueDeps {
 	readonly pollMs?: number;
 	// --watch only: newer Nightjar code than the one running, checked while idle
 	readonly newer?: Newer;
+	// factory.json's Signal names, for the Next step of a Feature handed back on a fault
+	readonly signals?: SignalNames;
 	// the revisit pass, when factory.json turns it on and the Code host can list Nightjar's drafts
 	readonly pullChecks?: PullChecksPass;
 }
@@ -72,18 +76,21 @@ export async function handBack(
 	const { tracker } = deps;
 	const { id, title } = feature;
 	const reason = why(fault);
+	const next = deps.signals === undefined ? undefined : featureStopStep(deps.signals);
 	deps.say(`#${id} failed: ${reason}`);
 	deps.status.happened({
 		kind: 'failed',
 		feature: id,
 		title,
 		why: reason,
-		...(startedAt === undefined ? {} : { startedAt })
+		...(startedAt === undefined ? {} : { startedAt }),
+		...(next === undefined ? {} : { next })
 	});
 	try {
 		await tracker.removeSignal(id, 'working');
 		await tracker.addSignal(id, 'needsInfo');
-		await tracker.comment(id, `Nightjar stopped on a fault: ${reason}${FOOTER}`);
+		const step = next === undefined ? '' : `\n\n${nextStepText(next)}`;
+		await tracker.comment(id, `Nightjar stopped on a fault: ${reason}${step}${FOOTER}`);
 	} catch {
 		// the Tracker itself may be the fault
 	}

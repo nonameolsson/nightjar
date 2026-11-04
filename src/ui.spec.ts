@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileSpend, record } from './ledger.js';
+import { featureAfterRunStep, ticketStep } from './next-step.js';
+import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
 
@@ -236,16 +238,18 @@ describe('nightjar ui page', () => {
 		const card = (html: string, title: string) =>
 			html.split('<article').find((a) => a.includes(title)) ?? '';
 		const row = (title: string) => table.split('<tr ').find((a) => a.includes(title)) ?? '';
-		expect(card(board, 'Billing')).toContain('2 of 6 built');
+		// each bar says what it counts: what is built now, or what a past run built
+		expect(card(board, 'Billing')).toContain('2 of 6 built now');
+		expect(card(board, 'Billing')).toContain('aria-label="2 of 6 built now"');
 		expect(card(board, 'Billing')).toContain('class="eggs"');
 		expect(card(board, 'Unknown')).toContain('>count unknown<');
 		expect(card(board, 'Unknown')).not.toContain('class="eggs"');
 		// the ledger holds 3 built sessions, but the branch is 3 of the Feature's 4
-		expect(card(board, 'Done one')).toContain('3 of 4 built');
+		expect(card(board, 'Done one')).toContain('3 of 4 built by the end of this run');
 		expect(card(board, 'Old one')).toContain('>count unknown<');
-		expect(card(board, 'it broke')).toContain('1 of 5 built');
-		expect(row('Billing')).toContain('2 of 6 built');
-		expect(row('Done one')).toContain('3 of 4 built');
+		expect(card(board, 'it broke')).toContain('1 of 5 built in this run');
+		expect(row('Billing')).toContain('2 of 6 built now');
+		expect(row('Done one')).toContain('3 of 4 built by the end of this run');
 		expect(row('Unknown')).not.toContain('class="eggs"');
 	});
 
@@ -539,7 +543,98 @@ describe('nightjar ui board', () => {
 		expect(card).toContain(
 			'<i class="slot"><i class="egg built"></i></i><i class="slot"><i class="egg building"></i></i><i class="slot"><i class="egg need"></i></i>'
 		);
-		expect(card).toContain('1 of 3 built');
+		expect(card).toContain('1 of 3 built now');
+	});
+
+	it('shows one Completed card per Feature: its latest run and how many runs it had', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		const url = (n: number) => `https://example.test/pull/${String(n)}`;
+		file.happened({ kind: 'failed', feature: '132', title: 'Retries', why: 'check red' });
+		file.happened({ kind: 'pull', feature: '147', title: 'Exports', url: url(40) });
+		file.happened({ kind: 'pull', feature: '132', title: 'Retries', url: url(41) });
+		file.happened({ kind: 'pull', feature: '132', title: 'Retries', url: url(42) });
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const [table = '', overview = ''] = rest.split('<div class="overview">');
+		const cards = board.split('<article').filter((a) => a.includes('Retries'));
+		expect(cards).toHaveLength(1);
+		expect(cards[0]).toContain('pull/42"');
+		expect(cards[0]).not.toContain('pull/41"');
+		expect(cards[0]).toContain('latest of 3 recent runs');
+		expect(board.split('<article').find((a) => a.includes('Exports'))).toContain('1 recent run');
+		// newest first: the latest run of #132 came after #147's
+		expect(board.indexOf('Retries')).toBeLessThan(board.indexOf('Exports'));
+		expect(page).toContain('<h2>Completed</h2><i class="tally">2</i>');
+		expect(table.split('<tr ').filter((r) => r.includes('Retries'))).toHaveLength(1);
+		expect(table).toContain('latest of 3 recent runs');
+		expect(overview.split('<li>').filter((r) => r.includes('Retries'))).toHaveLength(1);
+	});
+
+	it('shows on a Waiting card why its Ticket was handed back and the Next step, after the events moved on', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.happened({
+			kind: 'needs-info',
+			feature: '3',
+			ticket: '8',
+			why: 'it asked 1 question, round 1',
+			next: ticketStep(DEFAULT_SIGNAL_NAMES, 'answer')
+		});
+		file.happened({
+			kind: 'needs-info',
+			feature: '3',
+			ticket: null,
+			why: '1 Ticket waits',
+			next: featureAfterRunStep(DEFAULT_SIGNAL_NAMES, { waiting: true, red: false })
+		});
+		for (let t = 1; t <= 10; t++)
+			file.happened({ kind: 'built', feature: '9', ticket: String(100 + t) });
+		file.refreshed([], {
+			items: [
+				{
+					kind: 'feature',
+					id: '3',
+					title: 'Webhooks',
+					why: 'needs info',
+					ticketCounts: { total: 3, closed: 0 }
+				},
+				{ kind: 'ticket', id: '8', title: 'Facets', why: 'needs info', feature: '3' }
+			],
+			trackerCannotList: false
+		});
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const card = board.split('<article').find((a) => a.includes('Webhooks')) ?? '';
+		expect(card).toContain('<p>1 Ticket waits</p>');
+		expect(card).toContain('0 of 3 built now');
+		expect(card).toContain(
+			'Facets <small>needs info</small> <span class="reason">it asked 1 question, round 1</span>'
+		);
+		expect(card).toContain(
+			'<p>Next step</p><ol><li>Answer in a comment here.</li><li>On this Ticket, remove <code>needs-info</code> and add <code>ready-for-agent</code>.</li>'
+		);
+		// the Feature's own Next step comes after the Tickets it speaks of
+		const deal = card.indexOf('<li>Deal with the waiting Tickets above');
+		expect(deal).toBeGreaterThan(card.indexOf('Facets'));
+		const row = rest.split('<tr ').find((r) => r.includes('Webhooks')) ?? '';
+		expect(row).toContain('needs info: 1 Ticket waits');
+	});
+
+	it('says so when no reason is recorded for a waiting Feature', async () => {
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed([], {
+			items: [{ kind: 'feature', id: '3', title: 'Webhooks', why: 'needs a person' }],
+			trackerCannotList: false
+		});
+		await open();
+		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
+		const card = board.split('<article').find((a) => a.includes('Webhooks')) ?? '';
+		expect(card).toContain('no reason recorded; see its comments on the Tracker');
+		expect(card).not.toContain('Next step');
 	});
 
 	it('lists at most ten Completed, newest first, and says when the run is off', async () => {

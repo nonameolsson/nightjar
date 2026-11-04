@@ -70,6 +70,8 @@ export type Happened =
 			readonly feature: string;
 			readonly ticket: string | null;
 			readonly why: string;
+			// the Next step lines of the Tracker comment; older files lack it
+			readonly next?: readonly string[];
 	  }
 	| {
 			readonly kind: 'failed';
@@ -77,6 +79,8 @@ export type Happened =
 			// the Feature's title, for a view's list of outcomes; older files and a run by id lack it
 			readonly title?: string;
 			readonly why: string;
+			// the Next step lines of the Tracker comment; older files lack it
+			readonly next?: readonly string[];
 			// when the Feature's build began; older files and a fault outside a build lack it
 			readonly startedAt?: string;
 	  }
@@ -95,6 +99,17 @@ export type Happened =
 
 export type Event = Happened & { readonly seq: number; readonly at: string };
 
+// Why Nightjar last handed a Feature, or one of its Tickets, to a person, and the Next step its comment gave.
+export interface HandBack {
+	readonly feature: string;
+	// null when the Feature itself was handed back
+	readonly ticket: string | null;
+	readonly why: string;
+	// absent when the comment gave none
+	readonly next?: readonly string[];
+	readonly at: string;
+}
+
 export interface Status {
 	readonly at: string;
 	readonly pid: number;
@@ -103,6 +118,8 @@ export interface Status {
 	readonly doing: Doing;
 	// the last ten, oldest first; a reader toasts each seq it has not seen
 	readonly recent: Event[];
+	// the last hand-back of each Feature and Ticket, oldest first, kept after `recent` moves on; older files lack it
+	readonly handedBack?: HandBack[];
 	// true under --watch, whose next poll comes when the Feature being built ends; older files lack it
 	readonly watching?: boolean;
 	// the version or commit of newer Nightjar code than the one running; older files lack it

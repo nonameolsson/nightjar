@@ -96,6 +96,83 @@ describe('StatusFile', () => {
 		expect(after?.doing).toEqual({ kind: 'off' });
 	});
 
+	it('keeps the last hand-back of each Feature and Ticket after the events move on, and over a restart', () => {
+		const path = join(dir, 'status.json');
+		const first = file(path);
+		first.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		first.happened({
+			kind: 'needs-info',
+			feature: '1',
+			ticket: '2',
+			why: 'asked',
+			next: ['Answer']
+		});
+		first.happened({ kind: 'needs-info', feature: '1', ticket: '2', why: 'asked again' });
+		first.happened({ kind: 'needs-info', feature: '1', ticket: null, why: '1 Ticket waits' });
+		first.happened({
+			kind: 'failed',
+			feature: '5',
+			why: 'the network went away',
+			next: ['Fix']
+		});
+		for (let t = 1; t <= 11; t += 1)
+			first.happened({ kind: 'built', feature: '9', ticket: String(t) });
+		const when = at.toISOString();
+		const kept = [
+			{ feature: '1', ticket: '2', why: 'asked again', at: when },
+			{ feature: '1', ticket: null, why: '1 Ticket waits', at: when },
+			{ feature: '5', ticket: null, why: 'the network went away', next: ['Fix'], at: when }
+		];
+		expect(readStatus(path)?.recent.some((e) => e.kind === 'needs-info')).toBe(false);
+		expect(readStatus(path)?.handedBack).toEqual(kept);
+
+		const second = file(path);
+		second.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		expect(readStatus(path)?.handedBack).toEqual(kept);
+	});
+
+	it("drops a Feature's own hand-back when it builds again, and keeps its Tickets'", () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.happened({ kind: 'needs-info', feature: '1', ticket: '2', why: 'asked' });
+		status.happened({ kind: 'needs-info', feature: '1', ticket: null, why: '1 Ticket waits' });
+		const building: Doing = {
+			kind: 'building',
+			feature: '1',
+			ticket: null,
+			step: 'setup',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString()
+		};
+		const whys = () => readStatus(path)?.handedBack?.map((h) => h.why);
+		status.doing(building);
+		expect(whys()).toEqual(['asked']);
+		// a later step of the same build keeps what the build itself said
+		status.happened({ kind: 'needs-info', feature: '1', ticket: null, why: 'nothing' });
+		status.doing({ ...building, step: 'review' });
+		expect(whys()).toEqual(['asked', 'nothing']);
+	});
+
+	it("drops a Ticket's hand-back when that Ticket builds again", () => {
+		const path = join(dir, 'status.json');
+		const status = file(path);
+		status.happened({ kind: 'needs-info', feature: '1', ticket: '2', why: 'asked' });
+		status.happened({ kind: 'needs-info', feature: '1', ticket: '3', why: 'unclear' });
+		status.doing({
+			kind: 'building',
+			feature: '1',
+			ticket: '2',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		expect(readStatus(path)?.handedBack?.map((h) => h.why)).toEqual(['unclear']);
+	});
+
 	it('writes the Queue and Waiting on you with when they were refreshed, and drops them when the run is off', () => {
 		const path = join(dir, 'status.json');
 		const status = file(path);

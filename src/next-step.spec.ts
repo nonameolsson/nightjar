@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import {
-	featureAfterRunStep,
-	featureStopStep,
-	pullChecksStep,
-	stoppedStep,
-	ticketStep
-} from './next-step.js';
+import * as next from './next-step.js';
 import { DEFAULT_SIGNAL_NAMES, type SignalNames } from './signals.js';
+
+// each Next step as the Tracker comment lays it out
+const text = next.nextStepText;
+const ticketStep = (n: SignalNames, kind: next.TicketHandBack) => text(next.ticketStep(n, kind));
+const featureStopStep = (n: SignalNames) => text(next.featureStopStep(n));
+const featureAfterRunStep = (n: SignalNames, why: { waiting: boolean; red: boolean }) =>
+	text(next.featureAfterRunStep(n, why));
+const stoppedStep = (n: SignalNames) => text(next.stoppedStep(n));
+const pullChecksStep = (n: SignalNames) => text(next.pullChecksStep(n));
 
 const names = DEFAULT_SIGNAL_NAMES;
 const renamed: SignalNames = { ...names, go: 'run-it', ready: 'build-me', needsInfo: 'stuck' };

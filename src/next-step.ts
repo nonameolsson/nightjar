@@ -2,7 +2,10 @@ import type { SignalNames } from './signals.js';
 
 const tag = (name: string) => `\`${name}\``;
 
-const steps = (lines: readonly string[]) =>
+// A Next step as its numbered lines, which a Tracker comment and a view each lay out their own way.
+export type NextStep = readonly string[];
+
+export const nextStepText = (lines: NextStep) =>
 	`**Next step**\n\n${lines.map((l, i) => `${String(i + 1)}. ${l}`).join('\n')}`;
 
 const KEEP = '(keep it assigned to you)';
@@ -16,35 +19,38 @@ const handBack = (n: SignalNames, from: string) =>
 
 export type TicketHandBack = 'answer' | 'retry' | 'human';
 
-export function ticketStep(n: SignalNames, kind: TicketHandBack): string {
+export function ticketStep(n: SignalNames, kind: TicketHandBack): NextStep {
 	switch (kind) {
 		case 'answer':
-			return steps(['Answer in a comment here.', handBack(n, n.needsInfo), giveGo(n)]);
+			return ['Answer in a comment here.', handBack(n, n.needsInfo), giveGo(n)];
 		case 'retry':
-			return steps([
+			return [
 				'Read the reason above and fix what it names, or edit the Ticket.',
 				handBack(n, n.needsInfo),
 				giveGo(n)
-			]);
+			];
 		case 'human':
-			return steps([
+			return [
 				'Build it yourself, or answer the questions above and make the Ticket clear.',
 				`To hand it back to Nightjar, remove ${tag(n.human)} and add ${tag(n.ready)} on this Ticket.`,
 				giveGo(n)
-			]);
+			];
 	}
 }
 
 const featureGo = (n: SignalNames) =>
 	`On this Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}.`;
 
-export const featureStopStep = (n: SignalNames) =>
-	steps(['Fix the cause named above.', featureGo(n), 'Nightjar builds the Feature again.']);
+export const featureStopStep = (n: SignalNames): NextStep => [
+	'Fix the cause named above.',
+	featureGo(n),
+	'Nightjar builds the Feature again.'
+];
 
 export function featureAfterRunStep(
 	n: SignalNames,
 	why: { readonly waiting: boolean; readonly red: boolean }
-): string {
+): NextStep {
 	const todo = [
 		...(why.red ? ['Fix the failing check on the branch.'] : []),
 		...(why.waiting
@@ -54,19 +60,17 @@ export function featureAfterRunStep(
 			: [])
 	];
 	if (todo.length === 0) {
-		return steps(['Add a Ticket to the Feature, or close the Feature if it is done.']);
+		return ['Add a Ticket to the Feature, or close the Feature if it is done.'];
 	}
-	return steps([...todo, featureGo(n), 'Nightjar goes on from the branch.']);
+	return [...todo, featureGo(n), 'Nightjar goes on from the branch.'];
 }
 
 // A draft pull request whose Pull checks Nightjar could not make green: the person's now, and its fix rounds still count.
-export const pullChecksStep = (n: SignalNames) =>
-	steps([
-		'Read the failing Pull checks above and fix them on the branch, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.',
-		`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
-	]);
+export const pullChecksStep = (n: SignalNames): NextStep => [
+	'Read the failing Pull checks above and fix them on the branch, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.',
+	`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
+];
 
-export const stoppedStep = (n: SignalNames) =>
-	steps([
-		`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
-	]);
+export const stoppedStep = (n: SignalNames): NextStep => [
+	`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
+];

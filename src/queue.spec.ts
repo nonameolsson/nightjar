@@ -10,6 +10,7 @@ import {
 import type { PullChecks } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker, type NewItem } from './fakes/tracker.js';
+import { featureStopStep, nextStepText } from './next-step.js';
 import type { Waiting } from './plan.js';
 import {
 	buildNamed,
@@ -21,6 +22,7 @@ import {
 	queue,
 	type QueueDeps
 } from './queue.js';
+import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
 
 function world() {
@@ -130,6 +132,15 @@ describe('queue --once', () => {
 				startedAt: new Date(2026, 9, 30, 9).toISOString()
 			}
 		]);
+	});
+
+	it('gives a Feature handed back on a fault its Next step, in the comment and the event', async () => {
+		const w = world();
+		w.failWith(new Error('the network went away'));
+		await queue({ ...w.deps, signals: DEFAULT_SIGNAL_NAMES }, true);
+		const next = featureStopStep(DEFAULT_SIGNAL_NAMES);
+		expect(w.tracker.said('2')[0]).toContain(nextStepText(next));
+		expect(w.happened[0]).toMatchObject({ kind: 'failed', next });
 	});
 });
 
