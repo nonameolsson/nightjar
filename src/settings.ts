@@ -15,6 +15,24 @@ export const BUILD_TOOLS = [
 // The reviewer only reads: no Edit, no Write, and Bash only for git's read commands.
 export const REVIEW_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 
+// Where credentials live. Denied to sandboxed commands and to the Read tool alike, from this one list;
+// the rest of the home folder stays readable so toolchains under nvm, mise, pyenv or ~/.cargo still run.
+// ~/.claude* keeps the agent from another Session's transcripts and the login; Claude Code reads its own outside the sandbox.
+const CREDENTIAL_PATHS = [
+	'~/.ssh',
+	'~/.aws',
+	'~/.azure',
+	'~/.config',
+	'~/.gnupg',
+	'~/.docker',
+	'~/.kube',
+	'~/.netrc',
+	'~/.npmrc',
+	'~/.pypirc',
+	'~/.git-credentials',
+	'~/.claude*'
+];
+
 // Deny wins over any allow in Claude Code, so no config can loosen these.
 const DENY = [
 	'Bash(git commit *)',
@@ -39,9 +57,7 @@ const DENY = [
 	'Bash(ssh *)',
 	'Bash(scp *)',
 	'Bash(nc *)',
-	'Read(~/.ssh/**)',
-	'Read(~/.config/**)',
-	'Read(~/.aws/**)',
+	...CREDENTIAL_PATHS.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]),
 	'WebFetch',
 	'WebSearch'
 ];
@@ -70,7 +86,9 @@ const SANDBOX = {
 	failIfUnavailable: true,
 	allowUnsandboxedCommands: false,
 	autoAllowBashIfSandboxed: false,
-	network: { allowedDomains: [] as string[] }
+	network: { allowedDomains: [] as string[] },
+	// No allowWrite: Claude Code lets a sandboxed command write the worktree and the temp folder, and nothing else.
+	filesystem: { denyRead: CREDENTIAL_PATHS }
 };
 
 // A localNetwork Step's commands reach localhost and nothing else.
