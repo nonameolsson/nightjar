@@ -1,0 +1,27 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildFeature > names its Feature in the pull request body, once even after the body is edited 1`] = `
+"Nightjar built all of #1 One escape.
+
+## Built
+
+- #2 Share the function
+- #3 Use it in marks
+
+## Review
+
+Approve: Reads well.
+
+## Cost
+
+Estimated cost of this run: $6.50.
+
+- #2 Share the function: build $3.00
+- #3 Use it in marks: build $3.00
+- Review: $0.50
+
+<!-- nightjar-feature: 1 -->
+
+---
+_Built by Nightjar._"
+`;
