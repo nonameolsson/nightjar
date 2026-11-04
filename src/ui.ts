@@ -489,17 +489,12 @@ function actionLink(u: Unblock | null, links: Links): string {
 	return `<a class="act ext" href="${escape(u.href)}" ${EXTERNAL} aria-label="${verb} ${escape(idText(u.target))} on ${onTracker(links)}">${verb}</a>`;
 }
 
-const TIP = {
-	info: 'Nightjar asked a question and is waiting for your answer.',
-	person: 'Nightjar needs a person to do something before it can go on.'
-} as const;
-
 // The label of a waiting Feature: a button that opens the steps to unblock it, when the page knows them
 function whyHtml(card: WaitingCard, u: Unblock | null): string {
 	const egg = '<i class="egg need"></i>';
 	if (u === null) return `<p class="label">${egg}${escape(card.why)}</p>`;
 	const id = escape(card.id);
-	return `<p class="label"><button type="button" class="why" data-help="${id}" aria-expanded="false" aria-controls="help-${id}" data-tip="${TIP[u.kind]}">${egg}${escape(card.why)}<span>what to do</span></button></p>`;
+	return `<p class="label"><button type="button" class="why" data-help="${id}" aria-expanded="false" aria-controls="help-${id}">${egg}${escape(card.why)}<span>what to do</span></button></p>`;
 }
 
 // The steps that put a stopped Feature back in the Queue, in the repo's own Signal names
@@ -678,7 +673,7 @@ function table(view: FactoryView, links: Links): string {
 		: all.trackerCannotList
 			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
 			: '';
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Features"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
 }
 
 // Splits what stays in view (the run's state and numbers) from the content that scrolls beneath it.
@@ -875,10 +870,11 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header or chip; put focus back on its twin
-	const was = document.activeElement && document.activeElement.dataset;
-	const key = was && (was.sort ? 'sort' : was.chip ? 'chip' : was.help ? 'help' : null);
-	const value = key && was[key];
+	// a swap drops the focused sort header, chip, help or copy button or link; put focus back on its twin
+	const was = document.activeElement;
+	const data = (was && was.dataset) || {};
+	const key = ['sort', 'chip', 'help', 'copy'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	const kept = [];
 	for (const sel of SCROLLERS) {
 		document.querySelectorAll(sel).forEach((n, i) => kept.push([sel, i, n.scrollTop, n.scrollLeft]));
@@ -891,7 +887,8 @@ new EventSource('/events').onmessage = (e) => {
 		if (n) { n.scrollTop = top; n.scrollLeft = left; }
 	}
 	if (key) {
-		const back = document.querySelector('[data-' + key + '="' + value + '"]');
+		const same = (n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value;
+		const back = Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).find(same);
 		if (back) back.focus();
 	}
 	applyTable();
@@ -906,7 +903,7 @@ setInterval(tick, 1000);
 `;
 
 const STYLE = `
-:root { color-scheme: dark; --void: #04070b; --panel: #0b131b; --line: #1b3a42; --teal: #22e3d2; --teal2: #14a89c; --amber: #ff9a1f; --slate: #8f98e0; --ok: #3fd17f; --ink: #e6f1f2; --ink2: #9db5b8; --muted: #7f979b; --err: #ff5a5f; --socket-dash: #2f5a63; --socket-border: #3f7078; --bar-overlay: rgba(4, 7, 11, 0.94); --panel-overlay: rgba(8, 13, 19, 0.85); --panel-overlay-strong: rgba(8, 13, 19, 0.92); --teal-wash: color-mix(in srgb, var(--teal) 7%, transparent); --shade-soft: rgba(0, 0, 0, 0.3); --shade-mid: rgba(0, 0, 0, 0.35); --shade-deep: rgba(0, 0, 0, 0.45); --tip-shadow: rgba(0, 0, 0, 0.55); --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
+:root { color-scheme: dark; --void: #04070b; --panel: #0b131b; --line: #1b3a42; --teal: #22e3d2; --teal2: #14a89c; --amber: #ff9a1f; --slate: #8f98e0; --ok: #3fd17f; --ink: #e6f1f2; --ink2: #9db5b8; --muted: #7f979b; --err: #ff5a5f; --socket-dash: #2f5a63; --socket-border: #3f7078; --bar-overlay: rgba(4, 7, 11, 0.94); --panel-overlay: rgba(8, 13, 19, 0.85); --panel-overlay-strong: rgba(8, 13, 19, 0.92); --teal-wash: color-mix(in srgb, var(--teal) 7%, transparent); --shade-soft: rgba(0, 0, 0, 0.3); --shade-mid: rgba(0, 0, 0, 0.35); --shade-deep: rgba(0, 0, 0, 0.45); --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
 body { background-color: var(--void); background-size: 32px 32px; background-image: linear-gradient(color-mix(in srgb, var(--teal) 3.5%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--teal) 3.5%, transparent) 1px, transparent 1px); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; --gut: max(32px, calc((100% - 1380px) / 2 + 32px)); }
 ::selection { background: var(--teal); color: var(--void); }
@@ -1046,7 +1043,7 @@ td.progress .eggs { margin-bottom: 4px; }
 .overview li { padding: 3px 0; }
 a.ext { color: inherit; text-decoration-color: var(--muted); text-decoration-style: dotted; text-underline-offset: 3px; }
 a.ext:hover { color: var(--teal); text-decoration-style: solid; }
-a.act { align-items: center; border: 1px solid var(--teal2); color: var(--teal); display: inline-flex; font: 0.75rem var(--mono); gap: 6px; padding: 2px 9px; text-decoration: none; white-space: nowrap; }
+a.act { align-items: center; border: 1px solid var(--teal2); color: var(--teal); display: inline-flex; font: 0.75rem var(--mono); gap: 6px; min-height: 24px; padding: 2px 9px; text-decoration: none; white-space: nowrap; }
 a.act:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); color: var(--teal); }
 a.act::after { background: currentColor; content: ""; height: 0.8em; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8'%3E%3Cpath d='M6 3H3v10h10v-3M9 2h5v5M14 2 7 9'/%3E%3C/svg%3E") center / contain no-repeat; width: 0.8em; }
 .entry.waiting a.act { border-color: var(--amber); color: var(--amber); }
@@ -1055,7 +1052,6 @@ a.act::after { background: currentColor; content: ""; height: 0.8em; mask: url("
 button.why { align-items: center; flex-wrap: wrap; background: none; border: 0; color: inherit; cursor: pointer; display: inline-flex; font: inherit; letter-spacing: inherit; padding: 2px 0; position: relative; text-align: left; text-transform: inherit; }
 button.why span { color: var(--ink2); flex-basis: 100%; padding: 2px 0 0 2.4rem; white-space: nowrap; font-weight: 400; letter-spacing: 0; text-decoration: underline dotted; text-underline-offset: 3px; text-transform: none; }
 button.why[aria-expanded="true"] span { color: var(--amber); }
-button.why[aria-expanded="false"]:is(:hover, :focus-visible)::after { background: var(--panel); border: 1px solid var(--amber); box-shadow: 0 6px 18px var(--tip-shadow); color: var(--ink); content: attr(data-tip); font: 400 0.85rem/1.4 system-ui, sans-serif; left: 0; letter-spacing: 0; padding: 8px 10px; pointer-events: none; position: absolute; text-transform: none; top: calc(100% + 6px); white-space: normal; width: 16rem; z-index: 5; }
 .entry > .help { background: color-mix(in srgb, var(--amber) 6%, transparent); border: 1px dashed var(--amber); font-size: 0.85rem; grid-column: 1 / -1; max-width: 64ch; padding: 10px 16px; }
 .help p { margin: 4px 0; }
 .help p:last-child { color: var(--ink2); }
@@ -1063,7 +1059,7 @@ button.why[aria-expanded="false"]:is(:hover, :focus-visible)::after { background
 .help li { padding: 2px 0; }
 code { background: color-mix(in srgb, var(--teal) 10%, transparent); color: var(--teal); font: 0.85em var(--mono); padding: 1px 5px; }
 .hint { color: var(--ink2); display: block; font-size: 0.85rem; margin-top: 2px; }
-button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; padding: 1px 8px; }
+button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; min-height: 24px; padding: 1px 8px; }
 button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
@@ -1075,8 +1071,12 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button { min-height: 44px; }
+	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
+}
+@media (max-height: 480px), (max-width: 400px) {
+	body { height: auto; overflow: visible; }
+	#scroll { overflow: visible; }
 }
 @media (max-width: 900px) {
 	.entry { grid-template-columns: 1fr; }
