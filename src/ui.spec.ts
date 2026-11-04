@@ -809,7 +809,8 @@ describe('nightjar ui Table', () => {
 			(m) => `${m[1] ?? ''}:${m[2] ?? ''}`
 		);
 		expect(ids).toEqual(['queue:9', 'queue:10', 'waiting:3', 'completed:32', 'completed:31']);
-		expect(table).toContain('<a href="https://example.test/pull/31">draft pull request</a>');
+		expect(table).toContain('href="https://example.test/pull/31"');
+		expect(table).toContain('>draft pull request</a>');
 		expect(table).toContain('failed: check red');
 	});
 
@@ -1162,5 +1163,58 @@ describe('nightjar ui audit fixes', () => {
 		const { page } = await css();
 		expect(page).toContain('<a class="skip" href="#panels">Skip to Features</a>');
 		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
+	});
+});
+
+describe('nightjar ui guidance and links', () => {
+	const config = {
+		tracker: { type: 'github', repo: 'o/app' },
+		codeHost: { type: 'github', repo: 'o/app' },
+		check: 'npm test',
+		allowedCommands: ['npm test']
+	};
+	const waitingOnInfo = () => {
+		writeFileSync(join(root, 'factory.json'), JSON.stringify(config));
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.refreshed([], {
+			items: [{ kind: 'feature', id: '268', title: 'Webhook retries', why: 'needs info' }],
+			trackerCannotList: false
+		});
+	};
+
+	it('links a Feature and its pull request to the Tracker and the Code host', async () => {
+		writeFileSync(join(root, 'factory.json'), JSON.stringify(config));
+		const file = status();
+		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		file.happened({ kind: 'pull', feature: '259', url: 'https://github.com/o/app/pull/9' });
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('href="https://github.com/o/app/issues/259"');
+		expect(page).toContain('href="https://github.com/o/app/pull/9"');
+		expect(page).toContain('href="https://github.com/o/app/pulls"');
+		expect(page).toContain('target="_blank"');
+	});
+
+	it('tells the person what to do about needs info, with the repo’s Signal names and a link', async () => {
+		waitingOnInfo();
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('aria-controls="help-268"');
+		expect(page).toContain('<code>needs-info</code>');
+		expect(page).toContain('<code>ready-for-agent</code>');
+		expect(page).toContain('<code>factory-go</code>');
+		expect(page).toContain('aria-label="Answer #268 on GitHub"');
+	});
+
+	it('keeps the run state and the view switcher outside the scrolling content', async () => {
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toMatch(/<div id="top">.*<header>.*<\/div>\s*<div id="scroll"/s);
+	});
+
+	it('says how to start Nightjar when it is off', async () => {
+		await open();
+		expect((await get('/')).text).toContain('data-copy="nightjar --watch"');
 	});
 });
