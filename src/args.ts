@@ -87,6 +87,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 			chosen.doctor = true;
 			return null;
 		}
+		// two Features are refused rather than the last one built, since a build spends money
 		if (chosen.mode !== null || (m !== 'build' && chosen.doctor)) return clash;
 		chosen.mode = m;
 		return null;
