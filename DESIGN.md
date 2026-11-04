@@ -157,7 +157,7 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 
 ## Layout
 
-A sticky bar (view switcher, 4px gaps, 10px/32px padding) sits under a 260px banner (180px on phones) that fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 60px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding, collapsing to one column at 760px. Under 1000px the detail panel drops below and stops sticking. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
+The page never scrolls: the bar (view switcher and links to the Tracker and pull requests) and the run header with its numbers stay fixed, and only the content beneath scrolls. A 150px banner (100px on phones) opens the scrolling content and fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 16px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. Entries are a 4-column grid (name, 13rem eggs, 10.5rem, 6.5rem clock) with 14px vertical padding, collapsing to one column at 760px. Under 1000px the detail panel drops below and stops sticking. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
 
 ## Elevation & Depth
 
