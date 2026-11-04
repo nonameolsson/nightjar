@@ -63,8 +63,12 @@ export interface StepExtras {
 }
 
 // The sandbox keeps a Step's commands to localhost; it auto-allows nothing, so the allow list still decides.
+// Claude Code runs commands unsandboxed where the sandbox cannot start, and may retry a failed command outside it,
+// unless told not to: failIfUnavailable and allowUnsandboxedCommands make the promise hold.
 const LOCAL_ONLY = {
 	enabled: true,
+	failIfUnavailable: true,
+	allowUnsandboxedCommands: false,
 	autoAllowBashIfSandboxed: false,
 	network: { allowedDomains: ['localhost', '127.0.0.1'], allowLocalBinding: true }
 };
