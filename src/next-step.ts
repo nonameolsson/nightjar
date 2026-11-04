@@ -38,8 +38,28 @@ export function ticketStep(n: SignalNames, kind: TicketHandBack): NextStep {
 	}
 }
 
-const featureGo = (n: SignalNames) =>
-	`On this Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}.`;
+const featureGo = (n: SignalNames, from: string = n.needsInfo) =>
+	`On this Feature, remove ${tag(from)} and add ${tag(n.go)} ${KEEP}.`;
+
+// A Feature with no Tickets is its own Ticket, so what hands a Ticket back puts the Signal on the Feature itself.
+export function ownTicketStep(n: SignalNames, kind: TicketHandBack): NextStep {
+	switch (kind) {
+		case 'answer':
+			return ['Answer in a comment here.', featureGo(n), 'Nightjar goes on from the branch.'];
+		case 'retry':
+			return [
+				'Read the reason above and fix what it names, or edit the Feature.',
+				featureGo(n),
+				'Nightjar goes on from the branch.'
+			];
+		case 'human':
+			return [
+				'Build it yourself, or answer the questions above and make the Feature clear.',
+				featureGo(n, n.human),
+				'Nightjar goes on from the branch.'
+			];
+	}
+}
 
 export const featureStopStep = (n: SignalNames): NextStep => [
 	'Fix the cause named above.',
@@ -64,6 +84,13 @@ export function featureAfterRunStep(
 	}
 	return [...todo, featureGo(n), 'Nightjar goes on from the branch.'];
 }
+
+// A Feature whose Workflow has `output: "note"` ends with the note in a draft pull request, for a person to read and act on.
+export const noteStep = (url: string): NextStep => [
+	`Read the note in ${url}.`,
+	'Close this Feature if the note settles it, or follow up: write a Feature for what the note recommends.',
+	'Merge the pull request to keep the note, or close it.'
+];
 
 // A draft pull request whose Pull checks Nightjar could not make green: the person's now, and its fix rounds still count.
 export const pullChecksStep = (n: SignalNames): NextStep => [

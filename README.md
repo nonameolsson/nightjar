@@ -291,6 +291,26 @@ A Step has:
 | `budgetUsd`        | The most one run of the Step may cost; a Ticket's budget when left out.                                                                                                                                                              |
 | `until`, `maxRounds` | A condition in plain words. After each round the agent reports whether it holds, and Nightjar runs the Step again, in the same session, until it does or `maxRounds` (3 by default) is reached. What is left goes into the pull request body. |
 
+A Workflow can also have a `prompt`: text added to the build Session's instructions for each Ticket of a Feature that picks it. A Workflow with a `prompt` may have no Steps; one without a `prompt` builds as before.
+
+**The `bug` Workflow.** Nightjar ships it in [`templates/workflows/bug.json`](templates/workflows/bug.json); copy it into `workflows` in `factory.json`. Its prompt tells the Session to reproduce the bug before fixing it: write a test that shows the problem, run it and see it fail, fix the code, see the test pass, keep the test, and name the test in its final answer. The draft pull request then has a "Test that shows the bug" section naming it.
+
+```json
+{
+	"workflows": {
+		"bug": {
+			"prompt": "This Ticket is a bug. Reproduce it with a test before you fix it:\n\n1. Write a test that shows the problem, in the repo's own test setup and beside the code it covers.\n2. Run it and see it fail, for the reason the Ticket describes. A test that fails for another reason, or passes, does not show the bug: change it until it does.\n3. Fix the code, not the test.\n4. Run the test again and see it pass.\n5. Keep the test in the change.\n6. In your final answer, set \"test\" to the file and name of the test that shows the bug, and say in the summary how you saw it fail and then pass."
+		}
+	}
+}
+```
+
+A Feature picks it with `**Workflow:** bug`.
+
+A Workflow can also have `output: "note"`, for work whose result is findings, not code. Each Ticket's Session may then write only under `docs/research/`: its settings allow Edit and Write there alone, and Bash only for git's read commands, as the repo's `allowedCommands` could write anywhere. The fixed deny rules stay as they are. A Session that writes no note is handed back as one that changed no file. Once the Feature is built, its draft pull request holds the note, and the Feature gets `ready-for-human` with a comment whose Next step is to read the note, then close the Feature or follow up. A note Workflow cannot have Steps, as a Step can edit code anywhere: `nightjar doctor` fails it, and a Feature that picks it is refused.
+
+**The `exploration` Workflow.** Nightjar ships it in [`templates/workflows/exploration.json`](templates/workflows/exploration.json); copy it into `workflows` in `factory.json`. It has `output: "note"`, and its prompt asks for a note with the question, the findings, the sources they rest on and a recommendation, and no code change. A Feature picks it with `**Workflow:** exploration`.
+
 A Workflow can also have `serve`, a command started in the background in the worktree before its Steps and stopped after them (it reads its port from the variables of `ports.env`, so `ports` is required); `allowedCommands` and `allowedTools`, which its Steps may use besides the usual ones; and `localNetwork`, which lets its Steps reach localhost and nothing else. The fixed deny rules (committing, pushing, switching branches, the outside network, `gh`) cannot be loosened by any of these.
 
 Steps share one notes folder, `.factory/notes/` in the worktree, which is never committed. Nightjar passes nothing else from one Step to the next, so a Step that needs what an earlier one found reads it there.
@@ -446,7 +466,7 @@ The open Features and the day's count are read from the Tracker, so two intakes 
 
 ## The Ticket contract
 
-Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it.
+Every Ticket holds acceptance criteria (a checklist under an `Acceptance criteria` heading), optional blocking links to the Tickets that must be done first, and optional `**Model:**` and `**Effort:**` lines. The full contract, which holds on any Tracker, is in [docs/ticket-contract.md](docs/ticket-contract.md); the package ships it. A Feature with no Tickets is its own Ticket, so its body holds them.
 
 ## Give the Go
 
@@ -474,6 +494,8 @@ On Azure DevOps Boards the same steps read:
 5. Assign the Feature to yourself and add the Go tag. Signals are tags, which appear on first use, so there is nothing to create first.
 
 A work item counts as closed once Azure DevOps has stamped its Closed Date, which it does when the item reaches a closed state of your process; Nightjar reads that date and never the state ([ADR 0002](docs/adr/0002-signals-are-labels-or-tags-never-states.md)). A known limit follows: a **Removed** work item has no Closed Date, so Nightjar counts it as open. A removed Ticket that still carries the ready Signal is built, and one that blocks others keeps them waiting. Take the ready Signal off a Ticket before you remove it, and the Predecessor links from it.
+
+**A Feature without Tickets is its own Ticket.** When a Feature has no Tickets, the build makes one Ticket of the Feature itself, with the Feature's body as the Ticket's body, and builds it as one commit. So the body holds an `Acceptance criteria` checklist, and may hold the `**Model:**` and `**Effort:**` lines; without the checklist the Feature gets needs info and a comment saying so, with no Session. A Feature with Tickets is built as above, from its Tickets alone. `nightjar doctor FEATURE` reports a Feature without Tickets as `ok` when its body holds the checklist.
 
 **A standing Go from a Source.** A Source with `"go": true` and an `owner` gives each Feature it makes the Go: intake assigns the Feature to the owner, then adds the Go, and the owner's `--watch` builds it. This is the one place Nightjar gives the Go. Whoever commits such a Source to `factory.json` gives a standing Go, ahead of time, to every Feature it makes ([ADR 0003](docs/adr/0003-a-source-may-give-a-standing-go.md)). It is bounded by the Source's `maxPerDay`, the [limits](#limits) of each Ticket, and the owner's own `dailyUsd`.
 

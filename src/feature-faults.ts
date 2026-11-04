@@ -55,7 +55,7 @@ function loops(open: readonly Ticket[]): Ticket[][] {
 }
 
 // The faults across `tickets`, the whole of a Feature's Tickets: an open blocker outside them, a blocking loop,
-// an open Ticket a build would skip, no open Ticket, and a Workflow `workflows` does not name.
+// an open Ticket a build would skip, no open Ticket (a Feature with no Tickets is its own, which the caller passes), and a Workflow `workflows` does not name.
 // `ref` spells an item's id as the Tracker does.
 export function featureFaults(
 	feature: Feature,

@@ -43,6 +43,19 @@ describe('readBuildAnswer', () => {
 	});
 });
 
+describe('readBuildAnswer test', () => {
+	it('reads the test a built answer names, trimmed, and drops an empty one', () => {
+		expect(
+			readBuildAnswer({ outcome: 'built', summary: 'done', test: ' src/a.spec.ts: fails on x ' })
+		).toEqual({ outcome: 'built', summary: 'done', test: 'src/a.spec.ts: fails on x' });
+		expect(readBuildAnswer({ outcome: 'built', summary: 'done', test: '  ' })).toEqual({
+			outcome: 'built',
+			summary: 'done'
+		});
+		expect(BUILD_SCHEMA.required).not.toContain('test');
+	});
+});
+
 describe('readReview', () => {
 	it('keeps the issues that name a file and a problem', () => {
 		const review = readReview({
@@ -114,6 +127,23 @@ describe('buildPrompt', () => {
 		expect(withRules.indexOf('the rules win')).toBeLessThan(withRules.indexOf(text));
 		expect(withRules.indexOf(text)).toBeLessThan(withRules.indexOf(feature.body));
 		expect(prompt).not.toContain('bird');
+	});
+
+	it("adds the Workflow's prompt after the rules and before the Feature", () => {
+		const text = 'Write the failing test first.';
+		const withFlow = buildPrompt({
+			...context,
+			rules: 'Repo rule.',
+			workflow: { name: 'bug', prompt: text }
+		});
+		expect(withFlow).toContain('# Workflow `bug`');
+		expect(withFlow.indexOf('the rules win')).toBeLessThan(withFlow.indexOf(text));
+		expect(withFlow.indexOf('Repo rule.')).toBeLessThan(withFlow.indexOf(text));
+		expect(withFlow.indexOf(text)).toBeLessThan(withFlow.indexOf(feature.body));
+	});
+
+	it('is the same prompt without a Workflow prompt', () => {
+		expect(prompt).not.toContain('# Workflow');
 	});
 });
 

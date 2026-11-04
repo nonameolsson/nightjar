@@ -25,6 +25,8 @@ A Ticket is one child of a Feature, built as one commit. It holds:
 
   The first word after the colon is read, in any case; the bold is optional. A Ticket without them runs on `model` and `effort` from `factory.json`; `--model` and `--effort` on the command line win over both.
 
+A Feature without Tickets is its own Ticket: the build makes one Ticket of the Feature itself, its body the Ticket's body, built as one commit. The Feature's body then holds the acceptance criteria and may hold the `**Model:**` and `**Effort:**` lines; it needs no ready Signal and no blocking links. Without the checklist, no Session starts: the Feature gets needs info and a comment saying so. When such a Ticket is handed back (its Session failed, it asked questions, it changed no file), the Signal goes on the Feature itself. A Feature that has any Ticket, closed ones too, is built from its Tickets alone.
+
 A Ticket is built only while it carries the ready Signal (`ready-for-agent` by default). Its Feature carries no Signal until a person assigns it to themselves and gives it the Go (`factory-go` by default). The one exception is a Source with `"go": true` in `factory.json`: intake assigns each Feature it makes to the Source's trusted `owner` and gives it the Go, a standing Go from whoever committed that Source ([docs/adr/0003](adr/0003-a-source-may-give-a-standing-go.md)).
 
 ## Signals through a build
@@ -103,12 +105,12 @@ What to build.
 
 A Ticket on the Tracker is held to the same contract before its Session. One without acceptance criteria, or with a `**Model:**` or `**Effort:**` line with no value, is handed back with no Session and no spend: the ready Signal comes off, needs info goes on, and a comment lists each fault. Nightjar never edits the issue.
 
-`nightjar doctor FEATURE` checks a Feature's open Tickets against that contract, and also what sits across the Feature's Tickets, which the build does not check before a Session. Each is a fault, and any fault makes it exit 1:
+`nightjar doctor FEATURE` checks a Feature's open Tickets against that contract (a Feature with no Tickets, as its own Ticket: `ok` when its body holds the checklist), and also what sits across the Feature's Tickets, which the build does not check before a Session. Each is a fault, and any fault makes it exit 1:
 
 - an open blocker that is not one of the Feature's Tickets (a closed blocker, or one among the Feature's Tickets, is no fault), since a build never reaches it;
 - a blocking loop between Tickets, named by each Ticket in it, since none of them is built;
 - an open Ticket without the ready Signal, since a build skips it;
-- a Feature with no open Tickets, since a build has nothing to do;
+- a Feature whose Tickets are all closed, since a build has nothing to do (a Feature with no Tickets at all is its own Ticket, and no fault);
 - a `**Workflow:**` line naming a Workflow `factory.json` does not have.
 
 It reads only what every Tracker gives (the Feature, its Tickets and their blockers), and changes nothing.

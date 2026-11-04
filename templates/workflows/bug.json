@@ -1,0 +1,3 @@
+{
+	"prompt": "This Ticket is a bug. Reproduce it with a test before you fix it:\n\n1. Write a test that shows the problem, in the repo's own test setup and beside the code it covers.\n2. Run it and see it fail, for the reason the Ticket describes. A test that fails for another reason, or passes, does not show the bug: change it until it does.\n3. Fix the code, not the test.\n4. Run the test again and see it pass.\n5. Keep the test in the change.\n6. In your final answer, set \"test\" to the file and name of the test that shows the bug, and say in the summary how you saw it fail and then pass."
+}

@@ -7,14 +7,17 @@ import { pullChecksReport } from './gate.js';
 import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
-import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { needsAPerson, nextTicket, ownTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
+import { NOTES_FOLDER } from './settings.js';
 import {
 	featureAfterRunStep,
 	featureStopStep,
 	nextStepText,
+	noteStep,
+	ownTicketStep,
 	pullChecksStep,
 	stoppedStep,
 	ticketStep,
@@ -201,7 +204,10 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			...(tickets === undefined ? {} : { tickets })
 		});
 	deps.status.doing(settingUp());
-	const tickets = await tracker.tickets(id);
+	const listed = await tracker.tickets(id);
+	// a Feature with no Tickets is its own Ticket, built as one commit
+	const alone = listed.length === 0;
+	const tickets = alone ? [ownTicket(feature)] : listed;
 	const chosen = chooseWorkflow(setup, feature.body);
 	if (chosen.kind === 'refused') {
 		const why = `its Workflow cannot be used: ${chosen.why}`;
@@ -211,6 +217,17 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 			why,
 			`Nightjar built nothing: ${chosen.why}`,
 			waiting(tickets, new Set()),
+			setup.signals
+		);
+	}
+	const faults = alone ? ticketFaults(feature.body) : [];
+	if (faults.length > 0) {
+		return needsInfoStop(
+			deps,
+			id,
+			`it has no Tickets, and its body fails the Ticket contract: ${faults.join(' ')}`,
+			`Nightjar built nothing: this Feature has no Tickets, so it is built as one Ticket, and its body does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+			[],
 			setup.signals
 		);
 	}
@@ -283,6 +300,8 @@ function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
 
 class FeatureRun {
 	private readonly costs: Cost[] = [];
+	// the test each Ticket's Session said shows its bug, for the pull request
+	private readonly tests = new Map<ItemId, string>();
 	private featureComments: Comment[] = [];
 	// the Feature's Workflow, which runs its own Steps
 	private steps: WorkflowRun | null = null;
@@ -306,8 +325,19 @@ class FeatureRun {
 		this.sessionStartedAt = this.startedAt;
 	}
 
+	// whether the Feature has no Tickets, so its own Ticket is the only one
+	private get alone() {
+		return this.tickets.length === 1 && this.tickets[0]?.id === this.feature.id;
+	}
+
 	private get aborted() {
 		return this.setup.signal?.aborted === true;
+	}
+
+	// "note" when the Feature's Workflow writes a note under docs/research/, not code
+	private get output(): { readonly output?: 'note' } {
+		const output = this.workflow?.workflow.output;
+		return output === undefined ? {} : { output };
 	}
 
 	async build(): Promise<FeatureOutcome> {
@@ -384,18 +414,20 @@ class FeatureRun {
 	) {
 		const signal: Signal = kind === 'human' ? 'human' : 'needsInfo';
 		const { tracker } = this.deps;
-		const next = ticketStep(this.setup.signals, kind);
+		// a Feature that is its own Ticket carries the Signal itself, and was never given the ready one
+		const own = ticket.id === this.feature.id;
+		const next = (own ? ownTicketStep : ticketStep)(this.setup.signals, kind);
 		this.deps.status.happened({
 			kind: 'needs-info',
 			feature: this.feature.id,
-			ticket: ticket.id,
+			ticket: own ? null : ticket.id,
 			why,
 			next
 		});
 		const side = await this.tree.discard(before, ticket.id);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
 		await tracker.comment(ticket.id, withNext(`${body}${kept}`, next));
-		await tracker.removeSignal(ticket.id, 'ready');
+		if (!own) await tracker.removeSignal(ticket.id, 'ready');
 		await tracker.addSignal(ticket.id, signal);
 		const i = this.tickets.indexOf(ticket);
 		this.tickets[i] = {
@@ -420,6 +452,9 @@ class FeatureRun {
 		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
 		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);
+		const prompt = this.workflow?.workflow.prompt;
+		const workflow =
+			this.workflow !== null && prompt !== undefined ? { name: this.workflow.name, prompt } : null;
 		this.building(ticket.id, 'build', sessionId, {
 			round: questionRounds(ticketComments) + 1,
 			rounds: this.setup.limits.questionRounds + 1
@@ -433,6 +468,8 @@ class FeatureRun {
 			featureComments: this.featureComments,
 			ticketComments,
 			built: this.tickets.filter((t) => this.built.has(t.id)),
+			...(workflow === null ? {} : { workflow }),
+			...this.output,
 			budgetUsd: this.setup.limits.ticketUsd
 		});
 		const entry = {
@@ -469,7 +506,7 @@ class FeatureRun {
 			}
 			case 'built':
 				this.log({ ...entry, outcome: 'built' });
-				return this.checkAndCommit(ticket, before, sessionId, got.summary, got.costUsd);
+				return this.checkAndCommit(ticket, before, sessionId, got.summary, got.costUsd, got.test);
 		}
 	}
 
@@ -501,7 +538,8 @@ class FeatureRun {
 		before: string,
 		sessionId: string,
 		built: string,
-		cost: number
+		cost: number,
+		test?: string
 	): Promise<Step> {
 		const { limits, check: command } = this.setup;
 		const first = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
@@ -512,7 +550,7 @@ class FeatureRun {
 			cap: limits.ticketUsd,
 			spent: cost,
 			check: first,
-			of: { kind: 'build' }
+			of: { kind: 'build', ...this.output }
 		});
 		const { check } = fixed;
 		const summary = [built, ...fixed.summaries].join('\n\n');
@@ -531,6 +569,7 @@ class FeatureRun {
 			return NEXT;
 		}
 		this.built.add(ticket.id);
+		if (test !== undefined) this.tests.set(ticket.id, test);
 		if (this.shown?.kind === 'building') {
 			// no round of its own any more, so it is not counted as another fix round
 			this.deps.status.doing({
@@ -593,6 +632,8 @@ class FeatureRun {
 		if (paused) await this.pause(paused);
 		if ((await this.tree.ahead()) === 0) {
 			if (paused) return { kind: 'paused', why: paused };
+			// a Feature that is its own Ticket was handed back on itself, with its own comment
+			if (this.alone && left.some(needsAPerson)) return { kind: 'nothing', waiting: left };
 			const next = featureAfterRunStep(this.setup.signals, {
 				waiting: left.length > 0,
 				red: false
@@ -654,10 +695,16 @@ class FeatureRun {
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,
-			workflow
+			workflow,
+			note: this.workflow?.workflow.output === 'note' ? this.workflow.name : null,
+			tests: done.flatMap((t) => {
+				const test = this.tests.get(t.id);
+				return test === undefined ? [] : [{ ticket: t.id, test }];
+			})
 		});
 		const pull = await this.openDraft(body);
-		const linked = [...(complete ? [id] : []), ...done.map((t) => t.id)];
+		// a Feature that is its own Ticket is named once
+		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
 			pull,
 			linked.map((n) => tracker.reference(n))
@@ -697,8 +744,31 @@ class FeatureRun {
 					next
 				)
 			);
+		} else if (complete && this.workflow?.workflow.output === 'note') {
+			await this.handNote(pull);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
+	private async handNote(pull: Pull): Promise<void> {
+		const id = this.feature.id;
+		const next = noteStep(pull.url);
+		this.deps.status.happened({
+			kind: 'needs-info',
+			feature: id,
+			ticket: null,
+			why: 'its note is for a person to read',
+			next
+		});
+		await this.deps.tracker.addSignal(id, 'human');
+		await this.deps.tracker.comment(
+			id,
+			withNext(
+				`Nightjar wrote a note for this Feature, under \`${NOTES_FOLDER}/\` in ${pull.url}. It holds findings, not code, so it waits for a person to read it.`,
+				next
+			)
+		);
 	}
 
 	// The Go back, so a later run goes on from the branch.
@@ -1123,12 +1193,21 @@ function pullBody(p: {
 	paused: string | null;
 	// the Workflow's section, when it ran or left a Step
 	workflow: string | null;
+	// the tests the Sessions said show a bug, by Ticket
+	tests: readonly { ticket: ItemId; test: string }[];
+	// the name of the Workflow, when its output is a note rather than code
+	note: string | null;
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
 		`Nightjar built ${p.complete ? 'all of' : 'part of'} ${ref(p.feature.id)} ${p.feature.title}.`,
 		`## Built\n\n${p.done.map((t) => `- ${ref(t.id)} ${t.title}`).join('\n')}`
 	];
+	if (p.note !== null) {
+		parts.push(
+			`## A note, not code\n\nThe Workflow \`${p.note}\` writes findings, not code: this pull request holds a note under \`${NOTES_FOLDER}/\`. Read it, then close the Feature or follow up on what it recommends. It is not meant to be merged unread.`
+		);
+	}
 	if (p.red) {
 		parts.push(
 			`## The check fails\n\nAfter ${ref(p.red.ticket)}, \`${p.check}\` still fails after the fix rounds:\n\n\`\`\`\n${p.red.tail}\n\`\`\``
@@ -1139,6 +1218,11 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
+	if (p.tests.length > 0) {
+		const many = p.tests.length > 1;
+		const lines = p.tests.map((t) => `- ${ref(t.ticket)}: ${t.test}`).join('\n');
+		parts.push(`## ${many ? 'Tests that show the bugs' : 'Test that shows the bug'}\n\n${lines}`);
+	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.review !== 'off')
 		parts.push(

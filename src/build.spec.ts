@@ -40,7 +40,8 @@ import { FakeCodeHost } from './fakes/code-host.js';
 import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
-import { featureAfterRunStep, ticketStep } from './next-step.js';
+import { ticketLine } from './coding-agent.js';
+import { featureAfterRunStep, nextStepText, noteStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK } from './prompt.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
@@ -52,8 +53,8 @@ import { openWorktree } from './worktree.js';
 // A test over real git runs a few dozen processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
 
-// What the scripted agent does with each Ticket's build, by the Ticket's id.
-type Act = 'build' | 'ask' | 'fail';
+// What the scripted agent does with each Ticket's build, by the Ticket's id; 'empty' says it built but writes no file.
+type Act = 'build' | 'ask' | 'fail' | 'empty';
 
 // One piece of work the build loop asked the Coding agent for.
 type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
@@ -92,6 +93,8 @@ interface World {
 	// what the scripted agent does in a fix round; the default says it fixed it
 	fixAgent: (req: FixRequest) => FixOutcome;
 	acts: Record<string, Act>;
+	// the test the scripted agent says shows a Ticket's bug, by Ticket
+	tests: Record<string, string>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
 	checkOk: boolean;
@@ -218,6 +221,7 @@ function worldOf(o: {
 		stepAgent: (req) => stepDone(req),
 		fixAgent: (req) => ({ kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 }),
 		acts: {},
+		tests: {},
 		settle: () => undefined,
 		checkOk: true,
 		setupOk: true,
@@ -244,7 +248,9 @@ function deps(world: World): Deps {
 				answer(req, (): BuildOutcome => {
 					const n = req.ticket.id;
 					const act = world.acts[n] ?? 'build';
-					write(world, req.at.folder, `ticket-${n}.txt`);
+					// a note's Session may write only its note
+					const file = req.output === 'note' ? `docs/research/${n}.md` : `ticket-${n}.txt`;
+					if (act !== 'empty') write(world, req.at.folder, file);
 					const { sessionId } = req;
 					if (act === 'ask') {
 						const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
@@ -253,7 +259,14 @@ function deps(world: World): Deps {
 					if (act === 'fail') {
 						return { kind: 'failed', why: 'it reached its budget', sessionId, costUsd: 15.2 };
 					}
-					return { kind: 'built', summary: `Built #${n}`, sessionId, costUsd: 3 };
+					const test = world.tests[n];
+					return {
+						kind: 'built',
+						summary: `Built #${n}`,
+						...(test === undefined ? {} : { test }),
+						sessionId,
+						costUsd: 3
+					};
 				}),
 			fix: (req) => answer(req, () => world.fixAgent(req)),
 			step: (req) => answer(req, () => world.stepAgent(req)),
@@ -326,8 +339,10 @@ const tree = () => join(base, 'worktrees', '1-one-escape');
 
 // What a scripted Session does in the worktree, and what a spec reads of it, over either adapter.
 function write(world: World, folder: string, file: string): void {
-	if (world.git) writeFileSync(join(folder, file), 'work\n');
-	else world.trees.write(folder, file);
+	if (world.git) {
+		mkdirSync(join(folder, file, '..'), { recursive: true });
+		writeFileSync(join(folder, file), 'work\n');
+	} else world.trees.write(folder, file);
 }
 
 function has(world: World, file: string): boolean {
@@ -950,6 +965,178 @@ describe('buildFeature', () => {
 	});
 });
 
+describe('a Feature with no Tickets', () => {
+	const BODY =
+		'A crash on empty input.\n\n**Model:** opus\n**Effort:** low\n\n### Acceptance criteria\n\n- [ ] it does not crash';
+	const own = (world: World, body = BODY) => {
+		world.tracker.add({
+			id: '9',
+			title: 'Fix the crash',
+			body,
+			assignees: ['ann'],
+			signals: ['go']
+		});
+		world.asked.length = 0;
+	};
+	const worktree = (world: World) => join(world.worktrees, '9-fix-the-crash');
+
+	it('is built as one Ticket, its body the Ticket body, in one commit and one draft', async () => {
+		const world = makeWorld();
+		own(world);
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['9'], waiting: [] });
+		const [build, ...more] = askedOf(world, 'build');
+		expect(more).toEqual([]);
+		expect(build?.ticket).toMatchObject({ id: '9', title: 'Fix the crash', body: BODY });
+		expect(build?.feature.id).toBe('9');
+		expect(world.trees.subjects(worktree(world))).toEqual(['Fix the crash (#9)']);
+		expect(world.host.pulls).toHaveLength(1);
+		expect(world.host.pulls[0]?.body).toContain('Nightjar built all of #9 Fix the crash.');
+		expect(world.host.pulls[0]?.body).toContain('- #9 Fix the crash');
+		expect(refs(world)).toEqual(['#9']);
+		expect(world.tracker.signalsOf('9')).toEqual([]);
+	});
+
+	it("runs on the Feature's own Model and Effort lines", async () => {
+		const world = makeWorld();
+		own(world);
+		await buildFeature(deps(world), setup(world), '9');
+		const body = askedOf(world, 'build')[0]?.ticket.body ?? '';
+		expect([ticketLine(body, 'Model'), ticketLine(body, 'Effort')]).toEqual(['opus', 'low']);
+	});
+
+	it('gets needs info and a comment, and no Session, when its body holds no acceptance criteria', async () => {
+		const world = makeWorld();
+		own(world, 'Fix the crash on empty input.');
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.asked).toEqual([]);
+		expect(world.host.pulls).toEqual([]);
+		expect(world.tracker.signalsOf('9')).toEqual(['needsInfo']);
+		expect(world.tracker.said('9')).toHaveLength(1);
+		const said = world.tracker.said('9')[0] ?? '';
+		expect(said).toContain('no Tickets');
+		expect(said).toContain('Acceptance criteria');
+		expect(ledger(world)).toEqual([]);
+	});
+
+	it('is handed back on the Feature itself once, with the Feature as the place to answer', async () => {
+		const world = makeWorld();
+		own(world);
+		world.acts['9'] = 'ask';
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.tracker.signalsOf('9')).toEqual(['needsInfo']);
+		const said = world.tracker.said('9');
+		expect(said).toHaveLength(1);
+		expect(said[0]).toContain('Which file?');
+		expect(said[0]).toContain('On this Feature, remove `needs-info` and add `factory-go`');
+		expect(said[0]).not.toContain('On this Ticket');
+	});
+
+	it('goes on from the branch when it is built already, and builds nothing twice', async () => {
+		const world = makeWorld();
+		own(world);
+		await buildFeature(deps(world), setup(world), '9');
+		await world.tracker.addSignal('9', 'go');
+		world.asked.length = 0;
+		await buildFeature(deps(world), setup(world), '9');
+		expect(askedOf(world, 'build')).toEqual([]);
+	});
+});
+
+describe('a Workflow whose output is a note', () => {
+	const BODY =
+		'**Workflow:** exploration\n\nWhy is the build slow?\n\n### Acceptance criteria\n\n- [ ] a note says why';
+	const own = (world: World) => {
+		world.tracker.add({
+			id: '9',
+			title: 'Why the build is slow',
+			body: BODY,
+			assignees: ['ann'],
+			signals: ['go']
+		});
+		world.asked.length = 0;
+	};
+	const NOTE: WorkflowConfig = { prompt: 'Find out.', output: 'note', steps: [] };
+	const exploring = (world: World) => setup(world, { workflows: { exploration: NOTE } });
+	const worktree = (world: World) => join(world.worktrees, '9-why-the-build-is-slow');
+
+	it('builds the issue as a note in a draft, and hands the Feature to a person to read it', async () => {
+		const world = makeWorld();
+		own(world);
+		const got = await buildFeature(deps(world), exploring(world), '9');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['9'], waiting: [] });
+		const [build, ...more] = askedOf(world, 'build');
+		expect(more).toEqual([]);
+		expect(build?.output).toBe('note');
+		expect(build?.workflow).toEqual({ name: 'exploration', prompt: 'Find out.' });
+		expect(world.trees.has(worktree(world), 'docs/research/9.md')).toBe(true);
+		expect(world.trees.subjects(worktree(world))).toEqual(['Why the build is slow (#9)']);
+
+		const pull = world.host.pulls[0];
+		expect(pull?.body).toContain('## A note, not code');
+		expect(pull?.body).toContain('`docs/research/`');
+		expect(world.tracker.signalsOf('9')).toEqual(['human']);
+		const said = world.tracker.said('9');
+		expect(said).toHaveLength(1);
+		const next = noteStep(pull?.url ?? '');
+		expect(said[0]).toContain(nextStepText(next));
+		expect(next[0]).toContain('Read the note');
+		expect(next[1]).toMatch(/Close this Feature .* or follow up/);
+		expect(world.happened.at(-1)).toEqual({
+			kind: 'needs-info',
+			feature: '9',
+			ticket: null,
+			why: 'its note is for a person to read',
+			next
+		});
+	});
+
+	it("keeps a note's fix rounds to the note as well", async () => {
+		const world = makeWorld();
+		own(world);
+		world.checkOk = false;
+		world.fixAgent = (req) => {
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 };
+		};
+		await buildFeature(deps(world), exploring(world), '9');
+		expect(askedOf(world, 'fix').map((f) => f.of)).toEqual([{ kind: 'build', output: 'note' }]);
+	});
+
+	it('hands back a Ticket whose Session writes no note as one that changed no file', async () => {
+		const world = makeWorld();
+		own(world);
+		world.acts['9'] = 'empty';
+		const got = await buildFeature(deps(world), exploring(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.host.pulls).toEqual([]);
+		expect(world.tracker.signalsOf('9')).toEqual(['needsInfo']);
+		expect(world.tracker.said('9')).toHaveLength(1);
+		expect(world.tracker.said('9')[0]).toContain('said it built this Ticket but changed no file');
+	});
+
+	it('leaves the output out of a Workflow without one, and the Feature with no Signal', async () => {
+		const world = makeWorld();
+		own(world);
+		await buildFeature(
+			deps(world),
+			setup(world, { workflows: { exploration: { prompt: 'p', steps: [] } } }),
+			'9'
+		);
+		expect(askedOf(world, 'build')[0]).not.toHaveProperty('output');
+		expect(askedOf(world, 'fix')).toEqual([]);
+		expect(world.host.pulls[0]?.body).not.toContain('A note');
+		expect(world.tracker.signalsOf('9')).toEqual([]);
+	});
+});
+
 describe('a Session that cannot go on', () => {
 	const LIMIT_WHY = "the plan's usage limit was reached; it resets at 2026-10-30T20:00:00.000Z";
 	const KEY_WHY = 'the session billed an API key; unset ANTHROPIC_API_KEY or pass --use-api-key';
@@ -1234,6 +1421,40 @@ describe('Workflows', () => {
 		await buildFeature(deps(world), setup(world, { workflows: { 'design-review': flow() } }), '1');
 		expect(kinds(world)).toEqual(['build', 'build', 'review']);
 		expect(body(world)).not.toContain('Workflow');
+	});
+
+	it("gives each Ticket's build Session the Workflow's prompt, and none to a Workflow without one", async () => {
+		const world = makeWorld();
+		await buildFeature(
+			deps(world),
+			withFlow(world, { prompt: 'Show the bug with a test first.', steps: [] }),
+			'1'
+		);
+		const builds = askedOf(world, 'build');
+		expect(builds).toHaveLength(2);
+		for (const b of builds) {
+			expect(b.workflow).toEqual({
+				name: 'design-review',
+				prompt: 'Show the bug with a test first.'
+			});
+		}
+		expect(kinds(world)).toEqual(['build', 'build', 'review']);
+
+		const plain = makeWorld();
+		await buildFeature(deps(plain), withFlow(plain), '1');
+		expect(askedOf(plain, 'build').every((b) => b.workflow === undefined)).toBe(true);
+	});
+
+	it('names in the pull request the test a Session says shows the bug', async () => {
+		const world = makeWorld();
+		world.tests['2'] = 'src/marks.spec.ts: keeps the mark after a rename';
+		await buildFeature(deps(world), withFlow(world, { prompt: 'p', steps: [] }), '1');
+		expect(body(world)).toContain(
+			'## Test that shows the bug\n\n- #2: src/marks.spec.ts: keeps the mark after a rename'
+		);
+		const none = makeWorld();
+		await buildFeature(deps(none), withFlow(none, { prompt: 'p', steps: [] }), '1');
+		expect(body(none)).not.toContain('Test that shows');
 	});
 
 	it('runs the default Workflow of a Feature without a Workflow line', async () => {

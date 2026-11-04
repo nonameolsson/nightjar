@@ -595,6 +595,71 @@ describe('workflows', () => {
 		expect(refusal()).toContain(said);
 	});
 
+	it('loads a Workflow with a prompt and no Steps, and one with both', () => {
+		write({
+			...VALID,
+			workflows: {
+				bug: { prompt: 'Write a failing test first.' },
+				both: { prompt: 'p', steps: [step] }
+			}
+		});
+		const { workflows } = loadConfig(root);
+		expect(workflows?.bug).toEqual({ prompt: 'Write a failing test first.', steps: [] });
+		expect(workflows?.both?.prompt).toBe('p');
+		expect(workflows?.both?.steps).toHaveLength(1);
+	});
+
+	it('leaves the prompt out of a Workflow that names none', () => {
+		write({ ...VALID, workflows: WORKFLOWS });
+		expect(loadConfig(root).workflows?.['design-review']).not.toHaveProperty('prompt');
+	});
+
+	it('refuses an empty prompt, and a Workflow with neither Steps nor a prompt', () => {
+		write({ ...VALID, workflows: { w: { prompt: ' ', steps: [step] } } });
+		expect(refusal()).toContain('prompt: prompt is empty');
+		write({ ...VALID, workflows: { w: {} } });
+		expect(refusal()).toContain('a Workflow needs at least one Step or a prompt');
+	});
+
+	it('accepts the bug Workflow Nightjar ships, as a repo copies it into workflows', () => {
+		const bug: unknown = JSON.parse(
+			readFileSync(new URL('../templates/workflows/bug.json', import.meta.url), 'utf8')
+		);
+		write({ ...VALID, workflows: { bug } });
+		const prompt = loadConfig(root).workflows?.bug?.prompt ?? '';
+		expect(prompt).toMatch(/test that shows the problem/);
+		expect(prompt).toMatch(/see it fail/);
+		expect(prompt).toMatch(/Fix the code/);
+		expect(prompt).toMatch(/see it pass/);
+		expect(prompt).toMatch(/Keep the test/);
+		expect(prompt).toMatch(/final answer/);
+	});
+
+	it('takes an output of "note" and nothing else, and leaves it out of a Workflow that names none', () => {
+		write({ ...VALID, workflows: { explore: { prompt: 'p', output: 'note' } } });
+		expect(loadConfig(root).workflows?.explore?.output).toBe('note');
+		write({ ...VALID, workflows: WORKFLOWS });
+		expect(loadConfig(root).workflows?.['design-review']).not.toHaveProperty('output');
+		write({ ...VALID, workflows: { w: { prompt: 'p', output: 'code' } } });
+		expect(refusal()).toContain('output: output can only be "note"');
+	});
+
+	it('accepts the exploration Workflow Nightjar ships: a note of findings, sources and a recommendation, no code', () => {
+		const exploration: unknown = JSON.parse(
+			readFileSync(new URL('../templates/workflows/exploration.json', import.meta.url), 'utf8')
+		);
+		write({ ...VALID, workflows: { exploration } });
+		const flow = loadConfig(root).workflows?.exploration;
+		expect(flow?.output).toBe('note');
+		expect(flow?.steps).toEqual([]);
+		const prompt = flow?.prompt ?? '';
+		expect(prompt).toMatch(/docs\/research\//);
+		expect(prompt).toMatch(/Findings/);
+		expect(prompt).toMatch(/Sources/);
+		expect(prompt).toMatch(/Recommendation/);
+		expect(prompt).toMatch(/no code change/);
+	});
+
 	it('refuses a default that names no Workflow', () => {
 		write({ ...VALID, workflows: WORKFLOWS, defaultWorkflow: 'nope' });
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');

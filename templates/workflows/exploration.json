@@ -1,0 +1,4 @@
+{
+	"output": "note",
+	"prompt": "This Ticket is an exploration: answer its question in a note, and make no code change.\n\n1. Read what bears on the question: the code, its specs, the docs and decisions, and the git history.\n2. Write the note as one Markdown file under docs/research/, with these sections:\n   - Question: the question, in one sentence.\n   - Findings: what you found, each with the evidence for it.\n   - Sources: every file (as path:line), commit and doc you relied on.\n   - Recommendation: what to do next and why, or that nothing should be done; name what stays unknown.\n3. Change no other file: no code, no tests, no config. A fix you would make goes in the Recommendation, not in the code.\n4. In your final answer, say in the summary where the note is and what it recommends."
+}

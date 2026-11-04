@@ -9,6 +9,7 @@ import { loadConfig, loadRules, type Config } from './config.js';
 import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
+import { NOTES_FOLDER } from './settings.js';
 import { firstLine, run, type Env } from './git.js';
 import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
@@ -293,6 +294,7 @@ const workflowsCheck = check({
 	run: async ({ root, loaded }, o) => {
 		const named = Object.entries(loaded?.config.workflows ?? {}).map(([name, w]) => ({
 			name,
+			note: w.output === 'note',
 			steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
 		}));
 		if (named.length === 0) return { found: { workflowProblems: {} } };
@@ -307,6 +309,13 @@ const workflowsCheck = check({
 		const workflowProblems: Record<string, string> = {};
 		const lines = named.map((w): Line => {
 			const said = { name: `Workflow ${w.name}`, summary: null, only: w.name };
+			// a Step runs with Edit and Write over the whole worktree, so a note's Workflow with one could still change code
+			if (w.note && w.steps.length > 0) {
+				const steps = w.steps.map((s) => s.step).join(', ');
+				const detail = `its output is "note", so its Sessions may write only under ${NOTES_FOLDER}/, but its Steps (${steps}) can edit code anywhere in the worktree. Remove the Steps, or the output.`;
+				workflowProblems[w.name] = detail;
+				return { ...said, status: 'fail', detail };
+			}
 			const missing = w.steps.flatMap((s) =>
 				s.skills
 					.filter((k) => skills !== null && !isLoaded(skills, k))
@@ -325,7 +334,7 @@ const workflowsCheck = check({
 				return { ...said, status: 'fail', detail };
 			}
 			const count = `${String(w.steps.length)} Step${w.steps.length === 1 ? '' : 's'}`;
-			const detail = `${count}${used.length > 0 ? `, skills found: ${used.map((k) => `/${k}`).join(', ')}` : ''}`;
+			const detail = `${count}${w.note ? `, writes a note under ${NOTES_FOLDER}/` : ''}${used.length > 0 ? `, skills found: ${used.map((k) => `/${k}`).join(', ')}` : ''}`;
 			return { ...said, status: 'ok', detail };
 		});
 		return { found: { workflowProblems }, lines };
