@@ -11,7 +11,9 @@ Turn the idea agreed in this conversation into one Feature file and make it on t
 
 Read `factory.json` at the repo's root. Note the Tracker, and on Azure DevOps whether `tracker.ticketType` is set: without it `nightjar create` refuses, so ask the person which work item type a Ticket is (such as `User Story`) and add it to `factory.json` before step 5. Read the repo's `CLAUDE.md` or `AGENTS.md` and its glossary, if any, so titles use the repo's own words.
 
-Done when you know the Tracker and that it can make Tickets.
+List the Tracker's open Features and Tickets and match each to the idea by title and body. Extend an item that already covers it, and make a new Feature only for what none does.
+
+Done when you know the Tracker and that it can make Tickets, and have named every open item on the same topic.
 
 ## 2. Slice the idea into Tickets
 

@@ -3,6 +3,7 @@ import { describe, it } from 'vitest';
 import {
 	codeHostContract,
 	featureWriterContract,
+	feedbackContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract
@@ -39,4 +40,8 @@ describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn and
 
 describe('FakeCodeHost meets the Code host contract', () => {
 	for (const c of codeHostContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the feedback contract', () => {
+	for (const c of feedbackContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });

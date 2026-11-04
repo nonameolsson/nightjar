@@ -197,6 +197,7 @@ export async function runNightjar(
 		baseBranch: ready.baseBranch,
 		check: config.check,
 		allowedCommands: config.allowedCommands,
+		signals: config.signals,
 		...(ready.rules === null ? {} : { rules: ready.rules }),
 		...(config.plugins === undefined ? {} : { plugins: config.plugins }),
 		defaults: { model: config.model, effort: config.effort },
