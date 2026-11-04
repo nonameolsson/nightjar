@@ -430,6 +430,32 @@ describe('nightjar doctor over Workflows', () => {
 		).toBe(true);
 	});
 
+	it('fails a Workflow whose output is a note and whose Steps can edit code, and passes one without Steps', async () => {
+		m = machine();
+		m.writeConfig({
+			...GITHUB,
+			workflows: {
+				exploration: { prompt: 'Find out.', output: 'note' },
+				mixed: { prompt: 'Find out.', output: 'note', steps: [step('tidy', 'tidy the code')] }
+			}
+		});
+		expect(await start()).toBe(2);
+		expect(err.join('\n')).toMatch(
+			/FAIL {2}Workflow mixed: its output is "note", so its Sessions may write only under docs\/research\/, but its Steps \(tidy\) can edit code/
+		);
+		expect(out).toContain(
+			'  ok    Workflow exploration: 0 Steps, writes a note under docs/research/'
+		);
+		const checked = await checkMachine({
+			useApiKey: false,
+			env: m.env,
+			cwd: m.root,
+			failFast: true,
+			gh: github.gh
+		});
+		expect(Object.keys(checked.ready?.workflowProblems ?? {})).toEqual(['mixed']);
+	});
+
 	it('does not start a claude session when no Step names a skill', async () => {
 		m = machine();
 		m.writeConfig({ ...GITHUB, workflows: { quick: WORKFLOWS.quick } });

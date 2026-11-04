@@ -41,7 +41,7 @@ import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { ticketLine } from './coding-agent.js';
-import { featureAfterRunStep, ticketStep } from './next-step.js';
+import { featureAfterRunStep, nextStepText, noteStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK } from './prompt.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
@@ -53,8 +53,8 @@ import { openWorktree } from './worktree.js';
 // A test over real git runs a few dozen processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
 
-// What the scripted agent does with each Ticket's build, by the Ticket's id.
-type Act = 'build' | 'ask' | 'fail';
+// What the scripted agent does with each Ticket's build, by the Ticket's id; 'empty' says it built but writes no file.
+type Act = 'build' | 'ask' | 'fail' | 'empty';
 
 // One piece of work the build loop asked the Coding agent for.
 type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
@@ -248,7 +248,9 @@ function deps(world: World): Deps {
 				answer(req, (): BuildOutcome => {
 					const n = req.ticket.id;
 					const act = world.acts[n] ?? 'build';
-					write(world, req.at.folder, `ticket-${n}.txt`);
+					// a note's Session may write only its note
+					const file = req.output === 'note' ? `docs/research/${n}.md` : `ticket-${n}.txt`;
+					if (act !== 'empty') write(world, req.at.folder, file);
 					const { sessionId } = req;
 					if (act === 'ask') {
 						const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
@@ -337,8 +339,10 @@ const tree = () => join(base, 'worktrees', '1-one-escape');
 
 // What a scripted Session does in the worktree, and what a spec reads of it, over either adapter.
 function write(world: World, folder: string, file: string): void {
-	if (world.git) writeFileSync(join(folder, file), 'work\n');
-	else world.trees.write(folder, file);
+	if (world.git) {
+		mkdirSync(join(folder, file, '..'), { recursive: true });
+		writeFileSync(join(folder, file), 'work\n');
+	} else world.trees.write(folder, file);
 }
 
 function has(world: World, file: string): boolean {
@@ -1041,6 +1045,95 @@ describe('a Feature with no Tickets', () => {
 		world.asked.length = 0;
 		await buildFeature(deps(world), setup(world), '9');
 		expect(askedOf(world, 'build')).toEqual([]);
+	});
+});
+
+describe('a Workflow whose output is a note', () => {
+	const BODY =
+		'**Workflow:** exploration\n\nWhy is the build slow?\n\n### Acceptance criteria\n\n- [ ] a note says why';
+	const own = (world: World) => {
+		world.tracker.add({
+			id: '9',
+			title: 'Why the build is slow',
+			body: BODY,
+			assignees: ['ann'],
+			signals: ['go']
+		});
+		world.asked.length = 0;
+	};
+	const NOTE: WorkflowConfig = { prompt: 'Find out.', output: 'note', steps: [] };
+	const exploring = (world: World) => setup(world, { workflows: { exploration: NOTE } });
+	const worktree = (world: World) => join(world.worktrees, '9-why-the-build-is-slow');
+
+	it('builds the issue as a note in a draft, and hands the Feature to a person to read it', async () => {
+		const world = makeWorld();
+		own(world);
+		const got = await buildFeature(deps(world), exploring(world), '9');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['9'], waiting: [] });
+		const [build, ...more] = askedOf(world, 'build');
+		expect(more).toEqual([]);
+		expect(build?.output).toBe('note');
+		expect(build?.workflow).toEqual({ name: 'exploration', prompt: 'Find out.' });
+		expect(world.trees.has(worktree(world), 'docs/research/9.md')).toBe(true);
+		expect(world.trees.subjects(worktree(world))).toEqual(['Why the build is slow (#9)']);
+
+		const pull = world.host.pulls[0];
+		expect(pull?.body).toContain('## A note, not code');
+		expect(pull?.body).toContain('`docs/research/`');
+		expect(world.tracker.signalsOf('9')).toEqual(['human']);
+		const said = world.tracker.said('9');
+		expect(said).toHaveLength(1);
+		const next = noteStep(pull?.url ?? '');
+		expect(said[0]).toContain(nextStepText(next));
+		expect(next[0]).toContain('Read the note');
+		expect(next[1]).toMatch(/Close this Feature .* or follow up/);
+		expect(world.happened.at(-1)).toEqual({
+			kind: 'needs-info',
+			feature: '9',
+			ticket: null,
+			why: 'its note is for a person to read',
+			next
+		});
+	});
+
+	it("keeps a note's fix rounds to the note as well", async () => {
+		const world = makeWorld();
+		own(world);
+		world.checkOk = false;
+		world.fixAgent = (req) => {
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 };
+		};
+		await buildFeature(deps(world), exploring(world), '9');
+		expect(askedOf(world, 'fix').map((f) => f.of)).toEqual([{ kind: 'build', output: 'note' }]);
+	});
+
+	it('hands back a Ticket whose Session writes no note as one that changed no file', async () => {
+		const world = makeWorld();
+		own(world);
+		world.acts['9'] = 'empty';
+		const got = await buildFeature(deps(world), exploring(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(world.host.pulls).toEqual([]);
+		expect(world.tracker.signalsOf('9')).toEqual(['needsInfo']);
+		expect(world.tracker.said('9')).toHaveLength(1);
+		expect(world.tracker.said('9')[0]).toContain('said it built this Ticket but changed no file');
+	});
+
+	it('leaves the output out of a Workflow without one, and the Feature with no Signal', async () => {
+		const world = makeWorld();
+		own(world);
+		await buildFeature(
+			deps(world),
+			setup(world, { workflows: { exploration: { prompt: 'p', steps: [] } } }),
+			'9'
+		);
+		expect(askedOf(world, 'build')[0]).not.toHaveProperty('output');
+		expect(askedOf(world, 'fix')).toEqual([]);
+		expect(world.host.pulls[0]?.body).not.toContain('A note');
+		expect(world.tracker.signalsOf('9')).toEqual([]);
 	});
 });
 

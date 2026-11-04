@@ -1,4 +1,5 @@
 // The Feature and Ticket text reach the agent as material inside these rules, never in their place.
+import { NOTES_FOLDER } from './settings.js';
 import { PAYLOAD_HEADING } from './template.js';
 import type { Comment, Feature, Ticket } from './tracker.js';
 
@@ -141,10 +142,18 @@ export interface BuildContext {
 	readonly rules?: string;
 	// the Feature's Workflow, when it has a prompt
 	readonly workflow?: { readonly name: string; readonly prompt: string };
+	// "note": the Workflow's output is a note under NOTES_FOLDER, not code
+	readonly output?: 'note';
 }
 
 const repoRules = (rules: string | undefined) =>
 	rules ? `\n\n# Rules of this repo\n\n${rules}` : '';
+
+// What a Session whose Workflow has `output: "note"` writes, and where.
+const noteRules = (output: BuildContext['output']) =>
+	output === 'note'
+		? `\n\n# Your output is a note, not code\n\nWrite what you found as one Markdown file under ${code(`${NOTES_FOLDER}/`)}, named for the Ticket, such as ${code(`${NOTES_FOLDER}/<ticket-number>-<short-title>.md`)}. Change no other file: every write outside ${code(`${NOTES_FOLDER}/`)} is refused, and Bash runs only git's read commands. A Session that writes no note has built nothing, and its Ticket is handed back. The note goes to a person in a draft pull request, to read before anything is merged.`
+		: '';
 
 // A Workflow's prompt, added to the instructions of each Ticket's Session.
 const workflowRules = (workflow: BuildContext['workflow']) =>
@@ -155,7 +164,7 @@ const workflowRules = (workflow: BuildContext['workflow']) =>
 export function buildPrompt(c: BuildContext): string {
 	const done =
 		c.built.length === 0 ? 'None yet.' : c.built.map((b) => `- #${b.id} ${b.title}`).join('\n');
-	return `${rules(c.allowed, c.check)}${repoRules(c.rules)}${workflowRules(c.workflow)}
+	return `${rules(c.allowed, c.check)}${repoRules(c.rules)}${workflowRules(c.workflow)}${noteRules(c.output)}
 
 # The Feature: #${c.feature.id} ${c.feature.title}
 

@@ -85,6 +85,13 @@ export function featureAfterRunStep(
 	return [...todo, featureGo(n), 'Nightjar goes on from the branch.'];
 }
 
+// A Feature whose Workflow has `output: "note"` ends with the note in a draft pull request, for a person to read and act on.
+export const noteStep = (url: string): NextStep => [
+	`Read the note in ${url}.`,
+	'Close this Feature if the note settles it, or follow up: write a Feature for what the note recommends.',
+	'Merge the pull request to keep the note, or close it.'
+];
+
 // A draft pull request whose Pull checks Nightjar could not make green: the person's now, and its fix rounds still count.
 export const pullChecksStep = (n: SignalNames): NextStep => [
 	'Read the failing Pull checks above and fix them on the branch, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.',

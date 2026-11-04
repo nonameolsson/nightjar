@@ -9,6 +9,7 @@ import {
 	type StepRequest
 } from './coding-agent.js';
 import type { Session, SessionRequest, SessionResult, Settled } from './session.js';
+import { buildSettings, noteSettings } from './settings.js';
 import type { Feature, Ticket } from './tracker.js';
 import type { StepConfig } from './workflow.js';
 
@@ -123,6 +124,18 @@ describe('a build', () => {
 		expect(got).toMatchObject({ kind: 'built', test: 'src/a.spec.ts: x' });
 	});
 
+	it("runs a note Workflow's Session on the note settings, told to write only under docs/research/ and given no repo command", async () => {
+		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Wrote it' }));
+		await codingAgent(SETUP, session).build({ ...buildRequest(), output: 'note' });
+		const req = sent[0];
+		expect(req?.settings).toEqual(noteSettings());
+		expect(permissions(req).allow).not.toContain('Write');
+		expect(permissions(req).allow).not.toContain('Bash(make test)');
+		expect(req?.prompt).toContain('# Your output is a note, not code');
+		expect(req?.prompt).toContain('`docs/research/`');
+		expect(req?.prompt).not.toContain('`make test`');
+	});
+
 	it('reads questions', async () => {
 		const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
 		const { session } = fakeSession(done({ outcome: 'questions', summary: '', questions }));
@@ -184,6 +197,14 @@ describe('a fix round', () => {
 		expect(req?.minutes).toBe(60);
 		expect(req?.log).toBe('/repo/.factory/logs/s-1.jsonl');
 		expect(req?.tools).not.toContain('mcp__pw');
+	});
+
+	it("keeps a note's fix round on the note settings, and a plain build's on the build settings", async () => {
+		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Fixed it' }));
+		await codingAgent(SETUP, session).fix(fixRequest({ kind: 'build', output: 'note' }));
+		await codingAgent(SETUP, session).fix(fixRequest());
+		expect(sent[0]?.settings).toEqual(noteSettings());
+		expect(sent[1]?.settings).toEqual(buildSettings(SETUP.allowedCommands));
 	});
 
 	it("resumes a Step's Session with the Step's tools, commands and local network", async () => {
