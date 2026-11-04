@@ -22,7 +22,7 @@ export function thisOs(): Os {
 export interface SandboxFinding {
 	// what sandboxes a Session here
 	readonly name: string;
-	// why a sandboxed Step cannot run here, with the fix; null when it can
+	// why no Session can run here, with the fix; null when one can
 	readonly fault: string | null;
 	// what the person should know even where it can run; null when nothing
 	readonly caution: string | null;
@@ -41,10 +41,11 @@ const LINUX_TOOLS = [
 
 export async function sandboxFinding(os: Os, env: Env, cwd: string): Promise<SandboxFinding> {
 	if (os.platform === 'darwin') return { name: 'Seatbelt', fault: null, caution: null };
+	// main.ts stops native Windows first, so this is another platform Claude Code has no sandbox for
 	if (os.platform !== 'linux') {
 		return {
 			name: 'none',
-			fault: 'Claude Code cannot sandbox on native Windows; run Nightjar on macOS, Linux or WSL2.',
+			fault: `Claude Code cannot sandbox on ${os.platform}; run Nightjar on macOS, Linux or WSL2.`,
 			caution: null
 		};
 	}

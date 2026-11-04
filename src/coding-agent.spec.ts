@@ -8,7 +8,13 @@ import {
 	type ReviewRequest,
 	type StepRequest
 } from './coding-agent.js';
-import type { Session, SessionRequest, SessionResult, Settled } from './session.js';
+import {
+	sessionArgs,
+	type Session,
+	type SessionRequest,
+	type SessionResult,
+	type Settled
+} from './session.js';
 import type { Feature, Ticket } from './tracker.js';
 import type { StepConfig } from './workflow.js';
 
@@ -47,11 +53,12 @@ function fakeSession(settled: Settled, onCall: () => void = () => undefined) {
 
 const done = (output: unknown): Settled => ({ kind: 'done', costUsd: 2.5, output });
 
-// the sandbox every Session runs in: no network, and never run around
+// the sandbox of a Session with no network: on, auto-allowing nothing, and never run around
 const SEALED = {
 	enabled: true,
 	failIfUnavailable: true,
 	allowUnsandboxedCommands: false,
+	autoAllowBashIfSandboxed: false,
 	network: { allowedDomains: [] }
 };
 
@@ -179,6 +186,22 @@ describe('a fix round', () => {
 		expect(req?.minutes).toBe(60);
 		expect(req?.log).toBe('/repo/.factory/logs/s-1.jsonl');
 		expect(req?.tools).not.toContain('mcp__pw');
+	});
+
+	it('passes the sandboxed settings of the build with --resume', async () => {
+		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Built it' }));
+		const agent = codingAgent(SETUP, session);
+		await agent.build(buildRequest());
+		await agent.fix(fixRequest());
+		const [built, fixed] = sent.map(sessionArgs);
+		const value = (args: string[] | undefined, flag: string) =>
+			args?.[args.indexOf(flag) + 1] ?? '';
+		expect(value(fixed, '--resume')).toBe('s-1');
+		expect(value(fixed, '--settings')).toBe(value(built, '--settings'));
+		expect(JSON.parse(value(fixed, '--settings'))).toMatchObject({
+			disableAllHooks: true,
+			sandbox: SEALED
+		});
 	});
 
 	it("resumes a Step's Session with the Step's tools, commands and local network", async () => {

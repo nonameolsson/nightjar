@@ -15,10 +15,11 @@ describe('sandboxFinding', () => {
 		expect(found).toEqual({ name: 'Seatbelt', fault: null, caution: null });
 	});
 
-	it('refuses native Windows', async () => {
+	it('refuses a platform other than macOS and Linux, by its name', async () => {
 		m = machine();
-		const found = await sandboxFinding({ platform: 'win32', kernel: '' }, m.env, m.root);
-		expect(found.fault).toContain('native Windows');
+		const found = await sandboxFinding({ platform: 'freebsd', kernel: '' }, m.env, m.root);
+		expect(found.fault).toContain('cannot sandbox on freebsd');
+		expect(found.fault).not.toContain('Windows');
 	});
 
 	it.each([

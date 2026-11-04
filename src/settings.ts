@@ -97,9 +97,9 @@ const LOCAL_ONLY = {
 };
 
 // The one place every Session's settings come from; hooks run outside the sandbox, so none run.
-const sessionSettings = (permissions: object, localNetwork = false): object => ({
+const sessionSettings = (permissions: object, sandbox: typeof SANDBOX): object => ({
 	permissions,
-	sandbox: localNetwork ? LOCAL_ONLY : SANDBOX,
+	sandbox,
 	disableAllHooks: true
 });
 
@@ -125,14 +125,17 @@ export function buildSettings(allowed: readonly string[], extras: StepExtras = {
 			],
 			deny: DENY
 		},
-		extras.localNetwork === true
+		extras.localNetwork === true ? LOCAL_ONLY : SANDBOX
 	);
 }
 
 export function reviewSettings(): object {
-	return sessionSettings({
-		defaultMode: 'dontAsk',
-		allow: ['Read', 'Glob', 'Grep', ...READ_GIT],
-		deny: [...DENY, 'Edit', 'Write']
-	});
+	return sessionSettings(
+		{
+			defaultMode: 'dontAsk',
+			allow: ['Read', 'Glob', 'Grep', ...READ_GIT],
+			deny: [...DENY, 'Edit', 'Write']
+		},
+		SANDBOX
+	);
 }
