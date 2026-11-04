@@ -50,6 +50,16 @@ _Avoid_: ready-for-agent (on a Feature), start, trigger
 A comment on a Feature or Ticket whose author Nightjar trusts, so it reaches the Coding agent. No other comment does.
 _Avoid_: approved comment
 
+### The page
+
+**Mat**:
+One state's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Completed), with a label tab and a tally of its Features.
+_Avoid_: column, swimlane
+
+**Egg**:
+One Ticket's mark on the Board: built, building, needs a person, or waiting. It rests in a round nest socket in its Feature's row.
+_Avoid_: dot, pip, bar
+
 ### Where things are
 
 **Tracker**:
