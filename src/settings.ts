@@ -15,9 +15,7 @@ export const BUILD_TOOLS = [
 // The reviewer only reads: no Edit, no Write, and Bash only for git's read commands.
 export const REVIEW_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 
-// Where credentials live. Denied to sandboxed commands and to the Read tool alike, from this one list;
-// the rest of the home folder stays readable so toolchains under nvm, mise, pyenv or ~/.cargo still run.
-// ~/.claude* keeps the agent from another Session's transcripts and the login; Claude Code reads its own outside the sandbox.
+// Credentials, denied to sandboxed commands and the Read tool alike; the rest of home stays readable for nvm, mise, pyenv or ~/.cargo.
 const CREDENTIAL_PATHS = [
 	'~/.ssh',
 	'~/.aws',
@@ -30,6 +28,7 @@ const CREDENTIAL_PATHS = [
 	'~/.npmrc',
 	'~/.pypirc',
 	'~/.git-credentials',
+	// another Session's transcripts and the login; Claude Code reads its own outside the sandbox
 	'~/.claude*'
 ];
 
@@ -78,12 +77,12 @@ export interface StepExtras {
 	readonly localNetwork?: boolean;
 }
 
-// Every Session's commands run in the sandbox, which reaches no network and auto-allows nothing, so the allow list still decides.
-// Claude Code runs commands unsandboxed where the sandbox cannot start, and may retry a failed command outside it,
-// unless told not to: failIfUnavailable and allowUnsandboxedCommands make the promise hold. Like DENY, no Workflow loosens it.
+// Every Session's commands run in it: no network, nothing auto-allowed so the allow list decides, and like DENY no Workflow loosens it.
 const SANDBOX = {
 	enabled: true,
+	// else Claude Code runs commands unsandboxed where the sandbox cannot start
 	failIfUnavailable: true,
+	// else Claude Code may retry a failed command outside the sandbox
 	allowUnsandboxedCommands: false,
 	autoAllowBashIfSandboxed: false,
 	network: { allowedDomains: [] as string[] },

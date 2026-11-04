@@ -10,6 +10,7 @@ import { loadConfig, type Config } from './config.js';
 import { failures, printLines } from './doctor.js';
 import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
+import type { Os } from './sandbox.js';
 
 let out: string[];
 let err: string[];
@@ -26,6 +27,9 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	m.remove();
 });
+
+// a Linux that is not WSL; the sandbox check finds bwrap and socat among the stand-ins
+const LINUX: Os = { platform: 'linux', kernel: '' };
 
 const GITHUB = {
 	tracker: { type: 'github' },
@@ -45,7 +49,7 @@ async function doctor(
 
 function start(over: { env?: Record<string, string>; argv?: string[]; realGh?: boolean } = {}) {
 	return runNightjar(over.argv ?? ['doctor'], {
-		platform: 'linux',
+		os: LINUX,
 		cwd: m.root,
 		env: { ...m.env, ...over.env },
 		...(over.realGh === true ? {} : { gh: github.gh })
@@ -312,6 +316,7 @@ describe('nightjar doctor over Sources', () => {
 		// a Tuesday, local noon
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env: m.env,
 			cwd: m.root,
 			failFast: false,
@@ -409,6 +414,7 @@ describe('nightjar doctor over Sources', () => {
 		withSources();
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env: m.env,
 			cwd: m.root,
 			failFast: true,
@@ -456,6 +462,7 @@ describe('nightjar doctor over Workflows', () => {
 		};
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env: m.env,
 			cwd: m.root,
 			failFast: true,
@@ -488,6 +495,7 @@ describe('nightjar doctor over Workflows', () => {
 		const env = withWorkflows('tdd');
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env,
 			cwd: m.root,
 			failFast: true,
@@ -530,8 +538,7 @@ describe('the sandbox every Session runs in', () => {
 			cwd: m.root,
 			failFast,
 			gh: github.gh,
-			platform,
-			kernel
+			os: { platform, kernel }
 		});
 		return {
 			checked,
@@ -613,6 +620,18 @@ describe('the sandbox every Session runs in', () => {
 		expect(out.join('\n')).toMatch(
 			/warn {2}Workflow review: 1 Step\n {8}localNetwork: .*may not reach/s
 		);
+	});
+
+	it('reads the kernel the Host gives it, not the one it runs on', async () => {
+		on([], {});
+		const code = await runNightjar(['doctor'], {
+			os: { platform: 'linux', kernel: WSL1 },
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh
+		});
+		expect(code).toBe(2);
+		expect(err.join('\n')).toMatch(/FAIL {2}sandbox: Claude Code cannot sandbox on WSL1/);
 	});
 
 	it('refuses to build before any Session on a machine that cannot sandbox', async () => {

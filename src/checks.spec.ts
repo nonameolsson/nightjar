@@ -9,6 +9,7 @@ const options = (over: Partial<CheckOptions> = {}): CheckOptions => ({
 	env: {},
 	cwd: '/nowhere',
 	failFast: false,
+	os: { platform: 'linux', kernel: '' },
 	...over
 });
 

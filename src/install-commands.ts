@@ -14,17 +14,20 @@ const INSTALLS: readonly (readonly string[])[] = [
 	['composer', 'install']
 ];
 
-// `yarn` alone installs, and so does `yarn` with only flags; `yarn test` runs a script
+// flags that make `yarn` say something about itself instead of installing
+const YARN_LOOK_ALIKES = ['--version', '-v', '--help', '-h'];
+
+// `yarn` alone installs, and so does `yarn` with install flags; `yarn test` runs a script
 function yarnInstalls(args: readonly string[]): boolean {
 	const first = args[0];
-	return first === undefined || first === 'install' || first.startsWith('-');
+	if (first === undefined || first === 'install') return true;
+	return first.startsWith('-') && !args.some((arg) => YARN_LOOK_ALIKES.includes(arg));
 }
 
-// The install command an allowedCommands pattern runs, bare or with arguments; null for any other.
-export function installCommand(pattern: string): string | null {
+// Whether an allowedCommands pattern runs an install command, bare or with arguments.
+export function installs(pattern: string): boolean {
 	// the legacy `npm install:*` spells the same as `npm install *`
 	const words = pattern.trim().replace(/:\*$/, ' *').split(/\s+/);
-	if (words[0] === 'yarn') return yarnInstalls(words.slice(1)) ? 'yarn' : null;
-	const found = INSTALLS.find((install) => install.every((word, i) => words[i] === word));
-	return found === undefined ? null : found.join(' ');
+	if (words[0] === 'yarn') return yarnInstalls(words.slice(1));
+	return INSTALLS.some((install) => install.every((word, i) => words[i] === word));
 }

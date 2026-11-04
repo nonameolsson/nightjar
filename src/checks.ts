@@ -6,7 +6,7 @@ import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
 import { loadConfig, loadRules, type Config } from './config.js';
-import { installCommand } from './install-commands.js';
+import { installs } from './install-commands.js';
 import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
@@ -14,7 +14,7 @@ import { firstLine, run, type Env } from './git.js';
 import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
-import { readKernel, sandboxFinding, type SandboxFinding } from './sandbox.js';
+import { sandboxFinding, type Os, type SandboxFinding } from './sandbox.js';
 import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
@@ -71,10 +71,8 @@ export interface CheckOptions {
 	readonly skills?: LoadedSkills;
 	// the clock a schedule's next due time is counted from; a spec passes its own
 	readonly now?: () => Date;
-	// what the sandbox check reads of the machine; the running process's own unless a spec passes its own
-	readonly platform?: NodeJS.Platform;
-	// the text of /proc/version
-	readonly kernel?: string;
+	// what the sandbox check reads of the machine
+	readonly os: Os;
 }
 
 // What the checks find, each for the checks after it and for Ready.
@@ -165,11 +163,9 @@ const sandboxCheck = check({
 	name: 'sandbox',
 	needs: [],
 	run: async (_found, o) => {
-		const platform = o.platform ?? process.platform;
-		const sandbox = await sandboxFinding(platform, o.env, o.kernel ?? readKernel(), o.cwd);
+		const sandbox = await sandboxFinding(o.os, o.env, o.cwd);
 		if (sandbox.fault !== null) throw new Refusal(sandbox.fault);
-		const by = platform === 'darwin' ? 'Seatbelt' : 'bubblewrap and socat';
-		return { found: { sandbox }, detail: `${by}, no network`, summary: null };
+		return { found: { sandbox }, detail: `${sandbox.name}, no network`, summary: null };
 	}
 });
 
@@ -286,26 +282,20 @@ export const installsCheck = check({
 	needs: ['loaded'],
 	unmet: null,
 	run: ({ loaded }) => {
-		const where = [
-			{ of: '', commands: loaded.config.allowedCommands },
+		const commandLists = [
+			{ owner: '', commands: loaded.config.allowedCommands },
 			...Object.entries(loaded.config.workflows ?? {}).map(([name, w]) => ({
-				of: `Workflow ${name}: `,
+				owner: `Workflow ${name}: `,
 				commands: w.allowedCommands ?? []
 			}))
 		];
-		const lines = where.flatMap(({ of, commands }) =>
-			commands.flatMap((command): Line[] =>
-				installCommand(command) === null
-					? []
-					: [
-							{
-								name: 'allowedCommands',
-								status: 'warn',
-								detail: `${of}"${command}" installs packages, and a Session has no network to fetch them; move it to "setup", which Nightjar runs itself.`,
-								summary: null
-							}
-						]
-			)
+		const lines = commandLists.flatMap(({ owner, commands }) =>
+			commands.filter(installs).map((command): Line => ({
+				name: 'allowedCommands',
+				status: 'warn',
+				detail: `${owner}"${command}" installs packages, and a Session has no network to fetch them; move it to "setup", which Nightjar runs itself.`,
+				summary: null
+			}))
 		);
 		return { lines };
 	}

@@ -810,7 +810,7 @@ describe('nightjar intake', () => {
 	}
 
 	const host = (stop?: AbortSignal) => ({
-		platform: 'linux' as const,
+		os: { platform: 'linux' as const, kernel: '' },
 		env: { PATH: process.env.PATH, ALERTS_SECRET: SECRET },
 		cwd: dir,
 		...(stop === undefined ? {} : { stop })

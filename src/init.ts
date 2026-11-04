@@ -13,6 +13,7 @@ import { dryRun } from './queue.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
+import type { Os } from './sandbox.js';
 import { clackPrompter, type Prompter } from './prompter.js';
 import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
 
@@ -29,6 +30,7 @@ interface Answering {
 export interface InitOptions extends Answering {
 	readonly root: string;
 	readonly env: Env;
+	readonly os: Os;
 	readonly useApiKey: boolean;
 	readonly profile?: string;
 	readonly request?: AzureDevOpsRequest;
@@ -559,6 +561,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 		say('add `.factory/` to .gitignore: Nightjar keeps its status and logs there');
 
 	const checked = await checkMachine({
+		os: o.os,
 		useApiKey: o.useApiKey,
 		...(o.profile === undefined ? {} : { profile: o.profile }),
 		env: o.env,
@@ -629,6 +632,7 @@ async function offerDoctor(o: InitOptions): Promise<boolean> {
 
 export interface InitHost {
 	readonly env: Env;
+	readonly os: Os;
 	readonly cwd: string;
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
@@ -716,6 +720,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 		return await runInit({
 			root: top.out.trim(),
 			env,
+			os: host.os,
 			useApiKey: parsed.useApiKey,
 			...(profile === undefined ? {} : { profile }),
 			yes,
