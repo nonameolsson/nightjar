@@ -3,13 +3,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { oneEscape } from './fakes/github.js';
-import { machine, type Machine, type Tool } from './fakes/machine.js';
+import { machine, type Machine, type SandboxTool, type Tool } from './fakes/machine.js';
 import type { Adapters } from './adapters.js';
 import { checkMachine, pullChecksCheck, type CheckOptions } from './checks.js';
 import { loadConfig, type Config } from './config.js';
 import { failures, printLines } from './doctor.js';
 import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
+import type { Os } from './sandbox.js';
 
 let out: string[];
 let err: string[];
@@ -26,6 +27,9 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	m.remove();
 });
+
+// a Linux that is not WSL; the sandbox check finds bwrap and socat among the stand-ins
+const LINUX: Os = { platform: 'linux', kernel: '' };
 
 const GITHUB = {
 	tracker: { type: 'github' },
@@ -45,7 +49,7 @@ async function doctor(
 
 function start(over: { env?: Record<string, string>; argv?: string[]; realGh?: boolean } = {}) {
 	return runNightjar(over.argv ?? ['doctor'], {
-		platform: 'linux',
+		os: LINUX,
 		cwd: m.root,
 		env: { ...m.env, ...over.env },
 		...(over.realGh === true ? {} : { gh: github.gh })
@@ -207,6 +211,77 @@ describe('nightjar doctor over the Pull-check pass', () => {
 	});
 });
 
+describe('nightjar doctor over install commands in allowedCommands', () => {
+	async function over(allowedCommands: string[], more: Record<string, unknown> = {}) {
+		m = machine();
+		m.writeConfig({ ...GITHUB, allowedCommands, ...more });
+		return start();
+	}
+
+	it('warns on each install command, bare or with arguments, naming it and pointing at setup', async () => {
+		const installs = [
+			'npm install',
+			'npm install --legacy-peer-deps',
+			'npm ci',
+			'pnpm install',
+			'pnpm install *',
+			'yarn',
+			'yarn install',
+			'yarn --frozen-lockfile',
+			'bun install',
+			'pip install -r requirements.txt',
+			'uv sync',
+			'uv pip install *',
+			'poetry install',
+			'bundle install',
+			'go mod download',
+			'cargo fetch',
+			'composer install'
+		];
+		for (const command of installs) {
+			out = [];
+			err = [];
+			// a warning, not a failure
+			expect(await over(['make check', command]), command).toBe(0);
+			expect(err, command).toEqual([]);
+			const warned = out.filter((line) => line.startsWith('  warn  allowedCommands: '));
+			expect(warned, command).toHaveLength(1);
+			expect(warned[0], command).toContain(`"${command}"`);
+			expect(warned[0], command).toContain('move it to "setup"');
+			m.remove();
+		}
+	});
+
+	it('does not warn on commands that only look alike', async () => {
+		const code = await over([
+			'make check',
+			'npm test',
+			'npm run install-hooks',
+			'npm run ci',
+			'yarn test',
+			'yarn *',
+			'pip list',
+			'uv run pytest',
+			'go mod tidy',
+			'cargo test',
+			'bundle exec rspec'
+		]);
+		expect(code).toBe(0);
+		expect(out.join('\n')).not.toContain('allowedCommands');
+	});
+
+	it('warns on an install command in a Workflow too, naming the Workflow', async () => {
+		const workflows = {
+			quick: {
+				allowedCommands: ['npm ci'],
+				steps: [{ name: 'tidy', prompt: 'tidy up', point: 'afterAllTickets' }]
+			}
+		};
+		expect(await over(['make check'], { workflows })).toBe(0);
+		expect(out.join('\n')).toMatch(/warn {2}allowedCommands: .*Workflow quick.*"npm ci"/);
+	});
+});
+
 describe('nightjar doctor over Sources', () => {
 	const SOURCES = {
 		sentry: {
@@ -241,6 +316,7 @@ describe('nightjar doctor over Sources', () => {
 		// a Tuesday, local noon
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env: m.env,
 			cwd: m.root,
 			failFast: false,
@@ -338,6 +414,7 @@ describe('nightjar doctor over Sources', () => {
 		withSources();
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env: m.env,
 			cwd: m.root,
 			failFast: true,
@@ -385,6 +462,7 @@ describe('nightjar doctor over Workflows', () => {
 		};
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env: m.env,
 			cwd: m.root,
 			failFast: true,
@@ -417,6 +495,7 @@ describe('nightjar doctor over Workflows', () => {
 		const env = withWorkflows('tdd');
 		const checked = await checkMachine({
 			useApiKey: false,
+			os: LINUX,
 			env,
 			cwd: m.root,
 			failFast: true,
@@ -435,6 +514,130 @@ describe('nightjar doctor over Workflows', () => {
 		m.writeConfig({ ...GITHUB, workflows: { quick: WORKFLOWS.quick } });
 		expect(await start()).toBe(0);
 		// a path such as /tmp/notes is no skill
+		expect(m.calls('claude')).not.toMatch(/^-p /m);
+	});
+});
+
+describe('the sandbox every Session runs in', () => {
+	const WORKFLOWS = {
+		review: {
+			localNetwork: true,
+			steps: [{ name: 'look', prompt: 'look at the screens', point: 'afterAllTickets' }]
+		},
+		quick: {
+			steps: [{ name: 'tidy', prompt: 'tidy up the code', point: 'afterAllTickets' }]
+		}
+	};
+	const WSL2 = '5.15.153.1-microsoft-standard-WSL2';
+	const WSL1 = '4.4.0-19041-Microsoft';
+
+	async function checkMachineOn(platform: NodeJS.Platform, kernel: string, failFast = false) {
+		const checked = await checkMachine({
+			useApiKey: false,
+			env: m.env,
+			cwd: m.root,
+			failFast,
+			gh: github.gh,
+			os: { platform, kernel }
+		});
+		return {
+			checked,
+			sandbox: checked.lines.find((l) => l.name === 'sandbox'),
+			review: checked.lines.find((l) => l.only === 'review')
+		};
+	}
+
+	function on(without: SandboxTool[] = [], workflows: object = WORKFLOWS) {
+		m = machine(without);
+		m.writeConfig({ ...GITHUB, workflows });
+	}
+
+	it('fails on Linux without bubblewrap and socat, and says how to install them', async () => {
+		on(['bwrap', 'socat'], {});
+		const { checked, sandbox } = await checkMachineOn('linux', '');
+		expect(sandbox?.status).toBe('fail');
+		expect(sandbox?.detail).toContain('bubblewrap and socat are not installed');
+		expect(sandbox?.detail).toContain('sudo apt-get install bubblewrap socat');
+		expect(checked.ready).toBeNull();
+	});
+
+	it('names only the tool that is missing', async () => {
+		on(['socat']);
+		const { sandbox } = await checkMachineOn('linux', WSL2);
+		expect(sandbox?.status).toBe('fail');
+		expect(sandbox?.detail).toContain('socat is not installed');
+		expect(sandbox?.detail).not.toContain('bubblewrap is not');
+	});
+
+	it('fails on WSL1, which cannot sandbox, even with the tools installed', async () => {
+		on();
+		const { checked, sandbox } = await checkMachineOn('linux', WSL1);
+		expect(sandbox?.status).toBe('fail');
+		expect(sandbox?.detail).toContain('WSL1');
+		expect(sandbox?.detail).toContain('WSL2');
+		expect(checked.ready).toBeNull();
+	});
+
+	it('passes on macOS, which sandboxes with no install', async () => {
+		on(['bwrap', 'socat']);
+		const { checked, sandbox, review } = await checkMachineOn('darwin', '');
+		expect(sandbox?.status).toBe('ok');
+		expect(review?.status).toBe('ok');
+		expect(checked.ready?.workflowProblems).toEqual({});
+	});
+
+	it('passes on Linux and WSL2 with both tools', async () => {
+		for (const kernel of ['', WSL2]) {
+			on();
+			const { checked, sandbox } = await checkMachineOn('linux', kernel);
+			expect(sandbox?.status).toBe('ok');
+			expect(checked.ready).not.toBeNull();
+			m.remove();
+		}
+		on();
+	});
+
+	it('warns a localNetwork Workflow on Linux that a Step may not reach serve directly', async () => {
+		on();
+		const { checked, review } = await checkMachineOn('linux', WSL2);
+		expect(review?.status).toBe('warn');
+		expect(review?.detail).toContain('may not reach it');
+		expect(checked.ready?.workflowProblems).toEqual({});
+		// a Workflow without localNetwork has nothing to warn of
+		expect(checked.lines.find((l) => l.only === 'quick')?.status).toBe('ok');
+	});
+
+	it('exits 2 from doctor on a machine that cannot sandbox, with a Workflow or without', async () => {
+		on(['bwrap', 'socat'], {});
+		expect(await start()).toBe(2);
+		expect(err.join('\n')).toMatch(/FAIL {2}sandbox: bubblewrap and socat are not installed/);
+		out.length = 0;
+		err.length = 0;
+		m.remove();
+		on();
+		expect(await start()).toBe(0);
+		expect(out).toContain('  ok    sandbox: bubblewrap and socat, no network');
+		expect(out.join('\n')).toMatch(
+			/warn {2}Workflow review: 1 Step\n {8}localNetwork: .*may not reach/s
+		);
+	});
+
+	it('reads the kernel the Host gives it, not the one it runs on', async () => {
+		on([], {});
+		const code = await runNightjar(['doctor'], {
+			os: { platform: 'linux', kernel: WSL1 },
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh
+		});
+		expect(code).toBe(2);
+		expect(err.join('\n')).toMatch(/FAIL {2}sandbox: Claude Code cannot sandbox on WSL1/);
+	});
+
+	it('refuses to build before any Session on a machine that cannot sandbox', async () => {
+		on(['bwrap'], {});
+		expect(await start({ argv: ['--once'] })).toBe(2);
+		expect(err.join('\n')).toMatch(/nightjar: bubblewrap is not installed/);
 		expect(m.calls('claude')).not.toMatch(/^-p /m);
 	});
 });

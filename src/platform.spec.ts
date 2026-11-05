@@ -24,7 +24,7 @@ describe('on native Windows', () => {
 		[['--detach']],
 		[[]]
 	])('nightjar %j stops with the supported platforms', async (argv) => {
-		const code = await runNightjar(argv, { platform: 'win32' });
+		const code = await runNightjar(argv, { os: { platform: 'win32', kernel: '' } });
 		expect(code).toBe(2);
 		expect(out).toEqual([]);
 		expect(err).toEqual([
@@ -35,7 +35,7 @@ describe('on native Windows', () => {
 
 describe('on WSL2, which reports linux', () => {
 	it('is not stopped for its platform', async () => {
-		const code = await runNightjar(['--detach'], { platform: 'linux' });
+		const code = await runNightjar(['--detach'], { os: { platform: 'linux', kernel: '' } });
 		expect(code).toBe(2);
 		expect(err.join('\n')).toContain('unknown argument --detach');
 		expect(err.join('\n')).not.toContain('Windows');

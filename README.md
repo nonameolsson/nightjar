@@ -8,7 +8,8 @@ Today the Tracker is GitHub Issues or Azure DevOps Boards, and the Code host is 
 
 ## Platforms and requirements
 
-- macOS, Linux, or WSL2 on Windows. On native Windows every command stops with a message saying so.
+- macOS, Linux, or WSL2 on Windows. On native Windows every command stops with a message saying so. WSL1 is not supported: Claude Code cannot sandbox there, so Nightjar refuses to build.
+- On Linux and WSL2: `bubblewrap` and `socat`, which Claude Code's sandbox needs (`sudo apt-get install bubblewrap socat`, or `sudo dnf install bubblewrap socat` on Fedora). Without them Nightjar refuses to build, and `nightjar doctor` fails its `sandbox` line. macOS needs nothing extra.
 - Node 24 or later.
 - `git`, in a checkout whose `origin` is the Code host's repo, which `git fetch` can read with your own git login.
 - With GitHub as the Tracker or the Code host: [`gh`](https://cli.github.com/), signed in (`gh auth login`).
@@ -143,11 +144,11 @@ A full one:
 | `tracker`         | yes      | `{ "type": "github" }`: Features are issues, their Tickets sub-issues. `repo` (`owner/name`) is read from the `origin` remote when left out. Or `{ "type": "azure-devops" }` with `organization` (as in `dev.azure.com/<organization>`), `project`, and `featureType`, the work item type that plays the Feature (`Feature`, `Epic`, `Product Backlog Item`, …): its child work items are its Tickets. `ticketType`, optional, is the work item type `nightjar create` makes each Ticket as (`User Story`, `Product Backlog Item`, `Issue`, …). Or `{ "type": "module", "path": "./my-tracker.js" }`, with optional `options` handed to the module: see [Another Tracker or Code host](#another-tracker-or-code-host). |
 | `codeHost`        | yes      | `{ "type": "github" }`: the branch is pushed to `origin` and a draft pull request opened. `repo` as above. Or `{ "type": "azure-devops" }` with `organization`, `project` and `repo`, the Git repo on Azure Repos the branch is pushed to and the draft pull request opened on. Or a `module`, as for `tracker`. On GitHub, the optional `trustedChecks` lists the slugs of the GitHub Apps (`["lint-bot"]`) whose failed checks on the pull request count as feedback for the agent; GitHub Actions always counts, and a failed check from any other app is left out. |
 | <a id="factory-check"></a>`check` | yes      | The shell command that checks the work in the worktree, run after each Ticket. A non-zero exit means it failed. Nightjar assumes no language or toolchain, so there is no default.                                  |
-| `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list. The list may be empty. |
+| `allowedCommands` | yes      | What the agent may run, as Claude Code Bash permission patterns without `Bash( )`, such as `make test` or `make lint *`. Committing, pushing, switching branches, the network and `gh` stay denied whatever you list, so an install such as `npm install` or `pip install` cannot fetch anything here: put it in `setup`. `doctor` warns on one. The list may be empty. |
 | `gate`            | no       | What the report on a red `check` holds, given to the fix rounds and the pull request: the red stages, every failing test once from the whole output, and the last 40 lines without colour codes. `failingTest` is a regular expression whose first group names a failing test (default: a `FAIL name` line). `ignore` matches lines to drop, such as notes about slow tests. `stages` is for a check split into stages: `red` is a regular expression whose first group names a red stage, and `log`, optional, is where a stage leaves its whole log, relative to the worktree, with `{stage}` for its name (`.cache/{stage}.log`); its failing tests join the report. Left out, a red check still gets its failing tests and its plain tail. |
 | `signals`         | no       | The name each Signal has on the Tracker (a label on GitHub, a tag on Azure DevOps). Leave out the ones you do not rename. Defaults are shown above. `needs-triage` and `wontfix` are refused: Nightjar never reads or sets them.          |
 | `trusted`         | no       | The logins whose comments reach the agent (on Azure DevOps, sign-in names such as `ann@contoso.com`, in any case). Replaces the default: on GitHub anyone with write access, on Azure DevOps the members of the project's Contributors group.                                                                                                      |
-| `setup`           | no       | A shell command run once in each new worktree before the first session, such as an install. If it fails, the Feature stops with a comment saying why.                                                              |
+| `setup`           | no       | A shell command run once in each new worktree before the first session. Installs go here, not in `allowedCommands`: Nightjar runs `setup` itself, with the network, outside any session. If it fails, the Feature stops with a comment saying why.                                                              |
 | `ports`           | no       | Reserve `count` (1 to 100) ports per run, held until the process ends so two runs never share one. `env` names the variables that carry them: the first name gets the first port, the next name the next, and so on. At most `count` names. |
 | `plugins`         | no       | Plugin directories, relative to the repo root, loaded by every session (`claude --plugin-dir`). A restricted session ignores the repo's own `.claude/skills`, so a skill a Workflow Step names as `/skill` must come from one: `[".claude"]` loads the skills committed there, which `doctor` then sees as `.claude:<skill>`. |
 | `rules`           | no       | A text file, relative to the repo root, added to the agent's prompt. Conventions normally live in `CLAUDE.md` or `AGENTS.md`.                                                                                       |
@@ -292,6 +293,14 @@ A Step has:
 | `until`, `maxRounds` | A condition in plain words. After each round the agent reports whether it holds, and Nightjar runs the Step again, in the same session, until it does or `maxRounds` (3 by default) is reached. What is left goes into the pull request body. |
 
 A Workflow can also have `serve`, a command started in the background in the worktree before its Steps and stopped after them (it reads its port from the variables of `ports.env`, so `ports` is required); `allowedCommands` and `allowedTools`, which its Steps may use besides the usual ones; and `localNetwork`, which lets its Steps reach localhost and nothing else. The fixed deny rules (committing, pushing, switching branches, the outside network, `gh`) cannot be loosened by any of these.
+
+Every Session runs its commands in Claude Code's sandbox with no network (see [Limits](#limits)); `localNetwork` opens localhost to a Step, and nothing else. What it holds depends on the machine:
+
+| Machine | What `localNetwork` does |
+| --- | --- |
+| macOS | Commands reach localhost, including the `serve` Nightjar started, and nothing else. The design-review example above has been shown to work here. |
+| Linux, WSL2 | A sandboxed command has its own private loopback, so a direct connection to `127.0.0.1:$APP_PORT` may not reach `serve`; only HTTP clients that honour the sandbox's proxy variables may. This has not yet been checked for `curl`, Playwright or a raw TCP client, and `nightjar doctor` warns about it. |
+| WSL1, native Windows | Claude Code cannot sandbox here, so Nightjar builds nothing. |
 
 Steps share one notes folder, `.factory/notes/` in the worktree, which is never committed. Nightjar passes nothing else from one Step to the next, so a Step that needs what an earlier one found reads it there.
 
@@ -545,6 +554,7 @@ Also:
 - Claude Code is the only Coding agent.
 - GitHub Issues and Azure DevOps Boards are the Trackers built in, and GitHub and Azure Repos the Code hosts; others are [custom Adapter modules](#another-tracker-or-code-host).
 - The agent never commits, pushes, switches branches, reaches the network, or runs `gh`. Nightjar does that, and `factory.json` cannot loosen it.
+- Every Session runs in Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux and WSL2): builds and their fix rounds, Steps and their fix rounds, the review and Pull-check fixes. The agent's commands reach no network at all, a Step of a `localNetwork` Workflow reaches localhost and nothing else, and no key in `factory.json` opens it further, not even a list of domains. The sandbox fails closed: a command it cannot hold does not run, and is never retried outside it. No hooks run in a Session. `setup`, the check and `serve` run outside the sandbox, by Nightjar itself. See [ADR 0005](docs/adr/0005-every-session-runs-in-the-sandbox-with-no-network.md).
 - One run builds one Feature at a time.
 - On Azure DevOps Boards a Removed work item counts as open, because it has no Closed Date and Nightjar never reads a state (see [Give the Go](#give-the-go)).
 - When a Feature is complete, its draft pull request references the Feature as well as its Tickets: on GitHub `Closes #N` closes it on merge too.

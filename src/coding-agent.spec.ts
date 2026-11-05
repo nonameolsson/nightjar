@@ -8,7 +8,13 @@ import {
 	type ReviewRequest,
 	type StepRequest
 } from './coding-agent.js';
-import type { Session, SessionRequest, SessionResult, Settled } from './session.js';
+import {
+	sessionArgs,
+	type Session,
+	type SessionRequest,
+	type SessionResult,
+	type Settled
+} from './session.js';
 import type { Feature, Ticket } from './tracker.js';
 import type { StepConfig } from './workflow.js';
 
@@ -47,6 +53,15 @@ function fakeSession(settled: Settled, onCall: () => void = () => undefined) {
 
 const done = (output: unknown): Settled => ({ kind: 'done', costUsd: 2.5, output });
 
+// the sandbox of a Session with no network: on, auto-allowing nothing, and never run around
+const SEALED = {
+	enabled: true,
+	failIfUnavailable: true,
+	allowUnsandboxedCommands: false,
+	autoAllowBashIfSandboxed: false,
+	network: { allowedDomains: [] }
+};
+
 const permissions = (req: SessionRequest | undefined) =>
 	(req?.settings as { permissions: Record<string, string[]> }).permissions;
 
@@ -80,7 +95,7 @@ describe('a build', () => {
 		expect(req?.allowApiKey).toBe(false);
 		expect(req?.env).toEqual({ PATH: '/bin', WEB_PORT: '4500' });
 		expect(JSON.stringify(req?.settings)).toContain('Bash(make test)');
-		expect(req?.settings).not.toHaveProperty('sandbox');
+		expect(req?.settings).toMatchObject({ disableAllHooks: true, sandbox: SEALED });
 	});
 
 	it('loads the repo plugins from the worktree', async () => {
@@ -174,6 +189,22 @@ describe('a fix round', () => {
 		expect(req?.tools).not.toContain('mcp__pw');
 	});
 
+	it('passes the sandboxed settings of the build with --resume', async () => {
+		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Built it' }));
+		const agent = codingAgent(SETUP, session);
+		await agent.build(buildRequest());
+		await agent.fix(fixRequest());
+		const [built, fixed] = sent.map(sessionArgs);
+		const value = (args: string[] | undefined, flag: string) =>
+			args?.[args.indexOf(flag) + 1] ?? '';
+		expect(value(fixed, '--resume')).toBe('s-1');
+		expect(value(fixed, '--settings')).toBe(value(built, '--settings'));
+		expect(JSON.parse(value(fixed, '--settings'))).toMatchObject({
+			disableAllHooks: true,
+			sandbox: SEALED
+		});
+	});
+
 	it("resumes a Step's Session with the Step's tools, commands and local network", async () => {
 		const { sent, session } = fakeSession(
 			done({ outcome: 'done', summary: 'Fixed it', untilHolds: true, left: [], blocker: '' })
@@ -182,7 +213,9 @@ describe('a fix round', () => {
 		const req = sent[0];
 		expect(req?.tools).toContain('mcp__pw');
 		expect(JSON.stringify(req?.settings)).toContain('Bash(npx playwright *)');
-		expect(req?.settings).toHaveProperty('sandbox');
+		expect(req?.settings).toMatchObject({
+			sandbox: { failIfUnavailable: true, allowUnsandboxedCommands: false }
+		});
 		expect(req?.schema).toHaveProperty('properties.untilHolds');
 	});
 
@@ -362,7 +395,12 @@ describe('a Step round', () => {
 			])
 		);
 		expect(sent[0]?.settings).toMatchObject({
-			sandbox: { enabled: true, network: { allowedDomains: ['localhost', '127.0.0.1'] } }
+			sandbox: {
+				enabled: true,
+				failIfUnavailable: true,
+				allowUnsandboxedCommands: false,
+				network: { allowedDomains: ['localhost', '127.0.0.1'] }
+			}
 		});
 	});
 
@@ -489,6 +527,47 @@ const kinds: [string, Call, string][] = [
 	['a Step round', (agent) => agent.step(stepRequest()), 's-1'],
 	['the review', (agent) => agent.review(reviewRequest()), 's-9']
 ];
+
+const pullChecksFix = (fresh: boolean): FixRequest => ({
+	...fixRequest({
+		kind: 'pullChecks',
+		...(fresh ? { fresh: { feature, diff: { text: '+a', truncated: false } } } : {})
+	}),
+	tail: 'CI / test: failed'
+});
+
+// Every kind of Session, each with the sandbox its commands run in.
+const sandboxed: [string, Call, object][] = [
+	...kinds
+		.filter(([name]) => !name.includes('Step'))
+		.map(([name, call]): [string, Call, object] => [name, call, SEALED]),
+	['a Pull-check fix', (agent) => agent.fix(pullChecksFix(false)), SEALED],
+	['a fresh Pull-check fix', (agent) => agent.fix(pullChecksFix(true)), SEALED],
+	[
+		'a Step round of a Workflow without localNetwork',
+		(agent) => agent.step(stepRequest({ extras: { ...extras, localNetwork: false } })),
+		SEALED
+	],
+	[
+		"a Step's fix round of a Workflow without localNetwork",
+		(agent) =>
+			agent.fix(fixRequest({ kind: 'step', step: looks, extras: { localNetwork: false } })),
+		SEALED
+	],
+	[
+		"a localNetwork Step's fix round",
+		(agent) => agent.fix(fixRequest({ kind: 'step', step: looks, extras })),
+		{ ...SEALED, network: { allowedDomains: ['localhost', '127.0.0.1'] } }
+	]
+];
+
+describe.each(sandboxed)('%s', (_name, call, sandbox) => {
+	it('runs in the sandbox, failing closed, with no hooks', async () => {
+		const { sent, session } = fakeSession(done({}));
+		await call(codingAgent(SETUP, session));
+		expect(sent[0]?.settings).toMatchObject({ disableAllHooks: true, sandbox });
+	});
+});
 
 describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) => {
 	const ended = async (settled: Settled, setup: AgentSetup = SETUP, onCall?: () => void) => {

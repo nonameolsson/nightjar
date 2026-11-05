@@ -41,7 +41,7 @@ function init(answers: string[], env: Record<string, string> = {}, argv: string[
 	const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
 	ado.repository('fabrikam-app');
 	return runNightjar(argv, {
-		platform: 'linux',
+		os: { platform: 'linux', kernel: '' },
 		cwd: m.root,
 		env: { ...m.env, ...env },
 		request: ado.request,
@@ -705,7 +705,7 @@ describe('nightjar init on a terminal, with select prompts', () => {
 	}
 	const initUi = (picks: (string | string[] | boolean | null)[]) =>
 		runNightjar(['init'], {
-			platform: 'linux',
+			os: { platform: 'linux', kernel: '' },
 			cwd: m.root,
 			env: m.env,
 			gh: github.gh,
@@ -766,7 +766,7 @@ describe('nightjar init on a terminal, with select prompts', () => {
 	it('writes nothing when the person cancels', async () => {
 		const prompter = withUi([]);
 		const code = await runNightjar(['init'], {
-			platform: 'linux',
+			os: { platform: 'linux', kernel: '' },
 			cwd: m.root,
 			env: m.env,
 			gh: github.gh,

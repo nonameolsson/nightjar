@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError, configJsonSchema, loadConfig, loadRules } from './config.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
@@ -595,10 +596,32 @@ describe('workflows', () => {
 		expect(refusal()).toContain(said);
 	});
 
+	// the sandbox is fixed like the deny rules: no key opens the network or turns it off
+	it.each([
+		[
+			{ workflows: { w: { steps: [step], allowedDomains: ['registry.npmjs.org'] } } },
+			'allowedDomains'
+		],
+		[{ workflows: { w: { steps: [step], sandbox: { enabled: false } } } }, 'sandbox'],
+		[{ allowedDomains: ['registry.npmjs.org'] }, 'allowedDomains'],
+		[{ sandbox: { network: { allowedDomains: ['*'] } } }, 'sandbox']
+	])('refuses a key that would loosen the sandbox: %j', (over, said) => {
+		write({ ...VALID, ...over });
+		expect(refusal()).toContain(said);
+	});
+
 	it('refuses a default that names no Workflow', () => {
 		write({ ...VALID, workflows: WORKFLOWS, defaultWorkflow: 'nope' });
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
 		write({ ...VALID, defaultWorkflow: 'design-review' });
 		expect(refusal()).toContain('defaultWorkflow: names no Workflow of workflows');
+	});
+});
+
+describe("this repo's own factory.json", () => {
+	it('installs in setup, since a sandboxed Session cannot fetch', () => {
+		const config = loadConfig(fileURLToPath(new URL('..', import.meta.url)));
+		expect(config.setup).toBe('npm install');
+		expect(config.allowedCommands).not.toContain('npm install');
 	});
 });

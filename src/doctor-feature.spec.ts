@@ -64,7 +64,12 @@ async function doctor(github: FakeGitHub, argv: string[], extra: Record<string, 
 		allowedCommands: ['make check'],
 		...extra
 	});
-	return runNightjar(argv, { platform: 'linux', cwd: m.root, env: m.env, gh: github.gh });
+	return runNightjar(argv, {
+		os: { platform: 'linux', kernel: '' },
+		cwd: m.root,
+		env: m.env,
+		gh: github.gh
+	});
 }
 
 describe('nightjar doctor FEATURE', () => {

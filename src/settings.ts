@@ -15,6 +15,23 @@ export const BUILD_TOOLS = [
 // The reviewer only reads: no Edit, no Write, and Bash only for git's read commands.
 export const REVIEW_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 
+// Credentials, denied to sandboxed commands and the Read tool alike; the rest of home stays readable for nvm, mise, pyenv or ~/.cargo.
+const CREDENTIAL_PATHS = [
+	'~/.ssh',
+	'~/.aws',
+	'~/.azure',
+	'~/.config',
+	'~/.gnupg',
+	'~/.docker',
+	'~/.kube',
+	'~/.netrc',
+	'~/.npmrc',
+	'~/.pypirc',
+	'~/.git-credentials',
+	// another Session's transcripts and the login; Claude Code reads its own outside the sandbox
+	'~/.claude*'
+];
+
 // Deny wins over any allow in Claude Code, so no config can loosen these.
 const DENY = [
 	'Bash(git commit *)',
@@ -39,9 +56,7 @@ const DENY = [
 	'Bash(ssh *)',
 	'Bash(scp *)',
 	'Bash(nc *)',
-	'Read(~/.ssh/**)',
-	'Read(~/.config/**)',
-	'Read(~/.aws/**)',
+	...CREDENTIAL_PATHS.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]),
 	'WebFetch',
 	'WebSearch'
 ];
@@ -62,19 +77,38 @@ export interface StepExtras {
 	readonly localNetwork?: boolean;
 }
 
-// The sandbox keeps a Step's commands to localhost; it auto-allows nothing, so the allow list still decides.
-const LOCAL_ONLY = {
+// Every Session's commands run in it: no network, nothing auto-allowed so the allow list decides, and like DENY no Workflow loosens it.
+const SANDBOX = {
 	enabled: true,
+	// else Claude Code runs commands unsandboxed where the sandbox cannot start
+	failIfUnavailable: true,
+	// else Claude Code may retry a failed command outside the sandbox
+	allowUnsandboxedCommands: false,
 	autoAllowBashIfSandboxed: false,
+	network: { allowedDomains: [] as string[] },
+	// No allowWrite: Claude Code lets a sandboxed command write the worktree and the temp folder, and nothing else.
+	filesystem: { denyRead: CREDENTIAL_PATHS }
+};
+
+// A localNetwork Step's commands reach localhost and nothing else.
+const LOCAL_ONLY = {
+	...SANDBOX,
 	network: { allowedDomains: ['localhost', '127.0.0.1'], allowLocalBinding: true }
 };
+
+// The one place every Session's settings come from; hooks run outside the sandbox, so none run.
+const sessionSettings = (permissions: object, sandbox: typeof SANDBOX): object => ({
+	permissions,
+	sandbox,
+	disableAllHooks: true
+});
 
 export const stepTools = (extras: StepExtras) => [...BUILD_TOOLS, ...(extras.allowedTools ?? [])];
 
 // `allowed` are factory.json's allowedCommands, as Bash permission patterns.
 export function buildSettings(allowed: readonly string[], extras: StepExtras = {}): object {
-	return {
-		permissions: {
+	return sessionSettings(
+		{
 			defaultMode: 'dontAsk',
 			allow: [
 				'Read',
@@ -91,16 +125,17 @@ export function buildSettings(allowed: readonly string[], extras: StepExtras = {
 			],
 			deny: DENY
 		},
-		...(extras.localNetwork === true ? { sandbox: LOCAL_ONLY } : {})
-	};
+		extras.localNetwork === true ? LOCAL_ONLY : SANDBOX
+	);
 }
 
 export function reviewSettings(): object {
-	return {
-		permissions: {
+	return sessionSettings(
+		{
 			defaultMode: 'dontAsk',
 			allow: ['Read', 'Glob', 'Grep', ...READ_GIT],
 			deny: [...DENY, 'Edit', 'Write']
-		}
-	};
+		},
+		SANDBOX
+	);
 }

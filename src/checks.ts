@@ -6,6 +6,7 @@ import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
 import { loadConfig, loadRules, type Config } from './config.js';
+import { installs } from './install-commands.js';
 import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
 import { loadPersonConfig, type PersonConfig } from './person-config.js';
@@ -13,6 +14,7 @@ import { firstLine, run, type Env } from './git.js';
 import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
+import { sandboxFinding, type Os, type SandboxFinding } from './sandbox.js';
 import { skillsNamed } from './workflow.js';
 import { defaultBranch, signing } from './worktree.js';
 import { why } from './say.js';
@@ -69,6 +71,8 @@ export interface CheckOptions {
 	readonly skills?: LoadedSkills;
 	// the clock a schedule's next due time is counted from; a spec passes its own
 	readonly now?: () => Date;
+	// what the sandbox check reads of the machine
+	readonly os: Os;
 }
 
 // What the checks find, each for the checks after it and for Ready.
@@ -81,6 +85,7 @@ export interface Found {
 	readonly claude: { readonly version: string; readonly login: string | null };
 	readonly signs: 'signs' | 'unsigned';
 	readonly workflowProblems: Readonly<Record<string, string>>;
+	readonly sandbox: SandboxFinding;
 }
 
 const CLAUDE_INSTALL = 'https://claude.com/claude-code';
@@ -150,6 +155,17 @@ const nodeCheck = check({
 			throw new Refusal(`Node 24 or later is needed, and this is ${node}.`);
 		}
 		return { detail: node, summary: `Node ${node}` };
+	}
+});
+
+// Every Session runs in the sandbox and fails closed, so a machine that cannot sandbox gets no build at all.
+const sandboxCheck = check({
+	name: 'sandbox',
+	needs: [],
+	run: async (_found, o) => {
+		const sandbox = await sandboxFinding(o.os, o.env, o.cwd);
+		if (sandbox.fault !== null) throw new Refusal(sandbox.fault);
+		return { found: { sandbox }, detail: `${sandbox.name}, no network`, summary: null };
 	}
 });
 
@@ -260,6 +276,31 @@ export const pullChecksCheck = check({
 	}
 });
 
+// a warning only: an install in allowedCommands cannot fetch in a sandbox, but the build still runs
+export const installsCheck = check({
+	name: 'allowedCommands',
+	needs: ['loaded'],
+	unmet: null,
+	run: ({ loaded }) => {
+		const commandLists = [
+			{ owner: '', commands: loaded.config.allowedCommands },
+			...Object.entries(loaded.config.workflows ?? {}).map(([name, w]) => ({
+				owner: `Workflow ${name}: `,
+				commands: w.allowedCommands ?? []
+			}))
+		];
+		const lines = commandLists.flatMap(({ owner, commands }) =>
+			commands.filter(installs).map((command): Line => ({
+				name: 'allowedCommands',
+				status: 'warn',
+				detail: `${owner}"${command}" installs packages, and a Session has no network to fetch them; move it to "setup", which Nightjar runs itself.`,
+				summary: null
+			}))
+		);
+		return { lines };
+	}
+});
+
 const claudeCheck = check({
 	name: 'claude',
 	needs: ['root'],
@@ -290,9 +331,10 @@ const signingCheck = check({
 const workflowsCheck = check({
 	name: 'Workflows',
 	needs: ['root', 'claude'],
-	run: async ({ root, loaded }, o) => {
+	run: async ({ root, loaded, sandbox }, o) => {
 		const named = Object.entries(loaded?.config.workflows ?? {}).map(([name, w]) => ({
 			name,
+			localNetwork: w.localNetwork === true,
 			steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
 		}));
 		if (named.length === 0) return { found: { workflowProblems: {} } };
@@ -313,19 +355,27 @@ const workflowsCheck = check({
 					.map((k) => `step ${s.step} names /${k}`)
 			);
 			const used = [...new Set(w.steps.flatMap((s) => s.skills))];
+			const faults: string[] = [];
 			if (skills === null && used.length > 0) {
-				const detail =
-					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked';
-				workflowProblems[w.name] = detail;
-				return { ...said, status: 'fail', detail };
+				faults.push(
+					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked'
+				);
 			}
 			if (missing.length > 0) {
-				const detail = `${missing.join(' and ')}, which a headless claude session does not load. Sessions load no skill from the repo's own .claude/skills; add the folder that holds it to "plugins" in factory.json (for example [".claude"]), then run \`nightjar doctor\` again.`;
+				faults.push(
+					`${missing.join(' and ')}, which a headless claude session does not load. Sessions load no skill from the repo's own .claude/skills; add the folder that holds it to "plugins" in factory.json (for example [".claude"]), then run \`nightjar doctor\` again.`
+				);
+			}
+			if (faults.length > 0) {
+				const detail = faults.join('\n');
 				workflowProblems[w.name] = detail;
 				return { ...said, status: 'fail', detail };
 			}
 			const count = `${String(w.steps.length)} Step${w.steps.length === 1 ? '' : 's'}`;
 			const detail = `${count}${used.length > 0 ? `, skills found: ${used.map((k) => `/${k}`).join(', ')}` : ''}`;
+			if (w.localNetwork && sandbox !== undefined && sandbox.caution !== null) {
+				return { ...said, status: 'warn', detail: `${detail}\nlocalNetwork: ${sandbox.caution}` };
+			}
 			return { ...said, status: 'ok', detail };
 		});
 		return { found: { workflowProblems }, lines };
@@ -396,6 +446,7 @@ function sourceLine(
 export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	apiKeyCheck,
 	nodeCheck,
+	sandboxCheck,
 	checkoutCheck,
 	factoryCheck,
 	personCheck,
@@ -403,6 +454,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	trackerCheck,
 	codeHostCheck,
 	pullChecksCheck,
+	installsCheck,
 	claudeCheck,
 	signingCheck,
 	workflowsCheck,
