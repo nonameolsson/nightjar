@@ -2,6 +2,8 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { GUARDED } from './leak-names.js';
 
 export interface Source {
@@ -59,10 +61,11 @@ export function repoFiles(): Source[] {
 	return read(out.split('\0').filter(Boolean));
 }
 
-// the files `npm pack` would put in the tarball
+// the files `npm pack` would put in the tarball; its cache sits in the temp folder, the one place a sandboxed Session can write besides the worktree (else npm fails writing ~/.npm)
 export function packedFiles(): Source[] {
 	const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
 		encoding: 'utf8',
+		env: { ...process.env, npm_config_cache: join(tmpdir(), 'nightjar-npm-cache') },
 		stdio: ['ignore', 'pipe', 'ignore']
 	});
 	const [pack] = JSON.parse(out) as { files: { path: string }[] }[];
