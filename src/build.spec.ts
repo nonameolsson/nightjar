@@ -46,7 +46,7 @@ import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
-import { DEFAULT_SIGNAL_NAMES } from './signals.js';
+import { DEFAULT_SIGNAL_NAMES, type Signal } from './signals.js';
 import { openWorktree } from './worktree.js';
 
 // A test over real git runs a few dozen processes, which take seconds on a busy machine.
@@ -1036,6 +1036,69 @@ describe('buildFeature', () => {
 		expect(retries).toEqual([{ attempt: 2, of: 3 }]);
 	});
 
+	describe('the working Signal on a Ticket', () => {
+		it('is on the Ticket, beside ready, while its build Session runs, and off once it is built', async () => {
+			const world = makeGitWorld();
+			const seen: [string, readonly Signal[]][] = [];
+			world.settle = (req) => {
+				if (req.kind === 'build')
+					seen.push([req.ticket.id, [...world.tracker.signalsOf(req.ticket.id)]]);
+				return undefined;
+			};
+			await buildFeature(deps(world), setup(world), '1');
+			expect(seen).toEqual([
+				['2', ['ready', 'working']],
+				['3', ['ready', 'working']]
+			]);
+			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
+			expect(world.tracker.signalsOf('3')).toEqual(['ready']);
+		});
+
+		it('comes off a Ticket handed back, which carries needs info and not ready', async () => {
+			const world = makeGitWorld();
+			world.acts['2'] = 'fail';
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.tracker.signalsOf('2')).toEqual(['needsInfo']);
+		});
+
+		it('is never put on a Ticket handed back before a Session', async () => {
+			const world = makeWorld();
+			const item = world.tracker.items.get('2');
+			if (item) world.tracker.items.set('2', { ...item, body: 'Just do it.' });
+			const added: string[] = [];
+			const real = world.tracker.addSignal;
+			world.tracker.addSignal = (id, signal) => {
+				if (signal === 'working') added.push(id);
+				return real(id, signal);
+			};
+			await buildFeature(deps(world), setup(world), '1');
+			expect(added).not.toContain('2');
+			expect(world.tracker.signalsOf('2')).not.toContain('working');
+		});
+
+		it('comes off when the run pauses or a person stops it', async () => {
+			const paused = makeWorld();
+			paused.settle = (req) =>
+				req.kind === 'build'
+					? { kind: 'paused', why: 'the limit', sessionId: 's', costUsd: 1 }
+					: undefined;
+			await buildFeature(deps(paused), setup(paused), '1');
+			expect(paused.tracker.signalsOf('2')).toEqual(['ready']);
+
+			const stopped = makeWorld();
+			stopped.settle = (req) =>
+				req.kind === 'build' ? { kind: 'aborted', sessionId: 's', costUsd: 1 } : undefined;
+			await buildFeature(deps(stopped), setup(stopped), '1');
+			expect(stopped.tracker.signalsOf('2')).toEqual(['ready']);
+		});
+
+		it('leaves the Build order the same', async () => {
+			const world = makeGitWorld();
+			await buildFeature(deps(world), setup(world), '1');
+			expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+		});
+	});
+
 	it('hands back a Ticket whose session stopped, keeping the attempt on a side branch', async () => {
 		const world = makeGitWorld();
 		world.acts['2'] = 'fail';
@@ -1447,6 +1510,25 @@ describe('Workflows', () => {
 			'1'
 		);
 		expect(kinds(world)).toEqual(['build', 'build', 'step', 'step', 'review']);
+	});
+
+	it('stays on a built Ticket until its afterEachTicket Steps are done', async () => {
+		const world = makeGitWorld();
+		const lint = { name: 'lint', prompt: 'lint it', point: 'afterEachTicket' } as const;
+		const during: [string, readonly Signal[]][] = [];
+		world.stepAgent = (req) => {
+			const id = req.ticket?.id ?? '';
+			during.push([id, [...world.tracker.signalsOf(id)]]);
+			write(world, req.at.folder, `lint-${id}.txt`);
+			return stepDone(req);
+		};
+		await buildFeature(deps(world), withFlow(world, { steps: [lint] }), '1');
+		expect(during).toEqual([
+			['2', ['ready', 'working']],
+			['3', ['ready', 'working']]
+		]);
+		expect(world.tracker.signalsOf('2')).toEqual(['ready']);
+		expect(world.tracker.signalsOf('3')).toEqual(['ready']);
 	});
 
 	it('runs an afterEachTicket Step after each Ticket, committed on its own', async () => {
