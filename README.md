@@ -353,7 +353,7 @@ The issues list is flat: a Feature and its Tickets look the same. A GitHub Proje
 
 Show a column with the **+** at the right of the headers. A view change is saved only after **View → Save changes**.
 
-A Board's columns come from a single-select field such as Status, never from labels, and the Signals are labels. So Nightjar does not feed a Board; use `nightjar ui` for that. Which labels a Feature and its Tickets carry at each point of a build is in [Signals through a build](docs/ticket-contract.md#signals-through-a-build): a built Ticket, for one, keeps `ready-for-agent` until its pull request merges.
+A Board's columns come from a single-select field such as Status, never from labels, and the Signals are labels. So Nightjar does not feed a Board; use `nightjar ui` for that. Which labels a Feature and its Tickets carry at each point of a build is in [Signals through a build](docs/ticket-contract.md#signals-through-a-build): a built Ticket, for one, keeps `ready-for-agent` until its pull request merges, and the Ticket being built carries `agent-working` while its Session runs.
 
 Since June 2026, repository **saved views** (the Issues sidebar) keep a filter shared with everyone who has triage access. They are plain queries and show a flat list. Use them for the Signal filters, for example Queued: `is:open label:factory-go -label:agent-working`; the Project is what shows the hierarchy.
 
@@ -492,7 +492,7 @@ A work item counts as closed once Azure DevOps has stamped its Closed Date, whic
 
 The owner must be trusted: on `factory.json`'s `trusted` list, or if there is no list, by the Tracker's own default, write access on GitHub or the project's Contributors group on Azure DevOps Boards. `nightjar intake` refuses to start, and `nightjar doctor` fails the Source, while the owner is not trusted, or while the Tracker has no `assign` (a [Tracker module](docs/custom-adapters.md) written before it). If assigning a Feature fails, intake still answers 201 and leaves the Feature with no Signal, for a person to give the Go.
 
-While it works, Nightjar puts the working Signal (`agent-working`) on the Feature. When it cannot build a Ticket it takes the ready Signal off, puts on needs info (`needs-info`) or needs a person (`ready-for-human`), and comments with why. Answer by commenting on the Ticket, put the ready Signal back on it, and give the Go again: the next run continues on the same branch and pull request. Only Trusted comments reach the agent. Nightjar never closes a Ticket and never sets a tracker state.
+While it works, Nightjar puts the working Signal (`agent-working`) on the Feature, and on the Ticket it is building, from just before that Ticket's Session starts until the Ticket is built (committed, with its `afterEachTicket` Steps done), handed back, or the run pauses or is stopped. When it cannot build a Ticket it takes the ready Signal off, puts on needs info (`needs-info`) or needs a person (`ready-for-human`), and comments with why. Answer by commenting on the Ticket, put the ready Signal back on it, and give the Go again: the next run continues on the same branch and pull request. Only Trusted comments reach the agent. Nightjar never closes a Ticket and never sets a tracker state.
 
 ## Run
 

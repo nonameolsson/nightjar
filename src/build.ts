@@ -445,9 +445,23 @@ class FeatureRun {
 		return { kind: 'repeated', why: failed, tickets: this.streak.map((f) => f.ticket) };
 	}
 
+	// The Ticket carries the working Signal from just before its build Session starts until it ends any way: built, handed back, paused or stopped.
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		const before = await this.tree.head();
 		const faults = ticketFaults(ticket.body);
+		if (faults.length === 0) await this.deps.tracker.addSignal(ticket.id, 'working');
+		try {
+			return await this.buildWorking(ticket, before, faults);
+		} finally {
+			if (faults.length === 0) await this.deps.tracker.removeSignal(ticket.id, 'working');
+		}
+	}
+
+	private async buildWorking(
+		ticket: Ticket,
+		before: string,
+		faults: readonly string[]
+	): Promise<Step> {
 		if (faults.length > 0) {
 			await this.handBack(
 				ticket,
