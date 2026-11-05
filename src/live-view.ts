@@ -8,6 +8,7 @@ import {
 	idText,
 	pollAfter,
 	running,
+	retryText,
 	runState,
 	stepText,
 	two
@@ -60,7 +61,8 @@ type Building = Extract<Doing, { kind: 'building' }>;
 function progressText(doing: Building, tickets: readonly TicketProgress[] | undefined): string {
 	const round =
 		doing.round === null ? '' : `, round ${String(doing.round)}/${String(doing.rounds)}`;
-	const step = `${stepText(doing.step)}${round}`;
+	const again = doing.retry === undefined ? '' : `, ${retryText(doing.retry)}`;
+	const step = `${stepText(doing.step)}${round}${again}`;
 	if (tickets === undefined) return step;
 	const built = tickets.filter((t) => t.state === 'built').length;
 	const at = tickets.findIndex((t) => t.id === doing.ticket);

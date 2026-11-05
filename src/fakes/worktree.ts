@@ -154,6 +154,13 @@ class MemoryWorktree implements Worktree {
 		this.folder.dirty.clear();
 	}
 
+	snapshot = () => Promise.resolve(JSON.stringify([...this.folder.dirty]));
+
+	restore(mark: string) {
+		this.folder.dirty = new Map(JSON.parse(mark) as [string, string][]);
+		return Promise.resolve();
+	}
+
 	revert(before: string) {
 		this.reset(before);
 		return Promise.resolve();

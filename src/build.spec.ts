@@ -53,7 +53,8 @@ import { openWorktree } from './worktree.js';
 vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
-type Act = 'build' | 'ask' | 'fail';
+// 'flaky' fails for a passing reason `flaky` times, leaving a file, and then builds; 'down' does so every time
+type Act = 'build' | 'ask' | 'fail' | 'flaky' | 'down';
 
 // One piece of work the build loop asked the Coding agent for.
 type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
@@ -92,6 +93,12 @@ interface World {
 	// what the scripted agent does in a fix round; the default says it fixed it
 	fixAgent: (req: FixRequest) => FixOutcome;
 	acts: Record<string, Act>;
+	// how many passing failures a 'flaky' Ticket has before it builds
+	flaky: number;
+	// the waits the loop asked for between tries
+	readonly waits: number[];
+	// the tries each Ticket's build has had
+	readonly tries: Record<string, number>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
 	checkOk: boolean;
@@ -218,6 +225,9 @@ function worldOf(o: {
 		stepAgent: (req) => stepDone(req),
 		fixAgent: (req) => ({ kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 }),
 		acts: {},
+		flaky: 1,
+		waits: [],
+		tries: {},
 		settle: () => undefined,
 		checkOk: true,
 		setupOk: true,
@@ -249,6 +259,19 @@ function deps(world: World): Deps {
 					if (act === 'ask') {
 						const questions = [{ question: 'Which file?', recommendation: 'marks.ts' }];
 						return { kind: 'questions', questions, sessionId, costUsd: 2 };
+					}
+					if (act === 'flaky' || act === 'down') {
+						const tried = (world.tries[n] = (world.tries[n] ?? 0) + 1);
+						if (act === 'down' || tried <= world.flaky) {
+							write(world, req.at.folder, 'half-done.txt');
+							return {
+								kind: 'failed',
+								why: `claude exited with code 1 and no result: overloaded, try ${String(tried)}`,
+								failure: 'passing',
+								sessionId,
+								costUsd: 1
+							};
+						}
 					}
 					if (act === 'fail') {
 						return {
@@ -298,6 +321,10 @@ function deps(world: World): Deps {
 		},
 		spend: world.spend,
 		openWorktree: world.git ? openWorktree : world.trees.open,
+		sleep: (ms) => {
+			world.waits.push(ms);
+			return Promise.resolve();
+		},
 		now: () => new Date(2026, 9, 30, 9),
 		newId: () => `session-${String((id += 1))}`,
 		sessionExists: (sid) => !world.goneSessions.has(sid),
@@ -843,6 +870,119 @@ describe('buildFeature', () => {
 			['review', 'approve']
 		]);
 		expect(world.trees.messages(tree())[0]).toContain('Built #2\n\nFixed the lint');
+	});
+
+	it('tries a build again after a passing failure, from the commit before it, and builds the Ticket', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'flaky';
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.waits).toEqual([30_000]);
+		expect(world.trees.has(tree(), 'half-done.txt')).toBe(false);
+		expect(world.trees.has(tree(), 'ticket-2.txt')).toBe(true);
+		expect(
+			ledger(world)
+				.filter((e) => e.step === 'build' && e.ticket === '2')
+				.map((e) => [e.outcome.slice(0, 21), e.failure])
+		).toEqual([
+			['failed: claude exited', 'passing'],
+			['built', undefined]
+		]);
+		expect(world.tracker.said('2')).toEqual([]);
+	});
+
+	it('tries a fix round again after a passing failure, from what the build left', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		let rounds = 0;
+		world.fixAgent = (req) => {
+			rounds += 1;
+			if (rounds === 1) {
+				write(world, req.at.folder, 'half-fixed.txt');
+				return {
+					kind: 'failed',
+					why: 'claude exited with code 1 and no result: overloaded',
+					failure: 'passing',
+					sessionId: req.resume,
+					costUsd: 1
+				};
+			}
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1 };
+		};
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.waits).toEqual([30_000]);
+		expect(has(world, 'half-fixed.txt')).toBe(false);
+		expect(has(world, 'ticket-2.txt')).toBe(true);
+		expect(
+			ledger(world)
+				.filter((e) => e.step === 'fix')
+				.map((e) => [e.outcome.slice(0, 7), e.failure])
+		).toEqual([
+			['failed:', 'passing'],
+			['round 1', undefined]
+		]);
+	});
+
+	it('tries the review again after a passing failure', async () => {
+		const world = makeWorld();
+		let reviews = 0;
+		world.settle = (req) =>
+			req.kind === 'review' && (reviews += 1) === 1
+				? {
+						kind: 'failed',
+						why: 'claude could not start: spawn claude ENOENT',
+						failure: 'passing',
+						sessionId: req.sessionId,
+						costUsd: 0
+					}
+				: undefined;
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.waits).toEqual([30_000]);
+		expect(askedOf(world, 'review')).toHaveLength(2);
+		expect(ledger(world).filter((e) => e.step === 'review')).toMatchObject([
+			{ failure: 'passing' },
+			{ outcome: 'approve' }
+		]);
+	});
+
+	it('hands a Ticket back after three passing failures, naming all three', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'down';
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.waits).toEqual([30_000, 120_000]);
+		const said = world.tracker.said('2')[0] ?? '';
+		for (const n of ['1', '2', '3']) expect(said).toContain(`try ${n}: claude exited`);
+		expect(said).toContain('overloaded, try 3');
+		expect(ledger(world).filter((e) => e.ticket === '2' && e.step === 'build')).toHaveLength(3);
+		expect(world.trees.has(tree(), 'half-done.txt')).toBe(false);
+	});
+
+	it('does not try a lasting or budget failure again', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'fail';
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.waits).toEqual([]);
+		expect(ledger(world).filter((e) => e.ticket === '2' && e.step === 'build')).toHaveLength(1);
+	});
+
+	it('does not try again when the Ticket has no budget left for it', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'down';
+		await buildFeature(
+			deps(world),
+			setup(world, { limits: { ...setup(world).limits, ticketUsd: 1.5 } }),
+			'1'
+		);
+		expect(world.waits).toEqual([]);
+		expect(ledger(world).filter((e) => e.ticket === '2' && e.step === 'build')).toHaveLength(1);
+	});
+
+	it('shows a build tried again as try 2 of 3 in the status file', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'flaky';
+		await buildFeature(deps(world), setup(world), '1');
+		const retries = world.doing.flatMap((d) => (d.kind === 'building' && d.retry ? [d.retry] : []));
+		expect(retries).toEqual([{ attempt: 2, of: 3 }]);
 	});
 
 	it('hands back a Ticket whose session stopped, keeping the attempt on a side branch', async () => {

@@ -530,12 +530,15 @@ Built in; only the spend per day is yours to set, as `dailyUsd` in [your config.
 | Spend per Ticket          | $15          |
 | Minutes per Ticket        | 60           |
 | Fix rounds per Ticket     | 3            |
+| Tries of a Session that fails for a passing reason | 3 (retries after 30 s, then 2 min) |
 | Question rounds per Ticket | 2           |
 | Spend per review          | $3           |
 | Minutes per review        | 10           |
 | Spend per day             | $60, or `dailyUsd` |
 
 A Ticket still unclear after its question rounds goes to a person.
+
+A Session that fails for a passing reason (`claude` exits with no result and its last line names an overload, a 5xx error or a network fault, or `claude` cannot start) is tried again from the same starting point, after 30 seconds and then after 2 minutes, as long as the Ticket's budget has room for it. Each try is its own line in `.factory/runs.jsonl`. A budget or lasting failure is not retried.
 
 Also:
 

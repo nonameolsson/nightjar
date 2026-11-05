@@ -1,7 +1,13 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
 import type { RunCheck } from './check.js';
 import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
-import { envOf, type CodingAgent } from './coding-agent.js';
+import {
+	envOf,
+	type BuildOutcome,
+	type CodingAgent,
+	type FixOutcome,
+	type ReviewOutcome
+} from './coding-agent.js';
 import { DEFAULT_PULL_CHECKS } from './config.js';
 import { pullChecksReport } from './gate.js';
 import { FOOTER } from './footer.js';
@@ -23,6 +29,7 @@ import {
 } from './next-step.js';
 import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
+import { retryPassing, TRIES } from './retry.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -105,6 +112,8 @@ export interface Deps {
 	// opens the Feature's worktree: real git, or in memory
 	readonly openWorktree: OpenWorktree;
 	readonly now: () => Date;
+	// waits between the tries of a Session that failed for a passing reason; a spec swaps it for a stand-in
+	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly newId: () => string;
 	// whether the Coding agent still has the Session of this id on this machine, to resume
 	readonly sessionExists: (id: string) => boolean;
@@ -265,7 +274,8 @@ async function needsInfoStop(
 
 type Building = Extract<Doing, { kind: 'building' }>;
 type ShowBuilding = (
-	at: Pick<Building, 'ticket' | 'step' | 'round' | 'rounds' | 'session' | 'tickets'>
+	at: Pick<Building, 'ticket' | 'step' | 'round' | 'rounds' | 'session' | 'tickets'> &
+		Partial<Pick<Building, 'retry'>>
 ) => Building;
 
 // One Feature's building states: the Feature's start in every one, and a fresh start for each step.
@@ -339,13 +349,16 @@ class FeatureRun {
 			runCheck: deps.runCheck,
 			serve: deps.serve,
 			newId: deps.newId,
+			sleep: deps.sleep,
+			signal: this.setup.signal,
 			say: deps.say,
 			setup: this.setup,
 			feature: this.feature,
 			tree: this.tree,
 			fix: (work) => this.fixUntilGreen(work),
 			log: (entry) => this.log(entry),
-			building: (ticket, session, rounds) => this.building(ticket, 'step', session, rounds),
+			building: (ticket, session, rounds, attempt) =>
+				this.building(ticket, 'step', session, rounds, attempt),
 			dailyPause: () => this.dailyPause(),
 			allowance: (cap, spent) => this.deps.spend.allowance(cap, spent),
 			aborted: () => this.aborted
@@ -417,24 +430,48 @@ class FeatureRun {
 			);
 			return NEXT;
 		}
-		const sessionId = this.deps.newId();
 		const ticketComments = await this.trusted(ticket.id);
-		this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);
-		this.building(ticket.id, 'build', sessionId, {
+		const rounds = {
 			round: questionRounds(ticketComments) + 1,
 			rounds: this.setup.limits.questionRounds + 1
+		};
+		const { outcome: got, earlierUsd } = await retryPassing<BuildOutcome>({
+			budgetUsd: this.setup.limits.ticketUsd,
+			enough: (usd) => this.deps.spend.allowance(usd, 0).enough,
+			reset: () => this.tree.revert(before),
+			sleep: this.deps.sleep,
+			signal: this.setup.signal,
+			run: (budgetUsd, attempt) => {
+				const sessionId = this.deps.newId();
+				this.deps.say(`${hash(ticket.id)} ${ticket.title}: session ${sessionId}`);
+				this.building(ticket.id, 'build', sessionId, rounds, attempt);
+				return this.deps.codingAgent.build({
+					kind: 'build',
+					at: this.tree.at,
+					sessionId,
+					feature: this.feature,
+					ticket,
+					featureComments: this.featureComments,
+					ticketComments,
+					built: this.tickets.filter((t) => this.built.has(t.id)),
+					budgetUsd
+				});
+			},
+			record: (failed) =>
+				this.log({
+					ticket: ticket.id,
+					step: 'build',
+					session: failed.sessionId,
+					costUsd: failed.costUsd,
+					outcome: `failed: ${failed.why}`,
+					failure: 'passing'
+				}),
+			retrying: (attempt, why) =>
+				this.deps.say(
+					`${hash(ticket.id)}: ${why}; retrying after a passing fault, try ${String(attempt)} of ${String(TRIES)}`
+				)
 		});
-		const got = await this.deps.codingAgent.build({
-			kind: 'build',
-			at: this.tree.at,
-			sessionId,
-			feature: this.feature,
-			ticket,
-			featureComments: this.featureComments,
-			ticketComments,
-			built: this.tickets.filter((t) => this.built.has(t.id)),
-			budgetUsd: this.setup.limits.ticketUsd
-		});
+		const sessionId = got.sessionId;
 		const entry = {
 			ticket: ticket.id,
 			step: 'build' as const,
@@ -469,7 +506,13 @@ class FeatureRun {
 			}
 			case 'built':
 				this.log({ ...entry, outcome: 'built' });
-				return this.checkAndCommit(ticket, before, sessionId, got.summary, got.costUsd);
+				return this.checkAndCommit(
+					ticket,
+					before,
+					sessionId,
+					got.summary,
+					got.costUsd + earlierUsd
+				);
 		}
 	}
 
@@ -533,8 +576,9 @@ class FeatureRun {
 		this.built.add(ticket.id);
 		if (this.shown?.kind === 'building') {
 			// no round of its own any more, so it is not counted as another fix round
+			const { retry: _retry, ...shown } = this.shown;
 			this.deps.status.doing({
-				...this.shown,
+				...shown,
 				step: 'build',
 				round: null,
 				rounds: null,
@@ -553,7 +597,8 @@ class FeatureRun {
 				deps: this.deps,
 				setup: this.setup,
 				tree: this.tree,
-				building: (ticket, session, rounds) => this.building(ticket, 'fix', session, rounds),
+				building: (ticket, session, rounds, attempt) =>
+					this.building(ticket, 'fix', session, rounds, attempt),
 				log: (entry, work) => this.log(entry, work)
 			},
 			o
@@ -564,13 +609,15 @@ class FeatureRun {
 		ticket: ItemId | null,
 		step: 'build' | 'fix' | 'step',
 		session: string,
-		rounds: { readonly round: number; readonly rounds: number }
+		rounds: { readonly round: number; readonly rounds: number },
+		attempt = 1
 	) {
 		this.sessionStartedAt = this.deps.now();
 		this.shown = this.show({
 			ticket,
 			step,
 			...rounds,
+			...(attempt > 1 ? { retry: { attempt, of: TRIES } } : {}),
 			session,
 			tickets: progress(this.tickets, this.built, ticket)
 		});
@@ -733,7 +780,8 @@ interface FixContext {
 	readonly building: (
 		ticket: ItemId | null,
 		session: string,
-		rounds: { readonly round: number; readonly rounds: number }
+		rounds: { readonly round: number; readonly rounds: number },
+		attempt?: number
 	) => void;
 	readonly log: (entry: LogEntry, work: Work) => void;
 }
@@ -751,18 +799,45 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		const minutes = minutesLeft(deps.now, o.deadline);
 		if (minutes !== undefined && minutes <= 0) break;
 		deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
-		ctx.building(o.ticket, o.sessionId, { round, rounds: limits.fixRounds });
-		const got = await deps.codingAgent.fix({
-			kind: 'fix',
-			at: tree.at,
-			of: o.of,
-			resume: o.sessionId,
-			round,
-			tail: check.tail,
+		// a try that fails for a passing reason starts again from what the build and the rounds before left
+		const mark = await tree.snapshot();
+		const { outcome: got, earlierUsd } = await retryPassing<FixOutcome>({
 			budgetUsd: budget,
-			...(minutes === undefined ? {} : { minutes })
+			enough: (usd) => deps.spend.allowance(usd, 0).enough,
+			reset: () => tree.restore(mark),
+			sleep: deps.sleep,
+			signal: setup.signal,
+			run: (usd, attempt) => {
+				ctx.building(o.ticket, o.sessionId, { round, rounds: limits.fixRounds }, attempt);
+				return deps.codingAgent.fix({
+					kind: 'fix',
+					at: tree.at,
+					of: o.of,
+					resume: o.sessionId,
+					round,
+					tail: check.tail,
+					budgetUsd: usd,
+					...(minutes === undefined ? {} : { minutes })
+				});
+			},
+			record: (failed) =>
+				ctx.log(
+					{
+						ticket: o.ticket,
+						step: 'fix',
+						session: o.sessionId,
+						costUsd: failed.costUsd,
+						outcome: `failed: ${failed.why}`,
+						failure: 'passing'
+					},
+					work
+				),
+			retrying: (attempt, why) =>
+				deps.say(
+					`${o.name}: ${why}; retrying after a passing fault, try ${String(attempt)} of ${String(TRIES)}`
+				)
 		});
-		spent += got.costUsd;
+		spent += got.costUsd + earlierUsd;
 		const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
 		if (got.kind === 'paused') {
 			ctx.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
@@ -1073,20 +1148,56 @@ async function reviewFeature(
 	show: ShowBuilding,
 	log: (entry: LogEntry) => void
 ): Promise<Review | null | { readonly paused: string }> {
-	const sessionId = deps.newId();
-	deps.say(`${hash(feature.id)}: review, session ${sessionId}`);
-	deps.status.doing(
-		show({ ticket: null, step: 'review', round: null, rounds: null, session: sessionId, tickets })
-	);
-	const got = await deps.codingAgent.review({
-		kind: 'review',
-		at: tree.at,
-		sessionId,
-		feature,
-		tickets: built,
-		budgetUsd: setup.limits.reviewUsd
+	const before = await tree.head();
+	const { outcome: got } = await retryPassing<ReviewOutcome>({
+		budgetUsd: setup.limits.reviewUsd,
+		enough: (usd) => deps.spend.allowance(usd, 0).enough,
+		reset: () => tree.revert(before),
+		sleep: deps.sleep,
+		signal: setup.signal,
+		run: (budgetUsd, attempt) => {
+			const sessionId = deps.newId();
+			deps.say(`${hash(feature.id)}: review, session ${sessionId}`);
+			deps.status.doing(
+				show({
+					ticket: null,
+					step: 'review',
+					round: null,
+					rounds: null,
+					...(attempt > 1 ? { retry: { attempt, of: TRIES } } : {}),
+					session: sessionId,
+					tickets
+				})
+			);
+			return deps.codingAgent.review({
+				kind: 'review',
+				at: tree.at,
+				sessionId,
+				feature,
+				tickets: built,
+				budgetUsd
+			});
+		},
+		record: (failed) =>
+			log({
+				ticket: null,
+				step: 'review',
+				session: failed.sessionId,
+				costUsd: failed.costUsd,
+				outcome: `failed: ${failed.why}`,
+				failure: 'passing'
+			}),
+		retrying: (attempt, why) =>
+			deps.say(
+				`${hash(feature.id)}: ${why}; retrying after a passing fault, try ${String(attempt)} of ${String(TRIES)}`
+			)
 	});
-	const entry = { ticket: null, step: 'review' as const, session: sessionId, costUsd: got.costUsd };
+	const entry = {
+		ticket: null,
+		step: 'review' as const,
+		session: got.sessionId,
+		costUsd: got.costUsd
+	};
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });

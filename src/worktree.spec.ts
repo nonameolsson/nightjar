@@ -204,6 +204,17 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(world.has(tree, 'b.txt')).toBe(false);
 	});
 
+	it('restores a snapshot of the uncommitted work, losing the file a failed try left after it', async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'built.txt');
+		const mark = await tree.snapshot();
+		world.write(tree, 'junk.txt');
+
+		await tree.restore(mark);
+		expect(world.has(tree, 'junk.txt')).toBe(false);
+		expect(world.has(tree, 'built.txt')).toBe(true);
+	});
+
 	it('discards nothing, and keeps no branch, when the session left nothing', async () => {
 		const { tree } = await fresh();
 		expect(await tree.discard(await tree.head(), '2')).toBeNull();

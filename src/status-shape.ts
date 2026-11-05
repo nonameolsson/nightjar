@@ -53,6 +53,8 @@ export type Doing =
 			readonly round: number | null;
 			readonly rounds: number | null;
 			readonly session: string | null;
+			// set while a Session is tried again after a passing fault: its try, of how many
+			readonly retry?: { readonly attempt: number; readonly of: number };
 			// when the step began
 			readonly startedAt: string;
 			// when the Feature's build began, which every step keeps; older files lack it

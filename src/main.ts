@@ -248,6 +248,7 @@ export async function runNightjar(
 		spend,
 		openWorktree,
 		now: () => new Date(),
+		sleep,
 		newId: () => randomUUID(),
 		sessionExists: (id) => sessionExists(id, ready.env),
 		say: runSay,

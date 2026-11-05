@@ -202,10 +202,13 @@ describe('the Steps of a Workflow', () => {
 			revert: (before) => {
 				b.reverts.push(before);
 				return Promise.resolve();
-			}
+			},
+			snapshot: () => Promise.resolve('snapshot'),
+			restore: () => Promise.resolve()
 		};
 		const check = (): CheckResult => ({ ok: b.checkOk, tail: 'lint: 1 problem' });
 		const run: StepsRun = {
+			sleep: () => Promise.resolve(),
 			codingAgent: {
 				step: (req) => {
 					b.asked.push(req);
@@ -368,6 +371,30 @@ describe('the Steps of a Workflow', () => {
 			);
 		}
 	);
+
+	it('tries a Step round again, in a new Session, after a passing failure', async () => {
+		const b = bench();
+		let tries = 0;
+		b.agent = (req) =>
+			(tries += 1) === 1
+				? {
+						kind: 'failed',
+						why: 'claude exited with code 1 and no result: overloaded',
+						failure: 'passing',
+						sessionId: req.sessionId,
+						costUsd: 1
+					}
+				: stepDone(req);
+		const steps = await open(b, { steps: [critique] });
+		expect(await steps.runAt('afterAllTickets', null)).toEqual({ kind: 'next' });
+
+		expect(b.asked.map((s) => s.sessionId)).toEqual(['session-1', 'session-2']);
+		expect(b.commits.map((c) => c.key)).toEqual(['w/critique']);
+		expect(b.logged.map((e) => [e.session, e.outcome.slice(0, 20), e.failure])).toEqual([
+			['session-1', 'w/critique: failed: ', 'passing'],
+			['session-2', 'w/critique: round 1', undefined]
+		]);
+	});
 
 	it('runs a Step again in its own Session until its condition holds, and lists what is left when it never does', async () => {
 		const b = bench();
