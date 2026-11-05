@@ -54,7 +54,7 @@ vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
 // 'flaky' fails for a passing reason `flaky` times, leaving a file, and then builds; 'down' does so every time
-type Act = 'build' | 'ask' | 'fail' | 'flaky' | 'down';
+type Act = 'build' | 'ask' | 'fail' | 'flaky' | 'down' | 'lasting' | 'lasting-other';
 
 // One piece of work the build loop asked the Coding agent for.
 type Work = BuildRequest | FixRequest | StepRequest | ReviewRequest;
@@ -272,6 +272,15 @@ function deps(world: World): Deps {
 								costUsd: 1
 							};
 						}
+					}
+					if (act === 'lasting' || act === 'lasting-other') {
+						return {
+							kind: 'failed',
+							why: act === 'lasting' ? 'the login is rejected' : 'the disk is full',
+							failure: 'lasting',
+							sessionId,
+							costUsd: 1
+						};
 					}
 					if (act === 'fail') {
 						return {
@@ -963,6 +972,48 @@ describe('buildFeature', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.waits).toEqual([]);
 		expect(ledger(world).filter((e) => e.ticket === '2' && e.step === 'build')).toHaveLength(1);
+	});
+
+	describe('Tickets that keep failing the same way', () => {
+		const addTickets = (world: World) => {
+			for (const id of ['4', '5', '6', '7']) {
+				world.tracker.add({ id, title: `Ticket ${id}`, signals: ['ready'] });
+			}
+			world.tracker.add({
+				id: '1',
+				title: 'One escape',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['6', '2', '3', '4', '5', '7']
+			});
+		};
+
+		it('stops before the fourth Ticket and says why on the Feature', async () => {
+			const world = makeWorld();
+			addTickets(world);
+			for (const id of ['2', '4', '5']) world.acts[id] = 'lasting';
+			await buildFeature(deps(world), setup(world), '1');
+			// #3 waits for #2, so the three failures are #2, #4 and #5
+			const tried = ledger(world).filter((e) => e.step === 'build');
+			expect(tried.map((e) => e.ticket)).toEqual(['6', '2', '4', '5']);
+			expect(world.tracker.signalsOf('1')).toContain('needsInfo');
+			const comment = world.tracker.said('1').join('\n');
+			expect(comment).toContain('the login is rejected');
+			for (const id of ['2', '4', '5']) expect(comment).toContain(`#${id}`);
+			expect(world.host.pulls).toHaveLength(1);
+		});
+
+		it('does not stop when a different reason breaks the three', async () => {
+			const world = makeWorld();
+			addTickets(world);
+			world.acts['2'] = 'lasting';
+			world.acts['4'] = 'lasting';
+			world.acts['5'] = 'lasting-other';
+			await buildFeature(deps(world), setup(world), '1');
+			const tried = ledger(world).filter((e) => e.step === 'build');
+			expect(tried.map((e) => e.ticket)).toEqual(['6', '2', '4', '5', '7']);
+			expect(world.tracker.said('1').join('\n')).not.toContain('same reason');
+		});
 	});
 
 	it('does not try again when the Ticket has no budget left for it', async () => {

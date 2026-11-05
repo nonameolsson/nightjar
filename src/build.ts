@@ -188,7 +188,14 @@ interface Cost {
 const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
 
 // What building one Ticket left the run to do next.
-type Step = { readonly kind: 'next' } | Halt | { readonly kind: 'red'; readonly tail: string };
+type Step =
+	| { readonly kind: 'next' }
+	| Halt
+	| { readonly kind: 'red'; readonly tail: string }
+	| { readonly kind: 'repeated'; readonly why: string; readonly tickets: readonly ItemId[] };
+
+// How many Tickets in a row failing with the same lasting reason stop the run.
+const REPEATED_FAILURES = 3;
 
 const NEXT: Step = { kind: 'next' };
 
@@ -301,6 +308,10 @@ class FeatureRun {
 	// when the Feature's build began, and when the session now running did
 	private readonly startedAt: Date;
 	private sessionStartedAt: Date;
+	// the Tickets handed back in a row with a lasting failure, and why; any other end of a Ticket clears it
+	// the reason the Ticket just built failed for, when its failure is lasting
+	private lastFailure: string | null = null;
+	private streak: { readonly ticket: ItemId; readonly why: string }[] = [];
 
 	constructor(
 		private readonly deps: Deps,
@@ -333,6 +344,7 @@ class FeatureRun {
 			const ticket = nextTicket(this.tickets, this.built);
 			if (ticket === null) break;
 			last = await this.buildTicket(ticket);
+			if (last.kind === 'next') last = this.repeated(ticket, last);
 		}
 		// the Steps of "all Tickets" run on a Feature whose Tickets are all built
 		const whole = this.built.size > 0 && waiting(this.tickets, this.built).length === 0;
@@ -417,6 +429,22 @@ class FeatureRun {
 		};
 	}
 
+	// Remembers how the Ticket ended; three in a row failing for the same lasting reason stop the run.
+	private repeated(ticket: Ticket, step: Step): Step {
+		const failed = this.lastFailure;
+		this.lastFailure = null;
+		if (failed === null) {
+			this.streak = [];
+			return step;
+		}
+		this.streak = [
+			...this.streak.filter((f) => f.why === failed),
+			{ ticket: ticket.id, why: failed }
+		].slice(-REPEATED_FAILURES);
+		if (this.streak.length < REPEATED_FAILURES) return step;
+		return { kind: 'repeated', why: failed, tickets: this.streak.map((f) => f.ticket) };
+	}
+
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		const before = await this.tree.head();
 		const faults = ticketFaults(ticket.body);
@@ -490,6 +518,7 @@ class FeatureRun {
 				return { kind: 'paused', why: got.why };
 			case 'failed':
 				this.log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
+				if (got.failure === 'lasting') this.lastFailure = got.why;
 				await this.handBack(
 					ticket,
 					before,
@@ -638,6 +667,10 @@ class FeatureRun {
 			return { kind: 'stopped' };
 		}
 		if (paused) await this.pause(paused);
+		const repeated =
+			last.kind === 'repeated'
+				? `Nightjar stopped building this Feature: ${String(last.tickets.length)} Tickets in a row failed with the same reason, ${last.tickets.map(hash).join(', ')}.\n\nReason: ${last.why}.\n\n`
+				: '';
 		if ((await this.tree.ahead()) === 0) {
 			if (paused) return { kind: 'paused', why: paused };
 			const next = featureAfterRunStep(this.setup.signals, {
@@ -648,13 +681,16 @@ class FeatureRun {
 				kind: 'needs-info',
 				feature: id,
 				ticket: null,
-				why: 'it built nothing',
+				why: last.kind === 'repeated' ? `Tickets keep failing: ${last.why}` : 'it built nothing',
 				next
 			});
 			await tracker.addSignal(id, 'needsInfo');
 			await tracker.comment(
 				id,
-				withNext(`Nightjar built nothing for this Feature.\n\n${waitingList(left)}`, next)
+				withNext(
+					`${repeated}Nightjar built nothing for this Feature.\n\n${waitingList(left)}`,
+					next
+				)
 			);
 			return { kind: 'nothing', waiting: left };
 		}
@@ -722,7 +758,7 @@ class FeatureRun {
 				total: this.tickets.length
 			}
 		});
-		if (!paused && (left.length > 0 || red)) {
+		if (!paused && (left.length > 0 || red || repeated !== '')) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
 			const next = featureAfterRunStep(this.setup.signals, {
 				waiting: left.length > 0,
@@ -732,7 +768,11 @@ class FeatureRun {
 				kind: 'needs-info',
 				feature: id,
 				ticket: null,
-				why: red ? `the check fails after ${hash(red.ticket)}` : waits,
+				why: red
+					? `the check fails after ${hash(red.ticket)}`
+					: last.kind === 'repeated'
+						? `Tickets keep failing: ${last.why}`
+						: waits,
 				next
 			});
 			await tracker.addSignal(id, 'needsInfo');
@@ -740,7 +780,7 @@ class FeatureRun {
 			await tracker.comment(
 				id,
 				withNext(
-					`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${failing}${waitingList(left)}`,
+					`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${repeated}${failing}${waitingList(left)}`,
 					next
 				)
 			);
