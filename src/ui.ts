@@ -808,10 +808,22 @@ const PAGE = (panels: string, links: Links) => {
 <div id="top">${top}</div>
 <div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
 <script>${SCRIPT}</script>
+<script>${PARALLAX}</script>
 </body>
 </html>
 `;
 };
+
+// The banner image drifts at 0.6x the scroll speed; it stays still for people who ask for less motion.
+const PARALLAX = `
+const banner = document.querySelector('.banner');
+const region = document.getElementById('scroll');
+const still = matchMedia('(prefers-reduced-motion: reduce)');
+const drift = () => { banner.style.setProperty('--drift', still.matches ? '0px' : Math.round((region.scrollTop || scrollY) * 0.4) + 'px'); };
+region.addEventListener('scroll', drift, { passive: true });
+addEventListener('scroll', drift, { passive: true });
+drift();
+`;
 
 // The browser replaces the panels with each event and counts the clocks itself, so the server pushes only on a change.
 const SCRIPT = `
@@ -1007,7 +1019,7 @@ body { background-color: var(--void); background-size: 32px 32px; background-ima
 a { color: var(--teal); text-underline-offset: 3px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre { font-variant-numeric: tabular-nums; }
-.banner { background: var(--void) center 35% / 100% auto no-repeat; height: clamp(120px, 20vw, 300px); position: relative; }
+.banner { background: var(--void) center calc(35% + var(--drift, 0px)) / 100% auto no-repeat; overflow: hidden; height: clamp(120px, 20vw, 300px); position: relative; }
 .banner::after { background: linear-gradient(180deg, transparent 60%, var(--void)); content: ""; inset: 0; position: absolute; }
 .bar { align-items: center; background: var(--void); border-bottom: 1px solid var(--line); display: flex; flex: none; gap: 4px; padding: 10px var(--gut); }
 #top { background: var(--bar-overlay); border-bottom: 1px solid var(--line); flex: none; padding: 0 var(--gut); }
