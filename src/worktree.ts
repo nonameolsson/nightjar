@@ -115,6 +115,9 @@ export interface Worktree {
 	diff(limit: number): Promise<{ text: string; truncated: boolean }>;
 	// One commit of what a Step left; false when it changed no file.
 	commitStep(o: StepCommit): Promise<boolean>;
+	// Everything in the worktree now, committed or not, as an opaque mark `restore` goes back to; a try of a fix round starts from what the build left, which no commit holds.
+	snapshot(): Promise<string>;
+	restore(mark: string): Promise<void>;
 	// Throws away what a Step left, keeping nothing: the Step is listed as not done.
 	revert(before: string): Promise<void>;
 	// Keeps what the session left on a side branch, which it names; null when it left nothing.
@@ -241,6 +244,17 @@ export class GitWorktree implements Worktree {
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
 		await this.git(['commit', '-q', '-m', stepCommitMessage(o)]);
 		return true;
+	}
+
+	async snapshot(): Promise<string> {
+		await this.git(['add', '-A']);
+		return (await this.git(['write-tree'])).trim();
+	}
+
+	async restore(mark: string): Promise<void> {
+		await this.git(['reset', '-q', '--hard', 'HEAD']);
+		await this.git(['clean', '-q', '-fd']);
+		await this.git(['read-tree', '-u', '--reset', mark]);
 	}
 
 	// Throws away what a Step left, keeping nothing: the Step is listed as not done.

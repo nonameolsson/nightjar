@@ -25,6 +25,7 @@ import {
 	idText,
 	pollAfter,
 	running,
+	retryText,
 	runState,
 	stepText,
 	two
@@ -111,7 +112,8 @@ function stepLine(doing: Building): string {
 		doing.round === null || doing.rounds === null
 			? ''
 			: `, round ${String(doing.round)} of ${String(doing.rounds)}`;
-	return `${where}${stepText(doing.step)}${round}`;
+	const again = doing.retry === undefined ? '' : `, ${retryText(doing.retry)}`;
+	return `${where}${stepText(doing.step)}${round}${again}`;
 }
 
 // One `<li>` per Ticket, in order, with its state and why.

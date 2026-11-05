@@ -1,8 +1,15 @@
 // Workflows (GLOSSARY.md): which one a Feature picks, how its Steps run, and what they leave for the pull request.
 import type { CheckResult, RunCheck } from './check.js';
-import { envOf, type CodingAgent, type Ended, type Fixing } from './coding-agent.js';
+import {
+	envOf,
+	type CodingAgent,
+	type Ended,
+	type Fixing,
+	type StepOutcome
+} from './coding-agent.js';
 import { DEFAULT_ROUNDS, type Config } from './config.js';
 import type { Env } from './git.js';
+import { retryPassing, TRIES } from './retry.js';
 import type { Allowance, Entry } from './spend.js';
 import type { Serve, Served } from './serve.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
@@ -134,7 +141,7 @@ export type StepLog = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 // What of the Feature's worktree the Steps use.
 export type StepsTree = Pick<
 	Worktree,
-	'at' | 'head' | 'notes' | 'diff' | 'stepsDone' | 'commitStep' | 'revert'
+	'at' | 'head' | 'notes' | 'diff' | 'stepsDone' | 'commitStep' | 'revert' | 'snapshot' | 'restore'
 >;
 
 export interface StepsSetup {
@@ -152,6 +159,9 @@ export interface StepsRun {
 	readonly runCheck: RunCheck;
 	readonly serve: Serve;
 	readonly newId: () => string;
+	// waits between the tries of a Step round that failed for a passing reason
+	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+	readonly signal?: AbortSignal;
 	readonly say: (line: string) => void;
 	readonly setup: StepsSetup;
 	readonly feature: Feature;
@@ -162,7 +172,8 @@ export interface StepsRun {
 	readonly building: (
 		ticket: ItemId | null,
 		session: string,
-		rounds: { readonly round: number; readonly rounds: number }
+		rounds: { readonly round: number; readonly rounds: number },
+		attempt?: number
 	) => void;
 	// why the run pauses before another Session, else null
 	readonly dailyPause: () => string | null;
@@ -282,7 +293,7 @@ export class WorkflowRun {
 		const key = stepKey(name, step.name, after);
 		const label = `${name}/${step.name}`;
 		const before = await tree.head();
-		const sessionId = run.newId();
+		let sessionId = run.newId();
 		const rounds = step.until === undefined ? 1 : (step.maxRounds ?? DEFAULT_ROUNDS);
 		const cap = step.budgetUsd ?? setup.limits.ticketUsd;
 		const notes = await tree.notes();
@@ -306,25 +317,52 @@ export class WorkflowRun {
 		for (let round = 1; round <= rounds && !(round > 1 && holds); round += 1) {
 			const { usd: budget, enough } = run.allowance(cap, spent);
 			if (round > 1 && !enough) break;
-			run.building(after, sessionId, { round, rounds });
-			const got = await run.codingAgent.step({
-				kind: 'step',
-				at: tree.at,
-				sessionId,
-				workflow: name,
-				step,
-				extras,
-				round,
-				rounds,
-				feature: run.feature,
-				ticket,
-				notes,
-				...(diff === undefined ? {} : { diff }),
-				left,
-				budgetUsd: budget
+			// a try that fails for a passing reason starts again from what the rounds before left
+			const mark = await tree.snapshot();
+			const { outcome: got, earlierUsd } = await retryPassing<StepOutcome>({
+				budgetUsd: budget,
+				enough: (usd) => run.allowance(usd, 0).enough,
+				reset: () => tree.restore(mark),
+				sleep: run.sleep,
+				signal: run.signal,
+				run: (usd, attempt) => {
+					// a first round tried again is a new Session, as the one that failed may have kept its id
+					const id = attempt > 1 && round === 1 ? run.newId() : sessionId;
+					run.building(after, id, { round, rounds }, attempt);
+					return run.codingAgent.step({
+						kind: 'step',
+						at: tree.at,
+						sessionId: id,
+						workflow: name,
+						step,
+						extras,
+						round,
+						rounds,
+						feature: run.feature,
+						ticket,
+						notes,
+						...(diff === undefined ? {} : { diff }),
+						left,
+						budgetUsd: usd
+					});
+				},
+				record: (failed) =>
+					run.log({
+						ticket: after,
+						step: 'step',
+						session: failed.sessionId,
+						costUsd: failed.costUsd,
+						outcome: `${label}: failed: ${failed.why}`,
+						failure: 'passing'
+					}),
+				retrying: (attempt, why) =>
+					run.say(
+						`${label}: ${why}; retrying after a passing fault, try ${String(attempt)} of ${String(TRIES)}`
+					)
 			});
 			ran = round;
-			spent += got.costUsd;
+			sessionId = got.sessionId;
+			spent += got.costUsd + earlierUsd;
 			const entry = {
 				ticket: after,
 				step: 'step' as const,

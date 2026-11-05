@@ -192,6 +192,13 @@ describe('renderBlock', () => {
 		);
 	});
 
+	it('says a Session is tried again after a passing fault', () => {
+		const again = render(view(status(building({ retry: { attempt: 2, of: 3 } }))));
+		expect(again).toContain(
+			'  Ticket 3/5  build, round 1/3, retrying after a passing fault, try 2 of 3'
+		);
+	});
+
 	it('shows only the step when there is no Ticket list, and the step alone during review', () => {
 		const old = render(view(status(building({ tickets: undefined }))));
 		expect(old).toContain('  build, round 1/3');
