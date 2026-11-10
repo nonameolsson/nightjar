@@ -25,6 +25,8 @@ A Ticket is one child of a Feature, built as one commit. It holds:
 
   The first word after the colon is read, in any case; the bold is optional. A Ticket without them runs on `model` and `effort` from `factory.json`; `--model` and `--effort` on the command line win over both.
 
+A **lone issue** is an issue assigned to you with the Go and no sub-issues, open or closed. Its body is both the spec and the Ticket, so it must hold what a Ticket holds: acceptance criteria, optional blocking links, and optional `**Model:**`, `**Effort:**` and `**Workflow:**` lines. It needs no ready Signal. It is never built alone while it is a sub-issue of a Feature, because that Feature owns it. A Feature whose sub-issues are all closed is not a lone issue and builds nothing.
+
 A Ticket is built only while it carries the ready Signal (`ready-for-agent` by default). Its Feature carries no Signal until a person assigns it to themselves and gives it the Go (`factory-go` by default). The one exception is a Source with `"go": true` in `factory.json`: intake assigns each Feature it makes to the Source's trusted `owner` and gives it the Go, a standing Go from whoever committed that Source ([docs/adr/0003](adr/0003-a-source-may-give-a-standing-go.md)).
 
 ## Signals through a build

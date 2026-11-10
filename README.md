@@ -474,6 +474,8 @@ Nightjar builds a Feature that is **assigned to you** and carries the **Go** Sig
    A Ticket without them uses the defaults from `factory.json`.
 5. Assign the Feature to yourself and add the Go label.
 
+**A lone issue.** A piece of work that is one Ticket needs no parent. An issue that is assigned to you, carries the Go and has **no sub-issues, open or closed** is built as a Feature of one Ticket. Its body is both the spec and the Ticket: put the acceptance criteria in it, and optional `**Model:**`, `**Effort:**` and `**Workflow:**` lines. `nightjar <id>`, `--once`, `--watch` and `doctor` find it with no new flag. It gets one branch, one commit and one draft pull request that says `Closes #<id>`. The Go alone is enough; a ready Signal on it changes nothing. It waits until every issue blocking it is closed, and the run names each open blocker. An issue that is a sub-issue of a Feature is never built alone: `nightjar <id>` refuses it and names the parent, and `--once` and `--watch` skip it. An issue whose sub-issues are all closed stays a Feature and builds nothing. A sub-issue that was **removed** rather than closed leaves no trace on GitHub, so Nightjar cannot tell its parent from a lone issue and will build the parent's own body. Close sub-issues; do not remove them. A lone issue is a GitHub feature of Nightjar for now: on Azure DevOps Boards a work item with no children builds nothing, as before.
+
 On Azure DevOps Boards the same steps read:
 
 1. Write the Feature as a work item of the type `featureType` names, with its spec in the Description.

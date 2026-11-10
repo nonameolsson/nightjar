@@ -32,7 +32,11 @@ const LONE_METHODS = [
 ] as const satisfies readonly (keyof Tracker)[];
 
 // Typed as records, so a method added to an interface fails to compile until it is listed here.
-const TRACKER_METHODS: Record<Exclude<keyof Tracker, (typeof LONE_METHODS)[number]>, true> = {
+// `loneIssues` is a flag, not a method.
+const TRACKER_METHODS: Record<
+	Exclude<keyof Tracker, (typeof LONE_METHODS)[number] | 'loneIssues'>,
+	true
+> = {
 	me: true,
 	assignedFeatures: true,
 	feature: true,

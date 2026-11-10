@@ -76,7 +76,8 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 		...(featuresFrom === undefined ? {} : { featuresFrom }),
 		...(assign === undefined ? {} : { assign }),
 		...(trusts === undefined ? {} : { trusts }),
-		...(ticketCounts === undefined ? {} : { ticketCounts })
+		...(ticketCounts === undefined ? {} : { ticketCounts }),
+		...(tracker.loneIssues === undefined ? {} : { loneIssues: tracker.loneIssues })
 	};
 }
 

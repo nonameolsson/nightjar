@@ -774,12 +774,20 @@ export class FakeGitHub {
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },
+			parent_issue_url: this.parentUrl(issue.number),
 			sub_issues_summary: {
 				total: issue.subIssues.length,
 				completed: issue.subIssues.filter((n) => this.issues.get(n)?.state === 'closed').length
 			},
 			...(issue.pull ? { pull_request: { html_url: this.url(issue.number) } } : {})
 		};
+	}
+
+	private parentUrl(number: number): string | null {
+		const parent = [...this.issues.values()].find((i) => i.subIssues.includes(number));
+		return parent === undefined
+			? null
+			: `https://api.github.com/repos/${this.repo}/issues/${String(parent.number)}`;
 	}
 
 	private commentCount(): number {

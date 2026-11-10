@@ -32,6 +32,7 @@ export interface FakeItem {
 export type NewItem = Pick<FakeItem, 'id' | 'title'> & Partial<FakeItem>;
 
 export class FakeTracker implements Tracker, FeatureWriter {
+	readonly loneIssues = true;
 	readonly items = new Map<ItemId, FakeItem>();
 	// the people it trusts besides the signed-in person
 	private readonly trustedPeople = new Set<string>();
@@ -89,19 +90,34 @@ export class FakeTracker implements Tracker, FeatureWriter {
 
 	me = () => Promise.resolve(this.person);
 
+	// the item that has this one as a Ticket
+	private parentOf(id: ItemId): ItemId | undefined {
+		return [...this.items.values()].find((i) => i.children.includes(id))?.id;
+	}
+
+	// an item with no Tickets and no parent is a lone issue
+	private isLone(item: FakeItem): boolean {
+		return item.children.length === 0 && this.parentOf(item.id) === undefined;
+	}
+
+	private asFeature(item: FakeItem): Feature {
+		const { id, title, body } = item;
+		return this.isLone(item) ? { id, title, body, lone: true } : { id, title, body };
+	}
+
 	assignedFeatures = (person: string): Promise<Feature[]> =>
 		Promise.resolve(
 			[...this.items.values()]
 				.filter(
 					(i) =>
 						i.open &&
-						i.children.length > 0 &&
+						(i.children.length > 0 || this.isLone(i)) &&
 						i.assignees.includes(person) &&
 						i.signals.includes('go')
 				)
 				// the fake counts a lower id as older, PROJ-2 before PROJ-10
 				.sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))
-				.map(({ id, title, body }) => ({ id, title, body }))
+				.map((i) => this.asFeature(i))
 		);
 
 	waitingOn = (person: string): Promise<WaitingFeature[]> =>
@@ -111,11 +127,11 @@ export class FakeTracker implements Tracker, FeatureWriter {
 					.filter(
 						(i) =>
 							i.open &&
-							i.children.length > 0 &&
+							(i.children.length > 0 || this.isLone(i)) &&
 							i.assignees.includes(person) &&
 							i.signals.includes(signal)
 					)
-					.map(({ id, title, body }) => ({ id, title, body }))
+					.map((i) => this.asFeature(i))
 			)
 		);
 
@@ -139,36 +155,45 @@ export class FakeTracker implements Tracker, FeatureWriter {
 				ids.map((id) => {
 					const item = this.items.get(id);
 					if (item === undefined) return [id, null];
+					if (this.isLone(item)) return [id, { total: 1, closed: 0 }];
 					const closed = item.children.filter((c) => this.items.get(c)?.open === false).length;
 					return [id, { total: item.children.length, closed }];
 				})
 			)
 		);
 
-	feature = (id: ItemId): Promise<Feature> => {
-		const { title, body } = this.get(id);
-		return Promise.resolve({ id, title, body });
-	};
+	feature = (id: ItemId): Promise<Feature> => Promise.resolve(this.asFeature(this.get(id)));
 
 	standing = (id: ItemId): Promise<Standing> => {
-		const { assignees, signals } = this.get(id);
-		return Promise.resolve({ assignees, signals });
+		const { assignees, signals, children } = this.get(id);
+		const parent = children.length === 0 ? this.parentOf(id) : undefined;
+		return Promise.resolve({ assignees, signals, ...(parent === undefined ? {} : { parent }) });
 	};
 
-	tickets = (featureId: ItemId): Promise<Ticket[]> =>
-		Promise.resolve(
-			this.get(featureId).children.map((child) => {
+	tickets = (featureId: ItemId): Promise<Ticket[]> => {
+		const feature = this.get(featureId);
+		const ticket = (t: FakeItem, signals: readonly Signal[]): Ticket => ({
+			id: t.id,
+			title: t.title,
+			body: t.body,
+			open: t.open,
+			signals,
+			blockedBy: t.blockedBy.map((b) => ({ id: b, open: this.items.get(b)?.open ?? true }))
+		});
+		// a lone issue is its own Ticket, ready by being given the Go
+		if (this.isLone(feature)) {
+			const { signals } = feature;
+			return Promise.resolve([
+				ticket(feature, signals.includes('ready') ? signals : [...signals, 'ready'])
+			]);
+		}
+		return Promise.resolve(
+			feature.children.map((child) => {
 				const t = this.get(child);
-				return {
-					id: t.id,
-					title: t.title,
-					body: t.body,
-					open: t.open,
-					signals: t.signals,
-					blockedBy: t.blockedBy.map((b) => ({ id: b, open: this.items.get(b)?.open ?? true }))
-				};
+				return ticket(t, t.signals);
 			})
 		);
+	};
 
 	comments = (id: ItemId): Promise<Comment[]> => Promise.resolve([...this.get(id).comments]);
 

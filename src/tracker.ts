@@ -9,6 +9,8 @@ export interface Feature {
 	readonly id: ItemId;
 	readonly title: string;
 	readonly body: string;
+	// a lone issue: an issue with no sub-issues, built as a Feature of one Ticket, itself
+	readonly lone?: true;
 }
 
 // A Feature that waits on a person, with the Signal it carries; needs info when it carries both.
@@ -77,6 +79,8 @@ export interface TicketReference {
 export interface Standing {
 	readonly assignees: readonly string[];
 	readonly signals: readonly Signal[];
+	// the Feature that owns this item, when it has no Tickets of its own and is itself one; only a Tracker with `loneIssues` says it
+	readonly parent?: ItemId;
 }
 
 // A Feature a Source made, found by the marker in its body.
@@ -90,6 +94,8 @@ export interface SourcedFeature {
 }
 
 export interface Tracker {
+	// true when the Tracker can tell whether an issue has sub-issues, so an issue with none and no parent is a lone issue, a Feature of one Ticket; left out, it lists no such issue and builds nothing for one
+	readonly loneIssues?: boolean;
 	// the signed-in person
 	me(): Promise<string>;
 	// the open Features assigned to `person` that carry the Go, oldest first

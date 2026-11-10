@@ -46,21 +46,31 @@ function issue(id: ItemId): string {
 	return id;
 }
 
+// A lone issue has no sub-issues, open or closed, and no parent; with no summary GitHub cannot tell, so it is none.
+const isLone = (raw: RawIssue): boolean =>
+	raw.sub_issues_summary?.total === 0 && !raw.parent_issue_url;
+
 const toFeature = (raw: RawIssue): Feature => ({
 	id: String(raw.number),
 	title: raw.title,
-	body: raw.body ?? ''
+	body: raw.body ?? '',
+	...(isLone(raw) ? { lone: true as const } : {})
 });
 
-// null where GitHub gave no summary, or one without the closed count
+// the number an issue URL ends in
+const parentOf = (url: string): ItemId => url.slice(url.lastIndexOf('/') + 1);
+
+// null where GitHub gave no summary, or one without the closed count; a lone issue is one Ticket
 function countOf(raw: RawIssue): TicketCount | null {
 	const summary = raw.sub_issues_summary;
 	if (summary?.completed === undefined) return null;
+	if (isLone(raw)) return { total: 1, closed: 0 };
 	return { total: summary.total, closed: summary.completed };
 }
 
 export class GitHubTracker implements Tracker, FeatureWriter {
 	private readonly api: GitHubApi;
+	readonly loneIssues = true;
 	private readonly counts = new Map<ItemId, TicketCount>();
 	private readonly trust: GitHubTrust;
 
@@ -160,7 +170,9 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		);
 		for (const i of raw) this.remember(i);
 		return raw
-			.filter((i) => i.pull_request === undefined && (i.sub_issues_summary?.total ?? 0) > 0)
+			.filter(
+				(i) => i.pull_request === undefined && ((i.sub_issues_summary?.total ?? 0) > 0 || isLone(i))
+			)
 			.map(toFeature);
 	}
 
@@ -209,11 +221,38 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 			[`repos/${this.repo}/issues/${n}`],
 			IssueSchema
 		);
-		return { assignees: (raw.assignees ?? []).map((a) => a.login), signals: this.signalsOf(raw) };
+		const parent =
+			raw.sub_issues_summary?.total === 0 && raw.parent_issue_url
+				? parentOf(raw.parent_issue_url)
+				: undefined;
+		return {
+			assignees: (raw.assignees ?? []).map((a) => a.login),
+			signals: this.signalsOf(raw),
+			...(parent === undefined ? {} : { parent })
+		};
 	}
 
 	async tickets(featureId: ItemId): Promise<Ticket[]> {
 		const n = issue(featureId);
+		const self = await this.api.parse(
+			`read issue #${n}`,
+			[`repos/${this.repo}/issues/${n}`],
+			IssueSchema
+		);
+		// a lone issue is its own Ticket, ready by being given the Go
+		if (isLone(self)) {
+			const signals = this.signalsOf(self);
+			return [
+				{
+					id: n,
+					title: self.title,
+					body: self.body ?? '',
+					open: self.state === 'open',
+					signals: signals.includes('ready') ? signals : [...signals, 'ready'],
+					blockedBy: await this.blockedBy(n)
+				}
+			];
+		}
 		const children = await this.api.parse(
 			`list the sub-issues of #${n}`,
 			[`repos/${this.repo}/issues/${n}/sub_issues?${PAGE}`],

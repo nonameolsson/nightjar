@@ -745,6 +745,42 @@ describe('cannotClaim', () => {
 	});
 });
 
+describe('a lone issue', () => {
+	function loneWorld() {
+		const w = world();
+		w.tracker.add({ id: '20', title: 'Fix a typo', assignees: ['ann'], signals: ['go'] });
+		// a Ticket of Feature #2 that carries the Go: its Feature owns it
+		w.tracker.add({ id: '3', title: 'Ticket 3', assignees: ['ann'], signals: ['go'] });
+		return w;
+	}
+
+	it('is built by --once and --watch in its place in the Queue, and its parent-owned Ticket is not', async () => {
+		const w = loneWorld();
+		await queue(w.deps, true);
+		await queue(w.deps, true);
+		await queue(w.deps, true);
+		expect(w.built).toEqual(['2', '4', '20']);
+	});
+
+	it('is refused by nightjar <id> when it is a Ticket of a Feature, naming the Feature', async () => {
+		const w = loneWorld();
+		expect(await cannotClaim(w.deps, '3')).toBe(
+			'#3 is a Ticket of #2, so that Feature owns it and Nightjar leaves it alone. Build #2 instead.'
+		);
+		expect(await cannotClaim(w.deps, '20')).toBeNull();
+	});
+
+	it('is listed by doctor with the Features it would build, marked as a lone issue', async () => {
+		const w = loneWorld();
+		await dryRun(w.deps);
+		expect(w.lines).toEqual([
+			'would build #2 Older',
+			'would build #4 Later',
+			'would build #20 Fix a typo (a lone issue)'
+		]);
+	});
+});
+
 describe('dryRun', () => {
 	it('lists what it would build, and builds nothing', async () => {
 		const w = world();

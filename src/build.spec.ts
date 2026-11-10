@@ -542,6 +542,45 @@ describe('buildFeature', () => {
 		]);
 	});
 
+	it('builds a lone issue as a Feature of one Ticket: one commit, one draft that closes it, no ready Signal needed', async () => {
+		const world = makeWorld();
+		world.tracker.add({
+			id: '9',
+			title: 'Fix the typo',
+			body: 'Fix it.\n\n### Acceptance criteria\n\n- [ ] typo gone\n\n**Model:** opus',
+			assignees: ['ann'],
+			signals: ['go']
+		});
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'pull', built: ['9'], waiting: [] });
+		expect(world.trees.subjects(join(base, 'worktrees', '9-fix-the-typo'))).toEqual([
+			'Fix the typo (#9)'
+		]);
+		expect(world.host.pulls).toHaveLength(1);
+		expect(world.host.pulls[0]).toMatchObject({ head: 'factory/9-fix-the-typo', draft: true });
+		expect(refs(world)).toEqual(['#9']);
+		expect(askedOf(world, 'build').map((r) => r.ticket.id)).toEqual(['9']);
+		expect(world.tracker.signalsOf('9')).not.toContain('go');
+		expect(world.tracker.signalsOf('9')).not.toContain('working');
+	});
+
+	it('waits for the open blocker of a lone issue and says which one', async () => {
+		const world = makeWorld();
+		world.tracker.add({
+			id: '9',
+			title: 'Fix the typo',
+			assignees: ['ann'],
+			signals: ['go'],
+			blockedBy: ['2']
+		});
+		const got = await buildFeature(deps(world), setup(world), '9');
+
+		expect(got).toMatchObject({ kind: 'nothing' });
+		expect(askedOf(world, 'build')).toEqual([]);
+		expect(JSON.stringify(got)).toContain('blocked by');
+	});
+
 	it("asks for each Ticket's build in the worktree, with the Tickets built before it and the Ticket's budget", async () => {
 		const world = makeWorld();
 		await buildFeature(deps(world), setup(world), '1');

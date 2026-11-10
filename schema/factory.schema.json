@@ -450,9 +450,9 @@
 						"description": "schedule fires from a cron time, webhook takes a signed webhook of the Standard Webhooks scheme, sentry takes a Sentry alert"
 					},
 					"cron": {
+						"description": "When a schedule fires, in the machine's local time zone: five cron fields, @daily or @weekly. A schedule needs it; a webhook has none.",
 						"type": "string",
-						"pattern": "^(?:@daily|@weekly|(?:[\\d*][\\d*/,-]*\\s+){4}[\\d*][\\d*/,-]*)$",
-						"description": "When a schedule fires, in the machine's local time zone: five cron fields, @daily or @weekly. A schedule needs it; a webhook has none."
+						"pattern": "^(?:@daily|@weekly|(?:[\\d*][\\d*/,-]*\\s+){4}[\\d*][\\d*/,-]*)$"
 					},
 					"template": {
 						"type": "string",
@@ -460,29 +460,29 @@
 						"description": "A Feature file as a path from the repo's root, or the name of a template Nightjar ships, such as sentry or weekly-deps"
 					},
 					"key": {
+						"description": "A path into the payload, such as data.event.issue_id, that says when two events are the same; while a Feature with the same key is open, no new one is made",
 						"type": "string",
-						"pattern": "\\S",
-						"description": "A path into the payload, such as data.event.issue_id, that says when two events are the same; while a Feature with the same key is open, no new one is made"
+						"pattern": "\\S"
 					},
 					"secretEnv": {
+						"description": "The environment variable that holds the webhook secret; the secret is never in factory.json",
 						"type": "string",
-						"pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-						"description": "The environment variable that holds the webhook secret; the secret is never in factory.json"
+						"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
 					},
 					"maxPerDay": {
+						"description": "The most Features the Source makes in a day; 3 when left out",
 						"type": "integer",
 						"minimum": 1,
-						"maximum": 9007199254740991,
-						"description": "The most Features the Source makes in a day; 3 when left out"
+						"maximum": 9007199254740991
 					},
 					"go": {
-						"type": "boolean",
-						"description": "true gives each Feature the Go, assigned to the owner. Left out, the Go stays with a person. Needs an owner."
+						"description": "true gives each Feature the Go, assigned to the owner. Left out, the Go stays with a person. Needs an owner.",
+						"type": "boolean"
 					},
 					"owner": {
+						"description": "The login a Feature with the Go is assigned to; the Tracker must trust them (on Azure DevOps, a sign-in name such as ann@contoso.com)",
 						"type": "string",
-						"pattern": "\\S",
-						"description": "The login a Feature with the Go is assigned to; the Tracker must trust them (on Azure DevOps, a sign-in name such as ann@contoso.com)"
+						"pattern": "\\S"
 					}
 				},
 				"required": [

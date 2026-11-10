@@ -754,7 +754,8 @@ class FeatureRun {
 			workflow
 		});
 		const pull = await this.openDraft(body);
-		const linked = [...(complete ? [id] : []), ...done.map((t) => t.id)];
+		// a lone issue is its own Ticket, so it is named once
+		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
 			pull,
 			linked.map((n) => tracker.reference(n))
