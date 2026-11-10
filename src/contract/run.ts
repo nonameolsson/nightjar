@@ -4,6 +4,7 @@ import type { ContractCase } from './case.js';
 import { codeHostContract, type CodeHostHarness, type CodeHostSubject } from './code-host.js';
 import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
+import { openPullsContract } from './open-pulls.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
@@ -104,25 +105,28 @@ async function listsDrafts(harness: CodeHostHarness): Promise<boolean> {
 	}
 }
 
-// Whether the Code host answers feedback. A harness that cannot make a Code host has failed every case already, so it is asked nothing more.
-async function hasFeedback(harness: CodeHostHarness): Promise<boolean> {
+// Whether the Code host answers feedback, and whether it lists its open pull requests too. A harness that cannot make a Code host has failed every case already, so it is asked nothing more.
+async function hasFeedback(
+	harness: CodeHostHarness
+): Promise<{ readonly feedback: boolean; readonly openPulls: boolean }> {
 	let subject: CodeHostSubject;
 	try {
 		subject = await harness();
 	} catch {
-		return false;
+		return { feedback: false, openPulls: false };
 	}
 	try {
-		return (
-			typeof subject.codeHost.feedback === 'function' &&
-			typeof subject.codeHost.reply === 'function'
-		);
+		const { codeHost } = subject;
+		return {
+			feedback: typeof codeHost.feedback === 'function' && typeof codeHost.reply === 'function',
+			openPulls: typeof codeHost.openPulls === 'function'
+		};
 	} finally {
 		await subject.close?.();
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the Nightjar drafts suite when the Code host has nightjarDrafts, and the feedback suite when it has feedback and reply.
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, and the open pull requests suite when it has openPulls.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -156,8 +160,14 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 				await runSuite('Code host Nightjar drafts', nightjarDraftsContract, codeHost as never)
 			);
 		}
-		if (await hasFeedback(codeHost as CodeHostHarness)) {
+		const has = await hasFeedback(codeHost as CodeHostHarness);
+		if (has.feedback) {
 			suites.push(await runSuite('Code host feedback', feedbackContract, codeHost as never));
+		}
+		if (has.openPulls) {
+			suites.push(
+				await runSuite('Code host open pull requests', openPullsContract, codeHost as never)
+			);
 		}
 	}
 	const all = suites.flatMap((s) => s.results);

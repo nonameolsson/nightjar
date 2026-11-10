@@ -100,6 +100,13 @@ interface Review {
 	readonly submittedAt: string;
 }
 
+// A commit a push brought, dated when GitHub first saw it.
+interface PushedCommit {
+	readonly sha: string;
+	readonly message: string;
+	readonly date: string;
+}
+
 const NOT_FOUND = failed('gh: Not Found (HTTP 404)');
 
 const INVALID = (why: string) => failed(`gh: Validation Failed: ${why} (HTTP 422)`);
@@ -156,6 +163,8 @@ export class FakeGitHub {
 	private readonly repoLabels = new Set<string>();
 	// the commit each branch points at, as pushed
 	private readonly heads = new Map<string, string>();
+	// the commits each branch holds that its base lacks, oldest first, as pushed
+	private readonly branchCommits = new Map<string, PushedCommit[]>();
 	// by commit
 	private readonly statuses = new Map<string, CommitStatus[]>();
 	// by id, the id of its check run
@@ -286,9 +295,18 @@ export class FakeGitHub {
 		return (this.comments.get(number) ?? []).map((c) => c.body);
 	}
 
-	// `branch` now points at `commit`, as a push to it leaves it.
-	pushed(branch: string, commit: string): void {
+	// `branch` now points at `commit`, as a push to it leaves it; `commits` are those the branch holds that its base lacks, oldest first, and one GitHub has not seen yet is dated now.
+	pushed(
+		branch: string,
+		commit: string,
+		commits: readonly { readonly sha: string; readonly message: string }[] = []
+	): void {
 		this.heads.set(branch, commit);
+		const known = new Map((this.branchCommits.get(branch) ?? []).map((c) => [c.sha, c]));
+		this.branchCommits.set(
+			branch,
+			commits.map((c) => known.get(c.sha) ?? { ...c, date: this.stamp() })
+		);
 	}
 
 	// The commit pull request `number`'s head branch points at.
@@ -388,6 +406,8 @@ export class FakeGitHub {
 		}
 		const job = new RegExp(`^${repo}/actions/jobs/(\\d+)(/logs)?$`).exec(path);
 		if (method === 'GET' && job) return this.renderJob(Number(job[1]), job[2] !== undefined);
+		const commitsOf = new RegExp(`^${repo}/pulls/(\\d+)/commits$`).exec(path);
+		if (method === 'GET' && commitsOf) return this.renderCommits(Number(commitsOf[1]), call.query);
 		const pullNumber = new RegExp(`^${repo}/pulls/(\\d+)$`).exec(path);
 		const pull = pullNumber ? this.issues.get(Number(pullNumber[1])) : undefined;
 		if (pull?.pull !== undefined && method === 'GET') return ok(this.renderPull(pull));
@@ -521,7 +541,7 @@ export class FakeGitHub {
 				(head === null || head === `${owner}:${i.pull.head}`)
 		);
 		if (query.get('direction') !== 'asc') found.reverse();
-		return found.map((i) => this.renderPull(i));
+		return page(found, query).map((i) => this.renderPull(i));
 	}
 
 	private renderPull(issue: Issue) {
@@ -540,6 +560,19 @@ export class FakeGitHub {
 			},
 			base: { ref: issue.pull?.base ?? '' }
 		};
+	}
+
+	// The commits of a pull request's head branch, oldest first, each dated by its committer.
+	private renderCommits(number: number, query: URLSearchParams): Run {
+		const head = this.issues.get(number)?.pull?.head;
+		if (head === undefined) return NOT_FOUND;
+		const commits = page(this.branchCommits.get(head) ?? [], query);
+		return ok(
+			commits.map((c) => {
+				const who = { name: 'Test', email: 'test@example.com', date: c.date };
+				return { sha: c.sha, commit: { message: c.message, author: who, committer: who } };
+			})
+		);
 	}
 
 	// The check runs on a commit, or its combined status: the latest status of each context.

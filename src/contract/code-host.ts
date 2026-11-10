@@ -33,6 +33,8 @@ export type Given =
 			readonly body: string;
 			readonly trusted: boolean;
 			readonly approval?: boolean;
+			// a review that requests changes
+			readonly changes?: boolean;
 	  }
 	| {
 			readonly kind: 'check';
@@ -55,8 +57,10 @@ export interface CodeHostSubject {
 	readonly codeHost: CodeHost;
 	// a branch on the host that pull requests can target
 	readonly base: string;
-	// makes one more commit in a worktree of the repo, ready to push
-	readonly commit: () => Promise<{ readonly folder: string; readonly commit: string }>;
+	// makes one more commit in a worktree of the repo, ready to push, on the ones made before; the openPulls suite gives its message
+	readonly commit: (
+		message?: string
+	) => Promise<{ readonly folder: string; readonly commit: string }>;
 	// the commit `branch` points at on the host, else null
 	readonly branch: (name: string) => Promise<string | null>;
 	readonly pull: (pull: Pull) => Promise<PullView>;

@@ -33,6 +33,9 @@ function world(withConfig = true, extraConfig: Record<string, unknown> = {}) {
 		GIT_COMMITTER_EMAIL: 'test@example.com'
 	};
 	delete env.ANTHROPIC_API_KEY;
+	// a login the spec run inherits, such as from a Nightjar Session, is the machine's and not the stand-in's
+	delete env.CLAUDE_CONFIG_DIR;
+	delete env.CLAUDE_CODE_OAUTH_TOKEN;
 	// the person's own config.json is read under HOME alone
 	delete env.XDG_CONFIG_HOME;
 	const git = (cwd: string, ...args: string[]) =>

@@ -11,6 +11,7 @@ import {
 	fixPullChecks,
 	LIMITS,
 	pullFixLimits,
+	type Asked,
 	type Deps,
 	type Setup
 } from './build.js';
@@ -34,6 +35,7 @@ import { claimPorts, portEnv } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
+	feedbackPass,
 	fixNamed,
 	handBack,
 	pullChecksPass,
@@ -261,17 +263,21 @@ export async function runNightjar(
 	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
 		fixPullChecks(deps, setup, red)
 	);
+	// the build of one Feature, with the request for changes that started it when it has no Go
+	const build = async (feature: Named, started?: Asked) => {
+		building = feature;
+		try {
+			return await buildFeature(deps, setup, feature.id, started);
+		} finally {
+			building = null;
+		}
+	};
+	const feedback = feedbackPass(adapters.codeHost, (feature, asked) => build(feature, { asked }));
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
-		build: async (feature) => {
-			building = feature;
-			try {
-				return await buildFeature(deps, setup, feature.id);
-			} finally {
-				building = null;
-			}
-		},
+		build: (feature) => build(feature),
+		...(feedback === null ? {} : { feedback }),
 		status,
 		now: () => new Date(),
 		say: runSay,

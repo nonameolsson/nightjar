@@ -8,10 +8,15 @@ import { FakeTracker } from './tracker.js';
 export const fakeCodeHostHarness: CodeHostHarness = () =>
 	Promise.resolve(fakeCodeHostSubject(new FakeCodeHost()));
 
-// The fake keeps no commits, so each commit gets a folder of its own that names it.
+// The fake keeps no commits, so each commit gets a folder of its own that names it; each is made on the ones before, so a push from its folder brings them all.
 export function fakeCodeHostSubject(codeHost: FakeCodeHost): CodeHostSubject {
 	const commits = new Map<string, string>();
+	const messages: string[] = [];
 	codeHost.commitAt = (folder) => commits.get(folder) ?? folder;
+	codeHost.commitsAt = (folder) => {
+		const made = [...commits.keys()].indexOf(folder);
+		return made < 0 ? [] : messages.slice(0, made + 1);
+	};
 	const done = (act: () => void) => {
 		act();
 		return Promise.resolve();
@@ -25,10 +30,11 @@ export function fakeCodeHostSubject(codeHost: FakeCodeHost): CodeHostSubject {
 			closePull: (pull) => done(() => codeHost.close(pull))
 		},
 		base: 'main',
-		commit: () => {
+		commit: (message) => {
 			const n = String(commits.size + 1);
 			const made = { folder: `/work/${n}`, commit: `c${n}` };
 			commits.set(made.folder, made.commit);
+			messages.push(message ?? `change ${n}`);
 			return Promise.resolve(made);
 		},
 		branch: (name) => {
@@ -70,12 +76,11 @@ function giveTo(codeHost: FakeCodeHost, pull: Pull, given: Given): string {
 		});
 	}
 	if (given.kind === 'review') {
-		return codeHost.give(pull, {
-			kind: 'review',
-			author: given.author,
-			body: given.body,
-			trusted: given.trusted
-		});
+		return codeHost.give(
+			pull,
+			{ kind: 'review', author: given.author, body: given.body, trusted: given.trusted },
+			given.changes === true
+		);
 	}
 	const where = given.on;
 	const place =

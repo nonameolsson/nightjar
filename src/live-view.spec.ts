@@ -230,6 +230,20 @@ describe('renderBlock', () => {
 		expect(fix.find((l) => l.startsWith('● '))).toMatch(/^● #272 Custom views\s+.*\$1\.00$/);
 	});
 
+	it('shows a Feedback round as one, with its fix round', () => {
+		const round = (r: number | null) =>
+			render(
+				view(
+					status(
+						building({ ticket: null, step: 'feedback', round: r, rounds: r === null ? null : 3 })
+					)
+				)
+			);
+		expect(round(null).join('\n')).toContain('Feedback round');
+		expect(round(2)).toContainEqual(expect.stringContaining('Feedback round, round 2/3'));
+		expect(round(null).join('\n')).not.toContain('feedback');
+	});
+
 	it('shows the newest say() line at the foot, and holds every line to the width', () => {
 		const lines = render(
 			view(status(building()), { tail: ['x'.repeat(200)] }),

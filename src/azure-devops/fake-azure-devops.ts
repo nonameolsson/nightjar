@@ -99,17 +99,53 @@ export interface NewJob extends NewTask {
 	readonly steps: readonly NewTask[];
 }
 
-interface PullThread {
+interface PullComment {
 	readonly author: Person;
 	readonly content: string;
 	// written by Azure Repos itself, such as a vote or a push
 	readonly system: boolean;
+	readonly at: string;
+}
+
+// A thread of comments on a pull request; its first comment starts it.
+interface PullThread {
+	readonly comments: PullComment[];
+	// the file a line comment is on, and its line; null for a line the head push no longer has
+	readonly on: { readonly path: string; readonly line: number | null } | null;
+	// set on the thread Azure Repos writes when a reviewer votes: the vote
+	readonly vote?: number;
 }
 
 interface StoredStatus extends Omit<NewPullStatus, 'iteration'> {
 	readonly id: number;
 	readonly iterationId: number | null;
+	readonly at: string;
 }
+
+// A commit a push brought, dated when Azure Repos first saw it.
+interface PushedCommit {
+	readonly sha: string;
+	readonly message: string;
+	readonly date: string;
+}
+
+interface SaidOnPull {
+	// a note Azure Repos writes for a person's action, not a person's comment
+	readonly system?: boolean;
+	// a comment on a line of a file's diff; a null line is one the head push no longer has
+	readonly on?: { readonly path: string; readonly line: number | null } | null;
+}
+
+// what a reviewer's vote is called
+const VOTES: Readonly<Record<number, string>> = {
+	10: 'Approved',
+	5: 'Approved with suggestions',
+	[-5]: 'Waiting for author',
+	[-10]: 'Rejected'
+};
+
+// a list of commits cuts each message to this many characters
+const COMMIT_COMMENT_LIMIT = 400;
 
 interface StoredRecord {
 	readonly id: string;
@@ -176,6 +212,8 @@ export class FakeAzureDevOps {
 	private readonly artifacts = new Map<number, string[]>();
 	// the commit each pushed branch points at
 	private readonly heads = new Map<string, string>();
+	// the commits each branch holds that its base lacks, oldest first, as pushed
+	private readonly branchCommits = new Map<string, PushedCommit[]>();
 	// the commit of each push to a pull request: iteration n is at n - 1
 	private readonly iterations = new Map<number, string[]>();
 	private readonly threads = new Map<number, PullThread[]>();
@@ -278,9 +316,18 @@ export class FakeAzureDevOps {
 			.sort((a, b) => a - b);
 	}
 
-	// Azure Repos learns of a push: each active pull request from `branch` gains an iteration.
-	pushed(branch: string, commit: string): void {
+	// Azure Repos learns of a push: each active pull request from `branch` gains an iteration. `commits` are those the branch holds that its base lacks, oldest first; one Azure Repos has not seen yet is dated now.
+	pushed(
+		branch: string,
+		commit: string,
+		commits: readonly { readonly sha: string; readonly message: string }[] = []
+	): void {
 		this.heads.set(branch, commit);
+		const known = new Map((this.branchCommits.get(branch) ?? []).map((c) => [c.sha, c]));
+		this.branchCommits.set(
+			branch,
+			commits.map((c) => known.get(c.sha) ?? { ...c, date: this.tick() })
+		);
 		for (const p of this.pulls) {
 			if (p.status !== 'active' || p.sourceRefName !== `refs/heads/${branch}`) continue;
 			this.iterations.set(p.pullRequestId, [...this.pushesTo(p.pullRequestId), commit]);
@@ -307,32 +354,87 @@ export class FakeAzureDevOps {
 		this.replacePull({ ...this.pullRequestAt(id), status: 'completed', isDraft: false });
 	}
 
-	// A person comments on a pull request; `system` is a note Azure Repos writes for their action.
-	sayOnPull(id: number, author: string, text: string, { system = false } = {}): void {
+	// A person comments on a pull request in a thread of their own, on a line of a file when `on` says so; `system` is a note Azure Repos writes for their action. Gives the thread and the comment, as the ids spell them.
+	sayOnPull(
+		id: number,
+		author: string,
+		text: string,
+		options: SaidOnPull = {}
+	): { thread: number; comment: number } {
+		const { system = false, on = null } = options;
 		const pull = this.pullRequestAt(id);
-		this.threadsOf(id).push({ author: this.who(author), content: text, system });
+		const threads = this.threadsOf(id);
+		const comments = [{ author: this.who(author), content: text, system, at: this.tick() }];
+		threads.push({ comments, on });
 		this.replacePull({ ...pull, comments: [...pull.comments, text] });
+		return { thread: threads.length, comment: 1 };
 	}
 
-	// A reviewer is added (vote 0), or votes: 10 approves, 5 with suggestions, -5 waits, -10 rejects.
-	vote(id: number, reviewer: string, vote: number): void {
+	// A person answers in a thread already on the pull request. Gives the comment's id.
+	replyOnPull(id: number, thread: number, author: string, text: string): number {
+		this.pullRequestAt(id);
+		const found = this.threadAt(id, thread);
+		found.comments.push({
+			author: this.who(author),
+			content: text,
+			system: false,
+			at: this.tick()
+		});
+		return found.comments.length;
+	}
+
+	// A reviewer is added (vote 0), or votes: 10 approves, 5 with suggestions, -5 waits, -10 rejects. A vote leaves a note from Azure Repos in a thread of its own, whose text is `said` or says who voted how; gives that thread's id, none for vote 0 or when `said` is null, a vote Azure Repos left no note of.
+	vote(id: number, reviewer: string, vote: number, said?: string | null): number | null {
 		this.pullRequestAt(id);
 		const person = this.who(reviewer);
 		const reviewers = this.votes.get(id) ?? new Map<string, { person: Person; vote: number }>();
 		reviewers.set(person.id, { person, vote });
 		this.votes.set(id, reviewers);
+		if (vote === 0 || said === null) return null;
+		const content = said ?? `${person.uniqueName} voted ${VOTES[vote] ?? String(vote)}`;
+		const threads = this.threadsOf(id);
+		const comments = [{ author: person, content, system: true, at: this.tick() }];
+		threads.push({ comments, on: null, vote });
+		return threads.length;
 	}
 
-	status(id: number, status: NewPullStatus): void {
+	// Another service posts a status; gives its id.
+	status(id: number, status: NewPullStatus): number {
 		this.pullRequestAt(id);
 		const { iteration, ...rest } = status;
 		const list = this.statuses.get(id) ?? [];
-		list.push({
+		const made = {
 			...rest,
 			id: list.length + 1,
-			iterationId: iteration === undefined ? this.pushesTo(id).length : iteration
-		});
+			iterationId: iteration === undefined ? this.pushesTo(id).length : iteration,
+			at: this.tick()
+		};
+		list.push(made);
 		this.statuses.set(id, list);
+		return made.id;
+	}
+
+	// What a person sees in the pull request's conversation, oldest first: what people typed outside any file, in every thread.
+	conversation(id: number): string[] {
+		this.pullRequestAt(id);
+		const outside = this.threadsOf(id).filter((t) => t.on === null);
+		const said = outside.flatMap((t) => t.comments).filter((c) => !c.system);
+		return said.sort((a, b) => a.at.localeCompare(b.at)).map((c) => c.content);
+	}
+
+	// The comments after the first in thread `thread`, oldest first.
+	repliesIn(id: number, thread: number): string[] {
+		const { comments } = this.threadAt(id, thread);
+		return comments.slice(1).map((c) => c.content);
+	}
+
+	private threadAt(id: number, thread: number): PullThread {
+		this.pullRequestAt(id);
+		const found = this.threadsOf(id)[thread - 1];
+		if (found === undefined) {
+			throw fault(`no thread ${String(thread)} on pull request ${String(id)}`);
+		}
+		return found;
 	}
 
 	policy(id: number, policy: NewPolicy): void {
@@ -487,8 +589,16 @@ export class FakeAzureDevOps {
 		body: unknown,
 		project: string
 	): AzureDevOpsReply | null {
+		const commit = new RegExp(
+			`^${project}/_apis/git/repositories/([^/]+)/commits/([0-9a-f]+)$`,
+			'i'
+		).exec(url.pathname);
+		if (commit && call.method === 'GET') {
+			this.query(url, { 'api-version': API });
+			return this.renderWholeCommit(commit[2] ?? '');
+		}
 		const shape = new RegExp(
-			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads|statuses|iterations))?)?)?$`,
+			`^${project}/_apis/git/repositories/([^/]+)(?:/(pullrequests)(?:/(\\d+)(?:/(workitems|threads|statuses|iterations|commits)(?:/(\\d+)(?:/(comments))?)?)?)?)?$`,
 			'i'
 		).exec(url.pathname);
 		if (!shape) return null;
@@ -505,7 +615,7 @@ export class FakeAzureDevOps {
 				`TF401019: The Git repository with name or identifier ${shape[1] ?? ''} does not exist.`
 			);
 		}
-		const [, , pulls, idText, part] = shape;
+		const [, , pulls, idText, part, threadText, answer] = shape;
 		if (pulls === undefined) {
 			if (call.method !== 'GET') throw fault(`${call.method} on a repo`);
 			return json(200, this.renderRepository(repo));
@@ -530,14 +640,27 @@ export class FakeAzureDevOps {
 				url: this.itemUrl(id)
 			}));
 			return json(200, { count: value.length, value });
-		} else if (part.toLowerCase() === 'threads' && call.method === 'POST') {
-			const content = (body as { comments?: { content?: unknown }[] } | null)?.comments?.[0]
-				?.content;
-			if (typeof content !== 'string') throw fault('a thread carries { comments: [{ content }] }');
-			this.sayOnPull(pull.pullRequestId, this.person, content);
-			return json(200, { id: pull.comments.length + 1, comments: [{ id: 1, content }] });
-		} else if (part.toLowerCase() === 'threads' && call.method === 'GET') {
-			return this.renderThreads(pull.pullRequestId);
+		} else if (part.toLowerCase() === 'threads' && threadText === undefined) {
+			if (call.method === 'GET') return this.renderThreads(pull.pullRequestId);
+			if (call.method === 'POST') {
+				const content = (body as { comments?: { content?: unknown }[] } | null)?.comments?.[0]
+					?.content;
+				if (typeof content !== 'string')
+					throw fault('a thread carries { comments: [{ content }] }');
+				const made = this.sayOnPull(pull.pullRequestId, this.person, content);
+				return json(200, { id: made.thread, comments: [{ id: made.comment, content }] });
+			}
+		} else if (part.toLowerCase() === 'threads' && answer !== undefined && call.method === 'POST') {
+			const thread = Number(threadText);
+			if (this.threadsOf(pull.pullRequestId)[thread - 1] === undefined) {
+				return refusal(404, `TF401081: The thread ${String(thread)} was not found.`);
+			}
+			const content = (body as { content?: unknown } | null)?.content;
+			if (typeof content !== 'string') throw fault('a reply carries { content }');
+			const comment = this.replyOnPull(pull.pullRequestId, thread, this.person, content);
+			return json(200, { id: comment, content });
+		} else if (part.toLowerCase() === 'commits' && call.method === 'GET') {
+			return this.renderCommits(pull, url.searchParams);
 		} else if (part.toLowerCase() === 'statuses' && call.method === 'GET') {
 			const value = (this.statuses.get(pull.pullRequestId) ?? []).map((s) => ({
 				id: s.id,
@@ -545,6 +668,8 @@ export class FakeAzureDevOps {
 				...(s.description === undefined ? {} : { description: s.description }),
 				context: { name: s.name, ...(s.genre === undefined ? {} : { genre: s.genre }) },
 				...(s.iterationId === null ? {} : { iterationId: s.iterationId }),
+				creationDate: s.at,
+				updatedDate: s.at,
 				createdBy: this.identity(this.person)
 			}));
 			return json(200, { count: value.length, value });
@@ -558,22 +683,74 @@ export class FakeAzureDevOps {
 		throw fault(`no route answers ${call.method} ${url.href}`);
 	}
 
+	// Threads as Azure Repos shows them: a file's path starts with a slash, a line comment on a line the head push still has says where, and a vote's thread carries the notes Azure Repos keeps of it.
 	private renderThreads(id: number): AzureDevOpsReply {
 		const value = this.threadsOf(id).map((t, i) => ({
 			id: i + 1,
+			publishedDate: t.comments[0]?.at,
 			isDeleted: false,
-			comments: [
-				{
-					id: 1,
-					parentCommentId: 0,
-					author: this.identity(t.author.uniqueName),
-					content: t.content,
-					commentType: t.system ? 'system' : 'text',
-					isDeleted: false
-				}
-			]
+			status: t.on === null ? 'unknown' : 'active',
+			threadContext:
+				t.on === null
+					? null
+					: {
+							filePath: `/${t.on.path}`,
+							...(t.on.line === null
+								? {}
+								: {
+										rightFileStart: { line: t.on.line, offset: 1 },
+										rightFileEnd: { line: t.on.line, offset: 1 }
+									})
+						},
+			...(t.vote === undefined
+				? {}
+				: {
+						properties: {
+							CodeReviewThreadType: { $type: 'System.String', $value: 'VoteUpdate' },
+							CodeReviewVoteResult: { $type: 'System.String', $value: String(t.vote) }
+						}
+					}),
+			comments: t.comments.map((c, n) => ({
+				id: n + 1,
+				parentCommentId: n === 0 ? 0 : 1,
+				author: this.identity(c.author.uniqueName),
+				content: c.content,
+				publishedDate: c.at,
+				commentType: c.system ? 'system' : 'text',
+				isDeleted: false
+			}))
 		}));
 		return json(200, { count: value.length, value });
+	}
+
+	private renderCommits(pull: FakePullRequest, search: URLSearchParams): AzureDevOpsReply {
+		const branch = pull.sourceRefName.replace(/^refs\/heads\//, '');
+		// newest first, as `git log` lists them
+		const all = [...(this.branchCommits.get(branch) ?? [])].reverse();
+		const skip = Number(search.get('$skip') ?? '0');
+		const top = Number(search.get('$top') ?? '100');
+		const value = all.slice(skip, skip + top).map((c) => {
+			const who = { name: 'Test', email: 'test@example.com', date: c.date };
+			const cut = c.message.length > COMMIT_COMMENT_LIMIT;
+			return {
+				commitId: c.sha,
+				author: who,
+				committer: who,
+				comment: c.message.slice(0, COMMIT_COMMENT_LIMIT),
+				...(cut ? { commentTruncated: true } : {})
+			};
+		});
+		return json(200, { count: value.length, value });
+	}
+
+	// A commit on its own: its whole message.
+	private renderWholeCommit(sha: string): AzureDevOpsReply {
+		const found = [...this.branchCommits.values()].flat().find((c) => c.sha === sha);
+		if (found === undefined) {
+			return refusal(404, `TF401175: The commit ${sha} could not be found.`);
+		}
+		const who = { name: 'Test', email: 'test@example.com', date: found.date };
+		return json(200, { commitId: found.sha, author: who, committer: who, comment: found.message });
 	}
 
 	// The policy evaluations on a pull request, named as Azure Repos names its code review.

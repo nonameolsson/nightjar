@@ -158,6 +158,14 @@
 							"type": "string",
 							"pattern": "\\S",
 							"description": "The Git repo on Azure Repos, by name"
+						},
+						"trustedChecks": {
+							"description": "The names whose failed statuses on the pull request reach the agent as feedback: the genre a service posts a status under, or the status name, or genre/name. Replaces the default, Azure Pipelines. A status from any other name is left out.",
+							"type": "array",
+							"items": {
+								"type": "string",
+								"pattern": "\\S"
+							}
 						}
 					},
 					"required": [

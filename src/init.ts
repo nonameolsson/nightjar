@@ -599,7 +599,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 	say('running `nightjar doctor`:');
 	const { adapters, assignee } = checked.ready;
 	try {
-		await dryRun({ tracker: adapters.tracker, person: assignee, say });
+		await dryRun({ tracker: adapters.tracker, codeHost: adapters.codeHost, person: assignee, say });
 	} catch (fault) {
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;

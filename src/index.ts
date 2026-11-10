@@ -19,15 +19,19 @@ export { assignContract } from './contract/assign.js';
 export { waitingOnContract } from './contract/waiting-on.js';
 export { ticketCountsContract } from './contract/ticket-counts.js';
 export { nightjarDraftsContract } from './contract/nightjar-drafts.js';
+export { openPullsContract } from './contract/open-pulls.js';
 export type {
+	ChangeRequest,
 	CodeHost,
 	DraftRequest,
 	FailedCheck,
 	Feedback,
 	FeedbackKind,
 	NightjarDraft,
+	OpenPull,
 	Pull,
-	PullChecks
+	PullChecks,
+	PullCommit
 } from './code-host.js';
 export { FOOTER } from './footer.js';
 export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';

@@ -1,12 +1,15 @@
 // A Code host kept in memory, for the build loop's specs and for anyone testing against the seam.
 import { failedCheckBody } from '../check-output.js';
 import type {
+	ChangeRequest,
 	CodeHost,
 	DraftRequest,
 	Feedback,
 	NightjarDraft,
+	OpenPull,
 	Pull,
-	PullChecks
+	PullChecks,
+	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import type { TicketReference } from '../tracker.js';
@@ -33,8 +36,12 @@ export class FakeCodeHost implements CodeHost {
 	pulls: FakePull[] = [];
 	// what the fake calls the commit a push from `folder` puts on a branch; a harness that names its commits sets it
 	commitAt = (folder: string, push: number): string => `${folder}@${String(push)}`;
+	// the messages of the commits a push from `folder` leaves on a branch, oldest first; a harness that keeps commits sets it
+	commitsAt = (_folder: string): readonly string[] => [];
 	// the commit each branch points at
 	private readonly heads = new Map<string, string>();
+	// the commits each branch holds, each dated when a push first brought it
+	private readonly branchCommits = new Map<string, readonly PullCommit[]>();
 
 	private change(id: number, over: (p: FakePull) => Partial<FakePull>) {
 		const known = this.pulls.some((p) => p.id === id);
@@ -46,6 +53,7 @@ export class FakeCodeHost implements CodeHost {
 	push = (folder: string, branch: string): Promise<void> => {
 		this.pushes.push({ folder, branch });
 		this.heads.set(branch, this.commitAt(folder, this.pushes.length));
+		this.branchCommits.set(branch, this.dated(branch, this.commitsAt(folder)));
 		const queued = (p: FakePull): FakePull => ({ ...p, checks: { pending: true, failed: [] } });
 		this.pulls = this.pulls.map((p) => (p.open && p.head === branch ? queued(p) : p));
 		return Promise.resolve();
@@ -107,6 +115,38 @@ export class FakeCodeHost implements CodeHost {
 		return Promise.resolve(listed);
 	};
 
+	// in the order they were opened, which is the order of their ids
+	openPulls = (prefix: string): Promise<OpenPull[]> => {
+		const open = this.pulls.filter((p) => p.open && p.head.startsWith(prefix));
+		const listed = open.map((p): OpenPull => ({
+			pull: { id: p.id, url: p.url },
+			branch: p.head,
+			body: p.body,
+			commits: this.branchCommits.get(p.head) ?? [],
+			changesRequested: this.asked.get(p.id) ?? []
+		}));
+		return Promise.resolve(listed);
+	};
+
+	// The branch's commits after a push: those it had keep their dates, while they come first in the same order; the rest are dated now.
+	private dated(branch: string, messages: readonly string[]): PullCommit[] {
+		const had = this.branchCommits.get(branch) ?? [];
+		const out: PullCommit[] = [];
+		let same = true;
+		for (const [i, message] of messages.entries()) {
+			const before = had[i];
+			same = same && before?.message === message;
+			out.push(same && before !== undefined ? before : { message, at: this.tick() });
+		}
+		return out;
+	}
+
+	// the fake's clock: one minute on for each thing that happens, from 31 October 2026
+	private tick(): string {
+		this.lastId += 1;
+		return new Date(Date.UTC(2026, 9, 31, 0, this.lastId)).toISOString();
+	}
+
 	// What the Code host's own runs and a person do to a pull request, which a spec plays.
 
 	// the Pull checks on the pull request's head commit
@@ -132,17 +172,31 @@ export class FakeCodeHost implements CodeHost {
 	// the replies in the thread of each line comment, by pull request and feedback id
 	readonly threads: { readonly pull: number; readonly id: string; readonly body: string }[] = [];
 	private lastId = 0;
+	// the reviews that requested changes, by pull request
+	private readonly asked = new Map<number, ChangeRequest[]>();
 
-	// Puts feedback on a pull request, with the next id of its kind; a comment in the conversation shows there too.
-	give = (pull: Pull, feedback: Omit<Feedback, 'id' | 'at'>): string => {
-		this.lastId += 1;
+	// Puts feedback on a pull request, with the next id of its kind; a comment in the conversation shows there too, and a review with `changes` requests changes.
+	give = (pull: Pull, feedback: Omit<Feedback, 'id' | 'at'>, changes = false): string => {
+		const at = this.tick();
 		const id = `${feedback.kind}:${String(this.lastId)}`;
-		const at = new Date(Date.UTC(2026, 9, 31, 0, this.lastId)).toISOString();
 		this.given.set(pull.id, [...(this.given.get(pull.id) ?? []), { ...feedback, id, at }]);
 		if (feedback.kind === 'comment' && feedback.path === undefined) {
 			this.change(pull.id, (p) => ({ comments: [...p.comments, feedback.body] }));
 		}
+		if (feedback.kind === 'review' && changes) {
+			const { author, trusted } = feedback;
+			this.asked.set(pull.id, [...(this.asked.get(pull.id) ?? []), { id, author, at, trusted }]);
+		}
 		return id;
+	};
+
+	// A review by `author` that requests changes; gives its id.
+	requestChanges = (
+		pull: Pull,
+		review: { author: string; trusted: boolean; body?: string }
+	): string => {
+		const { author, trusted, body = 'Please change it.' } = review;
+		return this.give(pull, { kind: 'review', author, trusted, body }, true);
 	};
 
 	// A failed check by `author`, the app that ran it; its body is its name and the end of its output.
@@ -169,11 +223,24 @@ export class FakeCodeHost implements CodeHost {
 				new Error(`the fake Code host has no feedback ${feedbackId} on ${String(pull.id)}`)
 			);
 		}
+		const said = answered.path === undefined ? answerText(answered.body, body) : withFooter(body);
 		if (answered.path === undefined) {
-			this.change(pull.id, (p) => ({ comments: [...p.comments, answerText(answered.body, body)] }));
+			this.change(pull.id, (p) => ({ comments: [...p.comments, said] }));
 		} else {
-			this.threads.push({ pull: pull.id, id: feedbackId, body: withFooter(body) });
+			this.threads.push({ pull: pull.id, id: feedbackId, body: said });
 		}
+		// a real Code host lists the reply among the comments, as the signed-in person's, so only its footer keeps it out of the feedback
+		const at = this.tick();
+		const reply: Feedback = {
+			id: `comment:${String(this.lastId)}`,
+			kind: 'comment',
+			author: 'ann',
+			body: said,
+			at,
+			trusted: true,
+			...(answered.path === undefined ? {} : { path: answered.path })
+		};
+		this.given.set(pull.id, [...(this.given.get(pull.id) ?? []), reply]);
 		return Promise.resolve();
 	};
 }

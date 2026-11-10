@@ -28,7 +28,7 @@ export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promis
 	}
 	const { adapters, assignee } = checked.ready;
 	try {
-		await dryRun({ tracker: adapters.tracker, person: assignee, say });
+		await dryRun({ tracker: adapters.tracker, codeHost: adapters.codeHost, person: assignee, say });
 	} catch (fault) {
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;

@@ -12,6 +12,7 @@ import {
 	codeHostContract,
 	featureWriterContract,
 	nightjarDraftsContract,
+	openPullsContract,
 	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
@@ -149,23 +150,36 @@ async function gitHubCodeHost() {
 	await git(['init', '-q', '--bare', '-b', 'main', origin], base);
 	await git(['clone', '-q', origin, folder], base);
 	let made = 0;
-	const commit = async () => {
+	const commit = async (message?: string) => {
 		made += 1;
 		await writeFile(join(folder, `${String(made)}.txt`), 'a change\n');
 		await git(['add', '.'], folder);
-		await git(['commit', '-q', '-m', `change ${String(made)}`], folder);
+		await git(['commit', '-q', '-m', message ?? `change ${String(made)}`], folder);
 		return { folder, commit: await git(['rev-parse', 'HEAD'], folder) };
 	};
 	await commit();
 	await git(['push', '-q', 'origin', 'main'], folder);
 
+	// the commits HEAD holds that the base lacks, oldest first
+	const ownCommits = async (cwd: string) => {
+		const log = await git(['log', '--reverse', '--format=%H%x00%B%x1e', 'origin/main..HEAD'], cwd);
+		return log
+			.split('\x1e')
+			.map((record) => record.trim())
+			.filter((record) => record !== '')
+			.map((record) => {
+				const at = record.indexOf('\0');
+				return { sha: record.slice(0, at), message: record.slice(at + 1).trim() };
+			});
+	};
+
 	const github = new FakeGitHub('o/r', 'ann');
-	// GitHub learns of each push, so a pull request's head commit follows its branch
+	// GitHub learns of each push, so a pull request's head commit and commits follow its branch
 	const pushing = async (args: readonly string[], cwd: string) => {
 		const got = await run('git', args, cwd, env);
 		const ref = /^HEAD:refs\/heads\/(.+)$/.exec(args.at(-1) ?? '');
 		if (got.ok && args[0] === 'push' && ref) {
-			github.pushed(ref[1] ?? '', await git(['rev-parse', 'HEAD'], cwd));
+			github.pushed(ref[1] ?? '', await git(['rev-parse', 'HEAD'], cwd), await ownCommits(cwd));
 		}
 		return got;
 	};
@@ -214,10 +228,11 @@ function giveOnGitHub(github: FakeGitHub, pull: Pull, given: Given): string {
 	}
 	if (given.trusted) github.grant(given.author, 'write');
 	if (given.kind === 'review') {
+		const state = given.approval === true ? 'APPROVED' : 'COMMENTED';
 		const id = github.review(pull.id, {
 			login: given.author,
 			body: given.body,
-			state: given.approval === true ? 'APPROVED' : 'COMMENTED'
+			state: given.changes === true ? 'CHANGES_REQUESTED' : state
 		});
 		return `review:${String(id)}`;
 	}
@@ -287,4 +302,8 @@ describe('GitHubCodeHost meets the nightjarDrafts contract', { timeout: 30_000 }
 
 describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () => {
 	for (const c of feedbackContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
+	for (const c of openPullsContract) it(c.name, () => c.run(gitHubCodeHost));
 });

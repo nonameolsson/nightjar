@@ -18,6 +18,7 @@ import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } fr
 import { markerSearch } from '../template.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
+import { AzureTrust, IdentityRefSchema, same } from './trust.js';
 
 export interface AzureBoardsSettings {
 	readonly project: string;
@@ -54,19 +55,6 @@ const ItemsSchema = z.looseObject({ value: z.array(ItemSchema.nullable()) });
 
 const WiqlSchema = z.looseObject({ workItems: z.array(z.looseObject({ id: z.int() })) });
 
-const ConnectionSchema = z.looseObject({
-	authenticatedUser: z.looseObject({
-		id: z.string(),
-		properties: z.looseObject({ Account: z.looseObject({ $value: z.string().min(1) }) })
-	})
-});
-
-const IdentityRefSchema = z.looseObject({
-	id: z.string().nullish(),
-	uniqueName: z.string().nullish(),
-	displayName: z.string().nullish()
-});
-
 const CommentsSchema = z.looseObject({
 	comments: z.array(
 		z.looseObject({
@@ -75,18 +63,6 @@ const CommentsSchema = z.looseObject({
 			createdBy: IdentityRefSchema.nullish(),
 			createdDate: z.string()
 		})
-	)
-});
-
-const IdentitiesSchema = z.looseObject({
-	value: z.array(
-		z
-			.looseObject({
-				id: z.string().nullish(),
-				descriptor: z.string().nullish(),
-				memberOf: z.array(z.string()).nullish()
-			})
-			.nullable()
 	)
 });
 
@@ -104,9 +80,6 @@ const tagsOf = (item: Item): string[] =>
 		.split(';')
 		.map((t) => t.trim())
 		.filter((t) => t !== '');
-
-// Azure DevOps keeps tags without regard to case.
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 // The id a link names, from its address .../_apis/wit/workItems/<id>.
 const linked = (item: Item, rel: string): number[] =>
@@ -128,45 +101,19 @@ const rankOf = (item: Item): number => {
 
 const quoted = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
-// One answer per key, read once and kept; a read that failed is forgotten, so the next asks again.
-function kept<T>(read: (key: string) => Promise<T>): (key: string) => Promise<T> {
-	const known = new Map<string, Promise<T>>();
-	return (key) => {
-		let got = known.get(key);
-		if (got === undefined) {
-			got = read(key);
-			known.set(key, got);
-			got.catch(() => known.delete(key));
-		}
-		return got;
-	};
-}
-
 export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	private readonly project: string;
-	private readonly signedIn = kept(() =>
-		this.api
-			.parse(
-				'read the signed-in person',
-				{ method: 'GET', url: this.api.at(`_apis/connectionData?${API}-preview`) },
-				ConnectionSchema
-			)
-			.then((c) => ({
-				name: c.authenticatedUser.properties.Account.$value,
-				id: c.authenticatedUser.id
-			}))
-	);
-	private readonly contributors = kept(() => this.contributorsGroup());
-	private readonly members = kept((id) => this.isContributor(id));
+	private readonly trust: AzureTrust;
 
 	constructor(
 		private readonly api: AzureDevOpsApi,
 		private readonly settings: AzureBoardsSettings,
 		private readonly names: SignalNames,
 		// factory.json's trusted list; when set it replaces the Contributors default
-		private readonly trusted?: readonly string[]
+		trusted?: readonly string[]
 	) {
 		this.project = encodeURIComponent(settings.project);
+		this.trust = new AzureTrust(api, settings.project, trusted);
 	}
 
 	private signalsOf(item: Item): Signal[] {
@@ -184,7 +131,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	}
 
 	async me(): Promise<string> {
-		return (await this.signedIn('')).name;
+		return (await this.trust.me()).name;
 	}
 
 	// The work items with these ids, each with its fields and links; `omit` leaves out one that cannot be read.
@@ -297,7 +244,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 	async standing(id: ItemId): Promise<Standing> {
 		const item = await this.item(workItem(id));
 		const assigned = IdentityRefSchema.safeParse(item.fields['System.AssignedTo']);
-		const me = await this.signedIn('');
+		const me = await this.trust.me();
 		const name = !assigned.success
 			? null
 			: assigned.data.id === me.id
@@ -369,85 +316,24 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			},
 			CommentsSchema
 		);
-		const me = await this.signedIn('');
 		const comments: Comment[] = [];
 		const oldestFirst = [...got.comments].sort((a, b) =>
 			a.createdDate < b.createdDate ? -1 : a.createdDate > b.createdDate ? 1 : 0
 		);
 		for (const c of oldestFirst) {
-			const by = c.createdBy;
-			// the signed-in person goes by the name me() gives, however the comment spells it
-			const author = by?.id === me.id ? me.name : (by?.uniqueName ?? by?.displayName ?? '');
+			const { name, trusted } = await this.trust.person(c.createdBy);
 			comments.push({
-				author,
+				author: name,
 				body: plainText(c.text ?? '', c.format),
 				at: c.createdDate,
-				trusted: await this.isTrusted(author, by?.id ?? null)
+				trusted
 			});
 		}
 		return comments;
 	}
 
-	// Whether a comment's author is trusted: on the configured list, else in the project's Contributors group.
-	private async isTrusted(author: string, id: string | null): Promise<boolean> {
-		if (this.trusted !== undefined) return this.trusted.some((t) => same(t, author));
-		return id === null ? false : this.members(id);
-	}
-
-	// On the configured list, else in the project's Contributors group; a person the organization does not know is not trusted.
-	async trusts(person: string): Promise<boolean> {
-		if (this.trusted !== undefined) return this.trusted.some((t) => same(t, person));
-		const me = await this.signedIn('');
-		const id = same(person, me.name) ? me.id : await this.identityOf(person);
-		return id === null ? false : this.members(id);
-	}
-
-	// The identity id of the person with the sign-in name `person`; null when the organization has none.
-	private async identityOf(person: string): Promise<string | null> {
-		const got = await this.api.parse(
-			`find ${person}`,
-			{
-				method: 'GET',
-				url: this.api.identities(
-					`_apis/identities?searchFilter=AccountName&filterValue=${encodeURIComponent(person)}&queryMembership=None&${API}`
-				)
-			},
-			IdentitiesSchema
-		);
-		return got.value.find((i) => typeof i?.id === 'string')?.id ?? null;
-	}
-
-	private async isContributor(id: string): Promise<boolean> {
-		const group = await this.contributors('');
-		const got = await this.api.parse(
-			`read the groups of ${id}`,
-			{
-				method: 'GET',
-				url: this.api.identities(
-					`_apis/identities?identityIds=${encodeURIComponent(id)}&queryMembership=ExpandedUp&${API}`
-				)
-			},
-			IdentitiesSchema
-		);
-		return (got.value[0]?.memberOf ?? []).some((d) => same(d, group));
-	}
-
-	// The descriptor of the project's Contributors group, which every member of the project's teams is in.
-	private async contributorsGroup(): Promise<string> {
-		const name = `[${this.settings.project}]\\Contributors`;
-		const got = await this.api.parse(
-			`find the group ${name}`,
-			{
-				method: 'GET',
-				url: this.api.identities(
-					`_apis/identities?searchFilter=General&filterValue=${encodeURIComponent(name)}&queryMembership=None&${API}`
-				)
-			},
-			IdentitiesSchema
-		);
-		const descriptor = got.value[0]?.descriptor;
-		if (!descriptor) throw new AzureDevOpsFailure(`Azure DevOps has no group ${name}.`);
-		return descriptor;
+	trusts(person: string): Promise<boolean> {
+		return this.trust.trusts(person);
 	}
 
 	// Tags are one field, so a change writes the whole list back.

@@ -66,6 +66,35 @@ export interface Feedback {
 	readonly outdated?: true;
 }
 
+// A commit on a pull request's branch, as the Code host shows it.
+export interface PullCommit {
+	// its whole message, trailers too
+	readonly message: string;
+	// when it was made
+	readonly at: string;
+}
+
+// A review that requested changes on a pull request.
+export interface ChangeRequest {
+	// `review:` and the host's own id, as the review's feedback id is
+	readonly id: string;
+	readonly author: string;
+	readonly at: string;
+	// whether its author is trusted, by the rule feedback is trusted by
+	readonly trusted: boolean;
+}
+
+// An open pull request on a branch that starts with a prefix, as --watch reads it to see whether a reviewer asked for changes.
+export interface OpenPull {
+	readonly pull: Pull;
+	readonly branch: string;
+	readonly body: string;
+	// the commits on its branch that its base lacks, oldest first
+	readonly commits: readonly PullCommit[];
+	// every review that requested changes on it, oldest first
+	readonly changesRequested: readonly ChangeRequest[];
+}
+
 export interface CodeHost {
 	// pushes the worktree's HEAD in `folder` to `branch` on the host
 	push(folder: string, branch: string): Promise<void>;
@@ -83,4 +112,6 @@ export interface CodeHost {
 	feedback?(pull: Pull): Promise<Feedback[]>;
 	// A line comment is answered in its thread, anything else in the conversation quoting its start; the body ends with the footer.
 	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
+	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with `prefix`, oldest first; a Code host without it, or without feedback and reply, gets no Feedback round a request for changes starts
+	openPulls?(prefix: string): Promise<OpenPull[]>;
 }

@@ -30,6 +30,13 @@ describe('next steps', () => {
 		expect(got).not.toContain('factory-go');
 	});
 
+	it('tells a person to answer or clear up the feedback of a thrown-away Feedback round, then give the Go again', () => {
+		const got = text(next.feedbackStep(renamed));
+		expect(got).toContain('1. Read why above: answer the feedback yourself on the pull request');
+		expect(got).toContain('2. On this Feature, remove `stuck` and add `run-it`');
+		expect(got).toContain('3. Nightjar goes on from the branch, and answers the feedback');
+	});
+
 	it('tells a person to fix what a failed Ticket names, then hand it back', () => {
 		const got = ticketStep(names, 'retry');
 		expect(got).toContain('Read the reason above');

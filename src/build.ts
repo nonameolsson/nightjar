@@ -10,6 +10,15 @@ import {
 } from './coding-agent.js';
 import { DEFAULT_PULL_CHECKS } from './config.js';
 import { pullChecksReport } from './gate.js';
+import {
+	feedbackRound,
+	feedbackRounds,
+	feedbackSection,
+	replyText,
+	thrownAwayComment,
+	type FeedbackRoundEnd,
+	type Unanswered
+} from './feedback-round.js';
 import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
@@ -20,6 +29,7 @@ import type { Serve } from './serve.js';
 import {
 	featureAfterRunStep,
 	featureStopStep,
+	feedbackStep,
 	nextStepText,
 	pullChecksStep,
 	stoppedStep,
@@ -175,8 +185,8 @@ const hash = (id: ItemId) => `#${id}`;
 
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
-// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps'.
-type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks';
+// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback'.
+type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -199,7 +209,20 @@ const REPEATED_FAILURES = 3;
 
 const NEXT: Step = { kind: 'next' };
 
-export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promise<FeatureOutcome> {
+// A step shown with no round of its own.
+const NO_ROUND = { round: null, rounds: null };
+
+// A build with no Go, which a trusted request for changes on the Feature's pull request started: its id, which the Feedback round's commit names.
+export interface Asked {
+	readonly asked: string;
+}
+
+export async function buildFeature(
+	deps: Deps,
+	setup: Setup,
+	id: ItemId,
+	started?: Asked
+): Promise<FeatureOutcome> {
 	const { tracker } = deps;
 	const feature = await tracker.feature(id);
 	const branch = branchFor(feature.id, feature.title);
@@ -258,7 +281,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 		await tree.markSetUp();
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show);
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show, started);
 	return run.build();
 }
 
@@ -301,6 +324,10 @@ function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
 class FeatureRun {
 	private readonly costs: Cost[] = [];
 	private featureComments: Comment[] = [];
+	// the run's Feedback round that landed, whose feedback gets its replies after the push
+	private answered: Extract<FeedbackRoundEnd, { kind: 'answered' }> | null = null;
+	// the feedback the run's Feedback round left unanswered, which the pull request lists
+	private unanswered: readonly Unanswered[] = [];
 	// the Feature's Workflow, which runs its own Steps
 	private steps: WorkflowRun | null = null;
 	// what the status file shows now, so a Ticket built can change its Tickets alone
@@ -321,7 +348,8 @@ class FeatureRun {
 		private readonly tickets: Ticket[],
 		private readonly built: Set<ItemId>,
 		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
-		private readonly show: ShowBuilding
+		private readonly show: ShowBuilding,
+		private readonly started?: Asked
 	) {
 		this.startedAt = deps.now();
 		this.sessionStartedAt = this.startedAt;
@@ -351,7 +379,79 @@ class FeatureRun {
 		if (last.kind === 'next' && !this.aborted && whole && this.steps !== null) {
 			last = await this.steps.runAt('afterAllTickets', null);
 		}
+		if (last.kind === 'next' && !this.aborted) last = await this.answerFeedback();
 		return this.finish(last);
+	}
+
+	// One Feedback round when the branch's open pull request has trusted feedback no commit answers yet; one that fails is thrown away and handed to a person, and the run goes on.
+	private async answerFeedback(): Promise<Step> {
+		const { deps } = this;
+		const end = await feedbackRound({
+			codeHost: deps.codeHost,
+			codingAgent: deps.codingAgent,
+			runCheck: deps.runCheck,
+			newId: deps.newId,
+			say: deps.say,
+			setup: this.setup,
+			feature: this.feature,
+			tree: this.tree,
+			dailyPause: () => this.dailyPause(),
+			allowance: (cap, spent) => deps.spend.allowance(cap, spent),
+			fix: (work) => this.fixFeedback(work),
+			log: (entry) => this.log(entry),
+			building: (session) => this.building(null, 'feedback', session, NO_ROUND),
+			...(this.started === undefined ? {} : { asked: this.started.asked })
+		});
+		switch (end.kind) {
+			case 'none':
+				return NEXT;
+			case 'paused':
+			case 'aborted':
+				return end;
+			case 'answered':
+				this.answered = end;
+				this.unanswered = end.left;
+				return NEXT;
+			case 'failed': {
+				this.unanswered = end.left;
+				const next = feedbackStep(this.setup.signals);
+				deps.status.happened({
+					kind: 'needs-info',
+					feature: this.feature.id,
+					ticket: null,
+					why: `its Feedback round was thrown away: ${end.why}`,
+					next
+				});
+				await deps.tracker.addSignal(this.feature.id, 'needsInfo');
+				await deps.tracker.comment(this.feature.id, withNext(thrownAwayComment(end), next));
+				return NEXT;
+			}
+		}
+	}
+
+	// A Feedback round's fix rounds show and are logged as the round they belong to.
+	private fixFeedback(o: FixWork): Promise<FixEnd> {
+		return fixUntilGreen(
+			{
+				deps: this.deps,
+				setup: this.setup,
+				tree: this.tree,
+				building: (ticket, session, rounds, attempt) =>
+					this.building(ticket, 'feedback', session, rounds, attempt),
+				log: (entry) => this.log({ ...entry, step: 'feedback' })
+			},
+			o
+		);
+	}
+
+	// Each piece of feedback the round answered gets a reply naming its commit, once the commit is pushed.
+	private async replyToFeedback(pull: Pull): Promise<void> {
+		const { codeHost } = this.deps;
+		const round = this.answered;
+		if (round === null || codeHost.reply === undefined) return;
+		for (const { feedback, note } of round.answered) {
+			await codeHost.reply(pull, feedback.id, replyText(round.commit, note));
+		}
 	}
 
 	private openSteps(workflow: { readonly name: string; readonly workflow: WorkflowConfig }) {
@@ -650,9 +750,9 @@ class FeatureRun {
 
 	private building(
 		ticket: ItemId | null,
-		step: 'build' | 'fix' | 'step',
+		step: 'build' | 'fix' | 'step' | 'feedback',
 		session: string,
-		rounds: { readonly round: number; readonly rounds: number },
+		rounds: { readonly round: number | null; readonly rounds: number | null },
 		attempt = 1
 	) {
 		this.sessionStartedAt = this.deps.now();
@@ -738,6 +838,8 @@ class FeatureRun {
 		const complete = left.length === 0 && red === null && paused === null;
 		const ids = done.map((t) => t.id);
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;
+		// every round the branch had, from the ledger, so a run without one still shows the earlier ones
+		const rounds = feedbackRounds(this.deps.spend.entries(), this.setup.repo, this.tree.at.branch);
 		const body = pullBody({
 			tracker,
 			feature: this.feature,
@@ -751,7 +853,8 @@ class FeatureRun {
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,
-			workflow
+			workflow,
+			feedback: rounds.rounds === 0 ? null : feedbackSection(rounds, this.unanswered)
 		});
 		const pull = await this.openDraft(body);
 		// a lone issue is its own Ticket, so it is named once
@@ -760,6 +863,7 @@ class FeatureRun {
 			pull,
 			linked.map((n) => tracker.reference(n))
 		);
+		await this.replyToFeedback(pull);
 		if (review !== 'off' && review) await codeHost.comment(pull, reviewComment(review));
 		this.deps.say(`${hash(id)}: draft pull request ${pull.url}`);
 		this.deps.status.happened({
@@ -1294,6 +1398,8 @@ function pullBody(p: {
 	paused: string | null;
 	// the Workflow's section, when it ran or left a Step
 	workflow: string | null;
+	// the Feedback section, once the branch has had a Feedback round
+	feedback: string | null;
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
@@ -1311,6 +1417,7 @@ function pullBody(p: {
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
 	if (p.workflow !== null) parts.push(p.workflow);
+	if (p.feedback !== null) parts.push(p.feedback);
 	if (p.review !== 'off')
 		parts.push(
 			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
@@ -1332,7 +1439,7 @@ export function featureOfBody(body: string): string | undefined {
 	return MARKER.exec(body)?.[1];
 }
 
-// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, and the review; a kind with no Session is left out.
+// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round and the review; a kind with no Session is left out.
 function costSection(
 	spent: number,
 	costs: readonly Cost[],
@@ -1358,6 +1465,7 @@ function costSection(
 		return `- ${ref(id)}${title === undefined ? '' : ` ${title}`}: ${parts.join(', ')}`;
 	});
 	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
+	if (has(null, 'feedback')) lines.push(`- Feedback round: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;

@@ -6,11 +6,13 @@ import {
 	type PullFixOutcome,
 	type RedDraft
 } from './build.js';
-import type { CodeHost, NightjarDraft } from './code-host.js';
+import type { ChangeRequest, CodeHost, NightjarDraft, OpenPull } from './code-host.js';
+import { AUTOMATIC_ROUNDS, feedbackHistory, newRequest } from './feedback-round.js';
 import { FOOTER } from './footer.js';
-import { featureStopStep, nextStepText } from './next-step.js';
+import { featureStopStep, feedbackLimitStep, nextStepText } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
-import type { SignalNames } from './signals.js';
+import type { Signal, SignalNames } from './signals.js';
+import { BRANCH_PREFIX, branchFor } from './worktree.js';
 import {
 	waitingTickets,
 	type Named,
@@ -46,6 +48,33 @@ export interface QueueDeps {
 	readonly signals?: SignalNames;
 	// the revisit pass, when factory.json turns it on and the Code host can list Nightjar's drafts
 	readonly pullChecks?: PullChecksPass;
+	// Feedback rounds a trusted request for changes starts, when the Code host can list Nightjar's open pull requests and answer their feedback
+	readonly feedback?: FeedbackPass;
+}
+
+export interface FeedbackPass {
+	// the open pull requests on Nightjar's branches
+	readonly pulls: () => Promise<OpenPull[]>;
+	// the Feature built with no Go, its Feedback round started by the request for changes `asked`
+	readonly answer: (feature: Named, asked: string) => Promise<FeatureOutcome>;
+}
+
+// Nightjar's open pull requests, or null when the Code host cannot list them or cannot answer their feedback.
+function openPullsOf(codeHost: CodeHost): FeedbackPass['pulls'] | null {
+	const list = codeHost.openPulls?.bind(codeHost);
+	if (list === undefined || codeHost.feedback === undefined || codeHost.reply === undefined) {
+		return null;
+	}
+	return () => list(BRANCH_PREFIX);
+}
+
+// The pass, or null when the Code host cannot list Nightjar's open pull requests or answer their feedback.
+export function feedbackPass(
+	codeHost: CodeHost,
+	answer: FeedbackPass['answer']
+): FeedbackPass | null {
+	const pulls = openPullsOf(codeHost);
+	return pulls === null ? null : { pulls, answer };
 }
 
 export interface PullChecksPass {
@@ -97,10 +126,14 @@ export async function handBack(
 }
 
 // One Feature; a fault after the claim leaves it with the person, not stuck as being worked on.
-export async function buildOne(deps: QueueDeps, feature: Named): Promise<FeatureOutcome | null> {
+export async function buildOne(
+	deps: QueueDeps,
+	feature: Named,
+	build: QueueDeps['build'] = deps.build
+): Promise<FeatureOutcome | null> {
 	const startedAt = deps.now().toISOString();
 	try {
-		return await deps.build(feature);
+		return await build(feature);
 	} catch (fault) {
 		await handBack(deps, feature, fault, startedAt);
 		return null;
@@ -269,6 +302,96 @@ export async function fixNamed(deps: QueueDeps, id: ItemId): Promise<PullFixOutc
 	return didWork(got) ? got : null;
 }
 
+// A Feature with no Go whose open pull request a trusted reviewer asked changes of since its last Feedback round.
+interface AskedFeature {
+	readonly feature: Named;
+	readonly open: OpenPull;
+	// the newest such request
+	readonly request: ChangeRequest;
+	readonly signals: readonly Signal[];
+	// the Feedback rounds a request for changes started on the pull request, counted from its branch's trailers
+	readonly rounds: number;
+}
+
+// The Features a trusted request for changes may start a Feedback round on, oldest pull request first: each assigned to the person, with no Go, not being worked on and not waiting on needs info, and on the branch its title names.
+async function askedFeatures(
+	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>,
+	pulls: readonly OpenPull[]
+): Promise<AskedFeature[]> {
+	const found: AskedFeature[] = [];
+	for (const open of [...pulls].sort((a, b) => a.pull.id - b.pull.id)) {
+		const request = newRequest(open);
+		const id = featureOfBody(open.body);
+		if (request === null || id === undefined) continue;
+		try {
+			const { assignees, signals } = await deps.tracker.standing(id);
+			if (!assignees.some((a) => samePerson(a, deps.person))) continue;
+			// a Feature with the Go is built as one, and its build answers the feedback
+			if (signals.some((s) => s === 'go' || s === 'working' || s === 'needsInfo')) continue;
+			const { title } = await deps.tracker.feature(id);
+			// the build works on the branch the title names, so a pull request on another is not the one it would answer
+			if (branchFor(id, title) !== open.branch) continue;
+			const rounds = feedbackHistory(open.commits).automatic;
+			found.push({ feature: { id, title }, open, request, signals, rounds });
+		} catch (fault) {
+			deps.say(`could not read #${id} of ${open.pull.url}: ${why(fault)}`);
+		}
+	}
+	return found;
+}
+
+const atLimit = (a: AskedFeature) => a.rounds >= AUTOMATIC_ROUNDS;
+
+const limitWhy = `its pull request has had its ${String(AUTOMATIC_ROUNDS)} automatic Feedback rounds`;
+
+// A request for changes past the limit starts no round: the Feature gets needs a person and a comment saying why, once; a Feature that carries needs a person already is left alone.
+async function feedbackLimit(deps: QueueDeps, a: AskedFeature): Promise<void> {
+	const { id } = a.feature;
+	const { author } = a.request;
+	const { url } = a.open.pull;
+	if (a.signals.includes('human')) return;
+	deps.say(`#${id}: ${author} asked for changes on ${url}, and ${limitWhy}; handed to a person`);
+	const next = deps.signals === undefined ? null : feedbackLimitStep(deps.signals);
+	const step = next === null ? '' : `\n\n${nextStepText(next)}`;
+	try {
+		await deps.tracker.addSignal(id, 'human');
+		await deps.tracker.comment(
+			id,
+			`Nightjar did not answer the changes ${author} asked for on ${url}: ${limitWhy}, and only a Go starts another.${step}${FOOTER}`
+		);
+	} catch (fault) {
+		deps.say(`could not hand #${id} to a person: ${why(fault)}`);
+	}
+}
+
+// One Feedback round a trusted request for changes started, or null when none waits. A pull request is taken once per request in a run, so a round that lands no commit is not started again and again.
+async function answerAsked(
+	deps: QueueDeps,
+	pass: FeedbackPass,
+	tried: Set<string>
+): Promise<{ readonly feature: Named; readonly outcome: FeatureOutcome | null } | null> {
+	let found: AskedFeature[];
+	try {
+		found = await askedFeatures(deps, await pass.pulls());
+	} catch (fault) {
+		deps.say(`could not read Nightjar's open pull requests: ${why(fault)}`);
+		return null;
+	}
+	for (const a of found) {
+		const key = `${String(a.open.pull.id)} ${a.request.id}`;
+		if (tried.has(key)) continue;
+		if (atLimit(a)) {
+			await feedbackLimit(deps, a);
+			continue;
+		}
+		tried.add(key);
+		deps.say(`#${a.feature.id}: ${a.request.author} asked for changes on ${a.open.pull.url}`);
+		const outcome = await buildOne(deps, a.feature, (f) => pass.answer(f, a.request.id));
+		return { feature: a.feature, outcome };
+	}
+	return null;
+}
+
 const none = (deps: Pick<QueueDeps, 'person'>) =>
 	`no Feature with the Go is assigned to ${deps.person}`;
 
@@ -302,6 +425,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	};
 	// the drafts the revisit pass took this run, at their head commit then
 	const tried = new Set<string>();
+	// the pull requests a request for changes started a round on this run, by that request
+	const asked = new Set<string>();
 	while (stop?.aborted !== true) {
 		// a red draft is revisited before the next Feature is taken, and on each idle tick in --watch
 		const pass = deps.pullChecks;
@@ -330,6 +455,18 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		const rest = features.slice(1).map(named);
 		await waiting.read(rest);
 		waiting.tell(rest);
+		if (next === undefined) {
+			// with no Feature with the Go, a trusted request for changes on one of Nightjar's pull requests is next
+			const answered =
+				deps.feedback === undefined ? null : await answerAsked(deps, deps.feedback, asked);
+			if (answered !== null) {
+				const { outcome } = answered;
+				waiting.tell(rest, outcome, answered.feature);
+				if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
+				if (outcome?.kind === 'paused') await pause(outcome.why);
+				continue;
+			}
+		}
 		if (next === undefined && once) {
 			deps.say(none(deps));
 			return 0;
@@ -360,10 +497,23 @@ export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOu
 	return outcome;
 }
 
-export async function dryRun(deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>): Promise<void> {
+// doctor and init: the Features with the Go it would build, then those it would answer feedback on with no Go, when the Code host can list Nightjar's open pull requests.
+export async function dryRun(
+	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'> & { readonly codeHost?: CodeHost }
+): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
-	if (features.length === 0) deps.say(none(deps));
+	const pulls = deps.codeHost === undefined ? null : openPullsOf(deps.codeHost);
+	const asked = pulls === null ? [] : await askedFeatures(deps, await pulls());
+	if (features.length === 0 && asked.length === 0) deps.say(none(deps));
 	for (const f of features) {
 		deps.say(`would build #${f.id} ${f.title}${f.lone === true ? ' (a lone issue)' : ''}`);
+	}
+	for (const a of asked) {
+		const { id, title } = a.feature;
+		if (!atLimit(a)) {
+			deps.say(`would answer feedback on #${id} ${title}, on ${a.open.pull.url}`);
+		} else if (!a.signals.includes('human')) {
+			deps.say(`would hand #${id} ${title} to a person: ${limitWhy}`);
+		}
 	}
 }
