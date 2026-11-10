@@ -209,7 +209,13 @@ const CODE_HOSTS: {
 		const referencesAs: ReferencesAs = linked ? 'work items' : 'text';
 		const codeHost = new AzureReposCodeHost(
 			m.azureDevOps(organization),
-			{ project, repo, referencesAs },
+			{
+				project,
+				repo,
+				referencesAs,
+				trusted: m.config.trusted,
+				trustedChecks: spec.trustedChecks
+			},
 			(args, cwd, extra) => run('git', args, cwd, { ...m.env, ...extra })
 		);
 		// Azure Repos reads #N as a work item of its own organization, so any other Ticket is named by its page

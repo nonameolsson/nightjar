@@ -6,8 +6,11 @@ import { describe, it } from 'vitest';
 import { run, type Env } from '../git.js';
 import {
 	codeHostContract,
+	feedbackContract,
 	nightjarDraftsContract,
+	openPullsContract,
 	type DraftsWorld,
+	type Given,
 	type Pull,
 	type PullChecks
 } from '../index.js';
@@ -74,6 +77,48 @@ function azureReposDrafts(ado: FakeAzureDevOps): DraftsWorld {
 	};
 }
 
+// The statuses a service posts for each conclusion; a pass, a skip and a neutral one are not red.
+const STATUS_STATES = {
+	failure: 'failed',
+	timed_out: 'error',
+	success: 'succeeded',
+	skipped: 'notApplicable',
+	neutral: 'notSet'
+} as const;
+
+// A person on Azure DevOps is trusted when in the project's Contributors group.
+const person = (ado: FakeAzureDevOps, author: string, trusted: boolean) =>
+	ado.join(author, { contributor: trusted });
+
+// Feedback as Azure Repos shows it. A check is a status, trusted when Azure Pipelines posts it. A comment is a thread, or a line comment. Azure Repos has two votes that are reviews: Waiting for author asks for changes, Rejected does not start a Feedback round by itself, so Rejected stands in for a review that only comments. An approval is a vote that is no feedback; the words that come with one are a comment.
+function giveOnAzure(ado: FakeAzureDevOps, pull: Pull, given: Given): string {
+	if (given.kind === 'check') {
+		const id = ado.status(pull.id, {
+			name: given.name,
+			genre: given.trusted ? 'Azure Pipelines' : 'unknown-app',
+			state: STATUS_STATES[given.conclusion],
+			description: given.output
+		});
+		return `check:${String(id)}`;
+	}
+	person(ado, given.author, given.trusted);
+	if (given.kind === 'comment') {
+		const on = given.on ?? null;
+		const said = ado.sayOnPull(pull.id, given.author, given.body, { on });
+		return `comment:${String(said.thread)}.${String(said.comment)}`;
+	}
+	if (given.approval === true) {
+		const thread = ado.vote(pull.id, given.author, 10);
+		if (given.body === '') return `review:${String(thread)}`;
+		const said = ado.sayOnPull(pull.id, given.author, given.body);
+		return `comment:${String(said.thread)}.${String(said.comment)}`;
+	}
+	const vote = given.changes === true ? -5 : -10;
+	return `review:${String(ado.vote(pull.id, given.author, vote, given.body))}`;
+}
+
+const threadOf = (id: string) => Number(/^comment:(\d+)\./.exec(id)?.[1]);
+
 const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
 	const base = await mkdtemp(join(tmpdir(), 'nightjar-contract-'));
 	const config = join(base, 'gitconfig');
@@ -97,15 +142,28 @@ const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
 	await git(['init', '-q', '--bare', '-b', 'main', origin], base);
 	await git(['clone', '-q', origin, folder], base);
 	let made = 0;
-	const commit = async () => {
+	const commit = async (message?: string) => {
 		made += 1;
 		await writeFile(join(folder, `${String(made)}.txt`), 'a change\n');
 		await git(['add', '.'], folder);
-		await git(['commit', '-q', '-m', `change ${String(made)}`], folder);
+		await git(['commit', '-q', '-m', message ?? `change ${String(made)}`], folder);
 		return { folder, commit: await git(['rev-parse', 'HEAD'], folder) };
 	};
 	await commit();
 	await git(['push', '-q', 'origin', 'main'], folder);
+
+	// the commits HEAD holds that the base lacks, oldest first
+	const ownCommits = async (cwd: string) => {
+		const log = await git(['log', '--reverse', '--format=%H%x00%B%x1e', 'origin/main..HEAD'], cwd);
+		return log
+			.split('\x1e')
+			.map((record) => record.trim())
+			.filter((record) => record !== '')
+			.map((record) => {
+				const at = record.indexOf('\0');
+				return { sha: record.slice(0, at), message: record.slice(at + 1).trim() };
+			});
+	};
 
 	const ado = new FakeAzureDevOps('contoso', PROJECT, 'ann@contoso.com');
 	ado.repository(REPO);
@@ -118,7 +176,7 @@ const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
 		const got = await run('git', args, cwd, { ...env, ...extra });
 		const ref = /^HEAD:refs\/heads\/(.+)$/.exec(args.at(-1) ?? '');
 		if (got.ok && args[0] === 'push' && ref) {
-			ado.pushed(ref[1] ?? '', await git(['rev-parse', 'HEAD'], cwd));
+			ado.pushed(ref[1] ?? '', await git(['rev-parse', 'HEAD'], cwd), await ownCommits(cwd));
 		}
 		return got;
 	};
@@ -151,8 +209,12 @@ const azureReposCodeHost = (referencesAs: ReferencesAs) => async () => {
 				body: shown.description,
 				draft: shown.isDraft,
 				references: referencesShown(shown.description, ado.linkedWorkItems(pull.id)),
-				comments: shown.comments
+				comments: ado.conversation(pull.id)
 			});
+		},
+		bench: {
+			give: (pull: Pull, given: Given) => Promise.resolve(giveOnAzure(ado, pull, given)),
+			thread: (pull: Pull, id: string) => Promise.resolve(ado.repliesIn(pull.id, threadOf(id)))
 		},
 		close: () => rm(base, { recursive: true, force: true })
 	};
@@ -171,4 +233,12 @@ describe('AzureReposCodeHost meets the Code host contract', { timeout: 30_000 },
 
 describe('AzureReposCodeHost meets the nightjarDrafts contract', { timeout: 30_000 }, () => {
 	for (const c of nightjarDraftsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
+});
+
+describe('AzureReposCodeHost meets the feedback contract', { timeout: 30_000 }, () => {
+	for (const c of feedbackContract) it(c.name, () => c.run(azureReposCodeHost('text')));
+});
+
+describe('AzureReposCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
+	for (const c of openPullsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 });
