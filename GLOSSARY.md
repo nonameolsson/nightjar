@@ -87,7 +87,7 @@ What a person or a check said on a Feature's draft pull request that Nightjar ma
 _Avoid_: review notes, PR comments, change requests
 
 **Feedback round**:
-A Session that answers the unanswered trusted Feedback on a Feature's open draft pull request, run before the review when the Feature gets the Go again. It goes through the check and its fix rounds and lands as one commit whose `Factory-Feedback` trailer names the Feedback it answered, and Nightjar replies to each one with that commit. A round that fails is thrown away, and the Feature gets needs info.
+A Session that answers the unanswered trusted Feedback on a Feature's open draft pull request, run before the review when the Feature gets the Go again, or under `--watch` and `--once` with no Go when a trusted reviewer requested changes since the branch's last `Factory-Feedback` commit. Such an automatic round's commit names the request in a `Factory-Feedback-Asked` trailer; a pull request gets 5 of them, and after that only a Go starts another round. It goes through the check and its fix rounds and lands as one commit whose `Factory-Feedback` trailer names the Feedback it answered, and Nightjar replies to each one with that commit. A round that fails is thrown away, and the Feature gets needs info.
 _Avoid_: review round, PR fix, follow-up
 
 **Coding agent**:

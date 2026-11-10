@@ -2,13 +2,16 @@
 import { z } from 'zod';
 import { failedCheckBody } from '../check-output.js';
 import type {
+	ChangeRequest,
 	CodeHost,
 	DraftRequest,
 	FailedCheck,
 	Feedback,
 	NightjarDraft,
+	OpenPull,
 	Pull,
-	PullChecks
+	PullChecks,
+	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import { firstLine, type Run } from '../git.js';
@@ -111,6 +114,12 @@ const ReviewSchema = z.looseObject({
 	state: z.string(),
 	submitted_at: z.string().nullable().optional(),
 	author_association: z.string().optional()
+});
+
+const DatedSchema = z.looseObject({ date: z.string() }).nullable().optional();
+
+const PullCommitSchema = z.looseObject({
+	commit: z.looseObject({ message: z.string(), author: DatedSchema, committer: DatedSchema })
 });
 
 const CheckRunSchema = z.looseObject({
@@ -317,6 +326,62 @@ export class GitHubCodeHost implements CodeHost {
 			});
 		}
 		return drafts;
+	}
+
+	// Open pull requests, draft or not, from this repo's own branches that start with `prefix`, oldest first.
+	async openPulls(prefix: string): Promise<OpenPull[]> {
+		const query = new URLSearchParams({ state: 'open', sort: 'created', direction: 'asc' });
+		const raw = await this.api.everyPage(
+			'list the open pull requests',
+			`repos/${this.repo}/pulls?${query.toString()}`,
+			z.array(ListedPullSchema),
+			(page) => page
+		);
+		const own = (full: string | undefined) => full?.toLowerCase() === this.repo.toLowerCase();
+		const found: OpenPull[] = [];
+		for (const p of raw) {
+			if (!p.head.ref.startsWith(prefix) || !own(p.head.repo?.full_name)) continue;
+			const pull = toPull(p);
+			found.push({
+				pull,
+				branch: p.head.ref,
+				body: p.body ?? '',
+				commits: await this.commits(pull),
+				changesRequested: await this.changesRequested(pull)
+			});
+		}
+		return found;
+	}
+
+	// GitHub lists at most 250 commits of a pull request, oldest first; each is dated by its committer.
+	private async commits(pull: Pull): Promise<PullCommit[]> {
+		const n = String(pull.id);
+		const raw = await this.api.everyPage(
+			`list the commits of pull request #${n}`,
+			`repos/${this.repo}/pulls/${n}/commits`,
+			z.array(PullCommitSchema),
+			(page) => page
+		);
+		return raw.map(({ commit }) => ({
+			message: commit.message,
+			at: commit.committer?.date ?? commit.author?.date ?? ''
+		}));
+	}
+
+	private async changesRequested(pull: Pull): Promise<ChangeRequest[]> {
+		const n = String(pull.id);
+		const raw = await this.api.everyPage(
+			`list the reviews of pull request #${n}`,
+			`repos/${this.repo}/pulls/${n}/reviews`,
+			z.array(ReviewSchema),
+			(page) => page
+		);
+		const found: ChangeRequest[] = [];
+		for (const r of raw.filter((r) => r.state === 'CHANGES_REQUESTED')) {
+			const { id, author, at, trusted } = await this.said('review', r.id, r, r.submitted_at ?? '');
+			found.push({ id, author, at, trusted });
+		}
+		return found;
 	}
 
 	// The check runs and commit statuses on `sha`.

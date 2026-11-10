@@ -1,12 +1,12 @@
 // A Feedback round: one Session that answers the trusted feedback on a Feature's open draft pull request, the check and its fix rounds, and one commit whose trailer names what it answered.
 import type { RunCheck } from './check.js';
-import type { CodeHost, Feedback, Pull } from './code-host.js';
+import type { ChangeRequest, CodeHost, Feedback, OpenPull, Pull, PullCommit } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
 import type { Allowance, Entry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
-import type { Worktree } from './worktree.js';
+import { FEEDBACK_ASKED_TRAILER, FEEDBACK_TRAILER, trailersOf, type Worktree } from './worktree.js';
 
 // A piece of feedback the round did not answer, and why.
 export interface Unanswered {
@@ -64,6 +64,8 @@ export interface FeedbackRoundContext {
 	readonly fix: (work: FixWork) => Promise<FixEnd>;
 	readonly log: (entry: LogEntry) => void;
 	readonly building: (session: string) => void;
+	// the id of the request for changes that started a round with no Go, which its commit names
+	readonly asked?: string;
 }
 
 const NONE: FeedbackRoundEnd = { kind: 'none' };
@@ -171,7 +173,7 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 	}
 	const summary = [got.summary, ...fixed.summaries].join('\n\n');
 	const ids = yes.map((f) => f.id);
-	const commit = await tree.commitFeedback(ids, summary, got.sessionId);
+	const commit = await tree.commitFeedback(ids, summary, got.sessionId, ctx.asked);
 	if (commit === null) return failed('it said it answered feedback but changed no file');
 	ctx.say(`${name}: ${commit} answers ${ids.join(', ')}`);
 	return {
@@ -181,6 +183,34 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 		answered: yes.map((f) => ({ feedback: f, note: noteOf(f) })),
 		left: todo.filter((f) => !isAnswered(f)).map((f) => ({ feedback: f, why: noteOf(f) }))
 	};
+}
+
+// The most Feedback rounds a request for changes starts on one pull request; after them only a Go starts another.
+export const AUTOMATIC_ROUNDS = 5;
+
+// What a pull request's commits say of its Feedback rounds: when the last one was made, and how many a request for changes started.
+export interface FeedbackHistory {
+	readonly lastAt: string | null;
+	readonly automatic: number;
+}
+
+export function feedbackHistory(commits: readonly PullCommit[]): FeedbackHistory {
+	const rounds = commits.map((c) => ({ at: c.at, trailers: trailersOf(c.message) }));
+	const answered = rounds.filter((c) => c.trailers.has(FEEDBACK_TRAILER));
+	return {
+		lastAt: answered.at(-1)?.at ?? null,
+		automatic: answered.filter((c) => c.trailers.has(FEEDBACK_ASKED_TRAILER)).length
+	};
+}
+
+// The newest trusted request for changes made after the last Feedback round, or after the pull request opened when it has had none; null when there is none. A time that cannot be read is never later.
+export function newRequest(
+	open: Pick<OpenPull, 'commits' | 'changesRequested'>
+): ChangeRequest | null {
+	const { lastAt } = feedbackHistory(open.commits);
+	const since = lastAt === null ? -Infinity : Date.parse(lastAt);
+	const later = open.changesRequested.filter((r) => r.trusted && Date.parse(r.at) > since);
+	return later.at(-1) ?? null;
 }
 
 // One piece of feedback as a line of a list: its id, its author, and where it sits.

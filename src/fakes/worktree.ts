@@ -196,8 +196,8 @@ class MemoryWorktree implements Worktree {
 		);
 
 	// a short id made of the commit's place on the branch, as git's is made of its hash
-	commitFeedback(answered: readonly string[], summary: string, session: string) {
-		const message = feedbackCommitMessage(answered, summary, session);
+	commitFeedback(answered: readonly string[], summary: string, session: string, asked?: string) {
+		const message = feedbackCommitMessage(answered, summary, session, asked);
 		const made = this.commit({ message });
 		return Promise.resolve(made ? `c0ffee${String(this.folder.commits.length)}` : null);
 	}

@@ -5,6 +5,7 @@ import { assignContract } from './assign.js';
 import { codeHostContract, type CodeHostHarness } from './code-host.js';
 import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
+import { openPullsContract } from './open-pulls.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
@@ -36,7 +37,8 @@ describe('runContract', () => {
 			'Tracker ticket counts',
 			'Code host',
 			'Code host Nightjar drafts',
-			'Code host feedback'
+			'Code host feedback',
+			'Code host open pull requests'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -63,13 +65,16 @@ describe('runContract', () => {
 		expect(report.suites[8]?.results.map((r) => r.name)).toEqual(
 			feedbackContract.map((c) => c.name)
 		);
+		expect(report.suites[9]?.results.map((r) => r.name)).toEqual(
+			openPullsContract.map((c) => c.name)
+		);
 		expect(report.failed).toBe(0);
 	});
 
 	it('runs no feedback suite over a Code host without feedback and reply, as a module written before them', async () => {
 		const reads: CodeHostHarness = async () => {
 			const { codeHost, ...rest } = await fakeCodeHostHarness();
-			const { feedback: _a, reply: _b, ...only } = codeHost as FakeCodeHost;
+			const { feedback: _a, reply: _b, openPulls: _c, ...only } = codeHost as FakeCodeHost;
 			return { ...rest, codeHost: only };
 		};
 		const report = await runContract({ codeHostHarness: reads });
@@ -84,8 +89,42 @@ describe('runContract', () => {
 			return { ...subject, codeHost: without };
 		};
 		const report = await runContract({ codeHostHarness: lacks });
-		expect(report.suites.map((s) => s.title)).toEqual(['Code host', 'Code host feedback']);
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Code host',
+			'Code host feedback',
+			'Code host open pull requests'
+		]);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no openPulls suite over a Code host without the method, as a module written before it', async () => {
+		const lacks: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			const { openPulls: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			return { ...subject, codeHost: without };
+		};
+		const report = await runContract({ codeHostHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Code host',
+			'Code host Nightjar drafts',
+			'Code host feedback'
+		]);
+		expect(report.failed).toBe(0);
+	});
+
+	it('names an openPulls that is wrong', async () => {
+		const wrong: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			return {
+				...subject,
+				codeHost: Object.assign(subject.codeHost, { openPulls: () => Promise.resolve([]) })
+			};
+		};
+		const report = await runContract({ codeHostHarness: wrong });
+		const suite =
+			report.suites.find((s) => s.title === 'Code host open pull requests')?.results ?? [];
+		expect(suite).toHaveLength(openPullsContract.length);
+		expect(suite.every((r) => !r.ok)).toBe(true);
 	});
 
 	it('names a nightjarDrafts that is wrong', async () => {
@@ -254,7 +293,8 @@ describe('runContract', () => {
 		expect(report.suites.map((s) => s.title)).toEqual([
 			'Code host',
 			'Code host Nightjar drafts',
-			'Code host feedback'
+			'Code host feedback',
+			'Code host open pull requests'
 		]);
 	});
 

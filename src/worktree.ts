@@ -72,13 +72,18 @@ export function pullFixCommitMessage(round: number, summary: string, session: st
 	return `Fix the Pull checks, round ${String(round)}\n\n${summary.trim()}\n\n${PULL_FIX_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
 }
 
-// The commit of one Feedback round, its trailer naming only the feedback it answered.
+// Names the request for changes that started a Feedback round with no Go; the branch's automatic rounds are counted by it.
+export const FEEDBACK_ASKED_TRAILER = 'Factory-Feedback-Asked';
+
+// The commit of one Feedback round, its trailer naming only the feedback it answered; `asked` is the request for changes that started a round with no Go.
 export function feedbackCommitMessage(
 	answered: readonly string[],
 	summary: string,
-	session: string
+	session: string,
+	asked?: string
 ): string {
-	return `Answer feedback on the pull request\n\n${summary.trim()}\n\n${FEEDBACK_TRAILER}: ${answered.join(', ')}\n${SESSION_TRAILER}: ${session}`;
+	const started = asked === undefined ? '' : `\n${FEEDBACK_ASKED_TRAILER}: ${asked}`;
+	return `Answer feedback on the pull request\n\n${summary.trim()}\n\n${FEEDBACK_TRAILER}: ${answered.join(', ')}${started}\n${SESSION_TRAILER}: ${session}`;
 }
 
 // The feedback ids the values of Factory-Feedback trailers name.
@@ -148,11 +153,12 @@ export interface Worktree {
 	commitPullFix(round: number, summary: string, session: string): Promise<boolean>;
 	// The feedback the branch's own commits answered, as their Factory-Feedback trailers name it.
 	answeredFeedback(): Promise<Set<string>>;
-	// One commit of what a Feedback round left, naming the feedback it answered; its short id, or null when it changed no file.
+	// One commit of what a Feedback round left, naming the feedback it answered and, for a round with no Go, the request for changes that started it; its short id, or null when it changed no file.
 	commitFeedback(
 		answered: readonly string[],
 		summary: string,
-		session: string
+		session: string,
+		asked?: string
 	): Promise<string | null>;
 }
 
@@ -373,11 +379,13 @@ export class GitWorktree implements Worktree {
 	async commitFeedback(
 		answered: readonly string[],
 		summary: string,
-		session: string
+		session: string,
+		asked?: string
 	): Promise<string | null> {
 		await this.git(['add', '-A']);
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return null;
-		await this.git(['commit', '-q', '-m', feedbackCommitMessage(answered, summary, session)]);
+		const message = feedbackCommitMessage(answered, summary, session, asked);
+		await this.git(['commit', '-q', '-m', message]);
 		return (await this.git(['rev-parse', '--short', 'HEAD'])).trim();
 	}
 }

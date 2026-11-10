@@ -212,7 +212,17 @@ const NEXT: Step = { kind: 'next' };
 // A step shown with no round of its own.
 const NO_ROUND = { round: null, rounds: null };
 
-export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promise<FeatureOutcome> {
+// A build with no Go, which a trusted request for changes on the Feature's pull request started: its id, which the Feedback round's commit names.
+export interface Asked {
+	readonly asked: string;
+}
+
+export async function buildFeature(
+	deps: Deps,
+	setup: Setup,
+	id: ItemId,
+	started?: Asked
+): Promise<FeatureOutcome> {
 	const { tracker } = deps;
 	const feature = await tracker.feature(id);
 	const branch = branchFor(feature.id, feature.title);
@@ -271,7 +281,7 @@ export async function buildFeature(deps: Deps, setup: Setup, id: ItemId): Promis
 		await tree.markSetUp();
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
-	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show);
+	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show, started);
 	return run.build();
 }
 
@@ -338,7 +348,8 @@ class FeatureRun {
 		private readonly tickets: Ticket[],
 		private readonly built: Set<ItemId>,
 		private readonly workflow: { readonly name: string; readonly workflow: WorkflowConfig } | null,
-		private readonly show: ShowBuilding
+		private readonly show: ShowBuilding,
+		private readonly started?: Asked
 	) {
 		this.startedAt = deps.now();
 		this.sessionStartedAt = this.startedAt;
@@ -388,7 +399,8 @@ class FeatureRun {
 			allowance: (cap, spent) => deps.spend.allowance(cap, spent),
 			fix: (work) => this.fixFeedback(work),
 			log: (entry) => this.log(entry),
-			building: (session) => this.building(null, 'feedback', session, NO_ROUND)
+			building: (session) => this.building(null, 'feedback', session, NO_ROUND),
+			...(this.started === undefined ? {} : { asked: this.started.asked })
 		});
 		switch (end.kind) {
 			case 'none':

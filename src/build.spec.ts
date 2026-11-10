@@ -22,7 +22,7 @@ import {
 	type Deps,
 	type Setup
 } from './build.js';
-import { pullChecksPass, queue, type QueueDeps } from './queue.js';
+import { dryRun, feedbackPass, pullChecksPass, queue, type QueueDeps } from './queue.js';
 import type {
 	BuildOutcome,
 	BuildRequest,
@@ -220,14 +220,18 @@ function worldOf(o: {
 	});
 	tracker.add({ id: '2', title: 'Share the function', signals: ['ready'] });
 	tracker.add({ id: '3', title: 'Use it in marks', signals: ['ready'], blockedBy: ['2'] });
+	const trees = memoryWorktrees();
+	const host = new FakeCodeHost();
+	// a push brings the branch's commits to the Code host, oldest first
+	host.commitsAt = (folder) => [...trees.messages(folder)].reverse();
 	return {
 		git: o.git,
-		trees: memoryWorktrees(),
+		trees,
 		root,
 		worktrees: join(dir, 'worktrees'),
 		env,
 		tracker,
-		host: new FakeCodeHost(),
+		host,
 		spend: memorySpend(),
 		asked: [],
 		checks: [],
@@ -2966,6 +2970,225 @@ describe('a Feedback round on the draft pull request', () => {
 		};
 		expect(await run(true)).toEqual(await run(false));
 		expect((await run(true)).body).not.toContain('## Feedback');
+	});
+});
+
+describe('a request for changes under --watch', () => {
+	// a day's limit no spec here reaches
+	const roomy = (world: World) => setup(world, { limits: { ...LIMITS, dailyUsd: 1000 } });
+
+	// Feature 1 built into a draft pull request, which leaves it with no Signal; every run after shares the seams, so Session ids never repeat
+	async function opened(world: World) {
+		const d = deps(world);
+		const s = roomy(world);
+		await buildFeature(d, s, '1');
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		world.asked.length = 0;
+		// a run of the queue: --watch stops on its first idle tick, --once after one piece of work
+		const run = async (once = false) => {
+			const stop = new AbortController();
+			const pass = feedbackPass(world.host, (f, asked) => buildFeature(d, s, f.id, { asked }));
+			const q: QueueDeps = {
+				tracker: world.tracker,
+				person: 'ann',
+				build: ({ id }) => buildFeature(d, s, id),
+				status: d.status,
+				now: d.now,
+				say: () => undefined,
+				sleep: () => {
+					stop.abort();
+					return Promise.resolve();
+				},
+				signal: stop.signal,
+				signals: DEFAULT_SIGNAL_NAMES,
+				...(pass === null ? {} : { feedback: pass })
+			};
+			return queue(q, once);
+		};
+		return { pull, run };
+	}
+
+	const rounds = (world: World) => askedOf(world, 'feedback');
+	const newest = (world: World) => world.trees.messages(tree())[0] ?? '';
+	const ask = (world: World, pull: Pull, author = 'ann', trusted = true) =>
+		world.host.requestChanges(pull, { author, trusted, body: `Rename it, says ${author}.` });
+
+	it('starts a Feedback round on a trusted request for changes with no Go given, and its commit names the request', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		const id = ask(world, pull);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+
+		expect(await run()).toBe(130);
+		expect(rounds(world).map((r) => r.feedback.map((f) => f.id))).toEqual([[id]]);
+		expect(newest(world)).toContain(`Factory-Feedback: ${id}\nFactory-Feedback-Asked: ${id}\n`);
+		expect(world.host.pushes).toHaveLength(2);
+		expect(world.host.pulls[0]?.comments.some((c) => c.includes('Answered in'))).toBe(true);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it('starts no second round on the same request, as its commit is later than it', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		ask(world, pull);
+		await run();
+		await run();
+		expect(rounds(world)).toHaveLength(1);
+
+		const again = ask(world, pull);
+		await run();
+		const [, second] = rounds(world);
+		expect(rounds(world)).toHaveLength(2);
+		expect(second?.feedback.map((f) => f.id)).toEqual([again]);
+	});
+
+	it('starts nothing on a request for changes from a reviewer it does not trust', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		ask(world, pull, 'mallory', false);
+
+		expect(await run(true)).toBe(0);
+		expect(world.asked).toEqual([]);
+		expect(world.host.pushes).toHaveLength(1);
+	});
+
+	it('starts nothing on a Feature that carries needs info or working', async () => {
+		for (const signal of ['needsInfo', 'working'] as const) {
+			const world = makeWorld();
+			const { pull, run } = await opened(world);
+			ask(world, pull);
+			await world.tracker.addSignal('1', signal);
+
+			await run();
+			expect(world.asked).toEqual([]);
+		}
+	});
+
+	it('starts nothing on a Feature assigned to someone else', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		ask(world, pull);
+		world.tracker.add({ id: '1', title: 'One escape', assignees: ['bob'], children: ['3', '2'] });
+
+		await run();
+		expect(world.asked).toEqual([]);
+	});
+
+	it('builds a Feature with the Go before one waiting on feedback', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		ask(world, pull);
+		world.tracker.add({
+			id: '10',
+			title: 'Next',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['11']
+		});
+		world.tracker.add({ id: '11', title: 'Ticket 11', signals: ['ready'] });
+
+		await run();
+		expect(world.asked.map((r) => r.kind)).toEqual(['build', 'review', 'feedback', 'review']);
+		expect(world.asked[0]).toMatchObject({ ticket: { id: '11' } });
+	});
+
+	it('starts no sixth automatic round: the Feature gets needs a person and one comment saying why, and a new Go starts the next', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		for (let n = 1; n <= 5; n += 1) {
+			ask(world, pull);
+			expect(await run(true)).toBe(0);
+		}
+		expect(rounds(world)).toHaveLength(5);
+
+		const sixth = ask(world, pull);
+		expect(await run(true)).toBe(0);
+		expect(rounds(world)).toHaveLength(5);
+		expect(world.tracker.signalsOf('1')).toContain('human');
+		const limit = '5 automatic Feedback rounds';
+		const said = () => world.tracker.said('1').filter((c) => c.includes(limit));
+		expect(said()).toHaveLength(1);
+		const [why] = said();
+		expect(why).toContain(`Nightjar did not answer the changes ann asked for on ${pull.url}`);
+		expect(why).toContain('**Next step**');
+
+		await run();
+		expect(said()).toHaveLength(1);
+		expect(rounds(world)).toHaveLength(5);
+
+		await world.tracker.removeSignal('1', 'human');
+		await world.tracker.addSignal('1', 'go');
+		await run(true);
+		expect(rounds(world)).toHaveLength(6);
+		const last = rounds(world).at(-1);
+		expect(last?.feedback.map((f) => f.id)).toEqual([sixth]);
+		expect(newest(world)).not.toContain('Factory-Feedback-Asked');
+	});
+
+	it('counts only the rounds a request for changes started, not those a Go started', async () => {
+		const world = makeWorld();
+		const { pull, run } = await opened(world);
+		for (let n = 1; n <= 5; n += 1) {
+			const body = `Note ${String(n)}.`;
+			world.host.give(pull, { kind: 'comment', author: 'ann', trusted: true, body });
+			await world.tracker.addSignal('1', 'go');
+			await run(true);
+		}
+		ask(world, pull);
+		await run(true);
+		expect(rounds(world)).toHaveLength(6);
+		expect(world.tracker.signalsOf('1')).not.toContain('human');
+	});
+
+	it('lists in the dry run the Features it would build, then those it would answer feedback on', async () => {
+		const world = makeWorld();
+		const { pull } = await opened(world);
+		ask(world, pull);
+		world.tracker.add({
+			id: '10',
+			title: 'Next',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['11']
+		});
+		world.tracker.add({ id: '11', title: 'Ticket 11', signals: ['ready'] });
+		const lines: string[] = [];
+		const say = (line: string) => lines.push(line);
+
+		await dryRun({ tracker: world.tracker, codeHost: world.host, person: 'ann', say });
+		expect(lines).toEqual([
+			'would build #10 Next',
+			`would answer feedback on #1 One escape, on ${pull.url}`
+		]);
+		expect(world.asked).toEqual([]);
+		expect(world.host.pushes).toHaveLength(1);
+	});
+
+	it('leaves out of the dry run a request it does not trust, and says nothing of feedback over a Code host without openPulls', async () => {
+		const world = makeWorld();
+		const { pull } = await opened(world);
+		ask(world, pull, 'mallory', false);
+		const lines: string[] = [];
+		const say = (line: string) => lines.push(line);
+		await dryRun({ tracker: world.tracker, codeHost: world.host, person: 'ann', say });
+		expect(lines).toEqual(['no Feature with the Go is assigned to ann']);
+
+		ask(world, pull);
+		const { openPulls: _gone, ...without } = world.host;
+		lines.length = 0;
+		await dryRun({ tracker: world.tracker, codeHost: without, person: 'ann', say });
+		expect(lines).toEqual(['no Feature with the Go is assigned to ann']);
+	});
+
+	it('has no pass over a Code host without openPulls, or without feedback and reply', () => {
+		const world = makeWorld();
+		const answer = () => Promise.reject(new Error('never'));
+		expect(feedbackPass(world.host, answer)).not.toBeNull();
+		const { openPulls: _a, ...noList } = world.host;
+		expect(feedbackPass(noList, answer)).toBeNull();
+		const { feedback: _b, reply: _c, ...noFeedback } = world.host;
+		expect(feedbackPass(noFeedback, answer)).toBeNull();
 	});
 });
 

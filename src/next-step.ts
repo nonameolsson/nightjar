@@ -78,6 +78,12 @@ export const feedbackStep = (n: SignalNames): NextStep => [
 	'Nightjar goes on from the branch, and answers the feedback no commit has answered yet.'
 ];
 
+// A pull request that has had its automatic Feedback rounds: a request for changes starts no more, and only a Go starts another round.
+export const feedbackLimitStep = (n: SignalNames): NextStep => [
+	'Answer the requests for changes on the pull request yourself, on its branch.',
+	`To have Nightjar answer them, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Only a Go starts another Feedback round on this pull request.`
+];
+
 export const stoppedStep = (n: SignalNames): NextStep => [
 	`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
 ];
