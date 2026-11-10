@@ -51,12 +51,21 @@ describe('GitHubTracker', () => {
 				ok([
 					rawIssue(1, { sub_issues_summary: { total: 2 } }),
 					rawIssue(2, { sub_issues_summary: { total: 0 } }),
-					rawIssue(3, { sub_issues_summary: { total: 1 }, pull_request: {} })
+					rawIssue(3, { sub_issues_summary: { total: 1 }, pull_request: {} }),
+					// a Ticket of a Feature, and an issue whose sub-issues GitHub does not count
+					rawIssue(4, {
+						sub_issues_summary: { total: 0 },
+						parent_issue_url: 'https://api.github.com/repos/o/r/issues/1'
+					}),
+					rawIssue(5)
 				])
 			)
 		);
 		const features = await tracker(gh).assignedFeatures('ann');
-		expect(features).toEqual([{ id: '1', title: 'Issue 1', body: 'the body' }]);
+		expect(features).toEqual([
+			{ id: '1', title: 'Issue 1', body: 'the body' },
+			{ id: '2', title: 'Issue 2', body: 'the body', lone: true }
+		]);
 		expect(Object.fromEntries(calls[0]?.query ?? [])).toMatchObject({
 			assignee: 'ann',
 			labels: DEFAULT_SIGNAL_NAMES.go,
@@ -64,6 +73,37 @@ describe('GitHubTracker', () => {
 			sort: 'created',
 			direction: 'asc'
 		});
+	});
+
+	it('reads a lone issue as its own one Ticket, ready with no ready Signal, with its blockers', async () => {
+		const { gh, calls } = fakeGh(
+			on(
+				'GET',
+				'repos/o/r/issues/9',
+				ok(rawIssue(9, { labels: [{ name: 'factory-go' }], sub_issues_summary: { total: 0 } }))
+			),
+			on('GET', 'repos/o/r/issues/9/dependencies/blocked_by', ok([rawIssue(4)]))
+		);
+		expect(await tracker(gh).tickets('9')).toEqual([
+			{
+				id: '9',
+				title: 'Issue 9',
+				body: 'the body',
+				open: true,
+				signals: ['go', 'ready'],
+				blockedBy: [{ id: '4', open: true }]
+			}
+		]);
+		expect(calls.some((c) => c.path.endsWith('/sub_issues'))).toBe(false);
+	});
+
+	it('says no lone issue when GitHub gives no sub-issue count', async () => {
+		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/issues/9', ok(rawIssue(9))),
+			on('GET', 'repos/o/r/issues/9/sub_issues', ok([]))
+		);
+		expect(await tracker(gh).tickets('9')).toEqual([]);
+		expect((await tracker(gh).feature('9')).lone).toBeUndefined();
 	});
 
 	it('assigns an issue to a person, and fails when GitHub drops the assignee without a word', async () => {
@@ -158,6 +198,7 @@ describe('GitHubTracker', () => {
 
 	it('reads the Tickets in the Feature order, with their Signals and blockers', async () => {
 		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/issues/1', ok(rawIssue(1, { sub_issues_summary: { total: 2 } }))),
 			on(
 				'GET',
 				'repos/o/r/issues/1/sub_issues',
@@ -297,6 +338,7 @@ describe('GitHubTracker', () => {
 		it('reads each Signal from the label of its configured name', async () => {
 			const labels = ['ship-it', 'queued', 'bot-busy', 'bot-asks', 'over-to-you'];
 			const { gh } = fakeGh(
+				on('GET', 'repos/o/r/issues/1', ok(rawIssue(1, { sub_issues_summary: { total: 2 } }))),
 				on(
 					'GET',
 					'repos/o/r/issues/1/sub_issues',
@@ -338,6 +380,7 @@ describe('GitHubTracker', () => {
 
 		it('never reads needs-triage or wontfix, and never sets them', async () => {
 			const { gh, calls } = fakeGh(
+				on('GET', 'repos/o/r/issues/1', ok(rawIssue(1, { sub_issues_summary: { total: 2 } }))),
 				on(
 					'GET',
 					'repos/o/r/issues/1/sub_issues',

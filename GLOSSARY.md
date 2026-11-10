@@ -10,6 +10,10 @@ A command-line tool that builds a repo's Features with nobody at the keyboard: i
 The tracker item that holds a spec and that a person gives the go to build. A role, not a tracker type: in Azure DevOps it may be a Feature, an Epic or a Product Backlog Item.
 _Avoid_: parent issue, epic, story
 
+**Lone issue**:
+A tracker item with no sub-issues, open or closed, and no parent, that has the Go. It is built as a Feature of one Ticket, itself: its body is both the spec and the Ticket.
+_Avoid_: single ticket, standalone issue
+
 **Ticket**:
 One buildable child of a Feature, built as one commit.
 _Avoid_: sub-issue, task, story

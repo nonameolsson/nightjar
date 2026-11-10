@@ -26,6 +26,8 @@ export const IssueSchema = z.looseObject({
 		.optional(),
 	user: z.looseObject({ login: z.string() }).nullable(),
 	sub_issues_summary: z.looseObject({ total: z.int(), completed: z.int().optional() }).optional(),
+	// the issue this one is a sub-issue of; null or left out for an issue with no parent
+	parent_issue_url: z.string().nullable().optional(),
 	// the issues list also returns pull requests, which carry this
 	pull_request: z.unknown().optional()
 });

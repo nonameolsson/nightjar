@@ -376,5 +376,114 @@ export const trackerContract: readonly ContractCase<TrackerHarness>[] = [
 			assert.deepEqual(tracker.reference(id('a')), a);
 			return Promise.resolve();
 		}
+	),
+
+	trackerCase(
+		'lists an issue with no sub-issues as a lone issue, or, when it cannot tell, lists nothing for it',
+		given({
+			items: [
+				{ key: 'lone', title: 'Lone', body: 'Do it.', assignees: [ANN], signals: ['go'] },
+				{ key: 'ready', title: 'Ready', assignees: [ANN], signals: ['go', 'ready'] },
+				{ key: 'feature', title: 'Feature', children: ['owned', 'a'] },
+				// a Ticket of a Feature belongs to it: it never builds alone
+				{ key: 'owned', title: 'Owned', assignees: [ANN], signals: ['go'] },
+				{ key: 'a', title: 'Ticket a' },
+				// a Feature whose sub-issues are all closed is no lone issue
+				{
+					key: 'emptied',
+					title: 'Emptied',
+					assignees: [ANN],
+					signals: ['go'],
+					children: ['done']
+				},
+				{ key: 'done', title: 'Done', open: false },
+				{ key: 'no-go', title: 'No Go', assignees: [ANN] },
+				{ key: 'theirs', title: 'Theirs', assignees: ['bob'], signals: ['go'] }
+			]
+		}),
+		async ({ tracker, id }) => {
+			const listed = await tracker.assignedFeatures(ANN);
+			if (tracker.loneIssues !== true) {
+				assert.deepEqual(
+					listed.map((f) => f.id),
+					[id('emptied')]
+				);
+				return;
+			}
+			assert.deepEqual(listed, [
+				{ id: id('lone'), title: 'Lone', body: 'Do it.', lone: true },
+				{ id: id('ready'), title: 'Ready', body: '', lone: true },
+				{ id: id('emptied'), title: 'Emptied', body: '' }
+			]);
+			assert.deepEqual(await tracker.feature(id('lone')), listed[0]);
+			assert.deepEqual(await tracker.feature(id('emptied')), listed[2]);
+		}
+	),
+
+	trackerCase(
+		"reads a lone issue's one Ticket, itself, ready with or without the ready Signal, with its blockers",
+		given({
+			items: [
+				{
+					key: 'lone',
+					title: 'Lone',
+					body: 'Do it.\n\n**Model:** opus',
+					assignees: [ANN],
+					signals: ['go'],
+					blockedBy: ['open', 'closed']
+				},
+				{ key: 'ready', title: 'Ready', signals: ['go', 'ready'] },
+				{ key: 'open', title: 'Open blocker' },
+				{ key: 'closed', title: 'Closed blocker', open: false }
+			]
+		}),
+		async ({ tracker, id }) => {
+			if (tracker.loneIssues !== true) return;
+			assert.deepEqual(await tracker.tickets(id('lone')), [
+				{
+					id: id('lone'),
+					title: 'Lone',
+					body: 'Do it.\n\n**Model:** opus',
+					open: true,
+					signals: ['go', 'ready'],
+					blockedBy: [
+						{ id: id('open'), open: true },
+						{ id: id('closed'), open: false }
+					]
+				}
+			]);
+			assert.deepEqual(
+				(await tracker.tickets(id('ready')))[0]?.signals,
+				['go', 'ready'],
+				'the ready Signal is not added twice'
+			);
+		}
+	),
+
+	trackerCase(
+		'names the parent of a lone issue that is a sub-issue, and of nothing else',
+		given({
+			items: [
+				{ key: 'feature', title: 'Feature', assignees: [ANN], signals: ['go'], children: ['a'] },
+				{ key: 'a', title: 'Ticket a', assignees: [ANN], signals: ['go'] },
+				{ key: 'lone', title: 'Lone', assignees: [ANN], signals: ['go'] }
+			]
+		}),
+		async ({ tracker, id }) => {
+			if (tracker.loneIssues !== true) return;
+			assert.deepEqual(await tracker.standing(id('a')), {
+				assignees: [ANN],
+				signals: ['go'],
+				parent: id('feature')
+			});
+			assert.deepEqual(await tracker.standing(id('feature')), {
+				assignees: [ANN],
+				signals: ['go']
+			});
+			assert.deepEqual(await tracker.standing(id('lone')), {
+				assignees: [ANN],
+				signals: ['go']
+			});
+		}
 	)
 ];

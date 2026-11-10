@@ -114,7 +114,11 @@ export async function cannotClaim(
 	deps: Pick<QueueDeps, 'tracker' | 'person'>,
 	id: ItemId
 ): Promise<string | null> {
-	const { assignees, signals } = await deps.tracker.standing(id);
+	const { assignees, signals, parent } = await deps.tracker.standing(id);
+	// a Ticket is built by its Feature, so building it alone would build it twice
+	if (parent !== undefined) {
+		return `#${id} is a Ticket of #${parent}, so that Feature owns it and Nightjar leaves it alone. Build #${parent} instead.`;
+	}
 	if (signals.includes('working')) {
 		return `#${id} already carries the working Signal: another run is building it, or one stopped without clearing it. If none is running, take the Signal off and run again.`;
 	}
@@ -359,5 +363,7 @@ export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOu
 export async function dryRun(deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
 	if (features.length === 0) deps.say(none(deps));
-	for (const f of features) deps.say(`would build #${f.id} ${f.title}`);
+	for (const f of features) {
+		deps.say(`would build #${f.id} ${f.title}${f.lone === true ? ' (a lone issue)' : ''}`);
+	}
 }

@@ -95,6 +95,8 @@ To let a Source's Features be found again on your Tracker, give it one more opti
 		featuresFrom: todo('featuresFrom'),
 ```
 
+To let a Tracker build a lone issue (an issue with no sub-issues, open or closed, and no parent) as a Feature of one Ticket, set `loneIssues: true` on it. Then `assignedFeatures` and `feature` list such an issue with `lone: true`; `tickets` returns the issue itself as its one Ticket, ready whether or not it carries the ready Signal; and `standing` gives `parent` for an item with no Tickets of its own that is a Ticket of another. Without `loneIssues` the Tracker lists no such issue and builds nothing for one: say it only when the Tracker can tell whether an issue has sub-issues.
+
 To let a Source with `"go": true` give its Features the Go ([ADR 0003](adr/0003-a-source-may-give-a-standing-go.md)), give the Tracker two more optional methods. Without `assign`, intake and `nightjar doctor` refuse such a Source and name the method. Without `trusts`, they take the owner only from `factory.json`'s `trusted` list.
 
 ```js
