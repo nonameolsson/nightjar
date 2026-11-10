@@ -71,6 +71,13 @@ export const pullChecksStep = (n: SignalNames): NextStep => [
 	`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
 ];
 
+// A Feedback round that was thrown away: its feedback stays unanswered, so the next Go starts a round on it again.
+export const feedbackStep = (n: SignalNames): NextStep => [
+	'Read why above: answer the feedback yourself on the pull request, or make it clear enough to act on there.',
+	featureGo(n),
+	'Nightjar goes on from the branch, and answers the feedback no commit has answered yet.'
+];
+
 export const stoppedStep = (n: SignalNames): NextStep => [
 	`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
 ];

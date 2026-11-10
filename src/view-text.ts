@@ -16,8 +16,9 @@ export const elapsed = (ms: number) => {
 	return `${String(Math.floor(s / 60))}m ${two(s % 60)}s`;
 };
 
-// How a view names a build's step: the step as it is, but for a Pull-check fix round.
-export const stepText = (step: string) => (step === 'pullChecks' ? 'Pull-check fix' : step);
+// How a view names a build's step: the step as it is, but for a Pull-check fix round and a Feedback round.
+export const stepText = (step: string) =>
+	step === 'pullChecks' ? 'Pull-check fix' : step === 'feedback' ? 'Feedback round' : step;
 
 // The words for a Session tried again after a passing fault.
 export const retryText = (retry: { readonly attempt: number; readonly of: number }) =>

@@ -4,6 +4,7 @@ import {
 	codingAgent,
 	type AgentSetup,
 	type CodingAgent,
+	type FeedbackRequest,
 	type FixRequest,
 	type ReviewRequest,
 	type StepRequest
@@ -15,6 +16,7 @@ import {
 	type SessionResult,
 	type Settled
 } from './session.js';
+import { BUILD_TOOLS } from './settings.js';
 import type { Feature, Ticket } from './tracker.js';
 import type { StepConfig } from './workflow.js';
 
@@ -513,6 +515,130 @@ describe('the review', () => {
 	});
 });
 
+const feedbackRequest = (): FeedbackRequest => ({
+	kind: 'feedback',
+	at,
+	sessionId: 's-7',
+	feature,
+	feedback: [
+		{
+			id: 'comment:12',
+			kind: 'comment',
+			author: 'ann',
+			body: 'Name it escapeHtml.',
+			at: '2026-10-31T00:01:00.000Z',
+			trusted: true,
+			path: 'src/marks.ts',
+			line: 3
+		},
+		{
+			id: 'comment:13',
+			kind: 'comment',
+			author: 'ann',
+			body: 'This used to be wrong.',
+			at: '2026-10-31T00:02:00.000Z',
+			trusted: true,
+			path: 'src/old.ts',
+			outdated: true
+		},
+		{
+			id: 'review:4',
+			kind: 'review',
+			author: 'bob',
+			body: 'Add a test.',
+			at: '2026-10-31T00:03:00.000Z',
+			trusted: true
+		}
+	],
+	diff: { text: '+++ b/src/marks.ts', truncated: true },
+	budgetUsd: 15
+});
+
+const answered = {
+	outcome: 'answered',
+	summary: 'Renamed it.',
+	items: [
+		{ feedbackId: 'comment:12', answered: true, note: 'Renamed it.' },
+		{ feedbackId: 'review:4', answered: false, note: 'Which test is a decision for a person.' }
+	],
+	blocker: ''
+};
+
+describe('a Feedback round', () => {
+	it("starts a new Session given each piece of feedback with its place, and the branch's diff", async () => {
+		const { sent, session } = fakeSession(done(answered));
+		await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).feedback(feedbackRequest());
+		const req = sent[0];
+		expect(req?.cwd).toBe('/w/1-one-escape');
+		expect(req?.sessionId).toBe('s-7');
+		expect(req?.resume).toBeUndefined();
+		expect(req?.prompt).toContain(
+			'## `comment:12`: comment by ann, on `src/marks.ts:3`\n\nName it escapeHtml.'
+		);
+		expect(req?.prompt).toContain(
+			'## `comment:13`: comment by ann, on `src/old.ts`, on an earlier version'
+		);
+		expect(req?.prompt).toContain(
+			'## `review:4`: review by bob, on the pull request\n\nAdd a test.'
+		);
+		expect(req?.prompt).toContain('# The Feature: #1 One escape\n\nEscape once.');
+		expect(req?.prompt).toContain("# The branch's diff against origin/main");
+		expect(req?.prompt).toContain('It is cut here; the rest is in git.');
+		expect(req?.prompt).toContain('# Rules of this repo\n\nTabs.');
+		expect(req?.tools).toEqual(BUILD_TOOLS);
+		expect(req?.schema).toHaveProperty('properties.items.items.properties.feedbackId');
+		expect([req?.budgetUsd, req?.minutes]).toEqual([15, 60]);
+	});
+
+	it('reads what it answered and why it left the rest', async () => {
+		const { session } = fakeSession(done(answered));
+		expect(await codingAgent(SETUP, session).feedback(feedbackRequest())).toEqual({
+			kind: 'answered',
+			summary: 'Renamed it.',
+			items: [
+				{ id: 'comment:12', answered: true, note: 'Renamed it.' },
+				{ id: 'review:4', answered: false, note: 'Which test is a decision for a person.' }
+			],
+			sessionId: 's-7',
+			costUsd: 2.5
+		});
+	});
+
+	it('reads a round that reported itself blocked', async () => {
+		const blocked = { outcome: 'blocked', summary: '', items: [], blocker: 'They disagree.' };
+		const { session } = fakeSession(done(blocked));
+		expect(await codingAgent(SETUP, session).feedback(feedbackRequest())).toMatchObject({
+			kind: 'blocked',
+			blocker: 'They disagree.'
+		});
+	});
+
+	it('fails on an answer in a shape not known', async () => {
+		const { session } = fakeSession(done({ outcome: 'built', summary: 'x', questions: [] }));
+		expect(await codingAgent(SETUP, session).feedback(feedbackRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
+		});
+	});
+
+	it('resumes its Session for a fix round, keeping its answer shape', async () => {
+		const { sent, session } = fakeSession(done(answered));
+		const got = await codingAgent(SETUP, session).fix({
+			kind: 'fix',
+			at,
+			of: { kind: 'feedback' },
+			resume: 's-7',
+			round: 1,
+			tail: 'lint: 1 problem',
+			budgetUsd: 12
+		});
+		expect(got).toMatchObject({ kind: 'fixed', summary: 'Renamed it.' });
+		expect(sent[0]?.resume).toBe('s-7');
+		expect(sent[0]?.prompt).toContain('This is fix round 1 of 3.');
+		expect(sent[0]?.schema).toHaveProperty('properties.items');
+	});
+});
+
 type Call = (agent: CodingAgent) => Promise<{ readonly kind: string; readonly sessionId: string }>;
 
 // Each kind of work, with the Session its request starts or resumes.
@@ -525,6 +651,8 @@ const kinds: [string, Call, string][] = [
 		's-1'
 	],
 	['a Step round', (agent) => agent.step(stepRequest()), 's-1'],
+	['a Feedback round', (agent) => agent.feedback(feedbackRequest()), 's-7'],
+	["a Feedback round's fix round", (agent) => agent.fix(fixRequest({ kind: 'feedback' })), 's-1'],
 	['the review', (agent) => agent.review(reviewRequest()), 's-9']
 ];
 

@@ -47,7 +47,8 @@ echo '{"accessToken":"fake-azure-devops"}'`;
 // does, and each call notes the CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN it ran with.
 // A headless session prints its init line with the skills of FAKE_CLAUDE_SKILLS (comma separated).
 // A session Nightjar starts for a Ticket (it has a session id) writes built.txt, port.txt and login.txt in its
-// folder and answers built, at a cost of $0.50; the review session approves.
+// folder and answers built, at a cost of $0.50; the review session approves. A Feedback round's session (its schema
+// asks for a feedbackId) writes answered.txt and answers the first feedback id its prompt names, as do its fix rounds.
 const CLAUDE = String.raw`#!/bin/bash
 echo "$* [dir=$CLAUDE_CONFIG_DIR token=$CLAUDE_CODE_OAUTH_TOKEN]" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
@@ -62,6 +63,11 @@ case "$*" in
     case "$*" in
       *--session-id*|*--resume*)
         case "$*" in
+          *feedbackId*)
+            echo answered > answered.txt
+            id=""
+            if [[ "$*" =~ (comment|review|check):[0-9]+ ]]; then id="@{BASH_REMATCH[0]}"; fi
+            out="{\"outcome\":\"answered\",\"summary\":\"Answered it.\",\"items\":[{\"feedbackId\":\"$id\",\"answered\":true,\"note\":\"Changed it.\"}],\"blocker\":\"\"}" ;;
           *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
           *)
             echo work > built.txt

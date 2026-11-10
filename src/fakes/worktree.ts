@@ -1,7 +1,10 @@
 // The worktree's in-memory adapter, which the build loop's specs run over in place of real git: a branch is a list of commits, and what a Session leaves is files written to it.
 import {
+	FEEDBACK_TRAILER,
 	PULL_FIX_TRAILER,
 	attemptBranch,
+	feedbackCommitMessage,
+	feedbackIds,
 	folderFor,
 	pullFixCommitMessage,
 	stepCommitMessage,
@@ -181,6 +184,22 @@ class MemoryWorktree implements Worktree {
 
 	commitPullFix(round: number, summary: string, session: string) {
 		return Promise.resolve(this.commit({ message: pullFixCommitMessage(round, summary, session) }));
+	}
+
+	answeredFeedback = () =>
+		Promise.resolve(
+			new Set(
+				this.folder.commits.flatMap((c) =>
+					feedbackIds(trailersOf(c.message).get(FEEDBACK_TRAILER) ?? '')
+				)
+			)
+		);
+
+	// a short id made of the commit's place on the branch, as git's is made of its hash
+	commitFeedback(answered: readonly string[], summary: string, session: string) {
+		const message = feedbackCommitMessage(answered, summary, session);
+		const made = this.commit({ message });
+		return Promise.resolve(made ? `c0ffee${String(this.folder.commits.length)}` : null);
 	}
 
 	discard(before: string, ticket: string) {

@@ -305,6 +305,30 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect((await again.headTrailers()).get('Factory-Pull-Fix')).toBe('2');
 	});
 
+	it('commits a Feedback round naming the feedback it answered, and reads every answered id again in a later run', async () => {
+		const { world, branch, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		expect(await tree.answeredFeedback()).toEqual(new Set());
+		expect(await tree.commitFeedback(['comment:12'], 'Renamed it.', 's2')).toBeNull();
+
+		world.write(tree, 'b.txt');
+		const short = await tree.commitFeedback(['comment:12', 'review:4'], 'Renamed it.', 's2');
+		expect(short).toMatch(/^[0-9a-f]{7,}$/);
+		expect(world.subjects(tree)).toEqual(['Answer feedback on the pull request', 'Share it (#2)']);
+		expect(Object.fromEntries(await tree.headTrailers())).toEqual({
+			'Factory-Feedback': 'comment:12, review:4',
+			'Factory-Session': 's2'
+		});
+		world.write(tree, 'c.txt');
+		await tree.commitFeedback(['check:7'], 'Fixed the test.', 's3');
+		world.personCommit(tree, 'mine.txt');
+
+		const again = await world.open('/unused', world.worktrees, branch, 'main', {});
+		expect(await again.answeredFeedback()).toEqual(new Set(['comment:12', 'review:4', 'check:7']));
+		expect(await again.built()).toEqual(new Set(['2']));
+	});
+
 	it("reads the head commit's trailers, and none from a person's own commit", async () => {
 		const { world, tree } = await fresh();
 		world.write(tree, 'a.txt');

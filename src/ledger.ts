@@ -13,7 +13,7 @@ const EntrySchema = z.looseObject({
 	feature: z.union([z.string(), z.int()]),
 	ticket: z.union([z.string(), z.int()]).nullable(),
 	branch: z.string(),
-	step: z.enum(['build', 'fix', 'review', 'step', 'pullChecks']),
+	step: z.enum(['build', 'fix', 'review', 'step', 'pullChecks', 'feedback']),
 	session: z.string(),
 	costUsd: z.number(),
 	outcome: z.string(),

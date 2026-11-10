@@ -16,6 +16,9 @@ export const STEP_TRAILER = 'Factory-Step';
 // Counts the Pull-check fixes pushed to a branch, so a later run knows how many rounds it had.
 export const PULL_FIX_TRAILER = 'Factory-Pull-Fix';
 
+// Lists the feedback a Feedback round answered, by id; feedback no such trailer names is unanswered.
+export const FEEDBACK_TRAILER = 'Factory-Feedback';
+
 // Names the Session a commit came from, so a later round can resume it.
 export const SESSION_TRAILER = 'Factory-Session';
 
@@ -68,6 +71,19 @@ export function ticketCommitMessage(
 export function pullFixCommitMessage(round: number, summary: string, session: string): string {
 	return `Fix the Pull checks, round ${String(round)}\n\n${summary.trim()}\n\n${PULL_FIX_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
 }
+
+// The commit of one Feedback round, its trailer naming only the feedback it answered.
+export function feedbackCommitMessage(
+	answered: readonly string[],
+	summary: string,
+	session: string
+): string {
+	return `Answer feedback on the pull request\n\n${summary.trim()}\n\n${FEEDBACK_TRAILER}: ${answered.join(', ')}\n${SESSION_TRAILER}: ${session}`;
+}
+
+// The feedback ids the values of Factory-Feedback trailers name.
+export const feedbackIds = (values: string): string[] =>
+	values.split(/[\s,]+/).filter((id) => id !== '');
 
 export interface StepCommit {
 	readonly workflow: string;
@@ -130,6 +146,14 @@ export interface Worktree {
 	pullFixes(): Promise<number>;
 	// One commit of what a Pull-check fix round left, the `round`th; false when it changed no file.
 	commitPullFix(round: number, summary: string, session: string): Promise<boolean>;
+	// The feedback the branch's own commits answered, as their Factory-Feedback trailers name it.
+	answeredFeedback(): Promise<Set<string>>;
+	// One commit of what a Feedback round left, naming the feedback it answered; its short id, or null when it changed no file.
+	commitFeedback(
+		answered: readonly string[],
+		summary: string,
+		session: string
+	): Promise<string | null>;
 }
 
 // The trailers of a commit message: the `Key: value` lines of its last paragraph, by key.
@@ -335,6 +359,26 @@ export class GitWorktree implements Worktree {
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
 		await this.git(['commit', '-q', '-m', pullFixCommitMessage(round, summary, session)]);
 		return true;
+	}
+
+	async answeredFeedback(): Promise<Set<string>> {
+		const out = await this.git([
+			'log',
+			`--format=%(trailers:key=${FEEDBACK_TRAILER},valueonly,unfold)`,
+			`${this.at.base}..HEAD`
+		]);
+		return new Set(feedbackIds(out));
+	}
+
+	async commitFeedback(
+		answered: readonly string[],
+		summary: string,
+		session: string
+	): Promise<string | null> {
+		await this.git(['add', '-A']);
+		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return null;
+		await this.git(['commit', '-q', '-m', feedbackCommitMessage(answered, summary, session)]);
+		return (await this.git(['rev-parse', '--short', 'HEAD'])).trim();
 	}
 }
 

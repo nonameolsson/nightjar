@@ -61,6 +61,21 @@ describe('fileSpend', () => {
 		expect(builtOn(path, morning)).toBe(0);
 	});
 
+	it('reads back a Feedback round as its own kind of work, and counts it in the day', () => {
+		const path = join(dir, 'runs.jsonl');
+		const morning = new Date(2026, 9, 30, 8, 0);
+		const round: Entry = {
+			...entry(morning, 2.5),
+			ticket: null,
+			step: 'feedback',
+			session: 'session-3',
+			outcome: 'answered 1 of 2'
+		};
+		fileSpend(path).record(round);
+		expect(fileSpend(path).entries()).toEqual([round]);
+		expect(fileSpend(path).today(morning)).toBe(2.5);
+	});
+
 	it('counts a line written when ids were numbers', () => {
 		const path = join(dir, 'runs.jsonl');
 		const now = new Date(2026, 9, 30, 8, 0);

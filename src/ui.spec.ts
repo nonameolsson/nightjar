@@ -323,6 +323,35 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('line 5\n');
 	});
 
+	it('shows a Feedback round while it runs, and what it has cost so far', async () => {
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature: '272',
+			ticket: null,
+			branch: 'b',
+			step: 'feedback',
+			session: 'sess',
+			costUsd: 2.25,
+			outcome: 'answered 1 of 1'
+		});
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: null,
+			step: 'feedback',
+			round: 1,
+			rounds: 3,
+			session: 'sess',
+			startedAt: '2026-10-30T06:48:00.000Z'
+		});
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('Feedback round, round 1 of 3');
+		expect(page).toContain('$2.25');
+	});
+
 	it('shows a Pull-check fix round while it runs, and what it has cost so far', async () => {
 		record(ledgerFile(), {
 			at: at.toISOString(),

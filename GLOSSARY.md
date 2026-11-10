@@ -82,12 +82,20 @@ _Avoid_: repo host, forge, remote
 The checks the Code host runs on a draft pull request's head commit, in its own environment, apart from the repo's check. They can fail where the repo's check passed.
 _Avoid_: CI, pipeline, status, build
 
+**Feedback**:
+What a person or a check said on a Feature's draft pull request that Nightjar may answer: a review comment, on a line or in the conversation, a review with a body, or a failed check on the head commit. Its id carries its kind (`comment:123`, `review:45`, `check:678`). Feedback from an author Nightjar does not trust never reaches the Coding agent, and Nightjar's own words, which end with its footer, are never feedback. It is answered once a `Factory-Feedback` trailer on the branch names it.
+_Avoid_: review notes, PR comments, change requests
+
+**Feedback round**:
+A Session that answers the unanswered trusted Feedback on a Feature's open draft pull request, run before the review when the Feature gets the Go again. It goes through the check and its fix rounds and lands as one commit whose `Factory-Feedback` trailer names the Feedback it answered, and Nightjar replies to each one with that commit. A round that fails is thrown away, and the Feature gets needs info.
+_Avoid_: review round, PR fix, follow-up
+
 **Coding agent**:
 The program that builds one Ticket in the Feature's worktree, in a Session Nightjar starts and ends; today only Claude Code. It edits files and runs the commands it is allowed, and never commits, pushes or touches the Tracker: Nightjar does that.
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
+One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Feedback round, or the review. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
 **Adapter**:
