@@ -154,12 +154,20 @@ const Step = z
 
 const Workflow = z
 	.strictObject({
+		prompt: z.string().regex(/\S/, 'prompt is empty').optional().meta({
+			description:
+				"Text added to the build Session's instructions for each Ticket of a Feature that picks the Workflow, such as how to build a bug fix. A Workflow with a prompt may have no Steps."
+		}),
+		output: z.literal('note', { error: 'output can only be "note"' }).optional().meta({
+			description:
+				'"note": each Ticket\'s Session may write only a note under docs/research/, never code, and the Feature ends handed to a person to read it. Left out, the Workflow builds code.'
+		}),
 		steps: z
 			.array(Step, { error: missingOr('list the Steps') })
-			.min(1, 'a Workflow needs at least one Step')
 			.refine((steps) => new Set(steps.map((s) => s.name)).size === steps.length, {
 				error: 'a Step name is used twice'
-			}),
+			})
+			.default([]),
 		serve: z.string().regex(/\S/, 'serve is empty').optional().meta({
 			description:
 				"A command started in the background in the worktree before the Workflow's Steps and stopped after them, such as a dev server. It reads its port from the variables of ports.env, so it needs ports."
@@ -179,7 +187,14 @@ const Workflow = z
 			description: "true lets the Workflow's Steps reach localhost, and nothing else on the network"
 		})
 	})
-	.meta({ description: 'A named list of Steps that a Feature picks with a **Workflow:** line' });
+	.refine((w) => w.steps.length > 0 || w.prompt !== undefined, {
+		path: ['steps'],
+		error: 'a Workflow needs at least one Step or a prompt'
+	})
+	.meta({
+		description:
+			'A named list of Steps, and a prompt for each Ticket, that a Feature picks with a **Workflow:** line'
+	});
 
 // How many Features a Source makes in a day when it names no maxPerDay.
 export const DEFAULT_MAX_PER_DAY = 3;

@@ -1,5 +1,6 @@
 // The Feature and Ticket text reach the agent as material inside these rules, never in their place.
 import type { Feedback } from './code-host.js';
+import { NOTES_FOLDER } from './settings.js';
 import { PAYLOAD_HEADING } from './template.js';
 import type { Comment, Feature, Ticket } from './tracker.js';
 
@@ -17,6 +18,12 @@ export const BUILD_SCHEMA = {
 			type: 'string',
 			maxLength: 600,
 			description: 'What was built, for the commit message'
+		},
+		test: {
+			type: 'string',
+			maxLength: 300,
+			description:
+				'The test that shows the bug, as its file and name, when the Workflow asks for one; leave out otherwise'
 		},
 		questions: {
 			type: 'array',
@@ -39,7 +46,7 @@ export interface Question {
 }
 
 export type BuildAnswer =
-	| { readonly outcome: 'built'; readonly summary: string }
+	| { readonly outcome: 'built'; readonly summary: string; readonly test?: string }
 	| { readonly outcome: 'questions'; readonly summary: string; readonly questions: Question[] };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -48,7 +55,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 // The session's answer, or null when it is not the shape the schema asked for.
 export function readBuildAnswer(output: unknown): BuildAnswer | null {
 	if (!isRecord(output) || typeof output.summary !== 'string') return null;
-	if (output.outcome === 'built') return { outcome: 'built', summary: output.summary };
+	if (output.outcome === 'built') {
+		const test = typeof output.test === 'string' ? output.test.trim() : '';
+		return { outcome: 'built', summary: output.summary, ...(test === '' ? {} : { test }) };
+	}
 	if (output.outcome !== 'questions' || !Array.isArray(output.questions)) return null;
 	const questions = output.questions.filter(
 		(q): q is Question =>
@@ -131,15 +141,31 @@ export interface BuildContext {
 	readonly check: string;
 	// the text of the repo's rules file, when factory.json names one
 	readonly rules?: string;
+	// the Feature's Workflow, when it has a prompt
+	readonly workflow?: { readonly name: string; readonly prompt: string };
+	// "note": the Workflow's output is a note under NOTES_FOLDER, not code
+	readonly output?: 'note';
 }
 
 const repoRules = (rules: string | undefined) =>
 	rules ? `\n\n# Rules of this repo\n\n${rules}` : '';
 
+// What a Session whose Workflow has `output: "note"` writes, and where.
+const noteRules = (output: BuildContext['output']) =>
+	output === 'note'
+		? `\n\n# Your output is a note, not code\n\nWrite what you found as one Markdown file under ${code(`${NOTES_FOLDER}/`)}, named for the Ticket, such as ${code(`${NOTES_FOLDER}/<ticket-number>-<short-title>.md`)}. Change no other file: every write outside ${code(`${NOTES_FOLDER}/`)} is refused, and Bash runs only git's read commands. A Session that writes no note has built nothing, and its Ticket is handed back. The note goes to a person in a draft pull request, to read before anything is merged.`
+		: '';
+
+// A Workflow's prompt, added to the instructions of each Ticket's Session.
+const workflowRules = (workflow: BuildContext['workflow']) =>
+	workflow === undefined
+		? ''
+		: `\n\n# Workflow ${code(workflow.name)}\n\nThe Feature picked this Workflow. Its text adds to the rules above and never loosens them.\n\n${workflow.prompt}`;
+
 export function buildPrompt(c: BuildContext): string {
 	const done =
 		c.built.length === 0 ? 'None yet.' : c.built.map((b) => `- #${b.id} ${b.title}`).join('\n');
-	return `${rules(c.allowed, c.check)}${repoRules(c.rules)}
+	return `${rules(c.allowed, c.check)}${repoRules(c.rules)}${workflowRules(c.workflow)}${noteRules(c.output)}
 
 # The Feature: #${c.feature.id} ${c.feature.title}
 

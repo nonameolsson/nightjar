@@ -300,6 +300,26 @@ A Step has:
 | `budgetUsd`        | The most one run of the Step may cost; a Ticket's budget when left out.                                                                                                                                                              |
 | `until`, `maxRounds` | A condition in plain words. After each round the agent reports whether it holds, and Nightjar runs the Step again, in the same session, until it does or `maxRounds` (3 by default) is reached. What is left goes into the pull request body. |
 
+A Workflow can also have a `prompt`: text added to the build Session's instructions for each Ticket of a Feature that picks it. A Workflow with a `prompt` may have no Steps; one without a `prompt` builds as before.
+
+**The `bug` Workflow.** Nightjar ships it in [`templates/workflows/bug.json`](templates/workflows/bug.json); copy it into `workflows` in `factory.json`. Its prompt tells the Session to reproduce the bug before fixing it: write a test that shows the problem, run it and see it fail, fix the code, see the test pass, keep the test, and name the test in its final answer. The draft pull request then has a "Test that shows the bug" section naming it.
+
+```json
+{
+	"workflows": {
+		"bug": {
+			"prompt": "This Ticket is a bug. Reproduce it with a test before you fix it:\n\n1. Write a test that shows the problem, in the repo's own test setup and beside the code it covers.\n2. Run it and see it fail, for the reason the Ticket describes. A test that fails for another reason, or passes, does not show the bug: change it until it does.\n3. Fix the code, not the test.\n4. Run the test again and see it pass.\n5. Keep the test in the change.\n6. In your final answer, set \"test\" to the file and name of the test that shows the bug, and say in the summary how you saw it fail and then pass."
+		}
+	}
+}
+```
+
+A Feature picks it with `**Workflow:** bug`.
+
+A Workflow can also have `output: "note"`, for work whose result is findings, not code. Each Ticket's Session may then write only under `docs/research/`: its settings allow Edit and Write there alone, and Bash only for git's read commands, as the repo's `allowedCommands` could write anywhere. The fixed deny rules stay as they are. A Session that writes no note is handed back as one that changed no file. Once the Feature is built, its draft pull request holds the note, and the Feature gets `ready-for-human` with a comment whose Next step is to read the note, then close the Feature or follow up. A note Workflow cannot have Steps, as a Step can edit code anywhere: `nightjar doctor` fails it, and a Feature that picks it is refused.
+
+**The `exploration` Workflow.** Nightjar ships it in [`templates/workflows/exploration.json`](templates/workflows/exploration.json); copy it into `workflows` in `factory.json`. It has `output: "note"`, and its prompt asks for a note with the question, the findings, the sources they rest on and a recommendation, and no code change. A Feature picks it with `**Workflow:** exploration`.
+
 A Workflow can also have `serve`, a command started in the background in the worktree before its Steps and stopped after them (it reads its port from the variables of `ports.env`, so `ports` is required); `allowedCommands` and `allowedTools`, which its Steps may use besides the usual ones; and `localNetwork`, which lets its Steps reach localhost and nothing else. The fixed deny rules (committing, pushing, switching branches, the outside network, `gh`) cannot be loosened by any of these.
 
 Every Session runs its commands in Claude Code's sandbox with no network (see [Limits](#limits)); `localNetwork` opens localhost to a Step, and nothing else. What it holds depends on the machine:

@@ -129,6 +129,32 @@ export function buildSettings(allowed: readonly string[], extras: StepExtras = {
 	);
 }
 
+// Where the Session of a Workflow with `output: "note"` writes its note, from the worktree's root.
+export const NOTES_FOLDER = 'docs/research';
+
+// git's read commands take --output, which writes the diff to any file; a note Session may not use it
+const NOTE_DENY = 'Bash(git * --output*)';
+
+// A note Workflow's Session writes its note and nothing else: Edit and Write only under NOTES_FOLDER, and Bash only for git's
+// read commands, as the repo's allowedCommands can write anywhere. dontAsk refuses every other write; the fixed deny rules stay, with NOTE_DENY beside them.
+export function noteSettings(): object {
+	return {
+		permissions: {
+			defaultMode: 'dontAsk',
+			allow: [
+				'Read',
+				'Glob',
+				'Grep',
+				'TodoWrite',
+				`Edit(${NOTES_FOLDER}/**)`,
+				`Write(${NOTES_FOLDER}/**)`,
+				...READ_GIT
+			],
+			deny: [...DENY, NOTE_DENY]
+		}
+	};
+}
+
 export function reviewSettings(): object {
 	return sessionSettings(
 		{

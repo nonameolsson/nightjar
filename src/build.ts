@@ -26,11 +26,13 @@ import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
 import type { Serve } from './serve.js';
+import { NOTES_FOLDER } from './settings.js';
 import {
 	featureAfterRunStep,
 	featureStopStep,
 	feedbackStep,
 	nextStepText,
+	noteStep,
 	pullChecksStep,
 	stoppedStep,
 	ticketStep,
@@ -323,6 +325,8 @@ function buildingOf(feature: Feature, now: () => Date): ShowBuilding {
 
 class FeatureRun {
 	private readonly costs: Cost[] = [];
+	// the test each Ticket's Session said shows its bug, for the pull request
+	private readonly tests = new Map<ItemId, string>();
 	private featureComments: Comment[] = [];
 	// the run's Feedback round that landed, whose feedback gets its replies after the push
 	private answered: Extract<FeedbackRoundEnd, { kind: 'answered' }> | null = null;
@@ -357,6 +361,12 @@ class FeatureRun {
 
 	private get aborted() {
 		return this.setup.signal?.aborted === true;
+	}
+
+	// "note" when the Feature's Workflow writes a note under docs/research/, not code
+	private get output(): { readonly output?: 'note' } {
+		const output = this.workflow?.workflow.output;
+		return output === undefined ? {} : { output };
 	}
 
 	async build(): Promise<FeatureOutcome> {
@@ -573,6 +583,9 @@ class FeatureRun {
 			return NEXT;
 		}
 		const ticketComments = await this.trusted(ticket.id);
+		const prompt = this.workflow?.workflow.prompt;
+		const workflow =
+			this.workflow !== null && prompt !== undefined ? { name: this.workflow.name, prompt } : null;
 		const rounds = {
 			round: questionRounds(ticketComments) + 1,
 			rounds: this.setup.limits.questionRounds + 1
@@ -596,6 +609,8 @@ class FeatureRun {
 					featureComments: this.featureComments,
 					ticketComments,
 					built: this.tickets.filter((t) => this.built.has(t.id)),
+					...(workflow === null ? {} : { workflow }),
+					...this.output,
 					budgetUsd
 				});
 			},
@@ -654,7 +669,8 @@ class FeatureRun {
 					before,
 					sessionId,
 					got.summary,
-					got.costUsd + earlierUsd
+					got.costUsd + earlierUsd,
+					got.test
 				);
 		}
 	}
@@ -687,7 +703,8 @@ class FeatureRun {
 		before: string,
 		sessionId: string,
 		built: string,
-		cost: number
+		cost: number,
+		test?: string
 	): Promise<Step> {
 		const { limits, check: command } = this.setup;
 		const first = await this.deps.runCheck(command, this.tree.at.folder, envOf(this.setup));
@@ -698,7 +715,7 @@ class FeatureRun {
 			cap: limits.ticketUsd,
 			spent: cost,
 			check: first,
-			of: { kind: 'build' }
+			of: { kind: 'build', ...this.output }
 		});
 		const { check } = fixed;
 		const summary = [built, ...fixed.summaries].join('\n\n');
@@ -717,6 +734,7 @@ class FeatureRun {
 			return NEXT;
 		}
 		this.built.add(ticket.id);
+		if (test !== undefined) this.tests.set(ticket.id, test);
 		if (this.shown?.kind === 'building') {
 			// no round of its own any more, so it is not counted as another fix round
 			const { retry: _retry, ...shown } = this.shown;
@@ -854,7 +872,12 @@ class FeatureRun {
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
 			paused,
 			workflow,
-			feedback: rounds.rounds === 0 ? null : feedbackSection(rounds, this.unanswered)
+			feedback: rounds.rounds === 0 ? null : feedbackSection(rounds, this.unanswered),
+			note: this.workflow?.workflow.output === 'note' ? this.workflow.name : null,
+			tests: done.flatMap((t) => {
+				const test = this.tests.get(t.id);
+				return test === undefined ? [] : [{ ticket: t.id, test }];
+			})
 		});
 		const pull = await this.openDraft(body);
 		// a lone issue is its own Ticket, so it is named once
@@ -903,8 +926,31 @@ class FeatureRun {
 					next
 				)
 			);
+		} else if (complete && this.workflow?.workflow.output === 'note') {
+			await this.handNote(pull);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
+	private async handNote(pull: Pull): Promise<void> {
+		const id = this.feature.id;
+		const next = noteStep(pull.url);
+		this.deps.status.happened({
+			kind: 'needs-info',
+			feature: id,
+			ticket: null,
+			why: 'its note is for a person to read',
+			next
+		});
+		await this.deps.tracker.addSignal(id, 'human');
+		await this.deps.tracker.comment(
+			id,
+			withNext(
+				`Nightjar wrote a note for this Feature, under \`${NOTES_FOLDER}/\` in ${pull.url}. It holds findings, not code, so it waits for a person to read it.`,
+				next
+			)
+		);
 	}
 
 	// The Go back, so a later run goes on from the branch.
@@ -1400,12 +1446,21 @@ function pullBody(p: {
 	workflow: string | null;
 	// the Feedback section, once the branch has had a Feedback round
 	feedback: string | null;
+	// the tests the Sessions said show a bug, by Ticket
+	tests: readonly { ticket: ItemId; test: string }[];
+	// the name of the Workflow, when its output is a note rather than code
+	note: string | null;
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
 		`Nightjar built ${p.complete ? 'all of' : 'part of'} ${ref(p.feature.id)} ${p.feature.title}.`,
 		`## Built\n\n${p.done.map((t) => `- ${ref(t.id)} ${t.title}`).join('\n')}`
 	];
+	if (p.note !== null) {
+		parts.push(
+			`## A note, not code\n\nThe Workflow \`${p.note}\` writes findings, not code: this pull request holds a note under \`${NOTES_FOLDER}/\`. Read it, then close the Feature or follow up on what it recommends. It is not meant to be merged unread.`
+		);
+	}
 	if (p.red) {
 		parts.push(
 			`## The check fails\n\nAfter ${ref(p.red.ticket)}, \`${p.check}\` still fails after the fix rounds:\n\n\`\`\`\n${p.red.tail}\n\`\`\``
@@ -1416,6 +1471,11 @@ function pullBody(p: {
 		parts.push(
 			`## Paused\n\nThe run paused because ${p.paused}. It goes on from here when the Feature gets the Go again.`
 		);
+	if (p.tests.length > 0) {
+		const many = p.tests.length > 1;
+		const lines = p.tests.map((t) => `- ${ref(t.ticket)}: ${t.test}`).join('\n');
+		parts.push(`## ${many ? 'Tests that show the bugs' : 'Test that shows the bug'}\n\n${lines}`);
+	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.feedback !== null) parts.push(p.feedback);
 	if (p.review !== 'off')
