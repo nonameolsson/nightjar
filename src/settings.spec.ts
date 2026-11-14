@@ -195,8 +195,24 @@ describe('noteSettings', () => {
 		expect(decide(note, 'Bash', 'git commit -m x')).toBe('refused');
 	});
 
-	it('keeps the deny rules as they are and refuses anything not allowed', () => {
-		expect(permissions(noteSettings()).deny).toEqual(permissions(buildSettings([])).deny);
+	it("refuses git's read commands that write a file, as --output does", () => {
+		const note = noteSettings();
+		expect(decide(note, 'Bash', 'git diff HEAD~1')).toBe('allowed');
+		expect(decide(note, 'Bash', 'git diff --output=src/x.ts')).toBe('refused');
+		expect(decide(note, 'Bash', 'git log --output src/x.ts')).toBe('refused');
+		expect(decide(note, 'Bash', 'git show --stat --output=src/x.ts HEAD')).toBe('refused');
+	});
+
+	it('brings no skill or subagent, whose own tools the write limit does not cover', () => {
+		const note = noteSettings();
+		expect(decide(note, 'Skill', 'any')).toBe('refused');
+		expect(decide(note, 'Agent', 'any')).toBe('refused');
+	});
+
+	it('keeps every deny rule the build has and refuses anything not allowed', () => {
+		expect(permissions(noteSettings()).deny).toEqual(
+			expect.arrayContaining(permissions(buildSettings([])).deny)
+		);
 		expect(noteSettings()).toMatchObject({ permissions: { defaultMode: 'dontAsk' } });
 	});
 });
