@@ -302,6 +302,48 @@ export const installsCheck = check({
 	}
 });
 
+// a warning only: a Ticket left carrying working, while its Feature does not, blocks nothing, and the next claim of the Feature clears it. Looks at the person's Features that carry the Go or wait on a person; a Feature being built carries working itself.
+export const leftWorkingCheck = check({
+	name: 'working Signal',
+	needs: ['adapters', 'me', 'person'],
+	unmet: null,
+	run: async ({ adapters, me, person }) => {
+		const { tracker } = adapters;
+		const assignee = person.assignee ?? me;
+		const warn = (detail: string): Line => ({
+			name: 'working Signal',
+			status: 'warn',
+			detail,
+			summary: null
+		});
+		try {
+			const features = new Set<string>();
+			for (const f of await tracker.assignedFeatures(assignee)) features.add(f.id);
+			if (typeof tracker.waitingOn === 'function') {
+				for (const f of await tracker.waitingOn(assignee)) features.add(f.id);
+			}
+			const lines: Line[] = [];
+			for (const feature of features) {
+				if ((await tracker.standing(feature)).signals.includes('working')) continue;
+				for (const ticket of await tracker.tickets(feature)) {
+					// a lone issue is its own Ticket, and has just been seen without working
+					if (ticket.id === feature || !ticket.signals.includes('working')) continue;
+					lines.push(
+						warn(
+							`#${ticket.id} carries the working Signal, but its Feature #${feature} does not. It blocks nothing, and the next claim of #${feature} clears it.`
+						)
+					);
+				}
+			}
+			return { lines };
+		} catch (fault) {
+			return {
+				lines: [warn(`could not look for a Ticket left with the working Signal: ${why(fault)}`)]
+			};
+		}
+	}
+});
+
 const claudeCheck = check({
 	name: 'claude',
 	needs: ['root'],
@@ -464,6 +506,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	codeHostCheck,
 	pullChecksCheck,
 	installsCheck,
+	leftWorkingCheck,
 	claudeCheck,
 	signingCheck,
 	workflowsCheck,
