@@ -294,6 +294,12 @@
 					"description": "The review session's own effort; else the default effort",
 					"type": "string",
 					"pattern": "\\S"
+				},
+				"fixRounds": {
+					"description": "How many Review rounds a build gets: on a complete Feature, while the review says changes, a Session fixes what it found and the review runs again. 2 when left out; 0 keeps the review advisory",
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 5
 				}
 			},
 			"additionalProperties": false
@@ -578,6 +584,10 @@
 				}
 			},
 			"additionalProperties": false
+		},
+		"publish": {
+			"description": "true has Nightjar publish its own draft pull request under --watch once the Feature is complete, its last Review approved, its Pull checks are green and no person has engaged; it never merges one or turns one back into a draft. Off by default, so every pull request stays a draft.",
+			"type": "boolean"
 		}
 	},
 	"required": [

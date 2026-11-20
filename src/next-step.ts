@@ -78,6 +78,12 @@ export const pullChecksStep = (n: SignalNames): NextStep => [
 	`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
 ];
 
+// A Feature whose Review still asks for changes after Nightjar's Review rounds: the issues are the person's now.
+export const reviewStep = (n: SignalNames): NextStep => [
+	"Read the issues above and fix the ones that are right on the branch, or review the pull request: the Review is Nightjar's own and can be wrong.",
+	`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. A new build gets its Review rounds again.`
+];
+
 // A Feedback round that was thrown away: its feedback stays unanswered, so the next Go starts a round on it again.
 export const feedbackStep = (n: SignalNames): NextStep => [
 	'Read why above: answer the feedback yourself on the pull request, or make it clear enough to act on there.',

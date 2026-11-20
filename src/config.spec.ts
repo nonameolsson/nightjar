@@ -90,11 +90,34 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/off/);
 	});
 
+	it('loads how many Review rounds a build gets, from 0 to 5, and refuses any other', () => {
+		write({ ...VALID, review: { fixRounds: 0 } });
+		expect(loadConfig(root)).toMatchObject({ review: { fixRounds: 0 } });
+		write({ ...VALID, review: { fixRounds: 5 } });
+		expect(loadConfig(root)).toMatchObject({ review: { fixRounds: 5 } });
+		for (const fixRounds of [-1, 6, 1.5, '2']) {
+			write({ ...VALID, review: { fixRounds } });
+			expect(refusal()).toMatch(/^factory\.json: review\.fixRounds: /m);
+		}
+	});
+
 	it('loads the Pull-check pass, and leaves it out, so off, when not set', () => {
 		write({ ...VALID, pullChecks: { enabled: true } });
 		expect(loadConfig(root)).toMatchObject({ pullChecks: { enabled: true } });
 		write(VALID);
 		expect(loadConfig(root)).not.toHaveProperty('pullChecks');
+	});
+
+	it('loads publish, and leaves it out, so off, when not set', () => {
+		write({ ...VALID, publish: true });
+		expect(loadConfig(root)).toMatchObject({ publish: true });
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('publish');
+	});
+
+	it('refuses a publish that is not true or false', () => {
+		write({ ...VALID, publish: 'yes' });
+		expect(refusal()).toMatch(/^factory\.json: publish: /m);
 	});
 
 	it("loads the Pull-check pass's round, dollar and minute limits", () => {

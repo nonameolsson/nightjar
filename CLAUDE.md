@@ -10,7 +10,7 @@ Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement c
 
 ## Build, lint, test
 
-Node 24, TypeScript, npm.
+Node 24, TypeScript, npm. `mise.toml` pins Node 24 (`mise trust`, then `mise install`).
 
 - `npm run check`: typecheck, lint, format check, every spec, then the build. Run it before a commit.
 - `npm test`: every spec (Vitest). One file: `npx vitest run src/build.spec.ts`; one test: `npx vitest run src/build.spec.ts -t 'hands back a Ticket'`.
@@ -18,7 +18,7 @@ Node 24, TypeScript, npm.
 - `npm run lint`, `npm run format`, `npm run typecheck`.
 - CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you edit.
 - `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
-- `npm run ui:dev [building|idle|paused|stopped|off]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
+- `npm run ui:dev [building|review-round|idle|paused|stopped|off]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
 
 ## Architecture
 
