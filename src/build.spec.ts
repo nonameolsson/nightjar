@@ -46,7 +46,7 @@ import { memorySpend } from './fakes/spend.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { featureAfterRunStep, nextStepText, noteStep, ticketStep } from './next-step.js';
-import { QUESTIONS_MARK } from './prompt.js';
+import { QUESTIONS_MARK, type Review } from './prompt.js';
 import { publishMarkOf } from './publish.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
@@ -105,7 +105,7 @@ interface World {
 	reviewAgent: (req: ReviewRequest) => ReviewOutcome;
 	// what the scripted agent does in a Review round; the default changes a file and says it fixed the issues
 	reviewRoundAgent: (req: ReviewRoundRequest) => ReviewRoundOutcome;
-	// whether a Review round leaves a changed file; false for one that says it fixed the issues and changed none
+	// whether a Review round leaves a changed file; the default does
 	reviewRoundWrites: boolean;
 	acts: Record<string, Act>;
 	// how many passing failures a 'flaky' Ticket has before it builds
@@ -197,7 +197,7 @@ const answerAll = (req: FeedbackRequest): FeedbackOutcome => ({
 const reviewed = (
 	req: ReviewRequest,
 	verdict: 'approve' | 'changes',
-	issues = [{ file: 'a.ts', line: 2, problem: 'nit' }]
+	issues: Review['issues'] = [{ file: 'a.ts', line: 2, problem: 'nit' }]
 ): ReviewOutcome => ({
 	kind: 'reviewed',
 	review: {
@@ -275,6 +275,7 @@ function worldOf(o: {
 		reviewRoundAgent: (req) => ({
 			kind: 'fixed',
 			summary: 'Fixed what the Review found.',
+			declined: [],
 			sessionId: req.sessionId,
 			costUsd: 2
 		}),
@@ -3358,7 +3359,13 @@ describe('a Review round', () => {
 		const day = world.spend.today(NOW);
 		world.reviewRoundAgent = (req) => {
 			world.checkOk = false;
-			return { kind: 'fixed', summary: 'Escaped once.', sessionId: req.sessionId, costUsd: 2 };
+			return {
+				kind: 'fixed',
+				summary: 'Escaped once.',
+				declined: [],
+				sessionId: req.sessionId,
+				costUsd: 2
+			};
 		};
 		world.fixAgent = (req) => {
 			world.checkOk = true;
@@ -3455,6 +3462,123 @@ describe('a Review round', () => {
 
 		await buildFeature(d, setup(world), '1');
 		expect(kinds(world)).toEqual(['feedback', 'review', 'reviewRound', 'review']);
+	});
+
+	describe('declining an issue', () => {
+		const OTHER = { file: 'README.md', problem: 'The flag is not described.' };
+		const decline = (req: ReviewRoundRequest, ...which: number[]): ReviewRoundOutcome => ({
+			kind: 'fixed',
+			summary: 'Answered the Review.',
+			declined: which.flatMap((n) => {
+				const issue = req.issues[n];
+				return issue === undefined ? [] : [{ ...issue, reason: `Reason ${String(n)}.` }];
+			}),
+			sessionId: req.sessionId,
+			costUsd: 2
+		});
+
+		it('gives the next Review every issue declined, with its reason', async () => {
+			const world = makeWorld();
+			let reviews = 0;
+			world.reviewAgent = (req) =>
+				reviewed(req, (reviews += 1) <= 1 ? 'changes' : 'approve', [ISSUE, OTHER]);
+			world.reviewRoundAgent = (req) => decline(req, 1);
+
+			await buildFeature(deps(world), setup(world), '1');
+			const [first, second] = askedOf(world, 'review');
+			expect(first?.declined).toEqual([]);
+			expect(second?.declined).toEqual([{ ...OTHER, reason: 'Reason 1.' }]);
+		});
+
+		it('keeps what an earlier round declined for every Review after it', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			world.reviewRoundAgent = (req) => decline(req, 0);
+
+			await buildFeature(deps(world), setup(world), '1');
+			const reviews = askedOf(world, 'review');
+			expect(reviews.map((r) => r.declined.length)).toEqual([0, 1, 2]);
+			expect(reviews[2]?.declined.map((d) => d.reason)).toEqual(['Reason 0.', 'Reason 0.']);
+		});
+
+		it('counts per build: a new Go starts with none', async () => {
+			const world = makeWorld();
+			changesFor(world, 1);
+			world.reviewRoundAgent = (req) => decline(req, 0);
+			const d = deps(world);
+			const s = setup(world);
+			await buildFeature(d, s, '1');
+			expect(askedOf(world, 'review')[1]?.declined).toHaveLength(1);
+			world.asked.length = 0;
+			changesFor(world, 1);
+
+			await buildFeature(d, s, '1');
+			expect(askedOf(world, 'review')[0]?.declined).toEqual([]);
+		});
+
+		it('is no failed round when it declines every issue and changes no file: the Review runs again', async () => {
+			const world = makeWorld();
+			changesFor(world, 1);
+			world.reviewRoundWrites = false;
+			world.reviewRoundAgent = (req) => decline(req, 0);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(kinds(world)).toEqual(['build', 'build', 'review', 'reviewRound', 'review']);
+			expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+			expect(world.trees.sides.size).toBe(0);
+			expect(ledger(world).filter((e) => e.step === 'reviewRound')).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).not.toContain('needsInfo');
+		});
+
+		it('is a failed round when it declines only some issues and changes no file', async () => {
+			const world = makeWorld();
+			let reviews = 0;
+			world.reviewAgent = (req) =>
+				reviewed(req, (reviews += 1) <= 9 ? 'changes' : 'approve', [ISSUE, OTHER]);
+			world.reviewRoundWrites = false;
+			world.reviewRoundAgent = (req) => decline(req, 0);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(kinds(world)).toEqual(['build', 'build', 'review', 'reviewRound']);
+			expect(world.trees.sides.has('factory/1-one-escape-attempt-review')).toBe(false);
+			expect(body(world)).not.toContain('Reason 0.');
+		});
+
+		it('commits what a round fixed beside the issues it declined', async () => {
+			const world = makeWorld();
+			let reviews = 0;
+			world.reviewAgent = (req) =>
+				reviewed(req, (reviews += 1) <= 1 ? 'changes' : 'approve', [ISSUE, OTHER]);
+			world.reviewRoundAgent = (req) => decline(req, 1);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(subjects(world)[0]).toBe('Answer the Review, round 1');
+		});
+
+		it('lists the issues declined at the end of the build on the pull request, with their reasons', async () => {
+			const world = makeWorld();
+			let reviews = 0;
+			world.reviewAgent = (req) =>
+				reviewed(req, (reviews += 1) <= 1 ? 'changes' : 'approve', [ISSUE, OTHER]);
+			world.reviewRoundAgent = (req) => decline(req, 0, 1);
+			world.reviewRoundWrites = false;
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).toContain(
+				'Issues declined:\n\n- `src/marks.ts:3`: It escapes twice.\n  Reason: Reason 0.\n- `README.md`: The flag is not described.\n  Reason: Reason 1.'
+			);
+			expect(body(world).indexOf('Issues declined')).toBeGreaterThan(
+				body(world).indexOf('## Review')
+			);
+		});
+
+		it('lists none on a pull request where nothing was declined', async () => {
+			const world = makeWorld();
+			changesFor(world, 1);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).not.toContain('Issues declined');
+		});
 	});
 
 	it('runs on a note Feature, keeping the round to the note', async () => {
@@ -3572,7 +3696,13 @@ describe('a Review round', () => {
 				script: (world) => {
 					world.reviewRoundAgent = (req) => {
 						world.checkOk = false;
-						return { kind: 'fixed', summary: 'Tried.', sessionId: req.sessionId, costUsd: 2 };
+						return {
+							kind: 'fixed',
+							summary: 'Tried.',
+							declined: [],
+							sessionId: req.sessionId,
+							costUsd: 2
+						};
 					};
 				},
 				why: 'still fails after the fix rounds',

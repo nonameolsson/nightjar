@@ -499,6 +499,7 @@ const reviewRequest = (): ReviewRequest => ({
 	sessionId: 's-9',
 	feature,
 	tickets: [ticket, plain],
+	declined: [],
 	budgetUsd: 3
 });
 
@@ -525,6 +526,29 @@ describe('the review', () => {
 		expect(req?.schema).toHaveProperty('properties.verdict');
 		expect([req?.budgetUsd, req?.minutes]).toEqual([3, 10]);
 		expect(req?.log).toBe('/repo/.factory/logs/s-9.jsonl');
+	});
+
+	it('tells the Review which issues were declined before, with their reasons, so it does not raise them blindly', async () => {
+		const { sent, session } = fakeSession(done(verdict));
+		await codingAgent(SETUP, session).review({
+			...reviewRequest(),
+			declined: [
+				{
+					file: 'README.md',
+					problem: 'The flag is not described.',
+					reason: 'The flag is internal.'
+				}
+			]
+		});
+		expect(sent[0]?.prompt).toContain('# Issues declined earlier');
+		expect(sent[0]?.prompt).toContain('- `README.md`: The flag is not described.');
+		expect(sent[0]?.prompt).toContain('Reason: The flag is internal.');
+	});
+
+	it('names no declined issues when there are none', async () => {
+		const { sent, session } = fakeSession(done(verdict));
+		await codingAgent(SETUP, session).review(reviewRequest());
+		expect(sent[0]?.prompt).not.toContain('Issues declined earlier');
 	});
 
 	it('reads the review', async () => {
@@ -688,6 +712,7 @@ const reviewRoundRequest = (over: Partial<ReviewRoundRequest> = {}): ReviewRound
 });
 
 const fixedIt = { outcome: 'fixed', summary: 'Escaped once.', blocker: '' };
+const answering = (issues: unknown[]) => ({ ...fixedIt, issues });
 
 describe('a Review round', () => {
 	it("starts a new Session given each of the Review's issues with its place, and the branch's diff", async () => {
@@ -697,8 +722,8 @@ describe('a Review round', () => {
 		expect(req?.cwd).toBe('/w/1-one-escape');
 		expect(req?.sessionId).toBe('s-11');
 		expect(req?.resume).toBeUndefined();
-		expect(req?.prompt).toContain('- `src/marks.ts:3`: It escapes twice.');
-		expect(req?.prompt).toContain('- `README.md`: The new flag is not described.');
+		expect(req?.prompt).toContain('1. `src/marks.ts:3`: It escapes twice.');
+		expect(req?.prompt).toContain('2. `README.md`: The new flag is not described.');
 		expect(req?.prompt).toContain('# The Feature: #1 One escape\n\nEscape once.');
 		expect(req?.prompt).toContain("# The branch's diff against origin/main");
 		expect(req?.prompt).toContain('It is cut here; the rest is in git.');
@@ -723,8 +748,57 @@ describe('a Review round', () => {
 		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toEqual({
 			kind: 'fixed',
 			summary: 'Escaped once.',
+			declined: [],
 			sessionId: 's-11',
 			costUsd: 2.5
+		});
+	});
+
+	it('asks, for each issue by its number, whether it fixed or declined it, and why a declined one is wrong', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(reviewRoundRequest());
+		expect(sent[0]?.prompt).toContain('decline');
+		expect(sent[0]?.schema).toHaveProperty('properties.issues');
+	});
+
+	it('reads the issues it declined, each with its place and the reason it gave', async () => {
+		const { session } = fakeSession(
+			done(
+				answering([
+					{ issue: 1, outcome: 'fixed', reason: '' },
+					{ issue: 2, outcome: 'declined', reason: 'The flag is internal.' }
+				])
+			)
+		);
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'fixed',
+			declined: [
+				{
+					file: 'README.md',
+					problem: 'The new flag is not described.',
+					reason: 'The flag is internal.'
+				}
+			]
+		});
+	});
+
+	it('counts an issue it does not name as fixed, and ignores a number that is no issue', async () => {
+		const { session } = fakeSession(
+			done(answering([{ issue: 9, outcome: 'declined', reason: 'No such issue.' }]))
+		);
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'fixed',
+			declined: []
+		});
+	});
+
+	it('fails on a declined issue that gives no reason', async () => {
+		const { session } = fakeSession(
+			done(answering([{ issue: 1, outcome: 'declined', reason: '  ' }]))
+		);
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
 		});
 	});
 

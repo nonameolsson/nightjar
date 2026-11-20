@@ -24,7 +24,14 @@ import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
-import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
+import {
+	issueLine,
+	questionRounds,
+	questionsComment,
+	type Declined,
+	type Question,
+	type Review
+} from './prompt.js';
 import type { Serve } from './serve.js';
 import { NOTES_FOLDER } from './settings.js';
 import {
@@ -837,6 +844,7 @@ class FeatureRun {
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
 		let review: Review | 'off' | null = 'off';
 		let open: ReviewLeftOpen | null = null;
+		let declined: readonly Declined[] = [];
 		if (this.setup.review?.enabled !== false) {
 			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
@@ -849,6 +857,7 @@ class FeatureRun {
 				const rounds = await this.reviewRounds(got, done);
 				review = rounds.review;
 				open = rounds.open;
+				declined = rounds.declined;
 				if (rounds.paused !== null) {
 					paused = rounds.paused;
 					await this.pause(paused);
@@ -872,6 +881,7 @@ class FeatureRun {
 			left,
 			red,
 			review,
+			declined,
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
@@ -939,13 +949,14 @@ class FeatureRun {
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
 	}
 
-	private review(done: readonly Ticket[]) {
+	private review(done: readonly Ticket[], declined: readonly Declined[] = []) {
 		return reviewFeature(
 			this.deps,
 			this.setup,
 			this.tree,
 			this.feature,
 			done,
+			declined,
 			progress(this.tickets, this.built, null),
 			this.show,
 			(e) => this.log(e)
@@ -960,9 +971,12 @@ class FeatureRun {
 		readonly review: Review | null;
 		readonly paused: string | null;
 		readonly open: ReviewLeftOpen | null;
+		// the issues the rounds declined, in the order they did
+		readonly declined: readonly Declined[];
 	}> {
 		const { deps } = this;
 		const rounds = this.setup.review?.fixRounds ?? DEFAULT_REVIEW_FIX_ROUNDS;
+		let declined: readonly Declined[] = [];
 		let review = first;
 		let ran = 0;
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
@@ -984,23 +998,27 @@ class FeatureRun {
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
 			});
-			if (end.kind === 'paused') return { review, paused: end.why, open: null };
+			if (end.kind === 'paused') return { review, paused: end.why, open: null, declined };
 			if (end.kind === 'aborted') break;
 			if (end.kind === 'failed') {
 				return {
 					review,
 					paused: null,
-					open: { kind: 'failed', round, why: end.why, side: end.side }
+					open: { kind: 'failed', round, why: end.why, side: end.side },
+					declined
 				};
 			}
 			ran = round;
-			const again = await this.review(done);
-			if (again !== null && 'paused' in again) return { review, paused: again.paused, open: null };
+			declined = [...declined, ...end.declined];
+			const again = await this.review(done, declined);
+			if (again !== null && 'paused' in again) {
+				return { review, paused: again.paused, open: null, declined };
+			}
 			review = again;
 		}
 		const open: ReviewLeftOpen | null =
 			ran > 0 && review?.verdict === 'changes' ? { kind: 'exhausted', rounds: ran } : null;
-		return { review, paused: null, open };
+		return { review, paused: null, open, declined };
 	}
 
 	// A Review round's fix rounds show and are logged as the round they belong to.
@@ -1453,6 +1471,7 @@ async function reviewFeature(
 	tree: Worktree,
 	feature: Feature,
 	built: readonly Ticket[],
+	declined: readonly Declined[],
 	tickets: TicketProgress[],
 	show: ShowBuilding,
 	log: (entry: LogEntry) => void
@@ -1484,6 +1503,7 @@ async function reviewFeature(
 				sessionId,
 				feature,
 				tickets: built,
+				declined,
 				budgetUsd
 			});
 		},
@@ -1542,6 +1562,8 @@ function pullBody(p: {
 	left: readonly Waiting[];
 	red: { ticket: ItemId; tail: string } | null;
 	review: Review | 'off' | null;
+	// the issues the Review rounds declined, with their reasons
+	declined: readonly Declined[];
 	spent: number;
 	costs: readonly Cost[];
 	titleOf: (id: ItemId) => string | undefined;
@@ -1582,10 +1604,15 @@ function pullBody(p: {
 	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.feedback !== null) parts.push(p.feedback);
-	if (p.review !== 'off')
+	if (p.review !== 'off') {
+		const verdict = p.review
+			? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}`
+			: 'The review did not finish.';
+		const declined = p.declined.map((d) => `${issueLine(d)}\n  Reason: ${d.reason}`);
 		parts.push(
-			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
+			`## Review\n\n${verdict}${declined.length === 0 ? '' : `\n\nIssues declined:\n\n${declined.join('\n')}`}`
 		);
+	}
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
 	const approved = p.review !== 'off' && p.review?.verdict === 'approve';
