@@ -17,11 +17,13 @@ import {
 	cannotClaim,
 	dryRun,
 	fixNamed,
+	publishPass,
 	pullChecksPass,
 	pullFixExit,
 	queue,
 	type QueueDeps
 } from './queue.js';
+import { publishMark, type PublishMark } from './publish.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
 
@@ -790,6 +792,33 @@ describe('dryRun', () => {
 	});
 });
 
+describe('dryRun with Publish', () => {
+	it('lists a draft it would publish as it lists feedback it would answer, and publishes nothing', async () => {
+		const w = world();
+		const p = withPublish(w);
+		w.tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const ready = await p.open('20');
+		p.host.setChecks(await p.open('22'), { pending: true, failed: [] });
+		await dryRun({
+			...w.deps,
+			...(w.deps.publish === undefined ? {} : { publish: w.deps.publish })
+		});
+		expect(w.lines).toEqual([
+			'would build #2 Older',
+			'would build #4 Later',
+			`would publish #20 Done 20, on ${ready.url}`
+		]);
+		expect(p.published).toEqual([]);
+		expect(p.draftOf(ready)).toBe(true);
+	});
+
+	it('lists nothing to publish when the pass is off', async () => {
+		const w = world();
+		await dryRun(w.deps);
+		expect(w.lines.some((l) => l.startsWith('would publish'))).toBe(false);
+	});
+});
+
 describe('nightjar <id>', () => {
 	it('reads the Queue and Waiting on you before it builds, the named Feature not in the Queue', async () => {
 		const w = world();
@@ -867,5 +896,314 @@ describe('nightjar <id> with the Pull-check pass', () => {
 		const { pullChecks: _off, ...off } = w.deps;
 		expect(await fixNamed(off, '20')).toBeNull();
 		expect(d.fixed).toEqual([]);
+	});
+});
+
+// Draft pull requests on a fake Code host whose Pull checks, Review mark and people a spec plays, with the Publish pass over it.
+function withPublish(w: ReturnType<typeof world>) {
+	const host = new FakeCodeHost();
+	const pass = publishPass(true, host);
+	if (pass === null) throw new Error('the fake Code host cannot publish');
+	const published: string[] = [];
+	// minutes after the newest pull request opened; the fake has its own clock
+	let minutes = 0;
+	const clock = () => {
+		const opened = Math.max(0, ...host.pulls.map((p) => Date.parse(p.openedAt)));
+		return new Date(opened + minutes * 60_000);
+	};
+	w.deps = {
+		...w.deps,
+		now: clock,
+		publish: {
+			...pass,
+			publish: async (draft) => {
+				w.trail.push(`publish ${String(draft.pull.id)}`);
+				published.push(draft.pull.url);
+				await pass.publish(draft);
+			}
+		}
+	};
+	const open = async (
+		feature: string,
+		{
+			mark = { complete: true, approved: true },
+			checks = { pending: false, failed: [] },
+			ran = true
+		}: {
+			mark?: PublishMark | null;
+			checks?: PullChecks;
+			// whether any Pull check ran on the head commit
+			ran?: boolean;
+		} = {}
+	) => {
+		const branch = `factory/${feature}-done`;
+		await host.push(`/work/${branch}`, branch);
+		const marked = mark === null ? '' : `\n${publishMark(mark)}`;
+		const body = `Nightjar built all of it.\n\n${featureMarker(feature)}${marked}`;
+		const pull = await host.createDraft({ title: 'Done', head: branch, base: 'main', body });
+		host.setChecks(pull, checks, ran);
+		return pull;
+	};
+	const draftOf = (pull: { id: number }) => host.pulls.find((p) => p.id === pull.id)?.draft;
+	return {
+		host,
+		open,
+		published,
+		draftOf,
+		later: (m: number) => {
+			minutes = m;
+		}
+	};
+}
+
+describe('queue --watch with Publish', () => {
+	it('publishes a draft whose Feature was complete, whose last Review approved and whose Pull checks finished green, before it takes the next Feature', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20');
+		await queue(w.deps, false);
+		expect(p.draftOf(pull)).toBe(false);
+		expect(w.lines).toContain(`published ${pull.url}`);
+		expect(work(w.trail)).toEqual([`publish ${String(pull.id)}`, 'build 2', 'build 4']);
+	});
+
+	it('publishes the oldest first, and the next before any Feature', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const first = await p.open('20');
+		const second = await p.open('22');
+		await queue(w.deps, false);
+		expect(p.published).toEqual([first.url, second.url]);
+		expect(work(w.trail).slice(2)).toEqual(['build 2', 'build 4']);
+	});
+
+	it('looks again on each idle tick, so a draft whose Pull checks finish while nothing is queued is published', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const p = withPublish(w);
+		const pull = await p.open('20', { checks: { pending: true, failed: [] } });
+		const { sleep } = w.deps;
+		w.deps = {
+			...w.deps,
+			sleep: (ms, signal) => {
+				p.host.setChecks(pull, { pending: false, failed: [] });
+				return sleep(ms, signal);
+			}
+		};
+		await queue(w.deps, false);
+		expect(p.draftOf(pull)).toBe(false);
+	});
+
+	it.each([
+		['a partial Feature', { mark: { complete: false, approved: true } }],
+		['a last Review that said changes', { mark: { complete: true, approved: false } }],
+		['a body with no mark', { mark: null }],
+		['Pull checks still running', { checks: { pending: true, failed: [] } }],
+		['Pull checks that finished red', { checks: { pending: false, failed: [FAILURE] } }]
+	] as const)('leaves a draft with %s as it is', async (_name, over) => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20', over);
+		await queue(w.deps, false);
+		expect(p.draftOf(pull)).toBe(true);
+		expect(p.published).toEqual([]);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it('leaves a draft a person engaged with, pushed to or closed as it is', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const engaged = await p.open('20');
+		p.host.engage(engaged);
+		const pushed = await p.open('22');
+		p.host.pushedByPerson(pushed);
+		const closed = await p.open('24');
+		p.host.close(closed);
+		await queue(w.deps, false);
+		expect(p.published).toEqual([]);
+		expect(p.draftOf(engaged)).toBe(true);
+		expect(p.draftOf(pushed)).toBe(true);
+	});
+
+	it('waits for Pull checks the Code host has not registered until 10 minutes after the pull request opened, then takes none as green', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20', { ran: false });
+		p.later(9);
+		const seen: (boolean | undefined)[] = [];
+		const { sleep } = w.deps;
+		w.deps = {
+			...w.deps,
+			sleep: (ms, signal) => {
+				seen.push(p.draftOf(pull));
+				p.later(10);
+				return sleep(ms, signal);
+			}
+		};
+		await queue(w.deps, false);
+		expect(seen[0]).toBe(true);
+		expect(p.draftOf(pull)).toBe(false);
+	});
+
+	it('does not wait when Pull checks ran and finished green', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20');
+		p.later(0);
+		await queue(w.deps, false);
+		expect(p.draftOf(pull)).toBe(false);
+	});
+
+	it('publishes with the Pull-check pass off, which it needs no part of', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20');
+		expect(w.deps.pullChecks).toBeUndefined();
+		await queue(w.deps, false);
+		expect(p.draftOf(pull)).toBe(false);
+	});
+
+	it('publishes nothing under --once', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20');
+		await queue(w.deps, true);
+		expect(p.draftOf(pull)).toBe(true);
+		expect(w.built).toEqual(['2']);
+	});
+
+	it('publishes a pull request once, and never makes it a draft again', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20');
+		await queue(w.deps, false);
+		expect(w.sleeps.length).toBe(2);
+		expect(p.published).toEqual([pull.url]);
+		expect(p.draftOf(pull)).toBe(false);
+	});
+
+	it('goes on to the Queue when publishing stops on a fault, saying so, and does not try that pull request again in the run', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const pull = await p.open('20');
+		let tries = 0;
+		const { publish } = w.deps;
+		if (publish === undefined) throw new Error('no publish pass');
+		w.deps = {
+			...w.deps,
+			publish: {
+				...publish,
+				publish: () => {
+					tries += 1;
+					return Promise.reject(new Error('the Code host is down'));
+				}
+			}
+		};
+		await queue(w.deps, false);
+		expect(tries).toBe(1);
+		expect(p.draftOf(pull)).toBe(true);
+		expect(w.built).toEqual(['2', '4']);
+		expect(
+			w.lines.some((l) => l.includes(`could not publish ${pull.url}: the Code host is down`))
+		).toBe(true);
+	});
+
+	it('goes on to the Queue when the Code host cannot list the drafts, saying so', async () => {
+		const w = world();
+		w.deps = {
+			...w.deps,
+			publish: {
+				drafts: () => Promise.reject(new Error('the Code host is down')),
+				publish: () => Promise.reject(new Error('never'))
+			}
+		};
+		await queue(w.deps, false);
+		expect(w.built).toEqual(['2', '4']);
+		expect(w.lines.some((l) => l.includes('the Code host is down'))).toBe(true);
+	});
+});
+
+describe('queue --watch with Publish and the Pull-check pass', () => {
+	// both passes over one Code host
+	function both(w: ReturnType<typeof world>) {
+		const p = withPublish(w);
+		const fixed: string[] = [];
+		w.deps = {
+			...w.deps,
+			pullChecks: {
+				drafts: p.host.nightjarDrafts,
+				fix: (red) => {
+					fixed.push(red.feature);
+					return Promise.resolve({ kind: 'skipped', why: 'a spec' });
+				}
+			}
+		};
+		return { ...p, fixed };
+	}
+
+	it('still fixes a pull request Nightjar published when its Pull checks go red', async () => {
+		const w = world();
+		const p = both(w);
+		w.tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const pull = await p.open('20');
+		const { sleep } = w.deps;
+		w.deps = {
+			...w.deps,
+			sleep: (ms, signal) => {
+				p.host.setChecks(pull, { pending: false, failed: [FAILURE] });
+				return sleep(ms, signal);
+			}
+		};
+		await queue(w.deps, false);
+		expect(p.draftOf(pull)).toBe(false);
+		expect(p.fixed).toEqual(['20']);
+	});
+
+	it('stops once a person engages with it', async () => {
+		const w = world();
+		const p = both(w);
+		w.tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const pull = await p.open('20');
+		const { sleep } = w.deps;
+		w.deps = {
+			...w.deps,
+			sleep: (ms, signal) => {
+				p.host.engage(pull);
+				p.host.setChecks(pull, { pending: false, failed: [FAILURE] });
+				return sleep(ms, signal);
+			}
+		};
+		await queue(w.deps, false);
+		expect(p.fixed).toEqual([]);
+	});
+
+	it('leaves a pull request a person marked ready alone, red or not', async () => {
+		const w = world();
+		const p = both(w);
+		w.tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const pull = await p.open('20', { checks: { pending: false, failed: [FAILURE] } });
+		p.host.markReady(pull);
+		await queue(w.deps, false);
+		expect(p.fixed).toEqual([]);
+		expect(p.published).toEqual([]);
+	});
+});
+
+describe('publishPass', () => {
+	it('is there when factory.json sets publish and the Code host can publish and list its drafts', () => {
+		expect(publishPass(true, new FakeCodeHost())).not.toBeNull();
+	});
+
+	it('is off when factory.json leaves publish out or off', () => {
+		expect(publishPass(undefined, new FakeCodeHost())).toBeNull();
+		expect(publishPass(false, new FakeCodeHost())).toBeNull();
+	});
+
+	it('is off over a Code host without publish or without nightjarDrafts', () => {
+		const { publish: _no, ...noPublish } = new FakeCodeHost();
+		expect(publishPass(true, noPublish)).toBeNull();
+		const { nightjarDrafts: _gone, ...noDrafts } = new FakeCodeHost();
+		expect(publishPass(true, noDrafts)).toBeNull();
 	});
 });

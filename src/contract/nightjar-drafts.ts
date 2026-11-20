@@ -1,6 +1,7 @@
 // The nightjarDrafts contract (docs/custom-adapters.md): run over a Code host that has the optional method.
 import assert from 'node:assert/strict';
 import type { CodeHost, NightjarDraft, Pull } from '../code-host.js';
+import { markPublished, publishedByNightjar } from '../publish.js';
 import type { ContractCase } from './case.js';
 import type { CodeHostHarness, CodeHostSubject, DraftsWorld } from './code-host.js';
 
@@ -8,7 +9,10 @@ type Listing = Omit<CodeHostSubject, 'codeHost' | 'drafts'> & {
 	readonly codeHost: CodeHost & { nightjarDrafts: () => Promise<NightjarDraft[]> };
 	readonly drafts: DraftsWorld;
 	// a pushed branch with a draft pull request on it
-	readonly opened: (branch: string, body?: string) => Promise<Pull>;
+	readonly opened: (
+		branch: string,
+		o?: string | { body?: string; message?: string }
+	) => Promise<Pull>;
 };
 
 function draftsCase(
@@ -23,8 +27,12 @@ function draftsCase(
 				const { codeHost, drafts } = subject;
 				assert.ok(codeHost.nightjarDrafts !== undefined, 'the Code host has nightjarDrafts');
 				assert.ok(drafts !== undefined, 'the harness gives the drafts world');
-				const opened = async (branch: string, body = `Body of ${branch}`) => {
-					await codeHost.push((await subject.commit()).folder, branch);
+				const opened = async (
+					branch: string,
+					o: string | { body?: string; message?: string } = {}
+				) => {
+					const { body = `Body of ${branch}`, message } = typeof o === 'string' ? { body: o } : o;
+					await codeHost.push((await subject.commit(message)).folder, branch);
 					return codeHost.createDraft({ title: branch, head: branch, base: subject.base, body });
 				};
 				await check({
@@ -124,6 +132,64 @@ export const nightjarDraftsContract: readonly ContractCase<CodeHostHarness>[] = 
 			assert.equal((await one(subject, pull)).personEngaged, false);
 			await subject.drafts.engage(pull);
 			assert.equal((await one(subject, pull)).personEngaged, true);
+		}
+	),
+
+	draftsCase(
+		'says when the pull request opened, and how many Pull checks the head commit has: none until the Code host registers one',
+		async (subject) => {
+			const first = await subject.opened('factory/1-a');
+			const second = await subject.opened('factory/2-b');
+			const a = await one(subject, first);
+			const b = await one(subject, second);
+			const opened = (d: NightjarDraft) => {
+				const ms = Date.parse(d.openedAt ?? '');
+				assert.ok(!Number.isNaN(ms), `it says when the pull request opened: ${String(d.openedAt)}`);
+				return ms;
+			};
+			assert.ok(opened(a) <= opened(b), 'the later one opened no sooner');
+			assert.equal(a.checkCount, 0);
+			await subject.drafts.passed(first);
+			assert.equal((await one(subject, first)).checkCount, 1);
+			assert.equal((await one(subject, second)).checkCount, 0);
+			await subject.drafts.checks(second, { pending: true, failed: [] });
+			assert.equal((await one(subject, second)).checkCount, 1);
+		}
+	),
+
+	draftsCase(
+		'gives the commits of its branch, oldest first, each with its whole message',
+		async (subject) => {
+			const built = 'Build #2 Share the function\n\nFactory-Ticket: 2\nFactory-Session: s-1';
+			const pull = await subject.opened('factory/1-a', { message: built });
+			const later = await subject.commit('Fix a typo');
+			await subject.codeHost.push(later.folder, 'factory/1-a');
+			const { commits } = await one(subject, pull);
+			assert.ok(commits !== undefined, 'it lists the commits');
+			assert.ok(commits.length >= 2, `two commits at least; got ${String(commits.length)}`);
+			const [first, last] = [commits.at(-2), commits.at(-1)];
+			assert.equal(first?.message.trim(), built);
+			assert.equal(last?.message.trim(), 'Fix a typo');
+		}
+	),
+
+	draftsCase(
+		'lists a pull request Nightjar published, which its body marks, and leaves out one a person marked ready',
+		async (subject) => {
+			const { codeHost } = subject;
+			// a Code host without the optional method never publishes, so it has none to list
+			if (codeHost.publish === undefined) return;
+			const own = await subject.opened('factory/1-a');
+			const theirs = await subject.opened('factory/2-b');
+			await codeHost.publish(own);
+			await codeHost.editBody(own, markPublished('Body of factory/1-a'));
+			await subject.drafts.ready(theirs);
+			const listedNow = await listed(subject);
+			assert.deepEqual(
+				listedNow.map((d) => d.pull),
+				[own]
+			);
+			assert.ok(publishedByNightjar(listedNow[0]?.body ?? ''));
 		}
 	),
 

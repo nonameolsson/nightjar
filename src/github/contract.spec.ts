@@ -121,6 +121,10 @@ function gitHubDrafts(github: FakeGitHub): DraftsWorld {
 	};
 	return {
 		checks: (pull, checks) => done(() => setChecks(github, pull, checks)),
+		passed: (pull) =>
+			done(() => {
+				github.checkRun(github.headOf(pull.id), { name: 'lint', conclusion: 'success' });
+			}),
 		engage: (pull) => done(() => github.say(pull.id, 'bea', 'Why this change?')),
 		ready: (pull) => done(() => github.markReady(pull.id)),
 		closePull: (pull) => done(() => github.close(pull.id))

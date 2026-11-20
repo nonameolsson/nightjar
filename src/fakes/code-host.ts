@@ -12,6 +12,7 @@ import type {
 	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
+import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
 import { BRANCH_PREFIX } from '../worktree.js';
 
@@ -27,9 +28,16 @@ export interface FakePull extends Pull, DraftRequest {
 	readonly checks: PullChecks;
 	// whether a person other than Nightjar reviewed or commented on it
 	readonly personEngaged: boolean;
+	// when it opened
+	readonly openedAt: string;
+	// how many Pull checks its head commit has; none until the Code host registers some
+	readonly checkCount: number;
 }
 
 const NO_CHECKS: PullChecks = { pending: false, failed: [] };
+
+// the fake's own clock for when a pull request opens: from 31 October 2026, a minute apart
+const openedAfter = (opened: number) => new Date(Date.UTC(2026, 9, 31, 0, opened)).toISOString();
 
 export class FakeCodeHost implements CodeHost {
 	readonly pushes: { readonly folder: string; readonly branch: string }[] = [];
@@ -54,7 +62,11 @@ export class FakeCodeHost implements CodeHost {
 		this.pushes.push({ folder, branch });
 		this.heads.set(branch, this.commitAt(folder, this.pushes.length));
 		this.branchCommits.set(branch, this.dated(branch, this.commitsAt(folder)));
-		const queued = (p: FakePull): FakePull => ({ ...p, checks: { pending: true, failed: [] } });
+		const queued = (p: FakePull): FakePull => ({
+			...p,
+			checks: { pending: true, failed: [] },
+			checkCount: 1
+		});
 		this.pulls = this.pulls.map((p) => (p.open && p.head === branch ? queued(p) : p));
 		return Promise.resolve();
 	};
@@ -76,7 +88,9 @@ export class FakeCodeHost implements CodeHost {
 			references: [],
 			comments: [],
 			checks: NO_CHECKS,
-			personEngaged: false
+			personEngaged: false,
+			openedAt: openedAfter(this.pulls.length),
+			checkCount: 0
 		});
 		return Promise.resolve({ id, url });
 	};
@@ -103,14 +117,18 @@ export class FakeCodeHost implements CodeHost {
 
 	// in the order they were opened, which is the order of their ids
 	nightjarDrafts = (): Promise<NightjarDraft[]> => {
-		const drafts = this.pulls.filter((p) => p.open && p.draft && p.head.startsWith(BRANCH_PREFIX));
-		const listed = drafts.map((p): NightjarDraft => ({
+		const mine = (p: FakePull) =>
+			p.open && p.head.startsWith(BRANCH_PREFIX) && (p.draft || publishedByNightjar(p.body));
+		const listed = this.pulls.filter(mine).map((p): NightjarDraft => ({
 			pull: { id: p.id, url: p.url },
 			branch: p.head,
 			headCommit: this.heads.get(p.head) ?? '',
 			body: p.body,
 			checks: p.checks,
-			personEngaged: p.personEngaged
+			personEngaged: p.personEngaged,
+			openedAt: p.openedAt,
+			checkCount: p.checkCount,
+			commits: this.branchCommits.get(p.head) ?? []
 		}));
 		return Promise.resolve(listed);
 	};
@@ -155,9 +173,21 @@ export class FakeCodeHost implements CodeHost {
 
 	// What the Code host's own runs and a person do to a pull request, which a spec plays.
 
-	// the Pull checks on the pull request's head commit
-	setChecks(pull: Pull, checks: PullChecks): void {
-		this.change(pull.id, () => ({ checks }));
+	// the Pull checks on the pull request's head commit; `ran` false is a head commit the Code host has registered none on
+	setChecks(pull: Pull, checks: PullChecks, ran = true): void {
+		this.change(pull.id, () => ({
+			checks,
+			checkCount: ran ? Math.max(1, checks.failed.length) : 0
+		}));
+	}
+
+	// a person pushes a commit of their own to the pull request's branch
+	pushedByPerson(pull: Pull): void {
+		const found = this.pulls.find((p) => p.id === pull.id);
+		if (found === undefined)
+			throw new Error(`the fake Code host has no pull request ${String(pull.id)}`);
+		const had = this.branchCommits.get(found.head) ?? [];
+		this.branchCommits.set(found.head, [...had, { message: 'Fix a typo', at: this.tick() }]);
 	}
 
 	// a person other than Nightjar reviews or comments

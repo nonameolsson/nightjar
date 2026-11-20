@@ -981,6 +981,8 @@ export class FakeAzureDevOps {
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
 			isDraft: pull.isDraft,
+			// each pull request opens a minute after the one before
+			creationDate: new Date(Date.UTC(2026, 9, 30, 8, pull.pullRequestId)).toISOString(),
 			...(head === undefined ? {} : { lastMergeSourceCommit: { commitId: head } }),
 			reviewers: reviewers.map((r) => ({ ...this.identity(r.person.uniqueName), vote: r.vote })),
 			createdBy: this.identity(this.person),

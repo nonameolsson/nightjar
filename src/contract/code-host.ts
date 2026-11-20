@@ -76,6 +76,8 @@ export interface CodeHostSubject {
 export interface DraftsWorld {
 	// the Pull checks on the pull request's head commit: still running, or finished with these failed
 	readonly checks: (pull: Pull, checks: PullChecks) => Promise<void>;
+	// one Pull check finishes green on the pull request's head commit
+	readonly passed: (pull: Pull) => Promise<void>;
 	// an account other than the one the Adapter is signed in as reviews or comments on it
 	readonly engage: (pull: Pull) => Promise<void>;
 	// a person marks it ready for review

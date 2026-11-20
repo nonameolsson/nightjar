@@ -1,4 +1,5 @@
 // What Publish reads of a pull request (docs/adr/0006): the body Nightjar wrote, never a Signal, so the pull request stays the record.
+import type { NightjarDraft } from './code-host.js';
 
 // What the build that wrote a pull request's body found, as Publish needs it.
 export interface PublishMark {
@@ -22,4 +23,38 @@ export function publishMarkOf(body: string): PublishMark | null {
 	const last = [...body.matchAll(MARK)].at(-1);
 	if (last === undefined) return null;
 	return { complete: last[1] === 'yes', approved: last[2] === 'yes' };
+}
+
+const PUBLISHED = '<!-- nightjar-published -->';
+
+// Whether Nightjar published this pull request itself: a person marking one ready leaves no such mark, so only Nightjar's own Publish keeps the Pull-check pass on it (docs/adr/0004).
+export function publishedByNightjar(body: string): boolean {
+	return body.includes(PUBLISHED);
+}
+
+// The body with the hidden mark that Nightjar took the pull request out of draft.
+export function markPublished(body: string): string {
+	return publishedByNightjar(body) ? body : `${body}\n\n${PUBLISHED}`;
+}
+
+// How long after a pull request opened a head commit with no Pull checks counts as green (docs/adr/0006): a Code host registers its checks a little after the push.
+export const NO_CHECKS_WAIT_MS = 10 * 60_000;
+
+// The commit message carries a trailer of Nightjar's, as every commit it makes does.
+const hasTrailer = (message: string) => /^Factory-[\w-]+: /m.test(message);
+
+// Whether a draft meets the four conditions of Publish: the Feature was complete and the last Review approved (the body's mark), the Pull checks on the head commit finished green, and no person has engaged by reviewing, commenting or pushing.
+export function readyToPublish(draft: NightjarDraft, now: Date): boolean {
+	const mark = publishMarkOf(draft.body);
+	if (mark === null || !mark.complete || !mark.approved) return false;
+	if (draft.personEngaged) return false;
+	// a Code host that does not list the commits cannot say a person did not push
+	if (draft.commits === undefined || draft.commits.some((c) => !hasTrailer(c.message)))
+		return false;
+	const { checks } = draft;
+	if (checks.pending || checks.failed.length > 0) return false;
+	if ((draft.checkCount ?? 0) > 0) return true;
+	// none yet: a Code host that registers its checks late is not mistaken for one with none
+	const opened = Date.parse(draft.openedAt ?? '');
+	return !Number.isNaN(opened) && now.getTime() - opened >= NO_CHECKS_WAIT_MS;
 }
