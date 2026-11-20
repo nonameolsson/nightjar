@@ -27,8 +27,12 @@ The order a Feature's Tickets are built in: their blocking links, then the Featu
 _Avoid_: dependency graph, queue
 
 **Queue**:
-The Features assigned to a person with the Go, oldest first, that Nightjar builds one after another.
+The Features assigned to a person with the Go, oldest first, that Nightjar builds as many at once as the run has Slots.
 _Avoid_: backlog, next up
+
+**Slot**:
+One of a run's places for work on one Feature at a time: its build, a Pull-check fix or a Feedback round. A run has as many as the person sets, one unless they say more, and a Feature is never in two at once.
+_Avoid_: lane, worker, runner, thread
 
 ### Workflows
 
