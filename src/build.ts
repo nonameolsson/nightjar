@@ -1587,11 +1587,14 @@ async function reviewFeature(
 	}
 }
 
+const BLOCKED_FROM_OUTSIDE =
+	", a Ticket outside this Feature: it closes when its Feature's pull request merges. Merge that, then give the Go again.";
+
 // `name` is how the place the list goes names a Ticket: #N on the Tracker, its reference on the Code host.
 function waitingList(left: readonly Waiting[], name: (id: ItemId) => string = hash): string {
 	if (left.length === 0) return 'No Ticket is waiting.';
 	const line = (w: Waiting) =>
-		`- ${name(w.id)} ${w.title}: ${w.why}${w.blocker === undefined ? '' : ` ${name(w.blocker)}`}`;
+		`- ${name(w.id)} ${w.title}: ${w.why}${w.blocker === undefined ? '' : ` ${name(w.blocker)}`}${w.outside ? BLOCKED_FROM_OUTSIDE : ''}`;
 	return `Waiting:\n\n${left.map(line).join('\n')}`;
 }
 

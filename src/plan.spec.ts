@@ -56,3 +56,18 @@ describe('waiting', () => {
 		]);
 	});
 });
+
+describe('waiting on a Ticket outside the Feature', () => {
+	it("marks a blocker that is not among the Feature's Tickets, and only that", () => {
+		const tickets = [
+			ticket(1),
+			ticket(2, { blockedBy: [{ id: '1', open: true }] }),
+			ticket(3, { blockedBy: [{ id: '90', open: true }] })
+		];
+		expect(waiting(tickets, new Set())).toEqual([
+			{ id: '1', title: 'Ticket 1', why: 'not reached' },
+			{ id: '2', title: 'Ticket 2', why: 'blocked by', blocker: '1' },
+			{ id: '3', title: 'Ticket 3', why: 'blocked by', blocker: '90', outside: true }
+		]);
+	});
+});
