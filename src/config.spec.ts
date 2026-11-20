@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, configJsonSchema, loadConfig, loadRules } from './config.js';
+import { ConfigError, configJsonSchemaText, loadConfig, loadRules } from './config.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 
 let root: string;
@@ -553,10 +553,11 @@ describe('sources', () => {
 
 describe('the published JSON Schema', () => {
 	it('is the schema factory.json is validated with (run npm run schema when this fails)', () => {
-		const committed: unknown = JSON.parse(
-			readFileSync(new URL('../schema/factory.schema.json', import.meta.url), 'utf8')
+		const committed = readFileSync(
+			new URL('../schema/factory.schema.json', import.meta.url),
+			'utf8'
 		);
-		expect(committed).toEqual(configJsonSchema());
+		expect(committed).toBe(configJsonSchemaText());
 	});
 });
 

@@ -559,6 +559,11 @@ export function configJsonSchema(): object {
 	return z.toJSONSchema(ConfigSchema, { io: 'input' });
 }
 
+// schema/factory.schema.json as npm run schema writes it, compared as text so the committed file never drifts in key order.
+export function configJsonSchemaText(): string {
+	return `${JSON.stringify(configJsonSchema(), null, '\t')}\n`;
+}
+
 // The repo's CLAUDE.md and AGENTS.md, then the rules file factory.json names, each under its file name; null when there is none.
 // A restricted session loads no CLAUDE.md of its own, so the prompt carries the text.
 export function loadRules(root: string, config: Config): string | null {
