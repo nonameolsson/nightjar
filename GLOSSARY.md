@@ -114,6 +114,10 @@ _Avoid_: bot, AI, model, worker
 One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
+**Logbook**:
+Every Session Nightjar spent on a Feature, and each decision it made between them, in order. It stays on the person's machine.
+_Avoid_: log, run log, build log, history, timeline
+
 **Adapter**:
 The piece that connects Nightjar to one Tracker or one Code host, either built in or a module the repo's config names.
 _Avoid_: plugin, provider, driver, integration

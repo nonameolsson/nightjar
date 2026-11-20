@@ -31,6 +31,7 @@ import { runIntakeCommand } from './intake.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
+import { fileLogbook } from './logbook.js';
 import { claimPorts, portEnv } from './ports.js';
 import {
 	buildNamed,
@@ -250,6 +251,8 @@ export async function runNightjar(
 		runSetup: runCheck,
 		serve: startServe,
 		spend,
+		// written on a terminal or not, as the ledger is
+		logbook: fileLogbook(root),
 		openWorktree,
 		now: () => new Date(),
 		sleep,

@@ -21,6 +21,7 @@ import {
 } from './feedback-round.js';
 import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
+import { noteFor, type Logbook, type Note } from './logbook.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
@@ -121,6 +122,8 @@ export interface Deps {
 	readonly serve: Serve;
 	// records each Session's cost and answers for the caps
 	readonly spend: Spend;
+	// each Feature's Logbook, where every decision between its Sessions is written
+	readonly logbook: Logbook;
 	// opens the Feature's worktree: real git, or in memory
 	readonly openWorktree: OpenWorktree;
 	readonly now: () => Date;
@@ -214,6 +217,11 @@ const NEXT: Step = { kind: 'next' };
 // A step shown with no round of its own.
 const NO_ROUND = { round: null, rounds: null };
 
+// why work a person stopped was thrown away
+const STOPPED = 'stopped by a person';
+
+const haltWhy = (halt: Halt) => (halt.kind === 'paused' ? `paused: ${halt.why}` : STOPPED);
+
 // A build with no Go, which a trusted request for changes on the Feature's pull request started: its id, which the Feedback round's commit names.
 export interface Asked {
 	readonly asked: string;
@@ -229,9 +237,20 @@ export async function buildFeature(
 	const feature = await tracker.feature(id);
 	const branch = branchFor(feature.id, feature.title);
 	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
-	await tracker.addSignal(id, 'working');
-	await tracker.removeSignal(id, 'go');
+	// the Feature's start, before anything else reads the clock
 	const show = buildingOf(feature, deps.now);
+	const note = noteFor(deps.logbook, feature.id, deps.now);
+	const signals = signalsOf(tracker, feature.id, note);
+	const chosen = chooseWorkflow(setup, feature.body);
+	note({
+		kind: 'buildStarted',
+		by: started === undefined ? 'go' : 'feedback',
+		...(started === undefined ? {} : { asked: started.asked }),
+		branch,
+		workflow: chosen.kind === 'workflow' ? chosen.name : null
+	});
+	await signals.on('working');
+	await signals.off('go');
 	const settingUp = (tickets?: TicketProgress[]): Doing =>
 		show({
 			ticket: null,
@@ -243,12 +262,11 @@ export async function buildFeature(
 		});
 	deps.status.doing(settingUp());
 	const tickets = await tracker.tickets(id);
-	const chosen = chooseWorkflow(setup, feature.body);
 	if (chosen.kind === 'refused') {
 		const why = `its Workflow cannot be used: ${chosen.why}`;
 		return needsInfoStop(
 			deps,
-			id,
+			{ id, note, signals },
 			why,
 			`Nightjar built nothing: ${chosen.why}`,
 			waiting(tickets, new Set()),
@@ -269,11 +287,12 @@ export async function buildFeature(
 		const command = setup.setupCommand;
 		deps.say(`${hash(id)}: setup: ${command}`);
 		const got = await deps.runSetup(command, tree.at.folder, envOf(setup));
+		note({ kind: 'setup', command, ok: got.ok });
 		if (!got.ok) {
 			const why = `the setup command \`${command}\` failed`;
 			return needsInfoStop(
 				deps,
-				id,
+				{ id, note, signals },
 				why,
 				`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${got.tail}\n\`\`\``,
 				waiting(tickets, built),
@@ -290,18 +309,38 @@ export async function buildFeature(
 // A Feature stopped before it built anything, with the reason on it; a later Go builds it again.
 async function needsInfoStop(
 	deps: Deps,
-	id: ItemId,
+	of: { readonly id: ItemId; readonly note: Note; readonly signals: FeatureSignals },
 	why: string,
 	comment: string,
 	left: Waiting[],
-	signals: SignalNames
+	names: SignalNames
 ): Promise<FeatureOutcome> {
-	const next = featureStopStep(signals);
+	const { id, note, signals } = of;
+	const next = featureStopStep(names);
 	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
-	await deps.tracker.removeSignal(id, 'working');
-	await deps.tracker.addSignal(id, 'needsInfo');
+	note({ kind: 'handed', to: 'needsInfo', why });
+	await signals.off('working');
+	await signals.on('needsInfo');
 	await deps.tracker.comment(id, withNext(comment, next));
 	return { kind: 'nothing', waiting: left };
+}
+
+// The Signal calls on a Feature and its Tickets, each written to the Feature's Logbook once the Tracker has it; with `ticket`, the Signal is that Ticket's.
+interface FeatureSignals {
+	on(signal: Signal, ticket?: ItemId): Promise<void>;
+	off(signal: Signal, ticket?: ItemId): Promise<void>;
+}
+
+function signalsOf(tracker: Tracker, feature: ItemId, note: Note): FeatureSignals {
+	const set = async (signal: Signal, on: boolean, ticket?: ItemId) => {
+		const item = ticket ?? feature;
+		await (on ? tracker.addSignal(item, signal) : tracker.removeSignal(item, signal));
+		note({ kind: 'signal', signal, on, ...(ticket === undefined ? {} : { ticket }) });
+	};
+	return {
+		on: (signal, ticket) => set(signal, true, ticket),
+		off: (signal, ticket) => set(signal, false, ticket)
+	};
 }
 
 type Building = Extract<Doing, { kind: 'building' }>;
@@ -343,6 +382,9 @@ class FeatureRun {
 	// the reason the Ticket just built failed for, when its failure is lasting
 	private lastFailure: string | null = null;
 	private streak: { readonly ticket: ItemId; readonly why: string }[] = [];
+	// writes the Feature's Logbook, and its Signal calls with it
+	private readonly note: Note;
+	private readonly signals: FeatureSignals;
 
 	constructor(
 		private readonly deps: Deps,
@@ -357,6 +399,8 @@ class FeatureRun {
 	) {
 		this.startedAt = deps.now();
 		this.sessionStartedAt = this.startedAt;
+		this.note = noteFor(deps.logbook, feature.id, deps.now);
+		this.signals = signalsOf(deps.tracker, feature.id, this.note);
 	}
 
 	private get aborted() {
@@ -425,14 +469,16 @@ class FeatureRun {
 			case 'failed': {
 				this.unanswered = end.left;
 				const next = feedbackStep(this.setup.signals);
+				const why = `its Feedback round was thrown away: ${end.why}`;
 				deps.status.happened({
 					kind: 'needs-info',
 					feature: this.feature.id,
 					ticket: null,
-					why: `its Feedback round was thrown away: ${end.why}`,
+					why,
 					next
 				});
-				await deps.tracker.addSignal(this.feature.id, 'needsInfo');
+				this.note({ kind: 'handed', to: 'needsInfo', why });
+				await this.signals.on('needsInfo');
 				await deps.tracker.comment(this.feature.id, withNext(thrownAwayComment(end), next));
 				return NEXT;
 			}
@@ -448,7 +494,8 @@ class FeatureRun {
 				tree: this.tree,
 				building: (ticket, session, rounds, attempt) =>
 					this.building(ticket, 'feedback', session, rounds, attempt),
-				log: (entry) => this.log({ ...entry, step: 'feedback' })
+				log: (entry) => this.log({ ...entry, step: 'feedback' }),
+				note: this.note
 			},
 			o
 		);
@@ -479,6 +526,18 @@ class FeatureRun {
 			tree: this.tree,
 			fix: (work) => this.fixUntilGreen(work),
 			log: (entry) => this.log(entry),
+			verdict: (report, session) =>
+				this.note({
+					kind: 'stepVerdict',
+					workflow: workflow.name,
+					step: report.step.name,
+					verdict: report.state,
+					...(report.why === undefined ? {} : { why: report.why }),
+					...(report.rounds === undefined ? {} : { rounds: report.rounds }),
+					left: [...report.left],
+					...(report.ticket === null ? {} : { ticket: report.ticket }),
+					...(session === undefined ? {} : { session })
+				}),
 			building: (ticket, session, rounds, attempt) =>
 				this.building(ticket, 'step', session, rounds, attempt),
 			dailyPause: () => this.dailyPause(),
@@ -517,8 +576,7 @@ class FeatureRun {
 		kind: TicketHandBack,
 		why: string
 	) {
-		const signal: Signal = kind === 'human' ? 'human' : 'needsInfo';
-		const { tracker } = this.deps;
+		const signal = kind === 'human' ? 'human' : 'needsInfo';
 		const next = ticketStep(this.setup.signals, kind);
 		this.deps.status.happened({
 			kind: 'needs-info',
@@ -527,16 +585,24 @@ class FeatureRun {
 			why,
 			next
 		});
-		const side = await this.tree.discard(before, ticket.id);
+		this.note({ kind: 'handed', to: signal, why, ticket: ticket.id });
+		const side = await this.throwAway(before, ticket.id, why);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
-		await tracker.comment(ticket.id, withNext(`${body}${kept}`, next));
-		await tracker.removeSignal(ticket.id, 'ready');
-		await tracker.addSignal(ticket.id, signal);
+		await this.deps.tracker.comment(ticket.id, withNext(`${body}${kept}`, next));
+		await this.signals.off('ready', ticket.id);
+		await this.signals.on(signal, ticket.id);
 		const i = this.tickets.indexOf(ticket);
 		this.tickets[i] = {
 			...ticket,
 			signals: [...ticket.signals.filter((s) => s !== 'ready'), signal]
 		};
+	}
+
+	// Takes the branch back to `before`; what the Ticket's work left is kept on an attempt branch, which the Logbook names with `why`.
+	private async throwAway(before: string, ticket: ItemId, why: string): Promise<string | null> {
+		const side = await this.tree.discard(before, ticket);
+		if (side !== null) this.note({ kind: 'thrownAway', branch: side, why, ticket });
+		return side;
 	}
 
 	// Remembers how the Ticket ended; three in a row failing for the same lasting reason stop the run.
@@ -557,13 +623,14 @@ class FeatureRun {
 
 	// The Ticket carries the working Signal from just before its build Session starts until it ends any way: built, handed back, paused or stopped.
 	private async buildTicket(ticket: Ticket): Promise<Step> {
+		this.note({ kind: 'ticketStarted', ticket: ticket.id });
 		const before = await this.tree.head();
 		const faults = ticketFaults(ticket.body);
-		if (faults.length === 0) await this.deps.tracker.addSignal(ticket.id, 'working');
+		if (faults.length === 0) await this.signals.on('working', ticket.id);
 		try {
 			return await this.buildWorking(ticket, before, faults);
 		} finally {
-			if (faults.length === 0) await this.deps.tracker.removeSignal(ticket.id, 'working');
+			if (faults.length === 0) await this.signals.off('working', ticket.id);
 		}
 	}
 
@@ -639,10 +706,10 @@ class FeatureRun {
 		switch (got.kind) {
 			case 'aborted':
 				this.log({ ...entry, outcome: 'stopped by a person' });
-				await this.tree.discard(before, ticket.id);
+				await this.throwAway(before, ticket.id, STOPPED);
 				return { kind: 'aborted' };
 			case 'paused':
-				await this.tree.discard(before, ticket.id);
+				await this.throwAway(before, ticket.id, `paused: ${got.why}`);
 				this.log({ ...entry, outcome: `paused: ${got.why}` });
 				return { kind: 'paused', why: got.why };
 			case 'failed':
@@ -720,7 +787,7 @@ class FeatureRun {
 		const { check } = fixed;
 		const summary = [built, ...fixed.summaries].join('\n\n');
 		if (fixed.halt !== undefined) {
-			await this.tree.discard(before, ticket.id);
+			await this.throwAway(before, ticket.id, haltWhy(fixed.halt));
 			return fixed.halt;
 		}
 		if (!(await this.tree.commitTicket(ticket.id, ticket.title, summary, sessionId))) {
@@ -733,6 +800,12 @@ class FeatureRun {
 			);
 			return NEXT;
 		}
+		this.note({
+			kind: 'ticketBuilt',
+			commit: await this.tree.head(),
+			ticket: ticket.id,
+			session: sessionId
+		});
 		this.built.add(ticket.id);
 		if (test !== undefined) this.tests.set(ticket.id, test);
 		if (this.shown?.kind === 'building') {
@@ -760,7 +833,8 @@ class FeatureRun {
 				tree: this.tree,
 				building: (ticket, session, rounds, attempt) =>
 					this.building(ticket, 'fix', session, rounds, attempt),
-				log: (entry, work) => this.log(entry, work)
+				log: (entry, work) => this.log(entry, work),
+				note: this.note
 			},
 			o
 		);
@@ -790,7 +864,7 @@ class FeatureRun {
 		const id = this.feature.id;
 		const left = waiting(this.tickets, this.built);
 		let paused = last.kind === 'paused' ? last.why : null;
-		await tracker.removeSignal(id, 'working');
+		await this.signals.off('working');
 		if (this.aborted || last.kind === 'aborted') {
 			await tracker.comment(
 				id,
@@ -809,14 +883,11 @@ class FeatureRun {
 				waiting: left.length > 0,
 				red: false
 			});
-			this.deps.status.happened({
-				kind: 'needs-info',
-				feature: id,
-				ticket: null,
-				why: last.kind === 'repeated' ? `Tickets keep failing: ${last.why}` : 'it built nothing',
-				next
-			});
-			await tracker.addSignal(id, 'needsInfo');
+			const why =
+				last.kind === 'repeated' ? `Tickets keep failing: ${last.why}` : 'it built nothing';
+			this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
+			this.note({ kind: 'handed', to: 'needsInfo', why });
+			await this.signals.on('needsInfo');
 			await tracker.comment(
 				id,
 				withNext(
@@ -840,7 +911,8 @@ class FeatureRun {
 				done,
 				progress(this.tickets, this.built, null),
 				this.show,
-				(e) => this.log(e)
+				(e) => this.log(e),
+				this.note
 			);
 			if (got !== null && 'paused' in got) {
 				// the pull request's Paused section says why, so it gets no Review section
@@ -906,18 +978,14 @@ class FeatureRun {
 				waiting: left.length > 0,
 				red: red !== null
 			});
-			this.deps.status.happened({
-				kind: 'needs-info',
-				feature: id,
-				ticket: null,
-				why: red
-					? `the check fails after ${hash(red.ticket)}`
-					: last.kind === 'repeated'
-						? `Tickets keep failing: ${last.why}`
-						: waits,
-				next
-			});
-			await tracker.addSignal(id, 'needsInfo');
+			const why = red
+				? `the check fails after ${hash(red.ticket)}`
+				: last.kind === 'repeated'
+					? `Tickets keep failing: ${last.why}`
+					: waits;
+			this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
+			this.note({ kind: 'handed', to: 'needsInfo', why });
+			await this.signals.on('needsInfo');
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
 			await tracker.comment(
 				id,
@@ -936,14 +1004,10 @@ class FeatureRun {
 	private async handNote(pull: Pull): Promise<void> {
 		const id = this.feature.id;
 		const next = noteStep(pull.url);
-		this.deps.status.happened({
-			kind: 'needs-info',
-			feature: id,
-			ticket: null,
-			why: 'its note is for a person to read',
-			next
-		});
-		await this.deps.tracker.addSignal(id, 'human');
+		const why = 'its note is for a person to read';
+		this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
+		this.note({ kind: 'handed', to: 'human', why });
+		await this.signals.on('human');
 		await this.deps.tracker.comment(
 			id,
 			withNext(
@@ -955,7 +1019,8 @@ class FeatureRun {
 
 	// The Go back, so a later run goes on from the branch.
 	private async pause(why: string): Promise<void> {
-		await this.deps.tracker.addSignal(this.feature.id, 'go');
+		this.note({ kind: 'paused', why });
+		await this.signals.on('go');
 		this.deps.say(`paused: ${why}`);
 		this.deps.status.doing({ kind: 'paused', why, until: null });
 	}
@@ -966,14 +1031,17 @@ class FeatureRun {
 		const open = await codeHost.openPull(this.tree.at.branch);
 		if (open) {
 			await codeHost.editBody(open, body);
+			this.note({ kind: 'pullOpened', url: open.url, created: false });
 			return open;
 		}
-		return codeHost.createDraft({
+		const pull = await codeHost.createDraft({
 			title: this.feature.title,
 			head: this.tree.at.branch,
 			base: this.setup.baseBranch,
 			body
 		});
+		this.note({ kind: 'pullOpened', url: pull.url, created: true });
+		return pull;
 	}
 }
 
@@ -989,6 +1057,8 @@ interface FixContext {
 		attempt?: number
 	) => void;
 	readonly log: (entry: LogEntry, work: Work) => void;
+	// writes the Feature's Logbook
+	readonly note: Note;
 }
 
 // Fix rounds while the check fails, each in the session that built the work; `cap` is the most the whole piece of work may cost.
@@ -1004,6 +1074,14 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		const minutes = minutesLeft(deps.now, o.deadline);
 		if (minutes !== undefined && minutes <= 0) break;
 		deps.say(`${o.name}: the check fails, fix round ${String(round)}`);
+		ctx.note({
+			kind: 'checkRed',
+			report: check.tail,
+			round,
+			rounds: limits.fixRounds,
+			...(o.ticket === null ? {} : { ticket: o.ticket }),
+			session: o.sessionId
+		});
 		// a try that fails for a passing reason starts again from what the build and the rounds before left
 		const mark = await tree.snapshot();
 		const { outcome: got, earlierUsd } = await retryPassing<FixOutcome>({
@@ -1319,7 +1397,8 @@ async function pullFixRound(
 			setup,
 			tree,
 			building,
-			log: (e) => log(e)
+			log: (e) => log(e),
+			note: noteFor(deps.logbook, feature.id, deps.now)
 		},
 		{
 			ticket: null,
@@ -1351,7 +1430,8 @@ async function reviewFeature(
 	built: readonly Ticket[],
 	tickets: TicketProgress[],
 	show: ShowBuilding,
-	log: (entry: LogEntry) => void
+	log: (entry: LogEntry) => void,
+	note: Note
 ): Promise<Review | null | { readonly paused: string }> {
 	const before = await tree.head();
 	const { outcome: got } = await retryPassing<ReviewOutcome>({
@@ -1403,19 +1483,38 @@ async function reviewFeature(
 		session: got.sessionId,
 		costUsd: got.costUsd
 	};
+	const unfinished = () =>
+		note({
+			kind: 'review',
+			verdict: null,
+			summary: null,
+			issues: [],
+			session: got.sessionId
+		});
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });
 			return { paused: got.why };
-		case 'reviewed':
+		case 'reviewed': {
 			log({ ...entry, outcome: got.review.verdict });
+			const { verdict, summary, issues } = got.review;
+			note({
+				kind: 'review',
+				verdict,
+				summary,
+				issues: issues.map((i) => ({ ...i })),
+				session: got.sessionId
+			});
 			return got.review;
+		}
 		// a stopped review is one that did not finish: the run is past its last Ticket
 		case 'aborted':
 			log({ ...entry, outcome: 'failed: stopped by a person' });
+			unfinished();
 			return null;
 		case 'failed':
 			log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
+			unfinished();
 			return null;
 	}
 }
