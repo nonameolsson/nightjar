@@ -95,7 +95,7 @@ The Session, after the last Ticket and the Steps, that reads the Feature's whole
 _Avoid_: self-review, AI review, code review (when Nightjar's own is meant)
 
 **Review round**:
-A Session that answers the Review's issues before the draft pull request opens, after which the Review runs again. A build gets a set number of them; what the last Review still asks for is shown on the pull request, and the Feature gets needs a person.
+A Session that answers the Review's issues on a complete Feature before the draft pull request opens, after which the Review runs again. It may decline an issue with a reason, which the next Review sees. A build gets a set number of them; what the last Review still asks for is shown on the pull request, and the Feature gets needs a person.
 _Avoid_: review fix, self-fix, second pass
 
 **Publish**:
