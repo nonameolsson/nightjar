@@ -281,6 +281,29 @@ describe('makeAdapters and creating Features', () => {
 		}
 	});
 
+	it('loads a Code host module without publish, and one with it, and refuses one whose publish is no function', async () => {
+		moduleFile('old.mjs', `export const createCodeHost = () => (${HOST_BODY});`);
+		moduleFile(
+			'publishes.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', publish: async () => {} }')});`
+		);
+		for (const path of ['./old.mjs', './publishes.mjs']) {
+			const { codeHost } = await makeAdapters(
+				config({ codeHost: { type: 'module', path } }),
+				dir,
+				env()
+			);
+			expect(typeof codeHost.publish).toBe(path === './old.mjs' ? 'undefined' : 'function');
+		}
+		moduleFile(
+			'odd-publish.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', publish: true }')});`
+		);
+		expect(await refusal(config({ codeHost: { type: 'module', path: './odd-publish.mjs' } }))).toBe(
+			'factory.json: codeHost: createCodeHost in ./odd-publish.mjs returned a Code host whose publish is not a function'
+		);
+	});
+
 	it('refuses a Code host module with only one of feedback and reply, or one that is no function', async () => {
 		moduleFile(
 			'half.mjs',
