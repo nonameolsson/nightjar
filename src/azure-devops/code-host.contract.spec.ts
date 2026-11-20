@@ -9,6 +9,7 @@ import {
 	feedbackContract,
 	nightjarDraftsContract,
 	openPullsContract,
+	publishContract,
 	type DraftsWorld,
 	type Given,
 	type Pull,
@@ -241,4 +242,8 @@ describe('AzureReposCodeHost meets the feedback contract', { timeout: 30_000 }, 
 
 describe('AzureReposCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
 	for (const c of openPullsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
+});
+
+describe('AzureReposCodeHost meets the publish contract', { timeout: 30_000 }, () => {
+	for (const c of publishContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 });

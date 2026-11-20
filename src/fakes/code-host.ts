@@ -16,7 +16,7 @@ import type { TicketReference } from '../tracker.js';
 import { BRANCH_PREFIX } from '../worktree.js';
 
 export interface FakePull extends Pull, DraftRequest {
-	// false once a person marks it ready for review
+	// false once a person marks it ready for review, or Nightjar publishes it
 	readonly draft: boolean;
 	// false once it is closed or merged
 	readonly open: boolean;
@@ -113,6 +113,12 @@ export class FakeCodeHost implements CodeHost {
 			personEngaged: p.personEngaged
 		}));
 		return Promise.resolve(listed);
+	};
+
+	// Nightjar takes its own draft out of draft
+	publish = (pull: Pull): Promise<void> => {
+		this.change(pull.id, () => ({ draft: false }));
+		return Promise.resolve();
 	};
 
 	// in the order they were opened, which is the order of their ids

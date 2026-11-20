@@ -888,10 +888,16 @@ export class FakeAzureDevOps {
 	private updatePull(pull: FakePullRequest, body: unknown): AzureDevOpsReply {
 		const got = (body ?? {}) as Record<string, unknown>;
 		for (const name of Object.keys(got)) {
-			if (!['title', 'description'].includes(name))
+			if (!['title', 'description', 'isDraft'].includes(name))
 				throw fault(`a pull request update Nightjar may not send: ${name}`);
 		}
-		const { description, title } = got;
+		const { description, title, isDraft } = got;
+		// Nightjar publishes a draft, and never turns a pull request back into one
+		if (isDraft !== undefined && isDraft !== false) {
+			throw fault(
+				`a pull request update Nightjar may not send: isDraft ${JSON.stringify(isDraft)}`
+			);
+		}
 		if (typeof description === 'string' && description.length > DESCRIPTION_LIMIT) {
 			return refusal(
 				400,
@@ -901,7 +907,8 @@ export class FakeAzureDevOps {
 		const changed = {
 			...pull,
 			...(typeof description === 'string' ? { description } : {}),
-			...(typeof title === 'string' ? { title } : {})
+			...(typeof title === 'string' ? { title } : {}),
+			...(isDraft === false ? { isDraft } : {})
 		};
 		this.replacePull(changed);
 		return json(200, this.renderPull(changed));

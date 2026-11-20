@@ -556,6 +556,15 @@ export class AzureReposCodeHost implements CodeHost {
 		});
 	}
 
+	// Azure Repos publishes a draft by setting it out of draft.
+	async publish(pull: Pull): Promise<void> {
+		await this.api.call(`publish pull request ${String(pull.id)}`, {
+			method: 'PATCH',
+			url: this.at(`pullrequests/${String(pull.id)}?${API}`),
+			body: { isDraft: false }
+		});
+	}
+
 	// The active pull requests from this repo's own branches, draft or not, oldest first: Azure Repos numbers pull requests as they are made.
 	private async activePulls(
 		what: string

@@ -114,6 +114,9 @@ const INVALID = (why: string) => failed(`gh: Validation Failed: ${why} (HTTP 422
 // GitHub's own id of an issue, which its sub-issue and dependency calls take, apart from its number.
 const databaseId = (number: number) => 4_000_000 + number * 7;
 
+// GitHub's GraphQL id of a pull request, which its GraphQL mutations take, apart from its number.
+const nodeId = (number: number) => `PR_kwDO${String(number)}`;
+
 // GitHub's own paging: thirty to a page unless per_page says otherwise.
 function page<T>(list: readonly T[], query: URLSearchParams): T[] {
 	const size = Number(query.get('per_page') ?? 30);
@@ -390,6 +393,7 @@ export class FakeGitHub {
 			return failed('To get started with GitHub CLI, please run:  gh auth login');
 		}
 		if (method === 'GET' && path === 'user') return ok({ login: this.person });
+		if (method === 'POST' && path === 'graphql') return this.graphql(call);
 		if (method === 'POST' && path === `${repo}/labels`) return this.createLabel(call);
 		const named = new RegExp(`^${repo}/labels/([^/]+)$`).exec(path);
 		if (method === 'GET' && named) {
@@ -544,10 +548,31 @@ export class FakeGitHub {
 		return page(found, query).map((i) => this.renderPull(i));
 	}
 
+	// GraphQL as far as Nightjar asks: marking a draft pull request ready for review, by its node id.
+	private graphql(call: GhCall): Run {
+		const query = call.fields.query;
+		if (typeof query !== 'string' || !query.includes('markPullRequestReadyForReview')) {
+			return failed('gh: the fake GitHub knows no such GraphQL query');
+		}
+		const pull = [...this.issues.values()].find(
+			(i) => i.pull !== undefined && nodeId(i.number) === call.fields.id
+		);
+		if (pull?.pull === undefined) {
+			return failed(
+				`gh: Could not resolve to a node with the global id of '${String(call.fields.id)}'.`
+			);
+		}
+		// a cautious stand-in: Nightjar reads the pull request first, and never asks of one out of draft
+		if (!pull.pull.draft) return failed('gh: Pull request is not a draft');
+		this.markReady(pull.number);
+		return ok({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } });
+	}
+
 	private renderPull(issue: Issue) {
 		const head = issue.pull?.head ?? '';
 		return {
 			number: issue.number,
+			node_id: nodeId(issue.number),
 			html_url: this.url(issue.number),
 			title: issue.title,
 			body: issue.body,
