@@ -109,7 +109,7 @@ A Ticket on the Tracker is held to the same contract before its Session. One wit
 
 `nightjar doctor FEATURE` checks a Feature's open Tickets against that contract, and also what sits across the Feature's Tickets, which the build does not check before a Session. Each is a fault, and any fault makes it exit 1:
 
-- an open blocker that is not one of the Feature's Tickets (a closed blocker, or one among the Feature's Tickets, is no fault), since a build never reaches it;
+- an open blocker that is not one of the Feature's Tickets (a closed blocker, or one among the Feature's Tickets, is no fault), since that Ticket waits until its Feature's pull request merges (ADR 0007);
 - a blocking loop between Tickets, named by each Ticket in it, since none of them is built;
 - an open Ticket without the ready Signal, since a build skips it;
 - a Feature with no open Tickets, since a build has nothing to do;
