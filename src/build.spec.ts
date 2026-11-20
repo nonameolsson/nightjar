@@ -1207,6 +1207,25 @@ describe('buildFeature', () => {
 		expect(ledger(world).filter((e) => e.ticket === '2' && e.step === 'build')).toHaveLength(1);
 	});
 
+	it("says in the pull request's waiting list that a Ticket waits on a Ticket outside the Feature", async () => {
+		const world = makeWorld();
+		world.tracker.reference = (id) => ({ id, text: `AB#${id}` });
+		world.tracker.add({ id: '4', title: 'Mark the rest', signals: ['ready'], blockedBy: ['90'] });
+		world.tracker.add({
+			id: '1',
+			title: 'One escape',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['2', '3', '4']
+		});
+		await buildFeature(deps(world), setup(world), '1');
+
+		const body = world.host.pulls[0]?.body ?? '';
+		expect(body).toContain(
+			"- AB#4 Mark the rest: blocked by AB#90, a Ticket outside this Feature: it closes when its Feature's pull request merges. Merge that, then give the Go again."
+		);
+	});
+
 	it('shows a build tried again as try 2 of 3 in the status file', async () => {
 		const world = makeWorld();
 		world.acts['2'] = 'flaky';
