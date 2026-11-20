@@ -945,6 +945,17 @@ describe('buildFeature', () => {
 			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
 		});
 
+		it('builds on, leaving the body as it is, when the Code host fails to answer', async () => {
+			const world = makeWorld();
+			world.host.conflicts = () => Promise.reject(new Error('gh could not read pull request #100'));
+			const got = await buildFeature(deps(world), setup(world), '1');
+
+			expect(got).toMatchObject({ kind: 'pull' });
+			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
+			expect(refs(world)).toEqual(['#2', '#1', '#3']);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+
 		it('opens a draft as before over a Code host without the method', async () => {
 			const world = makeWorld();
 			delete (world.host as { conflicts?: unknown }).conflicts;
