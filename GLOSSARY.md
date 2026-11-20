@@ -98,6 +98,10 @@ _Avoid_: self-review, AI review, code review (when Nightjar's own is meant)
 A Session that answers the Review's issues before the draft pull request opens, after which the Review runs again. A build gets a set number of them; what the last Review still asks for is shown on the pull request, and the Feature gets needs a person.
 _Avoid_: review fix, self-fix, second pass
 
+**Publish**:
+Nightjar taking its own draft pull request out of draft, where the repo lets it: once the Feature is complete, its last Review approves, its Pull checks are green and no person has engaged. Nightjar never turns a pull request back into a draft, and never merges one.
+_Avoid_: ready, mark ready, undraft (ready is a Signal)
+
 **Coding agent**:
 The program that builds one Ticket in the Feature's worktree, in a Session Nightjar starts and ends; today only Claude Code. It edits files and runs the commands it is allowed, and never commits, pushes or touches the Tracker: Nightjar does that.
 _Avoid_: bot, AI, model, worker
