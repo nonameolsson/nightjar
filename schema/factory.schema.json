@@ -584,6 +584,10 @@
 				}
 			},
 			"additionalProperties": false
+		},
+		"publish": {
+			"description": "true has Nightjar publish its own draft pull request under --watch once the Feature is complete, its last Review approved, its Pull checks are green and no person has engaged; it never merges one or turns one back into a draft. Off by default, so every pull request stays a draft.",
+			"type": "boolean"
 		}
 	},
 	"required": [

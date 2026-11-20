@@ -529,7 +529,11 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					"The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request"
-			})
+			}),
+		publish: z.boolean().optional().meta({
+			description:
+				'true has Nightjar publish its own draft pull request under --watch once the Feature is complete, its last Review approved, its Pull checks are green and no person has engaged; it never merges one or turns one back into a draft. Off by default, so every pull request stays a draft.'
+		})
 	})
 	.refine(
 		(c) => c.defaultWorkflow === undefined || c.workflows?.[c.defaultWorkflow] !== undefined,
