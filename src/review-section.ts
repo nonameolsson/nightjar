@@ -1,8 +1,9 @@
 // The Review section of a pull request body: each Review of the build and each Review round after it, in order, then what is still open, then the issues the rounds declined with their reasons.
-import { issueLine, type Declined, type Review } from './prompt.js';
+import { declinedLine, issueLine, type Declined, type Review } from './prompt.js';
+import { dollars } from './view-text.js';
 
-// One thing that happened in the build's Review, in order: a Review, or the Review round after it.
-export type ReviewStep =
+// One Session of the build's Review, in order: a Review, or the Review round after it.
+export type ReviewSession =
 	// null when the Review did not finish
 	| { readonly kind: 'review'; readonly review: Review | null }
 	| {
@@ -16,37 +17,34 @@ export type ReviewStep =
 			readonly usd: number;
 	  };
 
-const dollars = (n: number) => `$${n.toFixed(2)}`;
-
 // What the build's last word on the Feature leaves open: the issues of its last Review, unless a round fixed them since and no Review has read the result.
-function open(steps: readonly ReviewStep[]): Review['issues'] {
-	for (const step of steps.toReversed()) {
-		if (step.kind === 'review') return step.review?.issues ?? [];
-		if (step.outcome === 'fixed') return [];
+function open(sessions: readonly ReviewSession[]): Review['issues'] {
+	for (const session of sessions.toReversed()) {
+		if (session.kind === 'review') return session.review?.issues ?? [];
+		if (session.outcome === 'fixed') return [];
 	}
 	return [];
 }
 
 export function reviewSection(
-	steps: readonly ReviewStep[],
+	sessions: readonly ReviewSession[],
 	declined: readonly Declined[] = []
 ): string {
 	let reviews = 0;
-	const blocks = steps.map((step) => {
-		if (step.kind === 'round') {
-			return `### Review round ${String(step.round)}: ${step.outcome}, ${dollars(step.usd)}\n\n${step.text}`;
+	const blocks = sessions.map((session) => {
+		if (session.kind === 'round') {
+			return `### Review round ${String(session.round)}: ${session.outcome}, ${dollars(session.usd)}\n\n${session.text}`;
 		}
 		reviews += 1;
 		const name = `### Review ${String(reviews)}`;
-		if (step.review === null) return `${name}: did not finish`;
-		const verdict = step.review.verdict === 'approve' ? 'Approve' : 'Changes asked';
-		return `${name}: ${verdict}\n\n${step.review.summary}`;
+		if (session.review === null) return `${name}: did not finish`;
+		const verdict = session.review.verdict === 'approve' ? 'Approve' : 'Changes asked';
+		return `${name}: ${verdict}\n\n${session.review.summary}`;
 	});
-	const issues = open(steps);
+	const issues = open(sessions);
 	if (issues.length > 0) blocks.push(`### Still open\n\n${issues.map(issueLine).join('\n')}`);
 	if (declined.length > 0) {
-		const lines = declined.map((d) => `${issueLine(d)}\n  Reason: ${d.reason}`);
-		blocks.push(`### Issues declined\n\n${lines.join('\n')}`);
+		blocks.push(`### Issues declined\n\n${declined.map(declinedLine).join('\n')}`);
 	}
 	return `## Review\n\n${blocks.join('\n\n')}`;
 }

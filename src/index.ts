@@ -25,6 +25,7 @@ export type {
 	ChangeRequest,
 	CodeHost,
 	DraftRequest,
+	DraftsListing,
 	FailedCheck,
 	Feedback,
 	FeedbackKind,

@@ -47,7 +47,7 @@ import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { featureAfterRunStep, nextStepText, noteStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK, type Review } from './prompt.js';
-import { publishMarkOf } from './publish.js';
+import { markPublished, publishMarkOf, publishedByNightjar } from './publish.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
@@ -1891,6 +1891,32 @@ describe('the publish mark in the pull request', () => {
 		await buildFeature(deps(red), setup(red), '1');
 		expect(mark(red)?.complete).toBe(false);
 	});
+
+	it('keeps the mark that Nightjar published the pull request across a rebuild, so its Pull-check pass keeps to it', async () => {
+		const world = makeWorld();
+		const d = deps(world);
+		await buildFeature(d, setup(world), '1');
+		const [pull] = await world.host.nightjarDrafts();
+		if (pull === undefined) throw new Error('no draft was opened');
+		await world.host.publish(pull.pull);
+		await world.host.editBody(pull.pull, markPublished(pull.body));
+
+		await buildFeature(d, setup(world), '1');
+		expect(publishedByNightjar(world.host.pulls[0]?.body ?? '')).toBe(true);
+		expect((await world.host.nightjarDrafts()).map((p) => p.pull)).toEqual([pull.pull]);
+	});
+
+	it('writes no such mark on a rebuild of a pull request a person marked ready', async () => {
+		const world = makeWorld();
+		const d = deps(world);
+		await buildFeature(d, setup(world), '1');
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		world.host.markReady(pull);
+
+		await buildFeature(d, setup(world), '1');
+		expect(publishedByNightjar(world.host.pulls[0]?.body ?? '')).toBe(false);
+	});
 });
 
 describe('the cost split in the pull request', () => {
@@ -3433,6 +3459,41 @@ describe('a Review round', () => {
 		expect(body(world)).toContain("## Paused\n\nThe run paused because the plan's usage limit");
 	});
 
+	it('ends the run as stopped by a person when a round is stopped, keeping nothing of it and handing nothing to a person', async () => {
+		const world = makeWorld();
+		changesFor(world, 9);
+		world.settle = (req) =>
+			req.kind === 'reviewRound'
+				? { kind: 'aborted', sessionId: 'session-x', costUsd: 1.5 }
+				: undefined;
+
+		const got = await buildFeature(deps(world), setup(world), '1');
+		expect(got).toEqual({ kind: 'stopped' });
+		expect(world.tracker.said('1').at(-1)).toContain('The Nightjar run was stopped by a person.');
+		expect(world.tracker.signalsOf('1')).not.toContain('human');
+		expect(world.host.pulls).toEqual([]);
+		expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+		expect(ledger(world).find((e) => e.step === 'reviewRound')).toMatchObject({
+			outcome: 'stopped by a person',
+			costUsd: 1.5
+		});
+	});
+
+	it('ends the run as stopped by a person when a stop lands in the second round, after the first was committed', async () => {
+		const world = makeWorld();
+		changesFor(world, 9);
+		let rounds = 0;
+		world.settle = (req) =>
+			req.kind === 'reviewRound' && (rounds += 1) === 2
+				? { kind: 'aborted', sessionId: 'session-x', costUsd: 1 }
+				: undefined;
+
+		const got = await buildFeature(deps(world), setup(world), '1');
+		expect(got).toEqual({ kind: 'stopped' });
+		expect(world.tracker.signalsOf('1')).not.toContain('human');
+		expect(world.host.pulls).toEqual([]);
+	});
+
 	it('shows the round in the status file, round N of review.fixRounds', async () => {
 		const world = makeWorld();
 		changesFor(world, 1);
@@ -3448,6 +3509,31 @@ describe('a Review round', () => {
 				session: 'session-4'
 			})
 		);
+	});
+
+	it("shows a round's fix rounds as the round, round N of review.fixRounds", async () => {
+		const world = makeWorld();
+		changesFor(world, 1);
+		world.reviewRoundAgent = (req) => {
+			world.checkOk = false;
+			return {
+				kind: 'fixed',
+				summary: 'Escaped.',
+				declined: [],
+				sessionId: req.sessionId,
+				costUsd: 1
+			};
+		};
+		world.fixAgent = (req) => {
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'Linted.', sessionId: req.resume, costUsd: 1 };
+		};
+
+		await buildFeature(deps(world), setup(world, roundOf({ fixRounds: 4 })), '1');
+		expect(askedOf(world, 'fix')).toHaveLength(1);
+		const shown = world.doing.filter((d) => d.kind === 'building' && d.step === 'reviewRound');
+		expect(shown.length).toBeGreaterThan(1);
+		for (const d of shown) expect(d).toMatchObject({ round: 1, rounds: 4 });
 	});
 
 	describe("the pull request's Review section", () => {
@@ -3657,6 +3743,17 @@ describe('a Review round', () => {
 			const reviews = askedOf(world, 'review');
 			expect(reviews.map((r) => r.declined.length)).toEqual([0, 1, 2]);
 			expect(reviews[2]?.declined.map((d) => d.reason)).toEqual(['Reason 0.', 'Reason 0.']);
+		});
+
+		it('gives each later Review round every issue declined before it, with its reason', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			world.reviewRoundAgent = (req) => decline(req, 0);
+
+			await buildFeature(deps(world), setup(world), '1');
+			const [first, second] = askedOf(world, 'reviewRound');
+			expect(first?.declined).toEqual([]);
+			expect(second?.declined).toEqual([{ ...ISSUE, reason: 'Reason 0.' }]);
 		});
 
 		it('counts per build: a new Go starts with none', async () => {

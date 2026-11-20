@@ -5,6 +5,7 @@ import type {
 	ChangeRequest,
 	CodeHost,
 	DraftRequest,
+	DraftsListing,
 	FailedCheck,
 	Feedback,
 	NightjarDraft,
@@ -594,7 +595,7 @@ export class AzureReposCodeHost implements CodeHost {
 	}
 
 	// Open draft pull requests from this repo's own Nightjar branches, oldest first, and those Nightjar published itself.
-	async nightjarDrafts(): Promise<NightjarDraft[]> {
+	async nightjarDrafts(listing: DraftsListing = {}): Promise<NightjarDraft[]> {
 		const listed = await this.activePulls("list Nightjar's draft pull requests");
 		const drafts: NightjarDraft[] = [];
 		for (const { id, branch, draft } of listed) {
@@ -604,7 +605,7 @@ export class AzureReposCodeHost implements CodeHost {
 				const read = await this.read({ id, url: this.pullUrl(id) });
 				if (!publishedByNightjar(read.description ?? '')) continue;
 			}
-			drafts.push(await this.draft(id, branch));
+			drafts.push(await this.draft(id, branch, listing));
 		}
 		return drafts;
 	}
@@ -684,7 +685,7 @@ export class AzureReposCodeHost implements CodeHost {
 	}
 
 	// The list cuts a description short, so each draft is read whole.
-	private async draft(id: number, branch: string): Promise<NightjarDraft> {
+	private async draft(id: number, branch: string, listing: DraftsListing): Promise<NightjarDraft> {
 		const n = String(id);
 		const raw = await this.api.parse(
 			`read pull request ${n}`,
@@ -707,7 +708,7 @@ export class AzureReposCodeHost implements CodeHost {
 			personEngaged: await this.personEngaged(raw),
 			...(raw.creationDate == null ? {} : { openedAt: raw.creationDate }),
 			checkCount: statuses.count + policies.count,
-			commits: await this.commits(pull)
+			...(listing.commits === true ? { commits: await this.commits(pull) } : {})
 		};
 	}
 

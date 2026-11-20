@@ -812,6 +812,20 @@ describe('dryRun with Publish', () => {
 		expect(p.draftOf(ready)).toBe(true);
 	});
 
+	it('says it has nothing to do only when it has no draft to publish either', async () => {
+		const w = world();
+		const p = withPublish(w);
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		w.tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const ready = await p.open('20');
+		await dryRun({
+			...w.deps,
+			...(w.deps.publish === undefined ? {} : { publish: w.deps.publish })
+		});
+		expect(w.lines).toEqual([`would publish #20 Done 20, on ${ready.url}`]);
+	});
+
 	it('lists nothing to publish when the pass is off', async () => {
 		const w = world();
 		await dryRun(w.deps);

@@ -18,6 +18,9 @@ export interface Entry {
 	readonly durationMs?: number;
 }
 
+// A ledger line as a piece of work gives it: the run adds where and when.
+export type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
+
 // What a piece of work with a cap may still spend.
 export interface Allowance {
 	// the dollars left of its cap, which the next Session gets as its budget

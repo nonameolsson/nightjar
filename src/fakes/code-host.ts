@@ -4,6 +4,7 @@ import type {
 	ChangeRequest,
 	CodeHost,
 	DraftRequest,
+	DraftsListing,
 	Feedback,
 	NightjarDraft,
 	OpenPull,
@@ -116,7 +117,7 @@ export class FakeCodeHost implements CodeHost {
 	};
 
 	// in the order they were opened, which is the order of their ids
-	nightjarDrafts = (): Promise<NightjarDraft[]> => {
+	nightjarDrafts = (listing: DraftsListing = {}): Promise<NightjarDraft[]> => {
 		const mine = (p: FakePull) =>
 			p.open && p.head.startsWith(BRANCH_PREFIX) && (p.draft || publishedByNightjar(p.body));
 		const listed = this.pulls.filter(mine).map((p): NightjarDraft => ({
@@ -128,7 +129,7 @@ export class FakeCodeHost implements CodeHost {
 			personEngaged: p.personEngaged,
 			openedAt: p.openedAt,
 			checkCount: p.checkCount,
-			commits: this.branchCommits.get(p.head) ?? []
+			...(listing.commits === true ? { commits: this.branchCommits.get(p.head) ?? [] } : {})
 		}));
 		return Promise.resolve(listed);
 	};

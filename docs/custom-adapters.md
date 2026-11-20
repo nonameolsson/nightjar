@@ -123,8 +123,9 @@ To let Nightjar fix the failed Pull checks of its own draft pull requests (`pull
 		// publishes a pull request itself, so that its Pull-check pass keeps to it.
 		// `openedAt` is when the pull request opened (ISO time), `checkCount` how many Pull checks the
 		// head commit has, finished or not (0 while your host has registered none), and `commits` those
-		// on the branch that its base lacks, oldest first, each with its whole message. Publish reads
-		// these three; a Code host that leaves them out never has its drafts published.
+		// on the branch that its base lacks, oldest first, each with its whole message, listed only
+		// when called with { commits: true }. Publish reads these three, and asks for the commits; a
+		// Code host that leaves them out never has its drafts published.
 		nightjarDrafts: todo('nightjarDrafts'),
 ```
 

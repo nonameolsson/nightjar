@@ -25,6 +25,7 @@ import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
+	issueLine,
 	questionRounds,
 	questionsComment,
 	type Declined,
@@ -46,14 +47,15 @@ import {
 	type NextStep,
 	type TicketHandBack
 } from './next-step.js';
-import { publishMark } from './publish.js';
+import { markPublished, publishedByNightjar, publishMark } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
-import { reviewSection, type ReviewStep } from './review-section.js';
-import type { Entry, Spend } from './spend.js';
+import { reviewSection, type ReviewSession } from './review-section.js';
+import type { Entry, LogEntry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
+import { dollars } from './view-text.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import {
 	SESSION_TRAILER,
@@ -194,10 +196,7 @@ export type FeatureOutcome =
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
-const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
-
-type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
 type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback' | 'reviewRound';
@@ -803,13 +802,7 @@ class FeatureRun {
 		const left = waiting(this.tickets, this.built);
 		let paused = last.kind === 'paused' ? last.why : null;
 		await tracker.removeSignal(id, 'working');
-		if (this.aborted || last.kind === 'aborted') {
-			await tracker.comment(
-				id,
-				withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
-			);
-			return { kind: 'stopped' };
-		}
+		if (this.aborted || last.kind === 'aborted') return this.stopped();
 		if (paused) await this.pause(paused);
 		const repeated =
 			last.kind === 'repeated'
@@ -845,7 +838,7 @@ class FeatureRun {
 		let review: Review | 'off' | null = 'off';
 		let open: ReviewLeftOpen | null = null;
 		let declined: readonly Declined[] = [];
-		let reviews: readonly ReviewStep[] | 'off' = 'off';
+		let reviewSessions: readonly ReviewSession[] | 'off' = 'off';
 		if (this.setup.review?.enabled !== false) {
 			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
@@ -859,14 +852,16 @@ class FeatureRun {
 				review = rounds.review;
 				open = rounds.open;
 				declined = rounds.declined;
-				reviews = rounds.steps;
+				reviewSessions = rounds.sessions;
+				// a round a person stopped ends the run as any Session they stop does
+				if (rounds.stopped) return this.stopped();
 				if (rounds.paused !== null) {
 					paused = rounds.paused;
 					await this.pause(paused);
 				}
 			} else {
 				review = got;
-				reviews = [{ kind: 'review', review: got }];
+				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
@@ -883,7 +878,7 @@ class FeatureRun {
 			done,
 			left,
 			red,
-			reviews,
+			reviewSessions,
 			declined,
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
@@ -952,6 +947,14 @@ class FeatureRun {
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
 	}
 
+	private async stopped(): Promise<FeatureOutcome> {
+		await this.deps.tracker.comment(
+			this.feature.id,
+			withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
+		);
+		return { kind: 'stopped' };
+	}
+
 	private review(done: readonly Ticket[], declined: readonly Declined[] = []) {
 		return reviewFeature(
 			this.deps,
@@ -966,14 +969,16 @@ class FeatureRun {
 		);
 	}
 
-	// On a complete Feature, while the Review says changes: a Review round, then the Review again, up to review.fixRounds in the build. A round that fails or is stopped ends them, the Review before it the last. `open` says why a person must look: a round that failed, or rounds that ran out on changes.
+	// On a complete Feature, while the Review says changes: a Review round, then the Review again, up to review.fixRounds in the build. A round that fails ends them, the Review before it the last; one a person stops ends the run. `open` says why a person must look: a round that failed, or rounds that ran out on changes.
 	private async reviewRounds(
 		first: Review | null,
 		done: readonly Ticket[]
 	): Promise<{
 		readonly review: Review | null;
-		readonly steps: readonly ReviewStep[];
+		readonly sessions: readonly ReviewSession[];
 		readonly paused: string | null;
+		// a person stopped a round, whose work is thrown away
+		readonly stopped: boolean;
 		readonly open: ReviewLeftOpen | null;
 		// the issues the rounds declined, in the order they did
 		readonly declined: readonly Declined[];
@@ -983,9 +988,10 @@ class FeatureRun {
 		let declined: readonly Declined[] = [];
 		let review = first;
 		let ran = 0;
-		const steps: ReviewStep[] = [{ kind: 'review', review }];
+		const sessions: ReviewSession[] = [{ kind: 'review', review }];
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
-			if (this.aborted) break;
+			if (this.aborted)
+				return { review, sessions, paused: null, stopped: true, open: null, declined };
 			const before = this.costs.length;
 			const end = await reviewRound({
 				codingAgent: deps.codingAgent,
@@ -997,21 +1003,26 @@ class FeatureRun {
 				tree: this.tree,
 				round,
 				issues: review.issues,
+				declined,
 				...this.output,
 				dailyPause: () => this.dailyPause(),
 				allowance: (cap, spent) => deps.spend.allowance(cap, spent),
-				fix: (work) => this.fixReviewRound(work),
+				fix: (work) => this.fixReviewRound(work, { round, rounds }),
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
 			});
-			if (end.kind === 'paused') return { review, steps, paused: end.why, open: null, declined };
-			if (end.kind === 'aborted') break;
+			if (end.kind === 'paused') {
+				return { review, sessions, paused: end.why, stopped: false, open: null, declined };
+			}
+			if (end.kind === 'aborted') {
+				return { review, sessions, paused: null, stopped: true, open: null, declined };
+			}
 			// what the round and its fix rounds cost
 			const usd = this.costs
 				.slice(before)
 				.filter((c) => c.work === 'reviewRound')
 				.reduce((n, c) => n + c.usd, 0);
-			steps.push(
+			sessions.push(
 				end.kind === 'fixed'
 					? { kind: 'round', round, outcome: 'fixed', text: end.summary, usd }
 					: { kind: 'round', round, outcome: 'thrown away', text: end.why, usd }
@@ -1019,8 +1030,9 @@ class FeatureRun {
 			if (end.kind === 'failed') {
 				return {
 					review,
-					steps,
+					sessions,
 					paused: null,
+					stopped: false,
 					open: { kind: 'failed', round, why: end.why, side: end.side },
 					declined
 				};
@@ -1029,24 +1041,27 @@ class FeatureRun {
 			declined = [...declined, ...end.declined];
 			const again = await this.review(done, declined);
 			if (again !== null && 'paused' in again) {
-				return { review, steps, paused: again.paused, open: null, declined };
+				return { review, sessions, paused: again.paused, stopped: false, open: null, declined };
 			}
 			review = again;
-			steps.push({ kind: 'review', review });
+			sessions.push({ kind: 'review', review });
 		}
 		const open: ReviewLeftOpen | null =
 			ran > 0 && review?.verdict === 'changes' ? { kind: 'exhausted', rounds: ran } : null;
-		return { review, steps, paused: null, open, declined };
+		return { review, sessions, paused: null, stopped: false, open, declined };
 	}
 
-	// A Review round's fix rounds show and are logged as the round they belong to.
-	private fixReviewRound(o: FixWork): Promise<FixEnd> {
+	// A Review round's fix rounds show as the round they belong to, its round of the build's, and are logged as it.
+	private fixReviewRound(
+		o: FixWork,
+		rounds: { readonly round: number; readonly rounds: number }
+	): Promise<FixEnd> {
 		return fixUntilGreen(
 			{
 				deps: this.deps,
 				setup: this.setup,
 				tree: this.tree,
-				building: (ticket, session, rounds, attempt) =>
+				building: (ticket, session, _fix, attempt) =>
 					this.building(ticket, 'reviewRound', session, rounds, attempt),
 				log: (entry) => this.log({ ...entry, step: 'reviewRound' })
 			},
@@ -1101,11 +1116,21 @@ class FeatureRun {
 	}
 
 	// The branch's open pull request with a new body, else a new draft.
+	// Whether Nightjar published the open pull request a rebuild rewrites, which its body's mark says; a Code host that cannot list its open pull requests has none to tell.
+	private async publishedBefore(open: Pull): Promise<boolean> {
+		const pulls = await this.deps.codeHost.openPulls?.(this.tree.at.branch);
+		const body = pulls?.find((p) => p.pull.id === open.id)?.body ?? '';
+		return publishedByNightjar(body);
+	}
+
 	private async openDraft(body: string): Promise<Pull> {
 		const { codeHost } = this.deps;
 		const open = await codeHost.openPull(this.tree.at.branch);
 		if (open) {
-			await codeHost.editBody(open, body);
+			await codeHost.editBody(
+				open,
+				(await this.publishedBefore(open)) ? markPublished(body) : body
+			);
 			return open;
 		}
 		return codeHost.createDraft({
@@ -1580,7 +1605,7 @@ function pullBody(p: {
 	left: readonly Waiting[];
 	red: { ticket: ItemId; tail: string } | null;
 	// the Reviews and Review rounds of the build in order, or 'off' when the Review is switched off or paused
-	reviews: readonly ReviewStep[] | 'off';
+	reviewSessions: readonly ReviewSession[] | 'off';
 	// the issues the Review rounds declined, with their reasons
 	declined: readonly Declined[];
 	spent: number;
@@ -1623,11 +1648,12 @@ function pullBody(p: {
 	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.feedback !== null) parts.push(p.feedback);
-	if (p.reviews !== 'off') parts.push(reviewSection(p.reviews, p.declined));
+	if (p.reviewSessions !== 'off') parts.push(reviewSection(p.reviewSessions, p.declined));
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
 	// the last Review of the build, whatever a round did after it
-	const last = p.reviews === 'off' ? undefined : p.reviews.findLast((r) => r.kind === 'review');
+	const last =
+		p.reviewSessions === 'off' ? undefined : p.reviewSessions.findLast((r) => r.kind === 'review');
 	const approved = last?.kind === 'review' && last.review?.verdict === 'approve';
 	parts.push(publishMark({ complete: p.complete, approved }));
 	return `${parts.join('\n\n')}${FOOTER}`;
@@ -1678,10 +1704,7 @@ function costSection(
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
 }
 
-const issueLines = (issues: Review['issues']) =>
-	issues
-		.map((i) => `- \`${i.file}${i.line ? `:${String(i.line)}` : ''}\`: ${i.problem}`)
-		.join('\n');
+const issueLines = (issues: Review['issues']) => issues.map(issueLine).join('\n');
 
 // Why the Feature needs a person after its Review rounds: one failed and was thrown away, or the rounds ran out with the Review still saying changes.
 type ReviewLeftOpen =

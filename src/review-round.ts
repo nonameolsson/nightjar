@@ -3,7 +3,7 @@ import type { RunCheck } from './check.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
 import type { Declined, Review } from './prompt.js';
-import type { Allowance, Entry } from './spend.js';
+import type { Allowance, LogEntry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
 import type { Worktree } from './worktree.js';
@@ -14,8 +14,6 @@ export type ReviewRoundEnd =
 	// thrown away, the attempt kept on `side` when it left anything
 	| { readonly kind: 'failed'; readonly why: string; readonly side: string | null }
 	| Halt;
-
-type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
 // What the round works with: the run's seams and worktree, and how the run shows, logs and fixes a round.
 export interface ReviewRoundContext {
@@ -36,6 +34,8 @@ export interface ReviewRoundContext {
 	readonly round: number;
 	// what the last Review asked to change
 	readonly issues: Review['issues'];
+	// the issues earlier rounds of the build declined, each with its reason
+	readonly declined: readonly Declined[];
 	// "note": the Feature's Workflow writes a note, so the round may revise only the note
 	readonly output?: 'note';
 	// why the day is over, once it is
@@ -64,6 +64,7 @@ export async function reviewRound(ctx: ReviewRoundContext): Promise<ReviewRoundE
 		sessionId,
 		feature,
 		issues: ctx.issues,
+		declined: ctx.declined,
 		diff: await tree.diff(DIFF_CHARS),
 		...(ctx.output === undefined ? {} : { output: ctx.output }),
 		budgetUsd: cap

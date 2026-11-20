@@ -1,5 +1,6 @@
 // What Publish reads of a pull request (docs/adr/0006): the body Nightjar wrote, never a Signal, so the pull request stays the record.
 import type { NightjarDraft } from './code-host.js';
+import { TRAILER_PREFIX, trailersOf } from './worktree.js';
 
 // What the build that wrote a pull request's body found, as Publish needs it.
 export interface PublishMark {
@@ -41,10 +42,12 @@ export function markPublished(body: string): string {
 export const NO_CHECKS_WAIT_MS = 10 * 60_000;
 
 // The commit message carries a trailer of Nightjar's, as every commit it makes does.
-const hasTrailer = (message: string) => /^Factory-[\w-]+: /m.test(message);
+const hasTrailer = (message: string) =>
+	[...trailersOf(message).keys()].some((k) => k.startsWith(TRAILER_PREFIX));
 
-// Whether a draft meets the four conditions of Publish: the Feature was complete and the last Review approved (the body's mark), the Pull checks on the head commit finished green, and no person has engaged by reviewing, commenting or pushing.
+// Whether a draft meets the four conditions of Publish: the Feature was complete and the last Review approved (the body's mark), the Pull checks on the head commit finished green, and no person has engaged by reviewing, commenting or pushing. One Nightjar published already is no draft to publish.
 export function readyToPublish(draft: NightjarDraft, now: Date): boolean {
+	if (publishedByNightjar(draft.body)) return false;
 	const mark = publishMarkOf(draft.body);
 	if (mark === null || !mark.complete || !mark.approved) return false;
 	if (draft.personEngaged) return false;

@@ -5,6 +5,7 @@ import type {
 	ChangeRequest,
 	CodeHost,
 	DraftRequest,
+	DraftsListing,
 	FailedCheck,
 	Feedback,
 	NightjarDraft,
@@ -331,7 +332,7 @@ export class GitHubCodeHost implements CodeHost {
 	}
 
 	// Open draft pull requests from this repo's own Nightjar branches, oldest first.
-	async nightjarDrafts(): Promise<NightjarDraft[]> {
+	async nightjarDrafts(listing: DraftsListing = {}): Promise<NightjarDraft[]> {
 		const query = new URLSearchParams({ state: 'open', sort: 'created', direction: 'asc' });
 		const raw = await this.api.parse(
 			"list Nightjar's draft pull requests",
@@ -355,7 +356,7 @@ export class GitHubCodeHost implements CodeHost {
 				personEngaged: await this.personEngaged(pull),
 				...(p.created_at == null ? {} : { openedAt: p.created_at }),
 				checkCount: count,
-				commits: await this.commits(pull)
+				...(listing.commits === true ? { commits: await this.commits(pull) } : {})
 			});
 		}
 		return drafts;

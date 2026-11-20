@@ -48,8 +48,13 @@ export interface NightjarDraft {
 	readonly openedAt?: string;
 	// how many Pull checks the head commit has, finished or not; 0 while the Code host has registered none
 	readonly checkCount?: number;
-	// the commits on its branch that its base lacks, oldest first
+	// the commits on its branch that its base lacks, oldest first; listed only when asked for, as Publish does
 	readonly commits?: readonly PullCommit[];
+}
+
+export interface DraftsListing {
+	// list each draft's commits too, which costs the Code host a read per draft
+	readonly commits?: boolean;
 }
 
 export type FeedbackKind = 'comment' | 'review' | 'check';
@@ -114,12 +119,12 @@ export interface CodeHost {
 	placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void>;
 	comment(pull: Pull, body: string): Promise<void>;
 	// optional, so a Code host module written before it still loads: the open draft pull requests whose head branch starts with Nightjar's branch prefix, oldest first, and those Nightjar published itself, whose body carries the mark `markPublished` writes (a pull request a person marked ready is left out); a Code host without it gets no Pull-check pass and never publishes
-	nightjarDrafts?(): Promise<NightjarDraft[]>;
+	nightjarDrafts?(listing?: DraftsListing): Promise<NightjarDraft[]>;
 	// Optional, both or neither. Every page of each list; whatever ends with the footer is left out, whoever wrote it.
 	feedback?(pull: Pull): Promise<Feedback[]>;
 	// A line comment is answered in its thread, anything else in the conversation quoting its start; the body ends with the footer.
 	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
-	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with `prefix`, oldest first; a Code host without it, or without feedback and reply, gets no Feedback round a request for changes starts
+	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with `prefix`, oldest first; a Code host without it, or without feedback and reply, gets no Feedback round a request for changes starts; without it, a rebuild drops the mark of a pull request Nightjar published
 	openPulls?(prefix: string): Promise<OpenPull[]>;
 	// optional, so a Code host module written before it still loads: takes Nightjar's own draft pull request out of draft (docs/adr/0006); one already out of draft stays so. It never merges, approves or closes one, and never turns one back into a draft. A Code host without it never publishes.
 	publish?(pull: Pull): Promise<void>;

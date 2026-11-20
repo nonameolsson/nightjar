@@ -277,7 +277,6 @@ export const pullChecksCheck = check({
 	}
 });
 
-// a warning only: an install in allowedCommands cannot fetch in a sandbox, but the build still runs
 // a warning only: nothing is published, but every build still runs
 export const publishCheck = check({
 	name: 'publish',
@@ -303,6 +302,7 @@ export const publishCheck = check({
 	}
 });
 
+// a warning only: an install in allowedCommands cannot fetch in a sandbox, but the build still runs
 export const installsCheck = check({
 	name: 'allowedCommands',
 	needs: ['loaded'],

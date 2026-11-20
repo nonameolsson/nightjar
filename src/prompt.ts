@@ -88,10 +88,17 @@ export const REVIEW_SCHEMA = {
 	required: ['verdict', 'summary', 'issues']
 } as const;
 
+// One thing a Review asks to change: where it sits, and what is wrong.
+export interface ReviewIssue {
+	readonly file: string;
+	readonly line?: number;
+	readonly problem: string;
+}
+
 export interface Review {
 	readonly verdict: 'approve' | 'changes';
 	readonly summary: string;
-	readonly issues: { readonly file: string; readonly line?: number; readonly problem: string }[];
+	readonly issues: ReviewIssue[];
 }
 
 export function readReview(output: unknown): Review | null {
@@ -100,7 +107,7 @@ export function readReview(output: unknown): Review | null {
 	}
 	if (output.verdict !== 'approve' && output.verdict !== 'changes') return null;
 	const issues = output.issues.filter(
-		(i): i is Review['issues'][number] =>
+		(i): i is ReviewIssue =>
 			isRecord(i) && typeof i.file === 'string' && typeof i.problem === 'string'
 	);
 	return { verdict: output.verdict, summary: output.summary, issues };
@@ -410,7 +417,7 @@ export const REVIEW_ROUND_SCHEMA = {
 } as const;
 
 // An issue a Review round declined, with the reason it gave.
-export type Declined = Review['issues'][number] & { readonly reason: string };
+export type Declined = ReviewIssue & { readonly reason: string };
 
 export type ReviewRoundAnswer =
 	| {
@@ -441,13 +448,15 @@ export function readReviewRoundAnswer(output: unknown): ReviewRoundAnswer | null
 	return { outcome: 'blocked', summary: output.summary, blocker };
 }
 
-export interface ReviewRoundContext {
+export interface ReviewRoundPromptContext {
 	readonly feature: Feature;
 	// the branch's base, which the diff is taken against
 	readonly base: string;
 	readonly diff: { readonly text: string; readonly truncated: boolean };
 	// what the last Review asked to change
 	readonly issues: Review['issues'];
+	// the issues earlier rounds of the build declined, each with its reason
+	readonly declined: readonly Declined[];
 	readonly allowed: readonly string[];
 	readonly check: string;
 	readonly rules?: string;
@@ -456,12 +465,14 @@ export interface ReviewRoundContext {
 }
 
 // One of the Review's issues as a line of a list: where it sits, and what is wrong.
-const issueText = (i: Review['issues'][number]) =>
+const issueText = (i: ReviewIssue) =>
 	`${code(i.line === undefined ? i.file : `${i.file}:${String(i.line)}`)}: ${i.problem}`;
-export const issueLine = (i: Review['issues'][number]) => `- ${issueText(i)}`;
+export const issueLine = (i: ReviewIssue) => `- ${issueText(i)}`;
+// An issue a Review round declined, as a line of a list with its reason under it.
+export const declinedLine = (d: Declined) => `${issueLine(d)}\n  Reason: ${d.reason}`;
 
 // A Review round's Session: the issues the last Review found on the Feature's whole diff, fixed before the draft pull request opens.
-export function reviewRoundPrompt(c: ReviewRoundContext): string {
+export function reviewRoundPrompt(c: ReviewRoundPromptContext): string {
 	const commands = c.allowed.length === 0 ? 'none' : c.allowed.map(code).join(', ');
 	const cut = c.diff.truncated ? ' It is cut here; the rest is in git.' : '';
 	const note =
@@ -496,7 +507,11 @@ ${c.diff.text}
 
 # The issues the Review found
 
-${c.issues.map((i, n) => `${String(n + 1)}. ${issueText(i)}`).join('\n')}`;
+${c.issues.map((i, n) => `${String(n + 1)}. ${issueText(i)}`).join('\n')}${
+		c.declined.length === 0
+			? ''
+			: `\n\n# Issues declined in earlier rounds\n\nAn earlier Review round declined these, each with its reason. Where the Review raises one again, weigh its reason before you decline it again.\n\n${c.declined.map(declinedLine).join('\n')}`
+	}`;
 }
 
 export function reviewPrompt(
@@ -510,7 +525,7 @@ export function reviewPrompt(
 	const earlier =
 		declined.length === 0
 			? ''
-			: `\n\n# Issues declined earlier\n\nA Review round declined these issues of an earlier Review, each with its reason. Do not raise one again unless its reason is wrong, and then say why.\n\n${declined.map((d) => `${issueLine(d)}\n  Reason: ${d.reason}`).join('\n')}`;
+			: `\n\n# Issues declined earlier\n\nA Review round declined these issues of an earlier Review, each with its reason. Do not raise one again unless its reason is wrong, and then say why.\n\n${declined.map(declinedLine).join('\n')}`;
 	return `You review a Feature branch that Nightjar built with nobody at the keyboard. You only read: change no file, and run nothing but git diff, git log and git show.
 
 Review \`git diff ${base}...HEAD\` against:

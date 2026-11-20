@@ -1,12 +1,14 @@
 // The nightjarDrafts contract (docs/custom-adapters.md): run over a Code host that has the optional method.
 import assert from 'node:assert/strict';
-import type { CodeHost, NightjarDraft, Pull } from '../code-host.js';
+import type { CodeHost, DraftsListing, NightjarDraft, Pull } from '../code-host.js';
 import { markPublished, publishedByNightjar } from '../publish.js';
 import type { ContractCase } from './case.js';
 import type { CodeHostHarness, CodeHostSubject, DraftsWorld } from './code-host.js';
 
 type Listing = Omit<CodeHostSubject, 'codeHost' | 'drafts'> & {
-	readonly codeHost: CodeHost & { nightjarDrafts: () => Promise<NightjarDraft[]> };
+	readonly codeHost: CodeHost & {
+		nightjarDrafts: (listing?: DraftsListing) => Promise<NightjarDraft[]>;
+	};
 	readonly drafts: DraftsWorld;
 	// a pushed branch with a draft pull request on it
 	readonly opened: (
@@ -48,10 +50,15 @@ function draftsCase(
 	};
 }
 
-const listed = async ({ codeHost }: Listing) => await codeHost.nightjarDrafts();
+const listed = async ({ codeHost }: Listing, listing?: DraftsListing) =>
+	await codeHost.nightjarDrafts(listing);
 
-const one = async (subject: Listing, pull: Pull): Promise<NightjarDraft> => {
-	const found = (await listed(subject)).find((d) => d.pull.id === pull.id);
+const one = async (
+	subject: Listing,
+	pull: Pull,
+	listing?: DraftsListing
+): Promise<NightjarDraft> => {
+	const found = (await listed(subject, listing)).find((d) => d.pull.id === pull.id);
 	assert.ok(found !== undefined, `pull request ${String(pull.id)} is listed`);
 	return found;
 };
@@ -158,13 +165,13 @@ export const nightjarDraftsContract: readonly ContractCase<CodeHostHarness>[] = 
 	),
 
 	draftsCase(
-		'gives the commits of its branch, oldest first, each with its whole message',
+		'gives the commits of its branch when asked for them, oldest first, each with its whole message',
 		async (subject) => {
 			const built = 'Build #2 Share the function\n\nFactory-Ticket: 2\nFactory-Session: s-1';
 			const pull = await subject.opened('factory/1-a', { message: built });
 			const later = await subject.commit('Fix a typo');
 			await subject.codeHost.push(later.folder, 'factory/1-a');
-			const { commits } = await one(subject, pull);
+			const { commits } = await one(subject, pull, { commits: true });
 			assert.ok(commits !== undefined, 'it lists the commits');
 			assert.ok(commits.length >= 2, `two commits at least; got ${String(commits.length)}`);
 			const [first, last] = [commits.at(-2), commits.at(-1)];

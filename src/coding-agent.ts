@@ -167,6 +167,8 @@ export interface ReviewRoundRequest extends Work {
 	readonly feature: Feature;
 	// what the last Review asked to change
 	readonly issues: Review['issues'];
+	// the issues a Review round declined earlier in the build, each with its reason
+	readonly declined: readonly Declined[];
 	readonly diff: { readonly text: string; readonly truncated: boolean };
 	// "note": the Feature's Workflow writes a note, so the round may revise only the note
 	readonly output?: 'note';
@@ -376,7 +378,10 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				...(req.minutes === undefined ? {} : { minutes: req.minutes }),
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {}),
 				...(req.of.kind === 'feedback' ? { schema: FEEDBACK_SCHEMA } : {}),
-				...(req.of.kind === 'reviewRound' ? { schema: REVIEW_ROUND_SCHEMA } : {}),
+				// a Review round's fix rounds name the round's model and effort, as a Step's do
+				...(req.of.kind === 'reviewRound'
+					? { schema: REVIEW_ROUND_SCHEMA, ...pick(setup.review) }
+					: {}),
 				...(req.of.kind === 'build' || req.of.kind === 'reviewRound' ? noting(req.of.output) : {})
 			}),
 			(output) => {
@@ -483,6 +488,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 					base: req.at.base,
 					diff: req.diff,
 					issues: req.issues,
+					declined: req.declined,
 					allowed: req.output === 'note' ? [] : setup.allowedCommands,
 					check: setup.check,
 					...(setup.rules === undefined ? {} : { rules: setup.rules }),

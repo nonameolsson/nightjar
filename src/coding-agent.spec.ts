@@ -706,6 +706,7 @@ const reviewRoundRequest = (over: Partial<ReviewRoundRequest> = {}): ReviewRound
 		{ file: 'src/marks.ts', line: 3, problem: 'It escapes twice.' },
 		{ file: 'README.md', problem: 'The new flag is not described.' }
 	],
+	declined: [],
 	diff: { text: '+++ b/src/marks.ts', truncated: true },
 	budgetUsd: 15,
 	...over
@@ -733,6 +734,25 @@ describe('a Review round', () => {
 		expect(req?.settings).toEqual(buildSettings(SETUP.allowedCommands));
 		expect(req?.schema).toHaveProperty('properties.outcome');
 		expect([req?.budgetUsd, req?.minutes]).toEqual([15, 60]);
+	});
+
+	it('gives the round the issues earlier rounds declined, with their reasons', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(
+			reviewRoundRequest({
+				declined: [
+					{ file: 'src/flag.ts', problem: 'The flag is unused.', reason: 'Tests read it.' }
+				]
+			})
+		);
+		expect(sent[0]?.prompt).toContain('- `src/flag.ts`: The flag is unused.');
+		expect(sent[0]?.prompt).toContain('Reason: Tests read it.');
+	});
+
+	it('names no declined issues when there are none', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(reviewRoundRequest());
+		expect(sent[0]?.prompt).not.toContain('Reason:');
 	});
 
 	it("runs a note's round on the note settings, given no repo command", async () => {
@@ -1022,6 +1042,13 @@ const owners: [
 		(own) => ({
 			setup: { review: own },
 			call: (agent) => agent.reviewRound(reviewRoundRequest())
+		})
+	],
+	[
+		"a Review round's fix round, by factory.json's review settings",
+		(own) => ({
+			setup: { review: own },
+			call: (agent) => agent.fix(fixRequest({ kind: 'reviewRound' }))
 		})
 	]
 ];

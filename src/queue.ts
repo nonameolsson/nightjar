@@ -11,7 +11,7 @@ import { AUTOMATIC_ROUNDS, feedbackHistory, newRequest } from './feedback-round.
 import { FOOTER } from './footer.js';
 import { featureStopStep, feedbackLimitStep, nextStepText } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
-import { markPublished, publishedByNightjar, readyToPublish } from './publish.js';
+import { markPublished, readyToPublish } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
 import { BRANCH_PREFIX, branchFor } from './worktree.js';
 import {
@@ -68,7 +68,8 @@ export function publishPass(publish: boolean | undefined, codeHost: CodeHost): P
 	const take = codeHost.publish?.bind(codeHost);
 	if (publish !== true || list === undefined || take === undefined) return null;
 	return {
-		drafts: list,
+		// only Publish reads the commits, to see that no person pushed
+		drafts: () => list({ commits: true }),
 		publish: async (draft) => {
 			await take(draft.pull);
 			// its own Publish is no person engaging: the mark is what tells the Pull-check pass it may still fix this pull request
@@ -120,6 +121,10 @@ export function pullChecksPass(
 	return { drafts: list, fix };
 }
 
+// The drafts that meet the four conditions of Publish, oldest first.
+const readyDrafts = (drafts: readonly NightjarDraft[], now: Date) =>
+	drafts.filter((d) => readyToPublish(d, now)).sort((a, b) => a.pull.id - b.pull.id);
+
 // One draft Publish takes out of draft, the oldest that meets its four conditions, or null when none does. A pull request whose publishing failed is not tried again in this run.
 async function publishNext(
 	deps: QueueDeps,
@@ -133,10 +138,7 @@ async function publishNext(
 		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
 		return null;
 	}
-	const now = deps.now();
-	const next = [...drafts]
-		.sort((a, b) => a.pull.id - b.pull.id)
-		.find((d) => !publishedByNightjar(d.body) && !failed.has(d.pull.id) && readyToPublish(d, now));
+	const next = readyDrafts(drafts, deps.now()).find((d) => !failed.has(d.pull.id));
 	if (next === undefined) return null;
 	try {
 		await pass.publish(next);
@@ -570,7 +572,9 @@ export async function dryRun(
 	const pulls = deps.codeHost === undefined ? null : openPullsOf(deps.codeHost);
 	const asked = pulls === null ? [] : await askedFeatures(deps, await pulls());
 	const publishing = deps.publish === undefined ? [] : await publishable(deps, deps.publish);
-	if (features.length === 0 && asked.length === 0) deps.say(none(deps));
+	if (features.length === 0 && asked.length === 0 && publishing.length === 0) {
+		deps.say(none(deps));
+	}
 	for (const f of features) {
 		deps.say(`would build #${f.id} ${f.title}${f.lone === true ? ' (a lone issue)' : ''}`);
 	}
@@ -592,14 +596,10 @@ async function publishable(
 	deps: Pick<QueueDeps, 'tracker'> & { readonly now?: () => Date },
 	pass: PublishPass
 ) {
-	const now = deps.now?.() ?? new Date();
-	const drafts = [...(await pass.drafts())].sort((a, b) => a.pull.id - b.pull.id);
 	const found: { draft: NightjarDraft; feature: ItemId; title: string }[] = [];
-	for (const draft of drafts) {
+	for (const draft of readyDrafts(await pass.drafts(), deps.now?.() ?? new Date())) {
 		const feature = featureOfBody(draft.body);
-		if (feature === undefined || publishedByNightjar(draft.body) || !readyToPublish(draft, now)) {
-			continue;
-		}
+		if (feature === undefined) continue;
 		const title = await deps.tracker.feature(feature).then(
 			(f) => f.title,
 			() => ''
