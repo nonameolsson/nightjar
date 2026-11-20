@@ -4279,3 +4279,98 @@ describe('pullFixLimits', () => {
 		});
 	});
 });
+
+describe('a draft that conflicts with its base', () => {
+	const bodyOf = (world: World) => world.host.pulls[0]?.body ?? '';
+	const BRANCH = 'factory/1-one-escape';
+
+	it('says so in the body, naming the base branch, and sets no Signal and writes no comment', async () => {
+		const world = makeWorld();
+		world.host.conflictsOn(BRANCH, 'yes');
+		await buildFeature(deps(world), setup(world, { baseBranch: 'develop' }), '1');
+
+		expect(bodyOf(world)).toContain(
+			'## Conflicts with develop\n\nThis pull request conflicts with `develop`: merge or rebase `develop` before review.'
+		);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(world.host.pulls[0]?.comments.join('\n')).not.toContain('conflict');
+		expect(
+			world.tracker.items
+				.get('1')
+				?.comments.map((c) => c.body)
+				.join('\n')
+		).not.toContain('conflict');
+	});
+
+	it('keeps the rest of the body as it was, the section after the opening line', async () => {
+		const clean = makeWorld();
+		await buildFeature(deps(clean), setup(clean), '1');
+		const world = makeWorld();
+		world.host.conflictsOn(BRANCH, 'yes');
+		await buildFeature(deps(world), setup(world), '1');
+		const section =
+			'## Conflicts with main\n\nThis pull request conflicts with `main`: merge or rebase `main` before review.';
+		expect(bodyOf(world).replace(`${section}\n\n`, '')).toBe(bodyOf(clean));
+		expect(bodyOf(world).indexOf(section)).toBeLessThan(bodyOf(world).indexOf('## Built'));
+	});
+
+	it('adds no section to a draft that does not conflict', async () => {
+		const world = makeWorld();
+		world.host.conflictsOn(BRANCH, 'no');
+		await buildFeature(deps(world), setup(world), '1');
+		expect(bodyOf(world)).not.toContain('## Conflicts with');
+		expect(world.host.conflictReads).toBe(1);
+	});
+
+	it('retries for about ten seconds while the state is unknown, then adds the section once it is yes', async () => {
+		const world = makeWorld();
+		world.host.conflictsOn(BRANCH, 'unknown', 'unknown', 'yes');
+		await buildFeature(deps(world), setup(world), '1');
+		expect(bodyOf(world)).toContain('## Conflicts with main');
+		expect(world.host.conflictReads).toBe(3);
+	});
+
+	it('leaves the body as it is when the state stays unknown, after about ten seconds of waiting', async () => {
+		const world = makeWorld();
+		world.host.conflictsOn(BRANCH, 'unknown');
+		await buildFeature(deps(world), setup(world), '1');
+		expect(bodyOf(world)).not.toContain('## Conflicts with');
+		expect(world.waits.reduce((a, b) => a + b, 0)).toBe(10_000);
+		expect(world.waits.every((ms) => ms <= 2_000)).toBe(true);
+	});
+
+	it('drops a section from an earlier run when the draft no longer conflicts', async () => {
+		const world = makeWorld();
+		const d = deps(world);
+		world.host.conflictsOn(BRANCH, 'yes');
+		await buildFeature(d, setup(world), '1');
+		expect(bodyOf(world)).toContain('## Conflicts with main');
+
+		world.host.conflictsOn(BRANCH, 'no');
+		await buildFeature(d, setup(world), '1');
+		expect(bodyOf(world)).not.toContain('## Conflicts with');
+	});
+
+	it('keeps the mark that Nightjar published the pull request when it adds the section', async () => {
+		const world = makeWorld();
+		const d = deps(world);
+		await buildFeature(d, setup(world), '1');
+		const [pull] = await world.host.nightjarDrafts();
+		if (pull === undefined) throw new Error('no draft was opened');
+		await world.host.publish(pull.pull);
+		await world.host.editBody(pull.pull, markPublished(pull.body));
+
+		world.host.conflictsOn(BRANCH, 'yes');
+		await buildFeature(d, setup(world), '1');
+		expect(bodyOf(world)).toContain('## Conflicts with main');
+		expect(publishedByNightjar(bodyOf(world))).toBe(true);
+	});
+
+	it('builds as before on a Code host that cannot say', async () => {
+		const world = makeWorld();
+		const { conflicts: _gone, ...without } = world.host;
+		await buildFeature({ ...deps(world), codeHost: without }, setup(world), '1');
+		expect(bodyOf(world)).not.toContain('## Conflicts with');
+		expect(world.host.pulls).toHaveLength(1);
+	});
+});

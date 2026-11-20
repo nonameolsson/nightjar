@@ -188,6 +188,17 @@ To let Nightjar publish its own draft pull request (`publish: true` in `factory.
 
 Nightjar decides when to publish; `publish` only does it. It reads whether the Feature was complete and the last Review approved from a hidden mark in the body Nightjar wrote, so your Code host stores nothing more. Under `--watch` it publishes the oldest draft from `nightjarDrafts` that was complete, whose last Review approved, whose Pull checks finished green (a head commit with none counts as green 10 minutes after the pull request opened) and that no person engaged with, then writes its mark into the body with `editBody`.
 
+To let Nightjar say in the body of its draft pull request that it conflicts with its base branch ([ADR 0007](adr/0007-a-feature-never-builds-on-another-features-unmerged-branch.md)), give the Code host one more optional method. A Code host without it builds as before, and its answer counts as unknown.
+
+```js
+		// whether the pull request conflicts with its base branch: 'yes', 'no', or 'unknown' while your
+		// host has not worked it out yet (GitHub's `mergeable` is null at first; Azure Repos' `mergeStatus`
+		// is notSet or queued). Only read the state; never merge or rebase the base into the branch.
+		conflicts: todo('conflicts'),
+```
+
+After Nightjar opens a draft or replaces its body, it calls `conflicts`. While the answer is `unknown` it asks again every 2 seconds, for about 10 seconds in all, then leaves the body as it is. On `yes` it adds a `## Conflicts with <base>` section that names the base branch and asks for a merge or rebase before review. A body Nightjar writes on a later run holds no such section, so the section goes when the draft no longer conflicts. No Signal is set and no Tracker comment is written, and `--watch` passes that only look at open drafts do not call it.
+
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
 ## Test the module

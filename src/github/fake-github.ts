@@ -15,6 +15,8 @@ interface PullHead {
 	readonly head: string;
 	readonly base: string;
 	readonly draft: boolean;
+	// whether it merges into its base cleanly; null until GitHub has worked it out, which it does when asked
+	readonly mergeable?: boolean | null;
 }
 
 // On GitHub a pull request is an issue too, numbered with the issues.
@@ -351,8 +353,14 @@ export class FakeGitHub {
 	markReady(number: number): void {
 		const pull = this.pullAt(number);
 		this.change(number, () => ({
-			pull: { head: pull.head, base: pull.base, draft: false }
+			pull: { ...pull, draft: false }
 		}));
+	}
+
+	// Sets what pull request `number` says of merging into its base: `false` for a conflict, `null` for a state GitHub has not worked out yet.
+	setMergeable(number: number, mergeable: boolean | null): void {
+		const pull = this.pullAt(number);
+		this.change(number, () => ({ pull: { ...pull, mergeable } }));
 	}
 
 	// A person closes issue or pull request `number`.
@@ -414,7 +422,7 @@ export class FakeGitHub {
 		if (method === 'GET' && commitsOf) return this.renderCommits(Number(commitsOf[1]), call.query);
 		const pullNumber = new RegExp(`^${repo}/pulls/(\\d+)$`).exec(path);
 		const pull = pullNumber ? this.issues.get(Number(pullNumber[1])) : undefined;
-		if (pull?.pull !== undefined && method === 'GET') return ok(this.renderPull(pull));
+		if (pull?.pull !== undefined && method === 'GET') return ok(this.renderPull(pull, true));
 		if (pull?.pull !== undefined && method === 'PATCH') {
 			const body = call.fields.body;
 			if (typeof body === 'string') this.change(pull.number, () => ({ body }));
@@ -568,9 +576,13 @@ export class FakeGitHub {
 		return ok({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } });
 	}
 
-	private renderPull(issue: Issue) {
+	// `one` is a pull request read by its own number: only then does GitHub say whether it merges
+	private renderPull(issue: Issue, one = false) {
 		const head = issue.pull?.head ?? '';
 		return {
+			...(one
+				? { mergeable: issue.pull?.mergeable === undefined ? true : issue.pull.mergeable }
+				: {}),
 			number: issue.number,
 			node_id: nodeId(issue.number),
 			html_url: this.url(issue.number),

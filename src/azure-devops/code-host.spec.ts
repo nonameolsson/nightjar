@@ -401,3 +401,36 @@ describe('AzureReposCodeHost.nightjarDrafts', () => {
 		await expect(host.nightjarDrafts()).rejects.toThrow(AzureDevOpsFailure);
 	});
 });
+
+describe('AzureReposCodeHost.conflicts', () => {
+	it("says yes when Azure Repos' mergeStatus is conflicts", async () => {
+		const { ado, host, open } = drafting();
+		const pull = await open('factory/1-a');
+		ado.setMergeStatus(pull.id, 'conflicts');
+		expect(await host.conflicts(pull)).toBe('yes');
+	});
+
+	it('says no when the merge succeeded', async () => {
+		const { ado, host, open } = drafting();
+		const pull = await open('factory/1-a');
+		ado.setMergeStatus(pull.id, 'succeeded');
+		expect(await host.conflicts(pull)).toBe('no');
+	});
+
+	it('says unknown while Azure Repos has not worked it out, or could not', async () => {
+		const { ado, host, open } = drafting();
+		const pull = await open('factory/1-a');
+		expect(await host.conflicts(pull)).toBe('unknown');
+		for (const status of ['queued', 'rejectedByPolicy', 'failure']) {
+			ado.setMergeStatus(pull.id, status);
+			expect(await host.conflicts(pull)).toBe('unknown');
+		}
+	});
+
+	it('names the pull request when Azure Repos refuses the read', async () => {
+		const { ado, host, open } = drafting();
+		const pull = await open('factory/1-a');
+		ado.failNext(/pullrequests\/\d+\?/, 500);
+		await expect(host.conflicts(pull)).rejects.toThrow(/read pull request \d+/);
+	});
+});

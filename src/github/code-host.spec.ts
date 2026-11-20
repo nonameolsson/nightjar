@@ -354,3 +354,42 @@ describe('GitHubCodeHost lists its drafts', () => {
 		await expect(host.nightjarDrafts()).rejects.toThrow(GitHubFailure);
 	});
 });
+
+describe('GitHubCodeHost conflicts', () => {
+	const world = () => {
+		const github = new FakeGitHub('o/r', 'nightjar-bot');
+		const host = new GitHubCodeHost('o/r', github.gh, noGit);
+		github.pushed('factory/1-a', 'sha-1');
+		const open = () =>
+			host.createDraft({ title: 'A', head: 'factory/1-a', base: 'main', body: 'Body' });
+		return { github, host, open };
+	};
+
+	it('says no for a pull request that merges cleanly', async () => {
+		const { host, open } = world();
+		expect(await host.conflicts(await open())).toBe('no');
+	});
+
+	it('says yes for a pull request whose mergeable is false', async () => {
+		const { github, host, open } = world();
+		const pull = await open();
+		github.setMergeable(pull.id, false);
+		expect(await host.conflicts(pull)).toBe('yes');
+	});
+
+	it('says unknown while mergeable is null, and answers once GitHub has worked it out', async () => {
+		const { github, host, open } = world();
+		const pull = await open();
+		github.setMergeable(pull.id, null);
+		expect(await host.conflicts(pull)).toBe('unknown');
+		github.setMergeable(pull.id, false);
+		expect(await host.conflicts(pull)).toBe('yes');
+	});
+
+	it('names the call when GitHub refuses it', async () => {
+		const { gh } = fakeGh(on('GET', 'repos/o/r/pulls/9', failed('gh: Not Found (HTTP 404)')));
+		await expect(new GitHubCodeHost('o/r', gh, noGit).conflicts(PULL)).rejects.toThrow(
+			new GitHubFailure('gh could not read pull request #9: gh: Not Found (HTTP 404)')
+		);
+	});
+});

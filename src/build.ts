@@ -23,6 +23,7 @@ import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { conflictOf, withConflict } from './conflict-section.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
 	issueLine,
@@ -1127,18 +1128,27 @@ class FeatureRun {
 		const { codeHost } = this.deps;
 		const open = await codeHost.openPull(this.tree.at.branch);
 		if (open) {
-			await codeHost.editBody(
-				open,
-				(await this.publishedBefore(open)) ? markPublished(body) : body
-			);
+			const written = (await this.publishedBefore(open)) ? markPublished(body) : body;
+			await codeHost.editBody(open, written);
+			await this.sayConflict(open, written);
 			return open;
 		}
-		return codeHost.createDraft({
+		const pull = await codeHost.createDraft({
 			title: this.feature.title,
 			head: this.tree.at.branch,
 			base: this.setup.baseBranch,
 			body
 		});
+		await this.sayConflict(pull, body);
+		return pull;
+	}
+
+	// A draft that conflicts with its base says so in its body, and nowhere else: no Signal and no Tracker comment, and the base is left alone (docs/adr/0007). A body written fresh each run holds no section of an earlier one.
+	private async sayConflict(pull: Pull, written: string): Promise<void> {
+		const { codeHost, sleep } = this.deps;
+		const state = await conflictOf(codeHost, pull, (ms) => sleep(ms, this.setup.signal));
+		if (state !== 'yes') return;
+		await codeHost.editBody(pull, withConflict(written, this.setup.baseBranch));
 	}
 }
 

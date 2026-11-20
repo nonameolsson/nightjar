@@ -3,6 +3,7 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	Conflict,
 	DraftRequest,
 	DraftsListing,
 	Feedback,
@@ -114,6 +115,23 @@ export class FakeCodeHost implements CodeHost {
 	comment = (pull: Pull, body: string): Promise<void> => {
 		this.change(pull.id, (p) => ({ comments: [...p.comments, body] }));
 		return Promise.resolve();
+	};
+
+	// what each branch's pull request says of its conflicts, one answer a read; the last answer stays once the rest are read
+	private readonly conflictAnswers = new Map<string, Conflict[]>();
+	// how many times a pull request's conflict state was read
+	conflictReads = 0;
+
+	// the pull request on `branch` conflicts with its base, or not, or the Code host has not worked it out: the answers come one at a time, and the last stays
+	conflictsOn(branch: string, ...answers: Conflict[]): void {
+		this.conflictAnswers.set(branch, answers);
+	}
+
+	conflicts = (pull: Pull): Promise<Conflict> => {
+		this.conflictReads += 1;
+		const head = this.pulls.find((p) => p.id === pull.id)?.head ?? '';
+		const answers = this.conflictAnswers.get(head) ?? [];
+		return Promise.resolve((answers.length > 1 ? answers.shift() : answers[0]) ?? 'no');
 	};
 
 	// in the order they were opened, which is the order of their ids

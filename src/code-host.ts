@@ -107,6 +107,9 @@ export interface OpenPull {
 	readonly changesRequested: readonly ChangeRequest[];
 }
 
+// Whether a pull request conflicts with its base branch, as the Code host says: `unknown` while it has not worked that out yet.
+export type Conflict = 'yes' | 'no' | 'unknown';
+
 export interface CodeHost {
 	// pushes the worktree's HEAD in `folder` to `branch` on the host
 	push(folder: string, branch: string): Promise<void>;
@@ -128,4 +131,6 @@ export interface CodeHost {
 	openPulls?(prefix: string): Promise<OpenPull[]>;
 	// optional, so a Code host module written before it still loads: takes Nightjar's own draft pull request out of draft (docs/adr/0006); one already out of draft stays so. It never merges, approves or closes one, and never turns one back into a draft. A Code host without it never publishes.
 	publish?(pull: Pull): Promise<void>;
+	// optional, so a Code host module written before it still loads, and its answer counts as `unknown`: whether the pull request conflicts with its base branch. Nightjar reads it after it opens or updates a draft, and says so in the body; it never merges or rebases the base into a draft (docs/adr/0007).
+	conflicts?(pull: Pull): Promise<Conflict>;
 }

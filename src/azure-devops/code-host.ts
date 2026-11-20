@@ -4,6 +4,7 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	Conflict,
 	DraftRequest,
 	DraftsListing,
 	FailedCheck,
@@ -59,6 +60,9 @@ const PullSchema = z.looseObject({
 		project: z.looseObject({ id: z.string() }).nullish()
 	})
 });
+
+// what Azure Repos says of merging a pull request into its target
+const MergeSchema = z.looseObject({ mergeStatus: z.string().nullish() });
 
 const PullsSchema = z.looseObject({ value: z.array(PullSchema) });
 
@@ -557,6 +561,17 @@ export class AzureReposCodeHost implements CodeHost {
 			url: this.at(`pullRequests/${String(pull.id)}/threads?${API}`),
 			body: { comments: [{ parentCommentId: 0, content: body, commentType: 1 }] }
 		});
+	}
+
+	// Azure Repos' mergeStatus is conflicts or succeeded once it has tried the merge; any other answer, such as notSet or queued, says nothing of conflicts yet.
+	async conflicts(pull: Pull): Promise<Conflict> {
+		const got = await this.api.parse(
+			`read pull request ${String(pull.id)}`,
+			{ method: 'GET', url: this.at(`pullrequests/${String(pull.id)}?${API}`) },
+			MergeSchema
+		);
+		if (got.mergeStatus === 'conflicts') return 'yes';
+		return got.mergeStatus === 'succeeded' ? 'no' : 'unknown';
 	}
 
 	// Azure Repos publishes a draft by setting it out of draft.

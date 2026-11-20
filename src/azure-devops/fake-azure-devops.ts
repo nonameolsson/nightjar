@@ -55,6 +55,8 @@ export interface FakePullRequest {
 	readonly description: string;
 	readonly isDraft: boolean;
 	readonly status: 'active' | 'abandoned' | 'completed';
+	// what Azure Repos says of merging it into its target: notSet until it has tried, then queued, conflicts, succeeded, rejectedByPolicy or failure
+	readonly mergeStatus?: string;
 	// the first comment of each thread, oldest first
 	readonly comments: readonly string[];
 }
@@ -344,6 +346,11 @@ export class FakeAzureDevOps {
 	// A person publishes the draft, abandons it, or completes it.
 	markReady(id: number): void {
 		this.replacePull({ ...this.pullRequestAt(id), isDraft: false });
+	}
+
+	// What Azure Repos says of merging the pull request into its target.
+	setMergeStatus(id: number, mergeStatus: string): void {
+		this.replacePull({ ...this.pullRequestAt(id), mergeStatus });
 	}
 
 	abandon(id: number): void {
@@ -981,6 +988,7 @@ export class FakeAzureDevOps {
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
 			isDraft: pull.isDraft,
+			mergeStatus: pull.mergeStatus ?? 'notSet',
 			// each pull request opens a minute after the one before
 			creationDate: new Date(Date.UTC(2026, 9, 30, 8, pull.pullRequestId)).toISOString(),
 			...(head === undefined ? {} : { lastMergeSourceCommit: { commitId: head } }),

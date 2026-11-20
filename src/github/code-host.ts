@@ -4,6 +4,7 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	Conflict,
 	DraftRequest,
 	DraftsListing,
 	FailedCheck,
@@ -40,6 +41,9 @@ const PullSchema = z.looseObject({
 
 // a pull request as publishing reads it: GraphQL names it by its node id
 const PublishedSchema = z.looseObject({ node_id: z.string(), draft: z.boolean().optional() });
+
+// whether a pull request merges into its base; null while GitHub has not worked it out
+const MergeableSchema = z.looseObject({ mergeable: z.boolean().nullish() });
 
 const READY_FOR_REVIEW =
 	'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }';
@@ -309,6 +313,18 @@ export class GitHubCodeHost implements CodeHost {
 			'-f',
 			`body=${body}`
 		]);
+	}
+
+	// GitHub works out whether a pull request merges when it is asked, so `mergeable` is null at first.
+	async conflicts(pull: Pull): Promise<Conflict> {
+		const n = String(pull.id);
+		const raw = await this.api.parse(
+			`read pull request #${n}`,
+			[`repos/${this.repo}/pulls/${n}`],
+			MergeableSchema
+		);
+		if (raw.mergeable == null) return 'unknown';
+		return raw.mergeable ? 'no' : 'yes';
 	}
 
 	// GitHub's REST API cannot take a pull request out of draft, so this asks its GraphQL API to mark it ready for review.
