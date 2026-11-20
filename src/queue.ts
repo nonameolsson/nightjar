@@ -43,6 +43,8 @@ export interface QueueDeps {
 	readonly signal?: AbortSignal;
 	// how long --watch waits when idle; POLL_MS when left out
 	readonly pollMs?: number;
+	// how many Slots the run holds (--parallel, else config.json's parallel); 1 when left out
+	readonly slots?: number;
 	// --watch only: newer Nightjar code than the one running, checked while idle
 	readonly newer?: Newer;
 	// factory.json's Signal names, for the Next step of a Feature handed back on a fault

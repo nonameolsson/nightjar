@@ -225,6 +225,7 @@ What is yours rather than the repo's lives outside it, in `config.json` under `$
 | ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dailyUsd` | `60`                   | The estimated spend per local day in a repo, from its `.factory/runs.jsonl`, at which a run pauses. `--watch` looks again after 30 minutes.                                          |
 | `pollSeconds` | `120`               | How often `--watch` looks again when idle, at least `30`. `--poll` beats it. |
+| `parallel` | `1`                    | How many Slots a run holds: how many Features `--watch` or `--once` builds at once, a whole number from `1` to `8`. `--parallel N` beats it. |
 | `assignee` | the signed-in person   | Whose Features to build: `--once`, `--watch` and `doctor` take the Features assigned to this login with the Go, and `nightjar <id>` refuses one assigned to anyone else. |
 | `profile`  | none, the terminal's own login | Which Claude login the sessions use: a name (`work` is `~/.claude-work`), a path to the config folder, or `default` for `~/.claude`. `--profile` beats it. |
 
@@ -541,6 +542,7 @@ nightjar doctor
 | `--once`               | Builds the oldest Feature assigned to you with the Go, then exits.                                     |
 | `--watch`              | Builds the Features assigned to you with the Go, oldest first, and looks again every 2 minutes, or `pollSeconds`. |
 | `--poll SECONDS`       | With `--watch` only: looks again after this many seconds (at least 30); beats `pollSeconds`.           |
+| `--parallel N`         | With `--watch` or `--once` only: holds N Slots (1 to 8); beats `parallel`. `doctor` shows the number. |
 | `<id>`                 | Builds that Feature now, by its id on the Tracker (`nightjar 42`, `#42`, or `nightjar PROJ-123` from a Tracker module). It refuses a Feature not assigned to you, without the Go, or already carrying the working Signal. |
 | `--use-api-key`        | Lets the sessions bill `ANTHROPIC_API_KEY` instead of your Claude plan.                                |
 | `--profile <name>`     | Runs the sessions as that Claude login: `~/.claude-NAME`, a path as the folder itself, or `default` for `~/.claude`. It drops `CLAUDE_CODE_OAUTH_TOKEN`, which would win over the folder. `doctor` and every build name the account, organization, plan and config folder first. |
