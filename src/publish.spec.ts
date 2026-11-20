@@ -12,7 +12,10 @@ describe('the publish mark in a pull request body', () => {
 	});
 
 	it('is hidden: an HTML comment on a line of its own', () => {
-		expect(publishMark({ complete: true, approved: true })).toMatch(/^<!-- [^\n]* -->$/);
+		const mark = publishMark({ complete: true, approved: true });
+		expect(mark.startsWith('<!-- ')).toBe(true);
+		expect(mark.endsWith(' -->')).toBe(true);
+		expect(mark).not.toContain('\n');
 	});
 
 	it('gives nothing for a body written without it, as one by an earlier Nightjar or a person', () => {
