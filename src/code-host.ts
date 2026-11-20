@@ -32,7 +32,7 @@ export interface PullChecks {
 	readonly failed: readonly FailedCheck[];
 }
 
-// An open draft pull request on one of Nightjar's branches, as the revisit pass reads it.
+// An open pull request on one of Nightjar's branches, as the revisit pass reads it: a draft, or one Nightjar published itself (docs/adr/0006).
 export interface NightjarDraft {
 	readonly pull: Pull;
 	// its head branch, which starts with Nightjar's branch prefix
@@ -43,6 +43,13 @@ export interface NightjarDraft {
 	readonly checks: PullChecks;
 	// whether an account other than the signed-in one reviewed or commented on it
 	readonly personEngaged: boolean;
+	// What Publish (docs/adr/0006) reads besides the above. Each is absent from a Code host module written before it, and Publish then waits: it never takes a draft out of draft on a guess.
+	// when the pull request opened, as an ISO time
+	readonly openedAt?: string;
+	// how many Pull checks the head commit has, finished or not; 0 while the Code host has registered none
+	readonly checkCount?: number;
+	// the commits on its branch that its base lacks, oldest first
+	readonly commits?: readonly PullCommit[];
 }
 
 export type FeedbackKind = 'comment' | 'review' | 'check';
@@ -106,7 +113,7 @@ export interface CodeHost {
 	// links each Ticket not linked yet; never closes one or sets its state
 	placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void>;
 	comment(pull: Pull, body: string): Promise<void>;
-	// optional, so a Code host module written before it still loads: the open draft pull requests whose head branch starts with Nightjar's branch prefix, oldest first; a Code host without it gets no Pull-check pass
+	// optional, so a Code host module written before it still loads: the open draft pull requests whose head branch starts with Nightjar's branch prefix, oldest first, and those Nightjar published itself, whose body carries the mark `markPublished` writes (a pull request a person marked ready is left out); a Code host without it gets no Pull-check pass and never publishes
 	nightjarDrafts?(): Promise<NightjarDraft[]>;
 	// Optional, both or neither. Every page of each list; whatever ends with the footer is left out, whoever wrote it.
 	feedback?(pull: Pull): Promise<Feedback[]>;

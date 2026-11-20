@@ -114,10 +114,17 @@ To let Nightjar fix the failed Pull checks of its own draft pull requests (`pull
 ```js
 		// the open draft pull requests whose head branch starts with factory/, oldest first, each as
 		// { pull: { id, url }, branch, headCommit, body,
-		//   checks: { pending, failed: [{ check, job, step, logTail }] }, personEngaged }:
+		//   checks: { pending, failed: [{ check, job, step, logTail }] }, personEngaged,
+		//   openedAt, checkCount, commits: [{ message, at }] }:
 		// `pending` while any check on the head commit runs, `failed` every check that finished red,
 		// `personEngaged` once any account but the signed-in one reviewed or commented on it.
-		// Leave out pull requests marked ready for review, closed or merged.
+		// Leave out pull requests marked ready for review, closed or merged, except one whose body
+		// holds the hidden mark `<!-- nightjar-published -->`, which Nightjar writes when it
+		// publishes a pull request itself, so that its Pull-check pass keeps to it.
+		// `openedAt` is when the pull request opened (ISO time), `checkCount` how many Pull checks the
+		// head commit has, finished or not (0 while your host has registered none), and `commits` those
+		// on the branch that its base lacks, oldest first, each with its whole message. Publish reads
+		// these three; a Code host that leaves them out never has its drafts published.
 		nightjarDrafts: todo('nightjarDrafts'),
 ```
 
@@ -178,7 +185,7 @@ To let Nightjar publish its own draft pull request (`publish: true` in `factory.
 		publish: todo('publish'),
 ```
 
-Nightjar decides when to publish; `publish` only does it. It reads whether the Feature was complete and the last Review approved from a hidden mark in the body Nightjar wrote, so your Code host stores nothing more.
+Nightjar decides when to publish; `publish` only does it. It reads whether the Feature was complete and the last Review approved from a hidden mark in the body Nightjar wrote, so your Code host stores nothing more. Under `--watch` it publishes the oldest draft from `nightjarDrafts` that was complete, whose last Review approved, whose Pull checks finished green (a head commit with none counts as green 10 minutes after the pull request opened) and that no person engaged with, then writes its mark into the body with `editBody`.
 
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
@@ -212,7 +219,7 @@ export async function trackerHarness(world) {
 }
 ```
 
-`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, and a check has a `conclusion`. A Code host with `openPulls` gives both `drafts` and `bench`; its review `given` may say `changes: true`, a review that requests changes, and its `commit(message)` takes the message of the commit to make, each commit made on the ones before it. A Code host with `publish` needs nothing more: its suite reads `draft` from `pull(pull)`, so that must say what your host shows. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
+`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `passed(pull)` finishes one Pull check green on it, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, and a check has a `conclusion`. A Code host with `openPulls` gives both `drafts` and `bench`; its review `given` may say `changes: true`, a review that requests changes, and its `commit(message)` takes the message of the commit to make, each commit made on the ones before it. A Code host with `publish` needs nothing more: its suite reads `draft` from `pull(pull)`, so that must say what your host shows. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
 
 Then run, from the repo:
 

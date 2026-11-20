@@ -9,7 +9,7 @@ import { checkMachine, Refusal } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { detectChecks, detectTools, type Detected } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
-import { dryRun } from './queue.js';
+import { dryRun, publishPass } from './queue.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
@@ -599,7 +599,14 @@ export async function runInit(o: InitOptions): Promise<number> {
 	say('running `nightjar doctor`:');
 	const { adapters, assignee } = checked.ready;
 	try {
-		await dryRun({ tracker: adapters.tracker, codeHost: adapters.codeHost, person: assignee, say });
+		const publish = publishPass(checked.ready.config.publish, adapters.codeHost);
+		await dryRun({
+			tracker: adapters.tracker,
+			codeHost: adapters.codeHost,
+			person: assignee,
+			say,
+			...(publish === null ? {} : { publish })
+		});
 	} catch (fault) {
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;

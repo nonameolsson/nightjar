@@ -72,6 +72,7 @@ function azureReposDrafts(ado: FakeAzureDevOps): DraftsWorld {
 	};
 	return {
 		checks: (pull, checks) => done(() => setChecks(ado, pull, checks)),
+		passed: (pull) => done(() => ado.policy(pull.id, { type: 'build', status: 'approved' })),
 		engage: (pull) => done(() => ado.sayOnPull(pull.id, 'bea@contoso.com', 'Why this change?')),
 		ready: (pull) => done(() => ado.markReady(pull.id)),
 		closePull: (pull) => done(() => ado.abandon(pull.id))

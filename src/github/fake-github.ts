@@ -578,6 +578,7 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			draft: issue.pull?.draft ?? false,
+			created_at: this.createdAt(issue.number),
 			head: {
 				ref: head,
 				sha: this.shaOf(issue.number),
