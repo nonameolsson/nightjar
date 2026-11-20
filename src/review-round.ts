@@ -2,15 +2,15 @@
 import type { RunCheck } from './check.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
-import type { Review } from './prompt.js';
+import type { Declined, Review } from './prompt.js';
 import type { Allowance, Entry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
 import type { Worktree } from './worktree.js';
 
 export type ReviewRoundEnd =
-	// one commit on the branch, not pushed yet
-	| { readonly kind: 'fixed'; readonly summary: string }
+	// one commit on the branch, not pushed yet; none when the round declined every issue and changed no file
+	| { readonly kind: 'fixed'; readonly summary: string; readonly declined: readonly Declined[] }
 	// thrown away, the attempt kept on `side` when it left anything
 	| { readonly kind: 'failed'; readonly why: string; readonly side: string | null }
 	| Halt;
@@ -123,9 +123,15 @@ export async function reviewRound(ctx: ReviewRoundContext): Promise<ReviewRoundE
 		);
 	}
 	const summary = [got.summary, ...fixed.summaries].join('\n\n');
+	const { declined } = got;
 	if (!(await tree.commitReview(ctx.round, summary, got.sessionId))) {
-		return failed('it said it fixed the issues but changed no file');
+		// a round that declines every issue has nothing to change: the Review is wrong, not the round
+		if (declined.length < ctx.issues.length) {
+			return failed('it said it fixed the issues but changed no file');
+		}
+		ctx.say(`${name}: declined every issue`);
+		return { kind: 'fixed', summary, declined };
 	}
 	ctx.say(`${name}: committed`);
-	return { kind: 'fixed', summary };
+	return { kind: 'fixed', summary, declined };
 }
