@@ -617,6 +617,9 @@ describe('buildFeature', () => {
 		expect(got).toMatchObject({ kind: 'nothing' });
 		expect(askedOf(world, 'build')).toEqual([]);
 		expect(JSON.stringify(got)).toContain('blocked by');
+		expect(world.tracker.said('9')[0]).toContain(
+			"#9 Fix the typo: blocked by #2, a Ticket outside this Feature: it closes when its Feature's pull request merges. Merge that, then give the Go again."
+		);
 	});
 
 	it("asks for each Ticket's build in the worktree, with the Tickets built before it and the Ticket's budget", async () => {
@@ -1218,6 +1221,7 @@ describe('buildFeature', () => {
 		expect(body).toContain('- AB#4 Mark the rest: blocked by AB#3');
 		expect(body).not.toMatch(/(?<!AB)#\d/);
 		expect(world.tracker.said('1')[0]).toContain('- #4 Mark the rest: blocked by #3');
+		expect(body).not.toContain('outside this Feature');
 	});
 
 	it('names the Ticket after which the check fails by its reference in the pull request', async () => {
