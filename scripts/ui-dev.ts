@@ -6,7 +6,7 @@ import { fileSpend, record } from '../src/ledger.js';
 import { StatusFile } from '../src/status.js';
 import { startUi, UI_PORT } from '../src/ui.js';
 
-const SCENARIOS = ['building', 'idle', 'paused', 'stopped', 'off'] as const;
+const SCENARIOS = ['building', 'review-round', 'idle', 'paused', 'stopped', 'off'] as const;
 type Scenario = (typeof SCENARIOS)[number];
 
 const arg = process.argv[2] ?? 'building';
@@ -50,6 +50,22 @@ session('268', '1', 95, 1.4);
 session('268', '2', 80, 2.1);
 session('268', null, 70, 0.6);
 session('270', '1', 50, 1.9);
+if (scenario === 'review-round') {
+	// the Review that asked for changes, then the Review round that is running
+	session('272', null, 12, 0.7);
+	record(ledger, {
+		at: ago(3),
+		repo: 'o/app',
+		feature: '272',
+		ticket: null,
+		branch: 'nightjar/272',
+		step: 'reviewRound',
+		session: 's-272-review-round',
+		costUsd: 1.2,
+		outcome: 'fixed',
+		durationMs: 3 * 60_000
+	});
+}
 
 const file = new StatusFile({
 	path: join(root, '.factory', 'status.json'),
@@ -95,7 +111,7 @@ if (scenario !== 'off') {
 	);
 }
 
-if (scenario === 'building' || scenario === 'stopped') {
+if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-round') {
 	const lines = [
 		'Reading src/views.ts',
 		'Edit src/views.ts',
@@ -109,22 +125,30 @@ if (scenario === 'building' || scenario === 'stopped') {
 		join(root, '.factory', 'logs', 'dev.jsonl'),
 		lines.map((l) => JSON.stringify(l)).join('\n')
 	);
+	const reviewing = scenario === 'review-round';
 	file.doing({
 		kind: 'building',
 		feature: '272',
 		title: 'Custom <views>',
-		ticket: '3',
-		step: 'build',
-		round: 1,
-		rounds: 3,
+		// a Review round works on the whole Feature, so it has no Ticket
+		ticket: reviewing ? null : '3',
+		step: reviewing ? 'reviewRound' : 'build',
+		round: reviewing ? 2 : 1,
+		rounds: reviewing ? 2 : 3,
 		session: 'dev',
 		startedAt: ago(4),
 		featureStartedAt: ago(20),
-		tickets: [
-			{ id: '1', title: 'Models', state: 'built' },
-			{ id: '3', title: 'Views list', state: 'building' },
-			{ id: '4', title: 'Share links', state: 'waiting', why: 'waits for #3' }
-		]
+		tickets: reviewing
+			? [
+					{ id: '1', title: 'Models', state: 'built' },
+					{ id: '3', title: 'Views list', state: 'built' },
+					{ id: '4', title: 'Share links', state: 'built' }
+				]
+			: [
+					{ id: '1', title: 'Models', state: 'built' },
+					{ id: '3', title: 'Views list', state: 'building' },
+					{ id: '4', title: 'Share links', state: 'waiting', why: 'waits for #3' }
+				]
 	});
 } else if (scenario === 'idle') {
 	file.doing({ kind: 'idle', nextPollAt: new Date(now.getTime() + 120_000).toISOString() });

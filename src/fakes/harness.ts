@@ -25,6 +25,7 @@ export function fakeCodeHostSubject(codeHost: FakeCodeHost): CodeHostSubject {
 		codeHost,
 		drafts: {
 			checks: (pull, checks) => done(() => codeHost.setChecks(pull, checks)),
+			passed: (pull) => done(() => codeHost.setChecks(pull, { pending: false, failed: [] })),
 			engage: (pull) => done(() => codeHost.engage(pull)),
 			ready: (pull) => done(() => codeHost.markReady(pull)),
 			closePull: (pull) => done(() => codeHost.close(pull))

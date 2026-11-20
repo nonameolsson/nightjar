@@ -5,6 +5,7 @@ import type { Feedback } from './code-host.js';
 import {
 	BUILD_SCHEMA,
 	FEEDBACK_SCHEMA,
+	REVIEW_ROUND_SCHEMA,
 	REVIEW_SCHEMA,
 	STEP_SCHEMA,
 	buildPrompt,
@@ -15,12 +16,15 @@ import {
 	readBuildAnswer,
 	readFeedbackAnswer,
 	readReview,
+	readReviewRoundAnswer,
 	readStepAnswer,
 	reviewPrompt,
+	reviewRoundPrompt,
 	stepPrompt,
 	stepRoundPrompt,
 	type FeedbackItem,
 	type Question,
+	type Declined,
 	type Review
 } from './prompt.js';
 import type { Failure, Session, SessionRequest, SessionResult } from './session.js';
@@ -107,6 +111,7 @@ export interface BuildRequest extends Work {
 export type Fixing =
 	| { readonly kind: 'build'; readonly output?: 'note' }
 	| { readonly kind: 'feedback' }
+	| { readonly kind: 'reviewRound'; readonly output?: 'note' }
 	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras }
 	// `fresh` is given when the head commit's Session is gone: the fix starts a new Session, which has only this to go on
 	| {
@@ -156,11 +161,26 @@ export interface FeedbackRequest extends Work {
 	readonly diff: { readonly text: string; readonly truncated: boolean };
 }
 
+export interface ReviewRoundRequest extends Work {
+	readonly kind: 'reviewRound';
+	readonly sessionId: string;
+	readonly feature: Feature;
+	// what the last Review asked to change
+	readonly issues: Review['issues'];
+	// the issues a Review round declined earlier in the build, each with its reason
+	readonly declined: readonly Declined[];
+	readonly diff: { readonly text: string; readonly truncated: boolean };
+	// "note": the Feature's Workflow writes a note, so the round may revise only the note
+	readonly output?: 'note';
+}
+
 export interface ReviewRequest extends Work {
 	readonly kind: 'review';
 	readonly sessionId: string;
 	readonly feature: Feature;
 	readonly tickets: readonly Ticket[];
+	// the issues a Review round declined earlier in the build, each with its reason
+	readonly declined: readonly Declined[];
 }
 
 // How any Session can end besides its answer.
@@ -201,6 +221,12 @@ export type FeedbackOutcome = Outcome<
 	| { readonly kind: 'blocked'; readonly blocker: string }
 >;
 
+export type ReviewRoundOutcome = Outcome<
+	// `declined`: the issues it declined, each with its reason
+	| { readonly kind: 'fixed'; readonly summary: string; readonly declined: readonly Declined[] }
+	| { readonly kind: 'blocked'; readonly blocker: string }
+>;
+
 export type ReviewOutcome = Outcome<{ readonly kind: 'reviewed'; readonly review: Review }>;
 
 export interface CodingAgent {
@@ -209,6 +235,7 @@ export interface CodingAgent {
 	step(req: StepRequest): Promise<StepOutcome>;
 	feedback(req: FeedbackRequest): Promise<FeedbackOutcome>;
 	review(req: ReviewRequest): Promise<ReviewOutcome>;
+	reviewRound(req: ReviewRoundRequest): Promise<ReviewRoundOutcome>;
 }
 
 const API_KEY_PAUSE =
@@ -351,9 +378,20 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				...(req.minutes === undefined ? {} : { minutes: req.minutes }),
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {}),
 				...(req.of.kind === 'feedback' ? { schema: FEEDBACK_SCHEMA } : {}),
-				...(req.of.kind === 'build' ? noting(req.of.output) : {})
+				// a Review round's fix rounds name the round's model and effort, as a Step's do
+				...(req.of.kind === 'reviewRound'
+					? { schema: REVIEW_ROUND_SCHEMA, ...pick(setup.review) }
+					: {}),
+				...(req.of.kind === 'build' || req.of.kind === 'reviewRound' ? noting(req.of.output) : {})
 			}),
 			(output) => {
+				if (req.of.kind === 'reviewRound') {
+					const answer = readReviewRoundAnswer(output);
+					if (answer === null) return null;
+					return answer.outcome === 'fixed'
+						? { kind: 'fixed' as const, summary: answer.summary }
+						: { kind: 'gaveUp' as const };
+				}
 				if (req.of.kind === 'feedback') {
 					const answer = readFeedbackAnswer(output);
 					if (answer === null) return null;
@@ -441,15 +479,50 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 			}
 		);
 
+	// A Review round starts a Session of its own, on a Ticket's minutes and the Review's model and effort.
+	const reviewRound = (req: ReviewRoundRequest) =>
+		outcomeOf(
+			request(req, {
+				prompt: reviewRoundPrompt({
+					feature: req.feature,
+					base: req.at.base,
+					diff: req.diff,
+					issues: req.issues,
+					declined: req.declined,
+					allowed: req.output === 'note' ? [] : setup.allowedCommands,
+					check: setup.check,
+					...(setup.rules === undefined ? {} : { rules: setup.rules }),
+					...(req.output === undefined ? {} : { output: req.output })
+				}),
+				...noting(req.output),
+				sessionId: req.sessionId,
+				schema: REVIEW_ROUND_SCHEMA,
+				...pick(setup.review)
+			}),
+			(output) => {
+				const answer = readReviewRoundAnswer(output);
+				if (answer === null) return null;
+				if (answer.outcome === 'blocked') {
+					return { kind: 'blocked' as const, blocker: answer.blocker };
+				}
+				const declined = answer.declined.flatMap(({ issue, reason }) => {
+					const found = req.issues[issue - 1];
+					return found === undefined ? [] : [{ ...found, reason }];
+				});
+				return { kind: 'fixed' as const, summary: answer.summary, declined };
+			}
+		);
+
 	return {
 		build,
 		fix,
 		step,
 		feedback,
+		reviewRound,
 		review: (req) =>
 			outcomeOf(
 				request(req, {
-					prompt: reviewPrompt(req.feature, req.at.base, req.tickets, setup.rules),
+					prompt: reviewPrompt(req.feature, req.at.base, req.tickets, setup.rules, req.declined),
 					sessionId: req.sessionId,
 					schema: REVIEW_SCHEMA,
 					tools: REVIEW_TOOLS,

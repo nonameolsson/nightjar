@@ -13,6 +13,7 @@ import {
 	featureWriterContract,
 	nightjarDraftsContract,
 	openPullsContract,
+	publishContract,
 	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
@@ -120,6 +121,10 @@ function gitHubDrafts(github: FakeGitHub): DraftsWorld {
 	};
 	return {
 		checks: (pull, checks) => done(() => setChecks(github, pull, checks)),
+		passed: (pull) =>
+			done(() => {
+				github.checkRun(github.headOf(pull.id), { name: 'lint', conclusion: 'success' });
+			}),
 		engage: (pull) => done(() => github.say(pull.id, 'bea', 'Why this change?')),
 		ready: (pull) => done(() => github.markReady(pull.id)),
 		closePull: (pull) => done(() => github.close(pull.id))
@@ -306,4 +311,8 @@ describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () =
 
 describe('GitHubCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
 	for (const c of openPullsContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the publish contract', { timeout: 30_000 }, () => {
+	for (const c of publishContract) it(c.name, () => c.run(gitHubCodeHost));
 });

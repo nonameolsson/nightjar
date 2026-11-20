@@ -1,6 +1,6 @@
 // `nightjar doctor`: runs every check, says how to fix each that fails, and lists what it would build.
-import { checkMachine, type CheckOptions, type Line } from './checks.js';
-import { dryRun } from './queue.js';
+import { checkMachine, type CheckOptions, type Line, type Ready } from './checks.js';
+import { dryRun, publishPass } from './queue.js';
 import { say, why } from './say.js';
 
 const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip', warn: 'warn' } as const;
@@ -17,6 +17,19 @@ export function printLines(lines: readonly Line[]): void {
 
 export const failures = (lines: readonly Line[]) => lines.filter((l) => l.status === 'fail').length;
 
+// What it would build, answer feedback on and publish, over the Adapters the checks made ready.
+export async function dryRunReady(ready: Pick<Ready, 'adapters' | 'assignee' | 'config'>) {
+	const { adapters, assignee, config } = ready;
+	const publish = publishPass(config.publish, adapters.codeHost);
+	await dryRun({
+		tracker: adapters.tracker,
+		codeHost: adapters.codeHost,
+		person: assignee,
+		say,
+		...(publish === null ? {} : { publish })
+	});
+}
+
 export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promise<number> {
 	const checked = await checkMachine({ ...options, failFast: false });
 	printLines(checked.lines);
@@ -26,9 +39,8 @@ export async function runDoctor(options: Omit<CheckOptions, 'failFast'>): Promis
 		console.error(`nightjar: ${count} failed; fix it, then run \`nightjar doctor\` again.`);
 		return 2;
 	}
-	const { adapters, assignee } = checked.ready;
 	try {
-		await dryRun({ tracker: adapters.tracker, codeHost: adapters.codeHost, person: assignee, say });
+		await dryRunReady(checked.ready);
 	} catch (fault) {
 		console.error(`  FAIL  Features: ${why(fault)}`);
 		return 2;
