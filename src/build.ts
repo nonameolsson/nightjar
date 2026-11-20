@@ -39,6 +39,7 @@ import {
 	type NextStep,
 	type TicketHandBack
 } from './next-step.js';
+import { publishMark } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
@@ -1484,6 +1485,8 @@ function pullBody(p: {
 		);
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
+	const approved = p.review !== 'off' && p.review?.verdict === 'approve';
+	parts.push(publishMark({ complete: p.complete, approved }));
 	return `${parts.join('\n\n')}${FOOTER}`;
 }
 

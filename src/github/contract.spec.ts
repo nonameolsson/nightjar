@@ -13,6 +13,7 @@ import {
 	featureWriterContract,
 	nightjarDraftsContract,
 	openPullsContract,
+	publishContract,
 	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
@@ -306,4 +307,8 @@ describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () =
 
 describe('GitHubCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
 	for (const c of openPullsContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the publish contract', { timeout: 30_000 }, () => {
+	for (const c of publishContract) it(c.name, () => c.run(gitHubCodeHost));
 });

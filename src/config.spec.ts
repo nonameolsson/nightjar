@@ -97,6 +97,18 @@ describe('loadConfig', () => {
 		expect(loadConfig(root)).not.toHaveProperty('pullChecks');
 	});
 
+	it('loads publish, and leaves it out, so off, when not set', () => {
+		write({ ...VALID, publish: true });
+		expect(loadConfig(root)).toMatchObject({ publish: true });
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('publish');
+	});
+
+	it('refuses a publish that is not true or false', () => {
+		write({ ...VALID, publish: 'yes' });
+		expect(refusal()).toMatch(/^factory\.json: publish: /m);
+	});
+
 	it("loads the Pull-check pass's round, dollar and minute limits", () => {
 		write({ ...VALID, pullChecks: { enabled: true, fixRounds: 3, fixUsd: 2.5, fixMinutes: 20 } });
 		expect(loadConfig(root)).toMatchObject({

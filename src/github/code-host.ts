@@ -36,6 +36,12 @@ const PullSchema = z.looseObject({
 	body: z.string().nullable().optional()
 });
 
+// a pull request as publishing reads it: GraphQL names it by its node id
+const PublishedSchema = z.looseObject({ node_id: z.string(), draft: z.boolean().optional() });
+
+const READY_FOR_REVIEW =
+	'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }';
+
 const ListedPullSchema = PullSchema.extend({
 	draft: z.boolean().optional(),
 	head: z.looseObject({
@@ -299,6 +305,26 @@ export class GitHubCodeHost implements CodeHost {
 			`repos/${this.repo}/issues/${n}/comments`,
 			'-f',
 			`body=${body}`
+		]);
+	}
+
+	// GitHub's REST API cannot take a pull request out of draft, so this asks its GraphQL API to mark it ready for review.
+	async publish(pull: Pull): Promise<void> {
+		const n = String(pull.id);
+		const raw = await this.api.parse(
+			`read pull request #${n}`,
+			[`repos/${this.repo}/pulls/${n}`],
+			PublishedSchema
+		);
+		if (raw.draft !== true) return;
+		await this.api.call(`publish pull request #${n}`, [
+			'-X',
+			'POST',
+			'graphql',
+			'-f',
+			`query=${READY_FOR_REVIEW}`,
+			'-f',
+			`id=${raw.node_id}`
 		]);
 	}
 

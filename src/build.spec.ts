@@ -45,6 +45,7 @@ import { FakeTracker } from './fakes/tracker.js';
 import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { featureAfterRunStep, nextStepText, noteStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK } from './prompt.js';
+import { publishMarkOf } from './publish.js';
 import type { Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
@@ -1807,6 +1808,58 @@ describe('Workflows', () => {
 			{ of: { kind: 'step', step: critique, extras }, resume: 'session-3', round: 1 }
 		]);
 		expect(subjects(world)[0]).toBe('design-review: critique');
+	});
+});
+
+describe('the publish mark in the pull request', () => {
+	const mark = (world: World) => publishMarkOf(world.host.pulls[0]?.body ?? '');
+	// the loop's deps with a Review that gives `verdict`
+	const reviewing = (world: World, verdict: 'approve' | 'changes'): Deps => {
+		const d = deps(world);
+		const review = (req: ReviewRequest): Promise<ReviewOutcome> =>
+			Promise.resolve({
+				kind: 'reviewed',
+				review: { verdict, summary: 'Read it.', issues: [] },
+				sessionId: req.sessionId,
+				costUsd: 0.5
+			});
+		return { ...d, codingAgent: { ...d.codingAgent, review } };
+	};
+
+	it('says complete and approved when every Ticket is built, the check is green and the Review approves', async () => {
+		const world = makeWorld();
+		await buildFeature(reviewing(world, 'approve'), setup(world), '1');
+		expect(mark(world)).toEqual({ complete: true, approved: true });
+	});
+
+	it('says not approved when the Review asks for changes, did not finish or is switched off', async () => {
+		const changes = makeWorld();
+		await buildFeature(reviewing(changes, 'changes'), setup(changes), '1');
+		expect(mark(changes)).toEqual({ complete: true, approved: false });
+
+		const failed = makeWorld();
+		failed.settle = (req) =>
+			req.kind === 'review'
+				? { kind: 'failed', why: 'budget', failure: 'budget', sessionId: req.sessionId, costUsd: 1 }
+				: undefined;
+		await buildFeature(deps(failed), setup(failed), '1');
+		expect(mark(failed)).toEqual({ complete: true, approved: false });
+
+		const off = makeWorld();
+		await buildFeature(deps(off), setup(off, { review: { enabled: false } }), '1');
+		expect(mark(off)).toEqual({ complete: true, approved: false });
+	});
+
+	it('says not complete when a Ticket is left waiting, or the check stays red', async () => {
+		const waiting = makeWorld();
+		waiting.acts['3'] = 'fail';
+		await buildFeature(deps(waiting), setup(waiting), '1');
+		expect(mark(waiting)).toEqual({ complete: false, approved: true });
+
+		const red = makeWorld();
+		red.checkOk = false;
+		await buildFeature(deps(red), setup(red), '1');
+		expect(mark(red)?.complete).toBe(false);
 	});
 });
 

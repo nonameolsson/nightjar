@@ -114,4 +114,6 @@ export interface CodeHost {
 	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
 	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with `prefix`, oldest first; a Code host without it, or without feedback and reply, gets no Feedback round a request for changes starts
 	openPulls?(prefix: string): Promise<OpenPull[]>;
+	// optional, so a Code host module written before it still loads: takes Nightjar's own draft pull request out of draft (docs/adr/0006); one already out of draft stays so. It never merges, approves or closes one, and never turns one back into a draft. A Code host without it never publishes.
+	publish?(pull: Pull): Promise<void>;
 }
