@@ -952,7 +952,7 @@ describe('buildFeature', () => {
 
 			expect(got).toMatchObject({ kind: 'pull' });
 			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
-			expect(refs(world)).toEqual(['#2', '#1', '#3']);
+			expect(refs(world)).toEqual(['#1', '#2', '#3']);
 			expect(world.tracker.signalsOf('1')).toEqual([]);
 		});
 
