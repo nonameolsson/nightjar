@@ -1570,7 +1570,9 @@ function pullBody(p: {
 	if (p.reviews !== 'off') parts.push(reviewSection(p.reviews));
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
-	const approved = p.review !== 'off' && p.review?.verdict === 'approve';
+	// the last Review of the build, whatever a round did after it
+	const last = p.reviews === 'off' ? undefined : p.reviews.findLast((r) => r.kind === 'review');
+	const approved = last?.kind === 'review' && last.review?.verdict === 'approve';
 	parts.push(publishMark({ complete: p.complete, approved }));
 	return `${parts.join('\n\n')}${FOOTER}`;
 }
