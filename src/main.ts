@@ -286,6 +286,7 @@ export async function runNightjar(
 		signals: config.signals,
 		...(pullChecks === null ? {} : { pullChecks }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
+		slots: args.parallel ?? ready.person.parallel,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 
