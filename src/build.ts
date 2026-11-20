@@ -34,6 +34,7 @@ import {
 	nextStepText,
 	noteStep,
 	pullChecksStep,
+	reviewStep,
 	stoppedStep,
 	ticketStep,
 	type NextStep,
@@ -834,6 +835,7 @@ class FeatureRun {
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? '', tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
 		let review: Review | 'off' | null = 'off';
+		let open: ReviewLeftOpen | null = null;
 		if (this.setup.review?.enabled !== false) {
 			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
@@ -845,6 +847,7 @@ class FeatureRun {
 			} else if (left.length === 0 && red === null && paused === null) {
 				const rounds = await this.reviewRounds(got, done);
 				review = rounds.review;
+				open = rounds.open;
 				if (rounds.paused !== null) {
 					paused = rounds.paused;
 					await this.pause(paused);
@@ -927,6 +930,8 @@ class FeatureRun {
 					next
 				)
 			);
+		} else if (open !== null && review !== null && review !== 'off') {
+			await this.handReview(pull, open, review);
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
 		}
@@ -946,14 +951,19 @@ class FeatureRun {
 		);
 	}
 
-	// On a complete Feature, while the Review says changes: a Review round, then the Review again, up to review.fixRounds in the build. A round that fails or is stopped ends them, the Review before it the last.
+	// On a complete Feature, while the Review says changes: a Review round, then the Review again, up to review.fixRounds in the build. A round that fails or is stopped ends them, the Review before it the last. `open` says why a person must look: a round that failed, or rounds that ran out on changes.
 	private async reviewRounds(
 		first: Review | null,
 		done: readonly Ticket[]
-	): Promise<{ readonly review: Review | null; readonly paused: string | null }> {
+	): Promise<{
+		readonly review: Review | null;
+		readonly paused: string | null;
+		readonly open: ReviewLeftOpen | null;
+	}> {
 		const { deps } = this;
 		const rounds = this.setup.review?.fixRounds ?? DEFAULT_REVIEW_FIX_ROUNDS;
 		let review = first;
+		let ran = 0;
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
 			if (this.aborted) break;
 			const end = await reviewRound({
@@ -973,13 +983,23 @@ class FeatureRun {
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
 			});
-			if (end.kind === 'paused') return { review, paused: end.why };
-			if (end.kind !== 'fixed') break;
+			if (end.kind === 'paused') return { review, paused: end.why, open: null };
+			if (end.kind === 'aborted') break;
+			if (end.kind === 'failed') {
+				return {
+					review,
+					paused: null,
+					open: { kind: 'failed', round, why: end.why, side: end.side }
+				};
+			}
+			ran = round;
 			const again = await this.review(done);
-			if (again !== null && 'paused' in again) return { review, paused: again.paused };
+			if (again !== null && 'paused' in again) return { review, paused: again.paused, open: null };
 			review = again;
 		}
-		return { review, paused: null };
+		const open: ReviewLeftOpen | null =
+			ran > 0 && review?.verdict === 'changes' ? { kind: 'exhausted', rounds: ran } : null;
+		return { review, paused: null, open };
 	}
 
 	// A Review round's fix rounds show and are logged as the round they belong to.
@@ -995,6 +1015,24 @@ class FeatureRun {
 			},
 			o
 		);
+	}
+
+	// The Feature is a person's now: the Review still asks for changes, and Nightjar's Review rounds could not, or did not get to, answer them.
+	private async handReview(pull: Pull, open: ReviewLeftOpen, review: Review): Promise<void> {
+		const id = this.feature.id;
+		const next = reviewStep(this.setup.signals);
+		this.deps.status.happened({
+			kind: 'needs-info',
+			feature: id,
+			ticket: null,
+			why:
+				open.kind === 'failed'
+					? `its Review round ${String(open.round)} was thrown away: ${open.why}`
+					: 'its Review still asks for changes',
+			next
+		});
+		await this.deps.tracker.addSignal(id, 'human');
+		await this.deps.tracker.comment(id, withNext(reviewOpenComment(pull.url, open, review), next));
 	}
 
 	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
@@ -1596,9 +1634,33 @@ function costSection(
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
 }
 
-function reviewComment(review: Review): string {
-	const issues = review.issues
+const issueLines = (issues: Review['issues']) =>
+	issues
 		.map((i) => `- \`${i.file}${i.line ? `:${String(i.line)}` : ''}\`: ${i.problem}`)
 		.join('\n');
+
+// Why the Feature needs a person after its Review rounds: one failed and was thrown away, or the rounds ran out with the Review still saying changes.
+type ReviewLeftOpen =
+	| {
+			readonly kind: 'failed';
+			readonly round: number;
+			readonly why: string;
+			// the branch the thrown-away attempt is kept on, when it left anything
+			readonly side: string | null;
+	  }
+	| { readonly kind: 'exhausted'; readonly rounds: number };
+
+// What the last Review left open, as the comment on the Feature says it.
+function reviewOpenComment(url: string, open: ReviewLeftOpen, review: Review): string {
+	const cause =
+		open.kind === 'failed'
+			? `Review round ${String(open.round)} was thrown away: ${open.why}.${open.side === null ? '' : ` Its work is kept on the branch \`${open.side}\`.`} The branch keeps the commits before it, and no more Review rounds ran.\n\nThe last Review said changes`
+			: `Nightjar ran ${String(open.rounds)} Review round${open.rounds === 1 ? '' : 's'}, and the last Review still says changes`;
+	const issues = issueLines(review.issues);
+	return `Nightjar opened ${url}, and this Feature still needs a person.\n\n${cause}: ${review.summary}${issues ? `\n\n${issues}` : ''}`;
+}
+
+function reviewComment(review: Review): string {
+	const issues = issueLines(review.issues);
 	return `**Nightjar review: ${review.verdict === 'approve' ? 'approve' : 'changes'}**\n\n${review.summary}${issues ? `\n\n${issues}` : ''}${FOOTER}`;
 }

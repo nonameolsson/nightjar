@@ -104,6 +104,8 @@ interface World {
 	reviewAgent: (req: ReviewRequest) => ReviewOutcome;
 	// what the scripted agent does in a Review round; the default changes a file and says it fixed the issues
 	reviewRoundAgent: (req: ReviewRoundRequest) => ReviewRoundOutcome;
+	// whether a Review round leaves a changed file; false for one that says it fixed the issues and changed none
+	reviewRoundWrites: boolean;
 	acts: Record<string, Act>;
 	// how many passing failures a 'flaky' Ticket has before it builds
 	flaky: number;
@@ -275,6 +277,7 @@ function worldOf(o: {
 			sessionId: req.sessionId,
 			costUsd: 2
 		}),
+		reviewRoundWrites: true,
 		acts: {},
 		flaky: 1,
 		waits: [],
@@ -364,7 +367,7 @@ function deps(world: World): Deps {
 			review: (req) => answer(req, () => world.reviewAgent(req)),
 			reviewRound: (req) =>
 				answer(req, () => {
-					write(world, req.at.folder, `review-${req.sessionId}.txt`);
+					if (world.reviewRoundWrites) write(world, req.at.folder, `review-${req.sessionId}.txt`);
 					return world.reviewRoundAgent(req);
 				})
 		},
@@ -3416,6 +3419,187 @@ describe('a Review round', () => {
 		const [round] = askedOf(world, 'reviewRound');
 		expect(round?.output).toBe('note');
 		expect(askedOf(world, 'review')).toHaveLength(2);
+	});
+
+	describe('hands the Feature to a person', () => {
+		const said = (world: World) =>
+			world.tracker.said('1').filter((c) => c.includes('still needs a person'));
+
+		it('when a round fails: needs a person, a comment naming what the Review left open and ending with its Next step, and agent-working off', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			world.reviewRoundAgent = (req) => ({
+				kind: 'blocked',
+				blocker: 'The Review is wrong.',
+				sessionId: req.sessionId,
+				costUsd: 1
+			});
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.tracker.signalsOf('1')).toContain('human');
+			expect(world.tracker.signalsOf('1')).not.toContain('working');
+			expect(world.tracker.signalsOf('1')).not.toContain('needsInfo');
+			const [comment, ...more] = said(world);
+			expect(more).toEqual([]);
+			expect(comment).toContain(world.host.pulls[0]?.url);
+			expect(comment).toContain('Review round 1 was thrown away: it reports itself blocked');
+			expect(comment).toContain('factory/1-one-escape-attempt-review');
+			expect(comment).toContain('The last Review said changes');
+			expect(comment).toContain('- `src/marks.ts:3`: It escapes twice.');
+			expect(comment?.indexOf('**Next step**')).toBeGreaterThan(
+				comment?.indexOf('It escapes twice') ?? 0
+			);
+			expect(comment).toMatch(
+				/\*\*Next step\*\*[\s\S]*remove `ready-for-human` and add `factory-go`/
+			);
+			expect(world.happened).toContainEqual(
+				expect.objectContaining({ kind: 'needs-info', feature: '1' })
+			);
+		});
+
+		it('when the rounds run out and the last Review still says changes', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(askedOf(world, 'reviewRound')).toHaveLength(2);
+			expect(world.tracker.signalsOf('1')).toContain('human');
+			expect(world.tracker.signalsOf('1')).not.toContain('working');
+			const [comment, ...more] = said(world);
+			expect(more).toEqual([]);
+			expect(comment).toContain('2 Review rounds');
+			expect(comment).toContain('still says changes');
+			expect(comment).toContain('- `src/marks.ts:3`: It escapes twice.');
+			expect(comment).toContain('**Next step**');
+			expect(world.host.pulls).toHaveLength(1);
+		});
+
+		it('not when the last Review approves after a round', async () => {
+			const world = makeWorld();
+			changesFor(world, 1);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.tracker.signalsOf('1')).not.toContain('human');
+			expect(said(world)).toEqual([]);
+		});
+
+		it('not with review.fixRounds 0: the Review stays advisory', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+
+			await buildFeature(deps(world), setup(world, roundOf({ fixRounds: 0 })), '1');
+			expect(world.tracker.signalsOf('1')).not.toContain('human');
+		});
+
+		it('not when the run paused: it gives the Go back', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			world.settle = (req) =>
+				req.kind === 'reviewRound'
+					? {
+							kind: 'paused',
+							why: "the plan's usage limit was reached",
+							sessionId: 's',
+							costUsd: 0
+						}
+					: undefined;
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.tracker.signalsOf('1')).not.toContain('human');
+			expect(world.tracker.signalsOf('1')).toContain('go');
+		});
+	});
+
+	describe('throws a round that fails away, keeping the commits before it', () => {
+		const side = 'factory/1-one-escape-attempt-review';
+		const cases: { name: string; script: (world: World) => void; why: string; kept: boolean }[] = [
+			{
+				name: 'the check stays red after its fix rounds',
+				script: (world) => {
+					world.reviewRoundAgent = (req) => {
+						world.checkOk = false;
+						return { kind: 'fixed', summary: 'Tried.', sessionId: req.sessionId, costUsd: 2 };
+					};
+				},
+				why: 'still fails after the fix rounds',
+				kept: true
+			},
+			{
+				name: 'the Session fails',
+				script: (world) => {
+					world.settle = (req) =>
+						req.kind === 'reviewRound'
+							? {
+									kind: 'failed',
+									why: 'it crashed',
+									failure: 'lasting',
+									sessionId: 's',
+									costUsd: 1
+								}
+							: undefined;
+				},
+				why: 'it crashed',
+				// the Session was settled before it wrote anything
+				kept: false
+			},
+			{
+				name: 'it reports itself blocked',
+				script: (world) => {
+					world.reviewRoundAgent = (req) => ({
+						kind: 'blocked',
+						blocker: 'Wrong.',
+						sessionId: req.sessionId,
+						costUsd: 1
+					});
+				},
+				why: 'it reports itself blocked: Wrong.',
+				kept: true
+			}
+		];
+
+		it.each(cases)('onto -attempt-review when $name', async ({ script, why, kept }) => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			script(world);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.trees.sides.has(side)).toBe(kept);
+			expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+			expect(askedOf(world, 'reviewRound')).toHaveLength(1);
+			expect(world.host.pulls).toHaveLength(1);
+			expect(world.tracker.said('1').join('\n')).toContain(why);
+		});
+
+		it('when it says it fixed the issues but changed no file, with nothing to keep', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			world.reviewRoundWrites = false;
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.trees.sides.has(side)).toBe(false);
+			expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+			expect(askedOf(world, 'reviewRound')).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toContain('human');
+			const comment = world.tracker.said('1').join('\n');
+			expect(comment).toContain('changed no file');
+			expect(comment).not.toContain('attempt-review');
+		});
+
+		it('on real git too', async () => {
+			const world = makeGitWorld();
+			changesFor(world, 9);
+			world.reviewRoundAgent = (req) => ({
+				kind: 'blocked',
+				blocker: 'Wrong.',
+				sessionId: req.sessionId,
+				costUsd: 1
+			});
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+			expect(git(world, tree(), 'branch', '--list', side).trim()).toContain(side);
+			expect(git(world, tree(), 'show', '--stat', '--format=', side)).toContain('review-');
+		});
 	});
 });
 
