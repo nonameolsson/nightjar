@@ -20,6 +20,7 @@ export { waitingOnContract } from './contract/waiting-on.js';
 export { ticketCountsContract } from './contract/ticket-counts.js';
 export { nightjarDraftsContract } from './contract/nightjar-drafts.js';
 export { openPullsContract } from './contract/open-pulls.js';
+export { publishContract } from './contract/publish.js';
 export type {
 	ChangeRequest,
 	CodeHost,

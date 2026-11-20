@@ -6,6 +6,7 @@ import {
 	featureWriterContract,
 	nightjarDraftsContract,
 	openPullsContract,
+	publishContract,
 	sourcesContract,
 	feedbackContract,
 	ticketCountsContract,
@@ -66,4 +67,8 @@ describe('FakeCodeHost meets the feedback contract', () => {
 
 describe('FakeCodeHost meets the openPulls contract', () => {
 	for (const c of openPullsContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the publish contract', () => {
+	for (const c of publishContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });
