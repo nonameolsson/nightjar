@@ -24,6 +24,7 @@ import {
 	stepRoundPrompt,
 	type FeedbackItem,
 	type Question,
+	type Declined,
 	type Review
 } from './prompt.js';
 import type { Failure, Session, SessionRequest, SessionResult } from './session.js';
@@ -176,6 +177,8 @@ export interface ReviewRequest extends Work {
 	readonly sessionId: string;
 	readonly feature: Feature;
 	readonly tickets: readonly Ticket[];
+	// the issues a Review round declined earlier in the build, each with its reason
+	readonly declined: readonly Declined[];
 }
 
 // How any Session can end besides its answer.
@@ -217,7 +220,8 @@ export type FeedbackOutcome = Outcome<
 >;
 
 export type ReviewRoundOutcome = Outcome<
-	| { readonly kind: 'fixed'; readonly summary: string }
+	// `declined`: the issues it declined, each with its reason
+	| { readonly kind: 'fixed'; readonly summary: string; readonly declined: readonly Declined[] }
 	| { readonly kind: 'blocked'; readonly blocker: string }
 >;
 
@@ -492,9 +496,14 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 			(output) => {
 				const answer = readReviewRoundAnswer(output);
 				if (answer === null) return null;
-				return answer.outcome === 'fixed'
-					? { kind: 'fixed' as const, summary: answer.summary }
-					: { kind: 'blocked' as const, blocker: answer.blocker };
+				if (answer.outcome === 'blocked') {
+					return { kind: 'blocked' as const, blocker: answer.blocker };
+				}
+				const declined = answer.declined.flatMap(({ issue, reason }) => {
+					const found = req.issues[issue - 1];
+					return found === undefined ? [] : [{ ...found, reason }];
+				});
+				return { kind: 'fixed' as const, summary: answer.summary, declined };
 			}
 		);
 
@@ -507,7 +516,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		review: (req) =>
 			outcomeOf(
 				request(req, {
-					prompt: reviewPrompt(req.feature, req.at.base, req.tickets, setup.rules),
+					prompt: reviewPrompt(req.feature, req.at.base, req.tickets, setup.rules, req.declined),
 					sessionId: req.sessionId,
 					schema: REVIEW_SCHEMA,
 					tools: REVIEW_TOOLS,
