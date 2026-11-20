@@ -10,7 +10,13 @@ exports[`buildFeature > names its Feature in the pull request body, once even af
 
 ## Review
 
-Approve: Reads well.
+### Review 1: Approve
+
+Reads well.
+
+### Still open
+
+- \`a.ts:2\`: nit
 
 ## Cost
 
@@ -36,7 +42,13 @@ exports[`what a person sees of a Pull-check fix round > the pull request body > 
 
 ## Review
 
-Approve: Reads well.
+### Review 1: Approve
+
+Reads well.
+
+### Still open
+
+- \`a.ts:2\`: nit
 
 <!-- nightjar-pull-checks-section -->
 ## Pull checks

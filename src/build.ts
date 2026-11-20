@@ -43,6 +43,7 @@ import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
+import { reviewSection, type ReviewStep } from './review-section.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -834,6 +835,7 @@ class FeatureRun {
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? '', tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
 		let review: Review | 'off' | null = 'off';
+		let reviews: readonly ReviewStep[] | 'off' = 'off';
 		if (this.setup.review?.enabled !== false) {
 			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
@@ -845,12 +847,14 @@ class FeatureRun {
 			} else if (left.length === 0 && red === null && paused === null) {
 				const rounds = await this.reviewRounds(got, done);
 				review = rounds.review;
+				reviews = rounds.steps;
 				if (rounds.paused !== null) {
 					paused = rounds.paused;
 					await this.pause(paused);
 				}
 			} else {
 				review = got;
+				reviews = [{ kind: 'review', review: got }];
 			}
 		}
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
@@ -867,7 +871,7 @@ class FeatureRun {
 			done,
 			left,
 			red,
-			review,
+			reviews,
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
@@ -950,12 +954,18 @@ class FeatureRun {
 	private async reviewRounds(
 		first: Review | null,
 		done: readonly Ticket[]
-	): Promise<{ readonly review: Review | null; readonly paused: string | null }> {
+	): Promise<{
+		readonly review: Review | null;
+		readonly steps: readonly ReviewStep[];
+		readonly paused: string | null;
+	}> {
 		const { deps } = this;
 		const rounds = this.setup.review?.fixRounds ?? DEFAULT_REVIEW_FIX_ROUNDS;
 		let review = first;
+		const steps: ReviewStep[] = [{ kind: 'review', review }];
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
 			if (this.aborted) break;
+			const before = this.costs.length;
 			const end = await reviewRound({
 				codingAgent: deps.codingAgent,
 				runCheck: deps.runCheck,
@@ -973,13 +983,25 @@ class FeatureRun {
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
 			});
-			if (end.kind === 'paused') return { review, paused: end.why };
-			if (end.kind !== 'fixed') break;
+			if (end.kind === 'paused') return { review, steps, paused: end.why };
+			if (end.kind !== 'fixed' && end.kind !== 'failed') break;
+			// what the round and its fix rounds cost
+			const usd = this.costs
+				.slice(before)
+				.filter((c) => c.work === 'reviewRound')
+				.reduce((n, c) => n + c.usd, 0);
+			steps.push(
+				end.kind === 'fixed'
+					? { kind: 'round', round, outcome: 'fixed', text: end.summary, usd }
+					: { kind: 'round', round, outcome: 'thrown away', text: end.why, usd }
+			);
+			if (end.kind === 'failed') break;
 			const again = await this.review(done);
-			if (again !== null && 'paused' in again) return { review, paused: again.paused };
+			if (again !== null && 'paused' in again) return { review, steps, paused: again.paused };
 			review = again;
+			steps.push({ kind: 'review', review });
 		}
-		return { review, paused: null };
+		return { review, steps, paused: null };
 	}
 
 	// A Review round's fix rounds show and are logged as the round they belong to.
@@ -1502,7 +1524,8 @@ function pullBody(p: {
 	done: readonly Ticket[];
 	left: readonly Waiting[];
 	red: { ticket: ItemId; tail: string } | null;
-	review: Review | 'off' | null;
+	// the Reviews and Review rounds of the build in order, or 'off' when the Review is switched off or paused
+	reviews: readonly ReviewStep[] | 'off';
 	spent: number;
 	costs: readonly Cost[];
 	titleOf: (id: ItemId) => string | undefined;
@@ -1543,10 +1566,7 @@ function pullBody(p: {
 	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.feedback !== null) parts.push(p.feedback);
-	if (p.review !== 'off')
-		parts.push(
-			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
-		);
+	if (p.reviews !== 'off') parts.push(reviewSection(p.reviews));
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
 	return `${parts.join('\n\n')}${FOOTER}`;
@@ -1564,7 +1584,7 @@ export function featureOfBody(body: string): string | undefined {
 	return MARKER.exec(body)?.[1];
 }
 
-// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round and the review; a kind with no Session is left out.
+// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round, the review and its rounds; a kind with no Session is left out.
 function costSection(
 	spent: number,
 	costs: readonly Cost[],
@@ -1592,6 +1612,7 @@ function costSection(
 	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
 	if (has(null, 'feedback')) lines.push(`- Feedback round: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
+	if (has(null, 'reviewRound')) lines.push(`- Review rounds: ${dollars(sum(null, 'reviewRound'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
 }
