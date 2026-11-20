@@ -304,6 +304,31 @@ describe('makeAdapters and creating Features', () => {
 		);
 	});
 
+	it('loads a Code host module without conflicts, and one with it, and refuses one whose conflicts is no function', async () => {
+		moduleFile('old.mjs', `export const createCodeHost = () => (${HOST_BODY});`);
+		moduleFile(
+			'says.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ", conflicts: async () => 'no' }")});`
+		);
+		for (const path of ['./old.mjs', './says.mjs']) {
+			const { codeHost } = await makeAdapters(
+				config({ codeHost: { type: 'module', path } }),
+				dir,
+				env()
+			);
+			expect(typeof codeHost.conflicts).toBe(path === './old.mjs' ? 'undefined' : 'function');
+		}
+		moduleFile(
+			'odd-conflicts.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', conflicts: true }')});`
+		);
+		expect(
+			await refusal(config({ codeHost: { type: 'module', path: './odd-conflicts.mjs' } }))
+		).toBe(
+			'factory.json: codeHost: createCodeHost in ./odd-conflicts.mjs returned a Code host whose conflicts is not a function'
+		);
+	});
+
 	it('refuses a Code host module with only one of feedback and reply, or one that is no function', async () => {
 		moduleFile(
 			'half.mjs',

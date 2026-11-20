@@ -4366,6 +4366,15 @@ describe('a draft that conflicts with its base', () => {
 		expect(publishedByNightjar(bodyOf(world))).toBe(true);
 	});
 
+	it('builds on, with no section, when the Code host fails to say whether it conflicts', async () => {
+		const world = makeWorld();
+		world.host.conflicts = () => Promise.reject(new Error('gh could not read pull request #100'));
+		const got = await buildFeature(deps(world), setup(world), '1');
+		expect(got.kind).toBe('pull');
+		expect(bodyOf(world)).not.toContain('## Conflicts with');
+		expect(refs(world)).toEqual(['#1', '#2', '#3']);
+	});
+
 	it('builds as before on a Code host that cannot say', async () => {
 		const world = makeWorld();
 		const { conflicts: _gone, ...without } = world.host;

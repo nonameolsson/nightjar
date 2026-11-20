@@ -2,8 +2,8 @@
 import type { CodeHost, Conflict, Pull } from './code-host.js';
 
 // About ten seconds in all: GitHub works out whether a pull request merges only when it is asked, and answers unknown until it has.
-export const CONFLICT_READS = 6;
-export const CONFLICT_WAIT_MS = 2_000;
+const CONFLICT_READS = 6;
+const CONFLICT_WAIT_MS = 2_000;
 
 // The section for a pull request that conflicts with `base`.
 export function conflictSection(base: string): string {

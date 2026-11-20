@@ -1,6 +1,6 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
 import type { RunCheck } from './check.js';
-import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
+import type { CodeHost, Conflict, NightjarDraft, Pull } from './code-host.js';
 import {
 	envOf,
 	type BuildOutcome,
@@ -24,6 +24,7 @@ import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { conflictOf, withConflict } from './conflict-section.js';
+import { why } from './say.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
 	issueLine,
@@ -1146,7 +1147,16 @@ class FeatureRun {
 	// A draft that conflicts with its base says so in its body, and nowhere else: no Signal and no Tracker comment, and the base is left alone (docs/adr/0007). A body written fresh each run holds no section of an earlier one.
 	private async sayConflict(pull: Pull, written: string): Promise<void> {
 		const { codeHost, sleep } = this.deps;
-		const state = await conflictOf(codeHost, pull, (ms) => sleep(ms, this.setup.signal));
+		let state: Conflict;
+		try {
+			state = await conflictOf(codeHost, pull, (ms) => sleep(ms, this.setup.signal));
+		} catch (fault) {
+			// the note is advice for a reviewer, so a failed read never stops the build
+			this.deps.say(
+				`${hash(this.feature.id)}: could not read whether ${pull.url} conflicts: ${why(fault)}`
+			);
+			return;
+		}
 		if (state !== 'yes') return;
 		await codeHost.editBody(pull, withConflict(written, this.setup.baseBranch));
 	}
