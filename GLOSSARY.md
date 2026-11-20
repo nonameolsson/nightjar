@@ -30,6 +30,10 @@ _Avoid_: dependency graph, queue
 The Features assigned to a person with the Go, oldest first, that Nightjar builds as many at once as the run has Slots.
 _Avoid_: backlog, next up
 
+**Shelf**:
+The open Features assigned to a person that carry no Signal yet: work they could give the Go. An item with no Tickets sits there as a Lone issue would be built.
+_Avoid_: backlog, drafts, upcoming, icebox
+
 **Slot**:
 One of a run's places for work on one Feature at a time: its build, a Pull-check fix or a Feedback round. A run has as many as the person sets, one unless they say more, and a Feature is never in two at once.
 _Avoid_: lane, worker, runner, thread
@@ -65,7 +69,7 @@ _Avoid_: approved comment
 ### The page
 
 **Mat**:
-One state's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Completed), with a label tab and a tally of its Features.
+One state's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), with a label tab and a tally of its Features.
 _Avoid_: column, swimlane
 
 **Egg**:
