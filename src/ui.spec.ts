@@ -6,9 +6,11 @@ import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileSpend, record } from './ledger.js';
 import { featureAfterRunStep, ticketStep } from './next-step.js';
+import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
+import { listsFrom, TRACKER_EVERY_MS, type ReadingTracker, type Upcoming } from './ui-tracker.js';
 
 let root: string;
 let ui: Ui | null;
@@ -526,6 +528,171 @@ describe('nightjar ui page', () => {
 			req.end();
 		});
 		expect(got).toBe(403);
+	});
+});
+
+describe('nightjar ui reads the Tracker', () => {
+	// each read a minute would bring, which a spec calls itself instead of waiting
+	let minutes: { ms: number; read: () => void }[];
+	let reads: number;
+	beforeEach(() => {
+		minutes = [];
+		reads = 0;
+	});
+	const every = (ms: number, read: () => void) => {
+		minutes.push({ ms, read });
+		return () => {};
+	};
+	// #1 with the Go and two Tickets, one closed; #4 a lone issue that needs info
+	const fakeTracker = () =>
+		new FakeTracker('ann', () => at)
+			.add({
+				id: '1',
+				title: 'Saved filters',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['2', '3']
+			})
+			.add({ id: '2', title: 'Model', open: false })
+			.add({ id: '3', title: 'View' })
+			.add({ id: '4', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] });
+	const readsOf = (tracker: ReadingTracker, fail: () => boolean = () => false) => {
+		const read = listsFrom(
+			() => Promise.resolve({ tracker, person: 'ann' }),
+			() => at
+		);
+		return (): Promise<Upcoming> => {
+			reads += 1;
+			return fail() ? Promise.reject(new Error('gh: Bad Gateway (HTTP 502)')) : read();
+		};
+	};
+	const openOn = async (tracker: () => Promise<Upcoming>) => {
+		ui = await startUi({ root, port: 0, now: () => at, alive: () => alive, tracker, every });
+		return ui;
+	};
+	const page = async () => (await get('/')).text;
+	// the page once its first read of the Tracker has ended
+	const read = async () => {
+		await vi.waitFor(async () => expect(await page()).not.toContain('reading the Tracker'));
+		return page();
+	};
+	const board = (html: string) => html.split('<div class="table">')[0] ?? '';
+	const mat = (html: string, state: string) =>
+		board(html).split(`<section class="mat" data-state="${state}"`)[1]?.split('<section')[0] ?? '';
+
+	it('shows the Queue and Waiting on you while nightjar is off, and when it read them', async () => {
+		const tracker = fakeTracker();
+		const before = structuredClone([...tracker.items.values()]);
+		await openOn(readsOf(tracker));
+		const html = await read();
+		expect(html).toContain('<span class="state">off</span>');
+		expect(html).not.toContain('not known while nightjar is off');
+		expect(mat(html, 'queue')).toContain('Saved filters');
+		expect(mat(html, 'queue')).toContain('0 of 2 built');
+		expect(mat(html, 'waiting')).toContain('Audit log');
+		expect(mat(html, 'waiting')).toContain('needs info');
+		expect(html).toMatch(/waiting on you<\/span> <b>1<\/b>/);
+		expect(html).toContain(`Tracker read <time datetime="${at.toISOString()}">`);
+		// the Table and Overview read the same lists
+		expect(html.split('<div class="table">')[1]).toContain('data-title="Saved filters"');
+		expect(html.split('<div class="overview">')[1]).toContain('Audit log');
+		// read-only: nothing on the Tracker changed
+		expect([...tracker.items.values()]).toEqual(before);
+	});
+
+	it('reads on open and then once a minute, never on a change under .factory/', async () => {
+		const tracker = fakeTracker();
+		await openOn(readsOf(tracker));
+		await read();
+		expect(reads).toBe(1);
+		expect(minutes.map((m) => m.ms)).toEqual([TRACKER_EVERY_MS]);
+		expect(TRACKER_EVERY_MS).toBe(60_000);
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await vi.waitFor(async () => expect(await page()).toContain('<span class="state">idle'));
+		tracker.add({ id: '5', title: 'Reports', assignees: ['ann'], signals: ['go'] });
+		await new Promise((done) => setTimeout(done, 100));
+		expect(reads).toBe(1);
+		expect(await page()).not.toContain('Reports');
+		minutes[0]?.read();
+		await vi.waitFor(async () => expect(mat(await page(), 'queue')).toContain('Reports'));
+		expect(reads).toBe(2);
+	});
+
+	it('keeps the last lists when a read fails, marked with their age, and stays up', async () => {
+		let down = false;
+		await openOn(readsOf(fakeTracker(), () => down));
+		await read();
+		down = true;
+		minutes[0]?.read();
+		await vi.waitFor(async () => expect(await page()).toContain('Bad Gateway'));
+		const got = await get('/');
+		expect(got.status).toBe(200);
+		expect(mat(got.text, 'queue')).toContain('Saved filters');
+		expect(mat(got.text, 'waiting')).toContain('Audit log');
+		const header = got.text.split('<header>')[1]?.split('</header>')[0] ?? '';
+		expect(header).toContain('class="read stale"');
+		expect(header).toContain(`<time data-since="${at.toISOString()}"></time> ago`);
+		expect(header).toContain('could not read it at');
+		// the next read that goes well clears the mark
+		down = false;
+		minutes[0]?.read();
+		await vi.waitFor(async () => expect(await page()).not.toContain('Bad Gateway'));
+	});
+
+	it('says why when no read has gone well yet, in place of the lists', async () => {
+		await openOn(readsOf(fakeTracker(), () => true));
+		const html = await read();
+		expect(mat(html, 'queue')).toContain('could not read the Tracker: gh: Bad Gateway');
+		expect(mat(html, 'waiting')).toContain('could not read the Tracker');
+		expect(html).not.toContain('not known while nightjar is off');
+	});
+
+	it('still says Waiting on you is not available from a Tracker without waitingOn', async () => {
+		const fake = fakeTracker();
+		const tracker: ReadingTracker = { assignedFeatures: (p) => fake.assignedFeatures(p) };
+		await openOn(readsOf(tracker));
+		const html = await read();
+		expect(mat(html, 'waiting')).toContain('not available from this Tracker');
+		expect(mat(html, 'queue')).toContain('Saved filters');
+		// no counts from a Tracker that cannot count
+		expect(mat(html, 'queue')).not.toContain('Tickets');
+	});
+
+	it("takes the Tracker's lists over status.json's, keeps the run's waiting Tickets, and queues no Feature being built", async () => {
+		const file = status();
+		file.refreshed([{ id: '50', title: 'Old queue' }], { items: [], trackerCannotList: false });
+		// while a Feature builds, status.json lists its own Tickets that wait
+		file.doing({
+			kind: 'building',
+			feature: '1',
+			title: 'Saved filters',
+			ticket: '3',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '3', title: 'View', state: 'building' },
+				{ id: '12', title: 'Facets', state: 'waiting', why: 'needs info' }
+			]
+		});
+		await openOn(readsOf(fakeTracker()));
+		const html = await read();
+		expect(html).not.toContain('Old queue');
+		expect(mat(html, 'queue')).not.toContain('Saved filters');
+		expect(mat(html, 'building')).toContain('Saved filters');
+		expect(mat(html, 'waiting')).toContain('Audit log');
+		expect(mat(html, 'waiting')).toContain('Facets');
+	});
+
+	it('answers GET and HEAD only, as before', async () => {
+		await openOn(readsOf(fakeTracker()));
+		await read();
+		for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+			expect((await get('/', method)).status).toBe(405);
+		}
+		expect((await get('/', 'HEAD')).status).toBe(200);
 	});
 });
 

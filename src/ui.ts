@@ -1,4 +1,4 @@
-// `nightjar ui`: a read-only page about the repo, drawn from .factory/ alone, pushed to the browser as server-sent events.
+// `nightjar ui`: a read-only page about the repo, drawn from .factory/ and a read of the Tracker, pushed to the browser as server-sent events.
 import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -15,9 +15,11 @@ import type {
 	Queued,
 	TicketCounts,
 	TicketProgress,
-	WaitingItem
+	WaitingItem,
+	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
+import { watchTracker, type TrackerLists, type Upcoming } from './ui-tracker.js';
 import {
 	countdown,
 	dollars,
@@ -41,12 +43,16 @@ export interface Ui {
 }
 
 export interface UiOptions {
-	// the repo root; the page reads its .factory/ and nothing else
+	// the repo root, whose .factory/ the page reads
 	readonly root: string;
 	readonly port: number;
 	readonly now?: () => Date;
 	// whether a pid is alive; the machine's own answer unless a spec passes one
 	readonly alive?: (pid: number) => boolean;
+	// reads the Queue and Waiting on you from the Tracker; left out, the page knows them only from a run's status.json
+	readonly tracker?: () => Promise<Upcoming>;
+	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
+	readonly every?: (ms: number, read: () => void) => () => void;
 }
 
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
@@ -64,7 +70,75 @@ const idHtml = (id: string, links: Links = NO_LINKS) => {
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function header(repo: string, view: FactoryView): string {
+// The Queue and Waiting on you as the page shows them: the Tracker's last read when there is one, else what a running Nightjar wrote to status.json.
+type Lists =
+	| {
+			readonly known: true;
+			// each undefined while status.json has not got it yet
+			readonly queue: readonly Queued[] | undefined;
+			readonly waitingOnYou: WaitingOnYou | undefined;
+			// when they were read
+			readonly at: string | undefined;
+	  }
+	// what the page says in their place
+	| { readonly known: false; readonly empty: string };
+
+function listsOf(view: FactoryView, tracker: TrackerLists | undefined): Lists {
+	const on = running(view);
+	const status = view.status;
+	const last = tracker?.last ?? null;
+	if (last !== null) {
+		const doing = status?.doing;
+		// a Feature claimed since the read is Building, not queued
+		const building = on && doing?.kind === 'building' ? doing.feature : null;
+		// the run knows which Tickets wait; the Tracker lists only Features
+		const tickets = on
+			? (status?.waitingOnYou?.items ?? []).filter((i) => i.kind === 'ticket')
+			: [];
+		return {
+			known: true,
+			queue: last.queue.filter((q) => q.id !== building),
+			waitingOnYou: {
+				items: [...last.waiting, ...tickets],
+				trackerCannotList: last.trackerCannotList
+			},
+			at: last.at
+		};
+	}
+	if (on) {
+		return {
+			known: true,
+			queue: status?.queue,
+			waitingOnYou: status?.waitingOnYou,
+			at: status?.refreshedAt
+		};
+	}
+	if (tracker === undefined) return { known: false, empty: OFF };
+	return {
+		known: false,
+		empty:
+			tracker.fault === null
+				? '<p class="empty">reading the Tracker</p>'
+				: `<p class="empty">could not read the Tracker: ${escape(tracker.fault.why)}</p>`
+	};
+}
+
+// When the page last read the Tracker; after a failed read, the lists it kept are marked with their age.
+function trackerRead(tracker: TrackerLists | undefined): string {
+	if (tracker === undefined) return '';
+	const { last, fault } = tracker;
+	if (last === null) {
+		return fault === null
+			? ' <span class="read">reading the Tracker</span>'
+			: ` <span class="read stale">could not read the Tracker: ${escape(fault.why)}</span>`;
+	}
+	const read = `Tracker read <time datetime="${escape(last.at)}">${clock(last.at)}</time>`;
+	return fault === null
+		? ` <span class="read">${read}</span>`
+		: ` <span class="read stale">${read}, <time data-since="${escape(last.at)}"></time> ago; could not read it at <time datetime="${escape(fault.at)}">${clock(fault.at)}</time>: ${escape(fault.why)}</span>`;
+}
+
+function header(repo: string, view: FactoryView, tracker: TrackerLists | undefined): string {
 	const doing = view.status?.doing;
 	const after = pollAfter(view);
 	const poll =
@@ -75,31 +149,28 @@ function header(repo: string, view: FactoryView): string {
 				: doing?.kind === 'paused' && running(view)
 					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
 					: '';
-	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}</header>`;
+	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}${trackerRead(tracker)}</header>`;
 }
 
-function cards(view: FactoryView): string {
+function cards(view: FactoryView, lists: Lists): string {
 	const status = view.status;
 	const spent =
 		status === null
 			? 'no spend recorded'
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
-	const waiting = status?.waitingOnYou?.items.length;
+	const waiting = lists.known ? lists.waitingOnYou?.items.length : undefined;
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
-function queue(view: FactoryView, links: Links): string {
-	const status = view.status;
+function queue(lists: Lists, links: Links): string {
 	let body: string;
-	if (!running(view)) body = OFF;
-	else if (status?.queue === undefined) body = '<p class="empty">not read yet</p>';
-	else if (status.queue.length === 0) body = emptyQueue(links);
+	if (!lists.known) body = lists.empty;
+	else if (lists.queue === undefined) body = '<p class="empty">not read yet</p>';
+	else if (lists.queue.length === 0) body = emptyQueue(links);
 	else
-		body = `<ul>${status.queue.map((q) => `<li>${idHtml(q.id, links)} ${escape(q.title)}</li>`).join('')}</ul>`;
+		body = `<ul>${lists.queue.map((q) => `<li>${idHtml(q.id, links)} ${escape(q.title)}</li>`).join('')}</ul>`;
 	const refreshed =
-		running(view) && status?.refreshedAt !== undefined
-			? ` <small>refreshed ${clock(status.refreshedAt)}</small>`
-			: '';
+		lists.known && lists.at !== undefined ? ` <small>refreshed ${clock(lists.at)}</small>` : '';
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
 }
 
@@ -142,10 +213,10 @@ function current(view: FactoryView, links: Links): string {
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
-function waiting(view: FactoryView, links: Links): string {
-	const found = view.status?.waitingOnYou;
+function waiting(view: FactoryView, lists: Lists, links: Links): string {
+	const found = lists.known ? lists.waitingOnYou : undefined;
 	let body: string;
-	if (!running(view)) body = OFF;
+	if (!lists.known) body = lists.empty;
 	else if (found === undefined) body = '<p class="empty">not read yet</p>';
 	else {
 		const note = found.trackerCannotList
@@ -167,10 +238,10 @@ function waiting(view: FactoryView, links: Links): string {
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
-function completed(view: FactoryView, links: Links): string {
+function completed(view: FactoryView, lists: Lists, links: Links): string {
 	const li = ({ done: { event, costUsd }, runs }: CompletedCard) =>
 		`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
-	const rows = features(view).completed.map(li).join('');
+	const rows = features(view, lists).completed.map(li).join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
 
@@ -291,7 +362,7 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 }
 
 interface Features {
-	// each is undefined while Nightjar is off or has not read it yet
+	// each is undefined while the lists are not known or not read yet
 	readonly queue: readonly QueuedCard[] | undefined;
 	readonly building: BuildingCard | null;
 	readonly waiting: readonly WaitingCard[] | undefined;
@@ -300,8 +371,8 @@ interface Features {
 	readonly completed: readonly CompletedCard[];
 }
 
-// The one list of Features, built from what the reader gives.
-function features(view: FactoryView): Features {
+// The one list of Features, built from what the reader and the Tracker give.
+function features(view: FactoryView, lists: Lists): Features {
 	const status = view.status;
 	const doing = status?.doing;
 	const on = running(view);
@@ -327,14 +398,13 @@ function features(view: FactoryView): Features {
 					doing
 				}
 			: null;
-	const found = on ? status?.waitingOnYou : undefined;
+	const found = lists.known ? lists.waitingOnYou : undefined;
+	const listed = lists.known ? lists.queue : undefined;
 	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
 	const totals = new Map<string, number>();
-	if (on) {
-		for (const q of status?.queue ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
-		for (const i of found?.items ?? [])
-			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
-	}
+	for (const q of listed ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
+	for (const i of found?.items ?? [])
+		if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
 	const completedCard = (done: Completed, runs: number): CompletedCard => {
 		const { event } = done;
 		const built = done.builtTickets ?? 0;
@@ -428,7 +498,7 @@ function features(view: FactoryView): Features {
 				? null
 				: view.medianTicketMs * q.ticketCounts.total
 	});
-	const queue = on ? status?.queue?.map(queued) : undefined;
+	const queue = listed?.map(queued);
 	return {
 		queue,
 		building,
@@ -623,12 +693,13 @@ function helpHtml(card: WaitingCard, u: Unblock | null, links: Links): string {
 const LEGEND =
 	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
 
-function board(view: FactoryView, links: Links): string {
-	const all = features(view);
+function board(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
 	const on = running(view);
+	const { known } = lists;
 	const none = (text: string) => `<p class="empty">${text}</p>`;
-	const queued = !on
-		? OFF
+	const queued = !lists.known
+		? lists.empty
 		: all.queue === undefined
 			? none('not read yet')
 			: all.queue.length === 0
@@ -637,7 +708,7 @@ function board(view: FactoryView, links: Links): string {
 	const building =
 		all.building === null ? none('nothing is being built') : buildingCard(all.building, links);
 	let waiting: string;
-	if (!on) waiting = OFF;
+	if (!lists.known) waiting = lists.empty;
 	else if (all.waiting === undefined) waiting = none('not read yet');
 	else {
 		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
@@ -652,9 +723,9 @@ function board(view: FactoryView, links: Links): string {
 	return (
 		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
-		group('waiting', 'Waiting on you', on ? (all.waiting?.length ?? null) : null, waiting) +
+		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
 		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
-		group('queue', 'Queue', on ? (all.queue?.length ?? null) : null, queued) +
+		group('queue', 'Queue', known ? (all.queue?.length ?? null) : null, queued) +
 		group('completed', 'Completed', all.completed.length, completed) +
 		`</div>${side}</div></div>`
 	);
@@ -678,8 +749,8 @@ const COLUMNS = [
 ] as const;
 
 // One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
-function table(view: FactoryView, links: Links): string {
-	const all = features(view);
+function table(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
 	interface Row {
 		readonly card: FeatureCard;
 		readonly state: (typeof STATES)[number][0];
@@ -756,8 +827,8 @@ function table(view: FactoryView, links: Links): string {
 				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
-	const note = !running(view)
-		? OFF
+	const note = !lists.known
+		? lists.empty
 		: all.trackerCannotList
 			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
 			: '';
@@ -768,14 +839,21 @@ function table(view: FactoryView, links: Links): string {
 const MAIN = '<!--main-->';
 
 // The panels, which the page replaces whole each time an event brings new ones.
-export function renderPanels(root: string, view: FactoryView, links: Links = NO_LINKS): string {
+// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker.
+export function renderPanels(
+	root: string,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	tracker?: TrackerLists
+): string {
+	const lists = listsOf(view, tracker);
 	return [
-		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
-		cards(view),
+		header(lastRepo(ledgerPath(root)) ?? basename(root), view, tracker),
+		cards(view, lists),
 		MAIN,
-		board(view, links),
-		table(view, links),
-		`<div class="overview">${[current(view, links), queue(view, links), waiting(view, links), completed(view, links)].join('\n')}</div>`
+		board(view, lists, links),
+		table(view, lists, links),
+		`<div class="overview">${[current(view, links), queue(lists, links), waiting(view, lists, links), completed(view, lists, links)].join('\n')}</div>`
 	].join('\n');
 }
 
@@ -1037,6 +1115,7 @@ header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; p
 h1 { font: 700 1.6rem var(--mono); }
 header span { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; }
 header .state { color: var(--teal); font-weight: 600; }
+header .stale { color: var(--amber); }
 #cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
 .stat b { color: var(--ink); }
 .empty, small, .meta { color: var(--muted); }
@@ -1234,6 +1313,17 @@ function originOf(root: string): string | null {
 export function startUi(o: UiOptions): Promise<Ui> {
 	const origin = originOf(o.root);
 	const clients = new Set<ServerResponse>();
+	// The Tracker is read on open and once a minute, never on a file change; each read pushes the panels when they changed.
+	const read = o.tracker;
+	const tracker =
+		read === undefined
+			? null
+			: watchTracker({
+					read,
+					changed: () => refresh(),
+					...(o.every === undefined ? {} : { every: o.every }),
+					...(o.now === undefined ? {} : { now: o.now })
+				});
 	const panelsNow = () =>
 		renderPanels(
 			o.root,
@@ -1241,7 +1331,8 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				...(o.alive === undefined ? {} : { alive: o.alive }),
 				...(o.now === undefined ? {} : { now: o.now })
 			}),
-			linksFor(o.root, origin)
+			linksFor(o.root, origin),
+			tracker?.lists()
 		);
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);
@@ -1302,19 +1393,27 @@ export function startUi(o: UiOptions): Promise<Ui> {
 	}, 2000);
 
 	return new Promise((done, fail) => {
-		server.once('error', fail);
+		// a port that is taken leaves nothing running behind it
+		server.once('error', (fault) => {
+			tracker?.stop();
+			clearInterval(slow);
+			clearTimeout(timer);
+			watcher?.close();
+			fail(fault);
+		});
 		server.listen(o.port, HOST, () => {
 			const { address, port } = server.address() as AddressInfo;
 			done({
 				address,
 				port,
 				close: () =>
-					new Promise<void>((closed) => {
+					new Promise<void>((ended) => {
+						tracker?.stop();
 						clearInterval(slow);
 						clearTimeout(timer);
 						watcher?.close();
 						server.closeAllConnections();
-						server.close(() => closed());
+						server.close(() => ended());
 					})
 			});
 		});

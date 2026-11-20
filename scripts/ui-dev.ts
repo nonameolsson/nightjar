@@ -1,10 +1,12 @@
-// `npm run ui:dev [SCENARIO]`: the ui page over made-up .factory/ files in a temp dir, to work on the page without a run.
+// `npm run ui:dev [SCENARIO]`: the ui page over made-up .factory/ files in a temp dir and a fake Tracker, to work on the page without a run.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { FakeTracker } from '../src/fakes/tracker.js';
 import { fileSpend, record } from '../src/ledger.js';
 import { StatusFile } from '../src/status.js';
 import { startUi, UI_PORT } from '../src/ui.js';
+import { listsFrom } from '../src/ui-tracker.js';
 
 const SCENARIOS = ['building', 'review-round', 'idle', 'paused', 'stopped', 'off'] as const;
 type Scenario = (typeof SCENARIOS)[number];
@@ -94,22 +96,21 @@ file.happened({
 	startedAt: ago(55)
 });
 
-if (scenario !== 'off') {
-	file.refreshed(
-		[
-			{ id: '275', title: 'Saved filters v2', ticketCounts: { total: 4, closed: 1 } },
-			{ id: '281', title: 'CSV <export>', ticketCounts: null },
-			{ id: '290', title: 'Reports' }
-		],
-		{
-			items: [
-				{ kind: 'feature', id: '262', title: 'Audit log', why: 'needs info' },
-				{ kind: 'feature', id: '264', title: 'SSO', why: 'needs a person' }
-			],
-			trackerCannotList: false
-		}
-	);
-}
+// The Tracker the page reads, in memory: the Queue and Waiting on you come from it in every scenario, `off` too.
+const tracker = new FakeTracker('ann');
+const ticket = (id: string, open = true) => tracker.add({ id, title: `Ticket ${id}`, open });
+for (const id of ['276', '277', '278', '279']) ticket(id, id !== '276');
+tracker
+	.add({
+		id: '275',
+		title: 'Saved filters v2',
+		assignees: ['ann'],
+		signals: ['go'],
+		children: ['276', '277', '278', '279']
+	})
+	.add({ id: '281', title: 'CSV <export>', assignees: ['ann'], signals: ['go'] })
+	.add({ id: '262', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
+	.add({ id: '264', title: 'SSO', assignees: ['ann'], signals: ['human'] });
 
 if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-round') {
 	const lines = [
@@ -158,7 +159,11 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 	file.doing({ kind: 'off' });
 }
 
-const ui = await startUi({ root, port: Number(process.env.PORT ?? UI_PORT) });
+const ui = await startUi({
+	root,
+	port: Number(process.env.PORT ?? UI_PORT),
+	tracker: listsFrom(() => Promise.resolve({ tracker, person: 'ann' }))
+});
 console.log(`${scenario}: http://127.0.0.1:${String(ui.port)}  (Ctrl-C to stop)`);
 console.log(`mock .factory/ in ${root}; edit it by hand and the page follows`);
 

@@ -1,7 +1,10 @@
-// `nightjar ui`: the argument, the repo root, and keeping the page up until it is told to stop.
+// `nightjar ui`: the argument, the repo root, the Tracker the page reads, and keeping the page up until it is told to stop.
+import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import type { GhRunner } from './github/api.js';
 import { run, type Env } from './git.js';
 import { say, why } from './say.js';
 import { startUi, UI_PORT } from './ui.js';
+import { listsFrom, openPageTracker } from './ui-tracker.js';
 
 export const UI_USAGE = 'usage: nightjar ui [--port PORT]';
 
@@ -10,6 +13,10 @@ export interface UiHost {
 	readonly env: Env;
 	// ends the page; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
+	// answers every Azure DevOps call; a spec passes a fake Azure DevOps
+	readonly request?: AzureDevOpsRequest;
+	// runs every `gh` call; a spec passes a fake GitHub
+	readonly gh?: GhRunner;
 }
 
 // The port, or the line that says what is wrong with the arguments. There is no flag for the address: the page is on 127.0.0.1 only.
@@ -40,8 +47,19 @@ export async function runUiCommand(argv: readonly string[], host: UiHost): Promi
 		console.error('nightjar: not inside a git checkout; run ui in the repo.');
 		return 2;
 	}
+	const root = top.out.trim();
+	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
+	const seams = {
+		...(host.request === undefined ? {} : { request: host.request }),
+		...(host.gh === undefined ? {} : { gh: host.gh })
+	};
 	try {
-		const ui = await startUi({ root: top.out.trim(), port });
+		const ui = await startUi({
+			root,
+			port,
+			// read-only: the page never writes to the Tracker (docs/adr/0009)
+			tracker: listsFrom(() => openPageTracker(root, env, seams))
+		});
 		say(`http://127.0.0.1:${String(ui.port)}  (Ctrl-C to stop)`);
 		const stop = host.stop ?? onSignals();
 		await new Promise<void>((done) => {
