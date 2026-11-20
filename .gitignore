@@ -7,3 +7,4 @@ dist/
 .impeccable/questions/
 .impeccable/review/
 .impeccable/build/
+.claude/worktrees/
