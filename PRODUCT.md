@@ -16,7 +16,7 @@ Nightjar is a command-line tool that builds a repo's Features with nobody at the
 A software factory that runs unattended on the person's own machine and logins, one draft PR per Feature, driven by the Tracker's specs rather than a chat session.
 
 ## Operating Context
-Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `gh`/`az`, `git` and `claude` sign-ins. The UI is a local web page for a repo whose `factory.json` is committed; run state lives in `.factory/`.
+Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `gh`/`az`, `git` and `claude` sign-ins. The UI is a local web page for a repo whose `factory.json` is committed. Run state (Building, spend, the Session log) lives in `.factory/`. The page reads the Tracker itself, read-only, for the Queue and Waiting on you, so the person sees them while Nightjar is off (ADR 0009). The Go is still given only in the Tracker.
 
 ## Capabilities and Constraints
 - Domain vocabulary is fixed by `GLOSSARY.md` (Feature, Ticket, Signal, Go, Queue, Workflow, Step, ...); UI copy uses these terms exactly.
