@@ -208,6 +208,8 @@ export class FakeAzureDevOps {
 	private readonly faults: { match: RegExp; status: number }[] = [];
 	private readonly repositories = new Map<string, Repository>();
 	private readonly pulls: FakePullRequest[] = [];
+	// the `mergeStatus` of each pull request Azure Repos has settled; succeeded when not set
+	private readonly mergeStatuses = new Map<number, string>();
 	// the artifact links on each work item, such as one to a pull request
 	private readonly artifacts = new Map<number, string[]>();
 	// the commit each pushed branch points at
@@ -222,6 +224,11 @@ export class FakeAzureDevOps {
 	private readonly statuses = new Map<number, StoredStatus[]>();
 	private readonly policies = new Map<number, NewPolicy[]>();
 	private readonly builds = new Map<number, StoredBuild>();
+
+	// What Azure Repos says of `mergeStatus` on a pull request: conflicts, succeeded, queued, notSet, rejectedByPolicy or failure.
+	setMergeStatus(pullRequestId: number, status: string): void {
+		this.mergeStatuses.set(pullRequestId, status);
+	}
 
 	constructor(
 		readonly organization: string,
@@ -981,6 +988,7 @@ export class FakeAzureDevOps {
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
 			isDraft: pull.isDraft,
+			mergeStatus: this.mergeStatuses.get(pull.pullRequestId) ?? 'succeeded',
 			// each pull request opens a minute after the one before
 			creationDate: new Date(Date.UTC(2026, 9, 30, 8, pull.pullRequestId)).toISOString(),
 			...(head === undefined ? {} : { lastMergeSourceCommit: { commitId: head } }),

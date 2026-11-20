@@ -23,6 +23,7 @@ import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { conflicts, withConflicts, withoutConflicts } from './conflicts-section.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
 	issueLine,
@@ -893,6 +894,7 @@ class FeatureRun {
 			})
 		});
 		const pull = await this.openDraft(body);
+		await noteConflicts(this.deps, this.setup, pull, body);
 		// a lone issue is its own Ticket, so it is named once
 		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
@@ -1329,10 +1331,9 @@ export async function fixPullChecks(
 		const ran = (r: Pick<PullRound, 'outcome' | 'summary' | 'usd'>) =>
 			withPullRound(draft.body, { round, failed: draft.checks.failed, ...r });
 		if (got.kind === 'fixed') {
-			await deps.codeHost.editBody(
-				pull,
-				ran({ outcome: 'pushed', summary: got.summary, usd: got.usd })
-			);
+			const body = ran({ outcome: 'pushed', summary: got.summary, usd: got.usd });
+			await deps.codeHost.editBody(pull, body);
+			await noteConflicts(deps, setup, pull, body);
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
@@ -1342,6 +1343,14 @@ export async function fixPullChecks(
 		await tracker.removeSignal(feature.id, 'working');
 	}
 	return got;
+}
+
+// Says in the pull request body whether it conflicts with the base branch: the section is added when it does and dropped when it does not. Nothing else happens, no Signal and no comment.
+async function noteConflicts(deps: Deps, setup: Setup, pull: Pull, body: string): Promise<void> {
+	const { codeHost } = deps;
+	const conflicting = await conflicts(codeHost, pull, deps.sleep, setup.signal);
+	const wanted = conflicting ? withConflicts(body, setup.baseBranch) : withoutConflicts(body);
+	if (wanted !== body) await codeHost.editBody(pull, wanted);
 }
 
 const HANDED_OVER = '<!-- nightjar-pull-checks: handed to a person -->';

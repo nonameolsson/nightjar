@@ -4,6 +4,7 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
 	DraftsListing,
 	FailedCheck,
@@ -35,7 +36,9 @@ export interface GitHubCodeHostOptions {
 const PullSchema = z.looseObject({
 	number: z.int(),
 	html_url: z.string(),
-	body: z.string().nullable().optional()
+	body: z.string().nullable().optional(),
+	// null while GitHub has not worked out whether the pull request merges; only a single pull request carries it
+	mergeable: z.boolean().nullable().optional()
 });
 
 // a pull request as publishing reads it: GraphQL names it by its node id
@@ -291,6 +294,17 @@ export class GitHubCodeHost implements CodeHost {
 	async editBody(pull: Pull, body: string): Promise<void> {
 		const { lines } = split(await this.body(pull));
 		await this.setBody(pull, join(body.trimEnd(), lines));
+	}
+
+	async conflicts(pull: Pull): Promise<ConflictState> {
+		const n = String(pull.id);
+		const raw = await this.api.parse(
+			`read pull request #${n}`,
+			[`repos/${this.repo}/pulls/${n}`],
+			PullSchema
+		);
+		if (raw.mergeable === true) return 'no';
+		return raw.mergeable === false ? 'yes' : 'unknown';
 	}
 
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {
