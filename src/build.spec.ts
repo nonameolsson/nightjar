@@ -1301,7 +1301,7 @@ describe('buildFeature', () => {
 					}
 				: undefined;
 		await buildFeature(deps(world), setup(world), '1');
-		expect(world.host.pulls[0]?.body).toContain('## Review\n\nThe review did not finish.');
+		expect(world.host.pulls[0]?.body).toContain('## Review\n\n### Review 1: did not finish');
 		expect(world.host.pulls[0]?.comments).toEqual([]);
 		expect(ledger(world).at(-1)).toMatchObject({
 			step: 'review',
@@ -3287,7 +3287,7 @@ describe('a Review round', () => {
 		changesFor(none, 9);
 		await buildFeature(deps(none), setup(none, roundOf({ fixRounds: 0 })), '1');
 		expect(kinds(none)).toEqual(['build', 'build', 'review']);
-		expect(body(none)).toContain('## Review\n\nChanges asked: One bug.');
+		expect(body(none)).toContain('## Review\n\n### Review 1: Changes asked\n\nOne bug.');
 
 		const off = makeWorld();
 		changesFor(off, 9);
@@ -3450,6 +3450,164 @@ describe('a Review round', () => {
 		);
 	});
 
+	describe("the pull request's Review section", () => {
+		it('lists each Review and Review round in order, with the round and its fix rounds costing what they cost, then the issues still open', async () => {
+			const world = makeWorld();
+			changesFor(world, 1);
+			world.reviewRoundAgent = (req) => {
+				world.checkOk = false;
+				return {
+					kind: 'fixed',
+					summary: 'Fixed what the Review found.',
+					declined: [],
+					sessionId: req.sessionId,
+					costUsd: 2
+				};
+			};
+			world.fixAgent = (req) => {
+				world.checkOk = true;
+				return { kind: 'fixed', summary: 'Fixed the lint.', sessionId: req.resume, costUsd: 1 };
+			};
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).toContain(
+				[
+					'## Review',
+					'',
+					'### Review 1: Changes asked',
+					'',
+					'One bug.',
+					'',
+					'### Review round 1: fixed, $3.00',
+					'',
+					'Fixed what the Review found.\n\nFixed the lint.',
+					'',
+					'### Review 2: Approve',
+					'',
+					'Reads well.',
+					'',
+					'### Still open',
+					'',
+					'- `src/marks.ts:3`: It escapes twice.'
+				].join('\n')
+			);
+		});
+
+		it('lists no issues as open when the last Review raised none', async () => {
+			const world = makeWorld();
+			world.reviewAgent = (req) => reviewed(req, 'approve', []);
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).toContain('## Review\n\n### Review 1: Approve\n\nReads well.');
+			expect(body(world)).not.toContain('Still open');
+		});
+
+		it('lists the Review that asked for changes, and what it left open, when no round was allowed', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+
+			await buildFeature(deps(world), setup(world, roundOf({ fixRounds: 0 })), '1');
+			expect(body(world)).toContain(
+				'## Review\n\n### Review 1: Changes asked\n\nOne bug.\n\n### Still open\n\n- `src/marks.ts:3`: It escapes twice.'
+			);
+			expect(body(world)).not.toContain('Review round');
+		});
+
+		it('lists a round that was thrown away with why, and what the last Review left open', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+			world.reviewRoundAgent = (req) => ({
+				kind: 'blocked',
+				blocker: 'The Review is wrong.',
+				sessionId: req.sessionId,
+				costUsd: 1
+			});
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).toContain(
+				[
+					'### Review 1: Changes asked',
+					'',
+					'One bug.',
+					'',
+					'### Review round 1: thrown away, $1.00',
+					'',
+					'it reports itself blocked: The Review is wrong.',
+					'',
+					'### Still open',
+					'',
+					'- `src/marks.ts:3`: It escapes twice.'
+				].join('\n')
+			);
+		});
+
+		it('lists every round of the build, the last Review still asking for changes', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+
+			await buildFeature(deps(world), setup(world), '1');
+			const headings = body(world)
+				.split('\n')
+				.filter((l) => l.startsWith('### '));
+			expect(headings).toEqual([
+				'### Review 1: Changes asked',
+				'### Review round 1: fixed, $2.00',
+				'### Review 2: Changes asked',
+				'### Review round 2: fixed, $2.00',
+				'### Review 3: Changes asked',
+				'### Still open'
+			]);
+		});
+
+		it('says a Review that did not finish did not', async () => {
+			const world = makeWorld();
+			changesFor(world, 1);
+			let reviews = 0;
+			world.settle = (req) =>
+				req.kind === 'review' && (reviews += 1) === 2
+					? {
+							kind: 'failed',
+							why: 'it reached its budget',
+							failure: 'budget',
+							sessionId: req.sessionId,
+							costUsd: 3
+						}
+					: undefined;
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).toContain('### Review round 1: fixed, $2.00');
+			expect(body(world)).toContain('### Review 2: did not finish');
+			expect(body(world)).not.toContain('Still open');
+		});
+
+		it('counts the rounds as their own kind of work in the cost lines', async () => {
+			const world = makeWorld();
+			changesFor(world, 9);
+
+			await buildFeature(deps(world), setup(world), '1');
+			// the Reviews are $0.50 each, the rounds $2 each
+			expect(body(world)).toContain('- Review: $1.50\n- Review rounds: $4.00');
+		});
+
+		it('leaves the cost line out when no round ran', async () => {
+			const world = makeWorld();
+
+			await buildFeature(deps(world), setup(world), '1');
+			expect(body(world)).not.toContain('Review rounds:');
+		});
+	});
+
+	it('comments only the last Review on the pull request', async () => {
+		const world = makeWorld();
+		changesFor(world, 1);
+
+		await buildFeature(deps(world), setup(world), '1');
+		const comments = world.host.pulls[0]?.comments ?? [];
+		expect(comments).toHaveLength(1);
+		expect(comments[0]).toContain('**Nightjar review: approve**');
+		expect(comments[0]).not.toContain('One bug.');
+	});
+
 	it('runs on a rebuild whose Feedback round ran first', async () => {
 		const world = makeWorld();
 		const d = deps(world);
@@ -3565,9 +3723,13 @@ describe('a Review round', () => {
 
 			await buildFeature(deps(world), setup(world), '1');
 			expect(body(world)).toContain(
-				'Issues declined:\n\n- `src/marks.ts:3`: It escapes twice.\n  Reason: Reason 0.\n- `README.md`: The flag is not described.\n  Reason: Reason 1.'
+				'### Issues declined\n\n- `src/marks.ts:3`: It escapes twice.\n  Reason: Reason 0.\n- `README.md`: The flag is not described.\n  Reason: Reason 1.'
 			);
-			expect(body(world).indexOf('Issues declined')).toBeGreaterThan(
+			// the Review section ends with them, after the issues still open
+			expect(body(world).indexOf('### Issues declined')).toBeGreaterThan(
+				body(world).indexOf('### Still open')
+			);
+			expect(body(world).indexOf('### Issues declined')).toBeGreaterThan(
 				body(world).indexOf('## Review')
 			);
 		});

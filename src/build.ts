@@ -25,7 +25,6 @@ import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
-	issueLine,
 	questionRounds,
 	questionsComment,
 	type Declined,
@@ -52,6 +51,7 @@ import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
+import { reviewSection, type ReviewStep } from './review-section.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -845,6 +845,7 @@ class FeatureRun {
 		let review: Review | 'off' | null = 'off';
 		let open: ReviewLeftOpen | null = null;
 		let declined: readonly Declined[] = [];
+		let reviews: readonly ReviewStep[] | 'off' = 'off';
 		if (this.setup.review?.enabled !== false) {
 			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
@@ -858,12 +859,14 @@ class FeatureRun {
 				review = rounds.review;
 				open = rounds.open;
 				declined = rounds.declined;
+				reviews = rounds.steps;
 				if (rounds.paused !== null) {
 					paused = rounds.paused;
 					await this.pause(paused);
 				}
 			} else {
 				review = got;
+				reviews = [{ kind: 'review', review: got }];
 			}
 		}
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
@@ -880,7 +883,7 @@ class FeatureRun {
 			done,
 			left,
 			red,
-			review,
+			reviews,
 			declined,
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
@@ -969,6 +972,7 @@ class FeatureRun {
 		done: readonly Ticket[]
 	): Promise<{
 		readonly review: Review | null;
+		readonly steps: readonly ReviewStep[];
 		readonly paused: string | null;
 		readonly open: ReviewLeftOpen | null;
 		// the issues the rounds declined, in the order they did
@@ -979,8 +983,10 @@ class FeatureRun {
 		let declined: readonly Declined[] = [];
 		let review = first;
 		let ran = 0;
+		const steps: ReviewStep[] = [{ kind: 'review', review }];
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
 			if (this.aborted) break;
+			const before = this.costs.length;
 			const end = await reviewRound({
 				codingAgent: deps.codingAgent,
 				runCheck: deps.runCheck,
@@ -998,11 +1004,22 @@ class FeatureRun {
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
 			});
-			if (end.kind === 'paused') return { review, paused: end.why, open: null, declined };
+			if (end.kind === 'paused') return { review, steps, paused: end.why, open: null, declined };
 			if (end.kind === 'aborted') break;
+			// what the round and its fix rounds cost
+			const usd = this.costs
+				.slice(before)
+				.filter((c) => c.work === 'reviewRound')
+				.reduce((n, c) => n + c.usd, 0);
+			steps.push(
+				end.kind === 'fixed'
+					? { kind: 'round', round, outcome: 'fixed', text: end.summary, usd }
+					: { kind: 'round', round, outcome: 'thrown away', text: end.why, usd }
+			);
 			if (end.kind === 'failed') {
 				return {
 					review,
+					steps,
 					paused: null,
 					open: { kind: 'failed', round, why: end.why, side: end.side },
 					declined
@@ -1012,13 +1029,14 @@ class FeatureRun {
 			declined = [...declined, ...end.declined];
 			const again = await this.review(done, declined);
 			if (again !== null && 'paused' in again) {
-				return { review, paused: again.paused, open: null, declined };
+				return { review, steps, paused: again.paused, open: null, declined };
 			}
 			review = again;
+			steps.push({ kind: 'review', review });
 		}
 		const open: ReviewLeftOpen | null =
 			ran > 0 && review?.verdict === 'changes' ? { kind: 'exhausted', rounds: ran } : null;
-		return { review, paused: null, open, declined };
+		return { review, steps, paused: null, open, declined };
 	}
 
 	// A Review round's fix rounds show and are logged as the round they belong to.
@@ -1561,7 +1579,8 @@ function pullBody(p: {
 	done: readonly Ticket[];
 	left: readonly Waiting[];
 	red: { ticket: ItemId; tail: string } | null;
-	review: Review | 'off' | null;
+	// the Reviews and Review rounds of the build in order, or 'off' when the Review is switched off or paused
+	reviews: readonly ReviewStep[] | 'off';
 	// the issues the Review rounds declined, with their reasons
 	declined: readonly Declined[];
 	spent: number;
@@ -1604,18 +1623,12 @@ function pullBody(p: {
 	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.feedback !== null) parts.push(p.feedback);
-	if (p.review !== 'off') {
-		const verdict = p.review
-			? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}`
-			: 'The review did not finish.';
-		const declined = p.declined.map((d) => `${issueLine(d)}\n  Reason: ${d.reason}`);
-		parts.push(
-			`## Review\n\n${verdict}${declined.length === 0 ? '' : `\n\nIssues declined:\n\n${declined.join('\n')}`}`
-		);
-	}
+	if (p.reviews !== 'off') parts.push(reviewSection(p.reviews, p.declined));
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
-	const approved = p.review !== 'off' && p.review?.verdict === 'approve';
+	// the last Review of the build, whatever a round did after it
+	const last = p.reviews === 'off' ? undefined : p.reviews.findLast((r) => r.kind === 'review');
+	const approved = last?.kind === 'review' && last.review?.verdict === 'approve';
 	parts.push(publishMark({ complete: p.complete, approved }));
 	return `${parts.join('\n\n')}${FOOTER}`;
 }
@@ -1632,7 +1645,7 @@ export function featureOfBody(body: string): string | undefined {
 	return MARKER.exec(body)?.[1];
 }
 
-// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round and the review; a kind with no Session is left out.
+// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round, the review and its rounds; a kind with no Session is left out.
 function costSection(
 	spent: number,
 	costs: readonly Cost[],
@@ -1660,6 +1673,7 @@ function costSection(
 	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
 	if (has(null, 'feedback')) lines.push(`- Feedback round: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
+	if (has(null, 'reviewRound')) lines.push(`- Review rounds: ${dollars(sum(null, 'reviewRound'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
 }

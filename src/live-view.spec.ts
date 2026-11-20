@@ -244,6 +244,24 @@ describe('renderBlock', () => {
 		expect(round(null).join('\n')).not.toContain('feedback');
 	});
 
+	it("shows a Review round as one, round N of the build's Review rounds, and no Ticket progress", () => {
+		const lines = render(
+			view(
+				status(
+					building({
+						ticket: null,
+						step: 'reviewRound',
+						round: 2,
+						rounds: 2,
+						tickets: undefined
+					})
+				)
+			)
+		);
+		expect(lines).toContainEqual(expect.stringContaining('Review round, round 2/2'));
+		expect(lines.join('\n')).not.toContain('reviewRound');
+	});
+
 	it('shows the newest say() line at the foot, and holds every line to the width', () => {
 		const lines = render(
 			view(status(building()), { tail: ['x'.repeat(200)] }),
