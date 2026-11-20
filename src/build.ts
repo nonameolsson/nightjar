@@ -8,7 +8,7 @@ import {
 	type FixOutcome,
 	type ReviewOutcome
 } from './coding-agent.js';
-import { DEFAULT_PULL_CHECKS } from './config.js';
+import { DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
 import { pullChecksReport } from './gate.js';
 import {
 	feedbackRound,
@@ -43,6 +43,7 @@ import { publishMark } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
+import { reviewRound } from './review-round.js';
 import type { Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -162,6 +163,8 @@ export interface Setup extends WorkflowSettings {
 		readonly enabled?: boolean;
 		readonly model?: string;
 		readonly effort?: string;
+		// how many Review rounds a build gets; DEFAULT_REVIEW_FIX_ROUNDS when it says nothing
+		readonly fixRounds?: number;
 	};
 	readonly signals: SignalNames;
 	readonly limits: Limits;
@@ -188,8 +191,8 @@ const hash = (id: ItemId) => `#${id}`;
 
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
-// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback'.
-type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback';
+// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
+type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback' | 'reviewRound';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -769,7 +772,7 @@ class FeatureRun {
 
 	private building(
 		ticket: ItemId | null,
-		step: 'build' | 'fix' | 'step' | 'feedback',
+		step: 'build' | 'fix' | 'step' | 'feedback' | 'reviewRound',
 		session: string,
 		rounds: { readonly round: number | null; readonly rounds: number | null },
 		attempt = 1
@@ -833,20 +836,18 @@ class FeatureRun {
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
 		let review: Review | 'off' | null = 'off';
 		if (this.setup.review?.enabled !== false) {
-			const got = await reviewFeature(
-				this.deps,
-				this.setup,
-				this.tree,
-				this.feature,
-				done,
-				progress(this.tickets, this.built, null),
-				this.show,
-				(e) => this.log(e)
-			);
+			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
 				// the pull request's Paused section says why, so it gets no Review section
 				if (paused === null) {
 					paused = got.paused;
+					await this.pause(paused);
+				}
+			} else if (left.length === 0 && red === null && paused === null) {
+				const rounds = await this.reviewRounds(got, done);
+				review = rounds.review;
+				if (rounds.paused !== null) {
+					paused = rounds.paused;
 					await this.pause(paused);
 				}
 			} else {
@@ -931,6 +932,70 @@ class FeatureRun {
 			await this.handNote(pull);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	private review(done: readonly Ticket[]) {
+		return reviewFeature(
+			this.deps,
+			this.setup,
+			this.tree,
+			this.feature,
+			done,
+			progress(this.tickets, this.built, null),
+			this.show,
+			(e) => this.log(e)
+		);
+	}
+
+	// On a complete Feature, while the Review says changes: a Review round, then the Review again, up to review.fixRounds in the build. A round that fails or is stopped ends them, the Review before it the last.
+	private async reviewRounds(
+		first: Review | null,
+		done: readonly Ticket[]
+	): Promise<{ readonly review: Review | null; readonly paused: string | null }> {
+		const { deps } = this;
+		const rounds = this.setup.review?.fixRounds ?? DEFAULT_REVIEW_FIX_ROUNDS;
+		let review = first;
+		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
+			if (this.aborted) break;
+			const end = await reviewRound({
+				codingAgent: deps.codingAgent,
+				runCheck: deps.runCheck,
+				newId: deps.newId,
+				say: deps.say,
+				setup: this.setup,
+				feature: this.feature,
+				tree: this.tree,
+				round,
+				issues: review.issues,
+				...this.output,
+				dailyPause: () => this.dailyPause(),
+				allowance: (cap, spent) => deps.spend.allowance(cap, spent),
+				fix: (work) => this.fixReviewRound(work),
+				log: (entry) => this.log(entry),
+				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
+			});
+			if (end.kind === 'paused') return { review, paused: end.why };
+			if (end.kind !== 'fixed') break;
+			const again = await this.review(done);
+			if (again !== null && 'paused' in again) return { review, paused: again.paused };
+			review = again;
+		}
+		return { review, paused: null };
+	}
+
+	// A Review round's fix rounds show and are logged as the round they belong to.
+	private fixReviewRound(o: FixWork): Promise<FixEnd> {
+		return fixUntilGreen(
+			{
+				deps: this.deps,
+				setup: this.setup,
+				tree: this.tree,
+				building: (ticket, session, rounds, attempt) =>
+					this.building(ticket, 'reviewRound', session, rounds, attempt),
+				log: (entry) => this.log({ ...entry, step: 'reviewRound' })
+			},
+			o
+		);
 	}
 
 	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.

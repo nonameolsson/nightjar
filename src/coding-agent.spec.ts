@@ -7,6 +7,7 @@ import {
 	type FeedbackRequest,
 	type FixRequest,
 	type ReviewRequest,
+	type ReviewRoundRequest,
 	type StepRequest
 } from './coding-agent.js';
 import {
@@ -672,6 +673,97 @@ describe('a Feedback round', () => {
 	});
 });
 
+const reviewRoundRequest = (over: Partial<ReviewRoundRequest> = {}): ReviewRoundRequest => ({
+	kind: 'reviewRound',
+	at,
+	sessionId: 's-11',
+	feature,
+	issues: [
+		{ file: 'src/marks.ts', line: 3, problem: 'It escapes twice.' },
+		{ file: 'README.md', problem: 'The new flag is not described.' }
+	],
+	diff: { text: '+++ b/src/marks.ts', truncated: true },
+	budgetUsd: 15,
+	...over
+});
+
+const fixedIt = { outcome: 'fixed', summary: 'Escaped once.', blocker: '' };
+
+describe('a Review round', () => {
+	it("starts a new Session given each of the Review's issues with its place, and the branch's diff", async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).reviewRound(reviewRoundRequest());
+		const req = sent[0];
+		expect(req?.cwd).toBe('/w/1-one-escape');
+		expect(req?.sessionId).toBe('s-11');
+		expect(req?.resume).toBeUndefined();
+		expect(req?.prompt).toContain('- `src/marks.ts:3`: It escapes twice.');
+		expect(req?.prompt).toContain('- `README.md`: The new flag is not described.');
+		expect(req?.prompt).toContain('# The Feature: #1 One escape\n\nEscape once.');
+		expect(req?.prompt).toContain("# The branch's diff against origin/main");
+		expect(req?.prompt).toContain('It is cut here; the rest is in git.');
+		expect(req?.prompt).toContain('# Rules of this repo\n\nTabs.');
+		expect(req?.prompt).toContain('`make test`');
+		expect(req?.tools).toEqual(BUILD_TOOLS);
+		expect(req?.settings).toEqual(buildSettings(SETUP.allowedCommands));
+		expect(req?.schema).toHaveProperty('properties.outcome');
+		expect([req?.budgetUsd, req?.minutes]).toEqual([15, 60]);
+	});
+
+	it("runs a note's round on the note settings, given no repo command", async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(reviewRoundRequest({ output: 'note' }));
+		expect(sent[0]?.settings).toEqual(noteSettings());
+		expect(sent[0]?.prompt).toContain('`docs/research/`');
+		expect(sent[0]?.prompt).not.toContain('`make test`');
+	});
+
+	it('reads what it fixed', async () => {
+		const { session } = fakeSession(done(fixedIt));
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toEqual({
+			kind: 'fixed',
+			summary: 'Escaped once.',
+			sessionId: 's-11',
+			costUsd: 2.5
+		});
+	});
+
+	it('reads a round that reported itself blocked', async () => {
+		const blocked = { outcome: 'blocked', summary: '', blocker: 'The Review is wrong.' };
+		const { session } = fakeSession(done(blocked));
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'blocked',
+			blocker: 'The Review is wrong.'
+		});
+	});
+
+	it('fails on an answer in a shape not known', async () => {
+		const { session } = fakeSession(done({ outcome: 'built', summary: 'x', questions: [] }));
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
+		});
+	});
+
+	it('resumes its Session for a fix round, keeping its answer shape and, for a note, the note settings', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		const got = await codingAgent(SETUP, session).fix({
+			kind: 'fix',
+			at,
+			of: { kind: 'reviewRound', output: 'note' },
+			resume: 's-11',
+			round: 1,
+			tail: 'lint: 1 problem',
+			budgetUsd: 12
+		});
+		expect(got).toMatchObject({ kind: 'fixed', summary: 'Escaped once.' });
+		expect(sent[0]?.resume).toBe('s-11');
+		expect(sent[0]?.prompt).toContain('This is fix round 1 of 3.');
+		expect(sent[0]?.schema).toHaveProperty('properties.blocker');
+		expect(sent[0]?.settings).toEqual(noteSettings());
+	});
+});
+
 type Call = (agent: CodingAgent) => Promise<{ readonly kind: string; readonly sessionId: string }>;
 
 // Each kind of work, with the Session its request starts or resumes.
@@ -686,7 +778,9 @@ const kinds: [string, Call, string][] = [
 	['a Step round', (agent) => agent.step(stepRequest()), 's-1'],
 	['a Feedback round', (agent) => agent.feedback(feedbackRequest()), 's-7'],
 	["a Feedback round's fix round", (agent) => agent.fix(fixRequest({ kind: 'feedback' })), 's-1'],
-	['the review', (agent) => agent.review(reviewRequest()), 's-9']
+	['the review', (agent) => agent.review(reviewRequest()), 's-9'],
+	['a Review round', (agent) => agent.reviewRound(reviewRoundRequest()), 's-11'],
+	["a Review round's fix round", (agent) => agent.fix(fixRequest({ kind: 'reviewRound' })), 's-1']
 ];
 
 const pullChecksFix = (fresh: boolean): FixRequest => ({
@@ -848,6 +942,13 @@ const owners: [
 	[
 		"the review, by factory.json's review settings",
 		(own) => ({ setup: { review: own }, call: (agent) => agent.review(reviewRequest()) })
+	],
+	[
+		"a Review round, by factory.json's review settings",
+		(own) => ({
+			setup: { review: own },
+			call: (agent) => agent.reviewRound(reviewRoundRequest())
+		})
 	]
 ];
 

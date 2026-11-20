@@ -19,6 +19,9 @@ export const PULL_FIX_TRAILER = 'Factory-Pull-Fix';
 // Lists the feedback a Feedback round answered, by id; feedback no such trailer names is unanswered.
 export const FEEDBACK_TRAILER = 'Factory-Feedback';
 
+// Names the Review round of the build a commit holds.
+export const REVIEW_TRAILER = 'Factory-Review';
+
 // Names the Session a commit came from, so a later round can resume it.
 export const SESSION_TRAILER = 'Factory-Session';
 
@@ -70,6 +73,11 @@ export function ticketCommitMessage(
 // The commit of one Pull-check fix round, the `round`th on the branch.
 export function pullFixCommitMessage(round: number, summary: string, session: string): string {
 	return `Fix the Pull checks, round ${String(round)}\n\n${summary.trim()}\n\n${PULL_FIX_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
+}
+
+// The commit of one Review round, the `round`th of its build.
+export function reviewCommitMessage(round: number, summary: string, session: string): string {
+	return `Answer the Review, round ${String(round)}\n\n${summary.trim()}\n\n${REVIEW_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
 }
 
 // Names the request for changes that started a Feedback round with no Go; the branch's automatic rounds are counted by it.
@@ -160,6 +168,8 @@ export interface Worktree {
 		session: string,
 		asked?: string
 	): Promise<string | null>;
+	// One commit of what a Review round left, the `round`th of its build; false when it changed no file.
+	commitReview(round: number, summary: string, session: string): Promise<boolean>;
 }
 
 // The trailers of a commit message: the `Key: value` lines of its last paragraph, by key.
@@ -387,6 +397,13 @@ export class GitWorktree implements Worktree {
 		const message = feedbackCommitMessage(answered, summary, session, asked);
 		await this.git(['commit', '-q', '-m', message]);
 		return (await this.git(['rev-parse', '--short', 'HEAD'])).trim();
+	}
+
+	async commitReview(round: number, summary: string, session: string): Promise<boolean> {
+		await this.git(['add', '-A']);
+		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
+		await this.git(['commit', '-q', '-m', reviewCommitMessage(round, summary, session)]);
+		return true;
 	}
 }
 
