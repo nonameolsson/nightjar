@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_SIGNAL_NAMES, type SignalNames } from '../signals.js';
 import { GitHubFailure } from './api.js';
 import { failed, fakeGh, ok, on } from './fake-gh.js';
+import { FakeGitHub } from './fake-github.js';
 import { sourceMarker } from '../template.js';
 import { GitHubTracker } from './tracker.js';
 
@@ -73,6 +74,70 @@ describe('GitHubTracker', () => {
 			sort: 'created',
 			direction: 'asc'
 		});
+	});
+
+	it("lists a person's Shelf from their open issues, newest update first, with no pull request, Ticket or Signal", async () => {
+		const updated = (n: number) => `2026-11-0${String(n)}T00:00:00Z`;
+		const { gh, calls } = fakeGh(
+			on(
+				'GET',
+				'repos/o/r/issues',
+				ok([
+					rawIssue(1, { labels: [], sub_issues_summary: { total: 2 }, updated_at: updated(9) }),
+					rawIssue(2, {
+						labels: [{ name: 'bug' }],
+						sub_issues_summary: { total: 0 },
+						updated_at: updated(8)
+					}),
+					rawIssue(3, { labels: [], pull_request: {}, updated_at: updated(7) }),
+					rawIssue(4, {
+						labels: [],
+						sub_issues_summary: { total: 0 },
+						parent_issue_url: 'https://api.github.com/repos/o/r/issues/1',
+						updated_at: updated(6)
+					}),
+					rawIssue(5, { labels: [{ name: 'over-to-you' }], updated_at: updated(5) }),
+					rawIssue(6, { labels: [], updated_at: updated(4) })
+				])
+			)
+		);
+		expect(await tracker(gh, MINE).shelf('ann', 50)).toEqual({
+			features: [
+				{ id: '1', title: 'Issue 1', body: 'the body', hasTickets: true, updated: updated(9) },
+				{
+					id: '2',
+					title: 'Issue 2',
+					body: 'the body',
+					lone: true,
+					hasTickets: false,
+					updated: updated(8)
+				},
+				// GitHub gave no sub-issue count, so it is no lone issue
+				{ id: '6', title: 'Issue 6', body: 'the body', hasTickets: false, updated: updated(4) }
+			],
+			total: 3
+		});
+		expect(Object.fromEntries(calls[0]?.query ?? [])).toMatchObject({
+			assignee: 'ann',
+			state: 'open',
+			sort: 'updated',
+			direction: 'desc'
+		});
+		expect(calls[0]?.query.has('labels')).toBe(false);
+	});
+
+	it('reads every page of the Shelf to count it, and lists the 50 updated last', async () => {
+		const github = new FakeGitHub('o/r', 'ann');
+		const issue = { body: null, state: 'open' as const, labels: [], assignees: ['ann'] };
+		for (let n = 1; n <= 130; n += 1) github.issue({ ...issue, title: `Issue ${String(n)}` });
+		github.say(7, 'bob', 'Any news?');
+		const shelf = await tracker(github.gh).shelf('ann', 50);
+		expect(shelf.total).toBe(130);
+		expect(shelf.features.map((f) => f.id)).toEqual([
+			'7',
+			...Array.from({ length: 49 }, (_, i) => String(130 - i))
+		]);
+		expect(github.calls.filter((c) => c.path === 'repos/o/r/issues')).toHaveLength(2);
 	});
 
 	it('reads a lone issue as its own one Ticket, ready with no ready Signal, with its blockers', async () => {

@@ -9,6 +9,7 @@ import { publishContract } from './publish.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { shelfContract } from './shelf.js';
 import { sourcesContract } from './sources.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
@@ -71,12 +72,20 @@ async function optionalSuites(harness: TrackerHarness): Promise<{
 	finds: boolean;
 	assigns: boolean;
 	counts: boolean;
+	shelves: boolean;
 }> {
 	let subject: TrackerSubject;
 	try {
 		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
 	} catch {
-		return { creates: false, waitsOn: false, finds: false, assigns: false, counts: false };
+		return {
+			creates: false,
+			waitsOn: false,
+			finds: false,
+			assigns: false,
+			counts: false,
+			shelves: false
+		};
 	}
 	try {
 		return {
@@ -84,7 +93,8 @@ async function optionalSuites(harness: TrackerHarness): Promise<{
 			waitsOn: typeof subject.tracker.waitingOn === 'function',
 			finds: typeof subject.tracker.featuresFrom === 'function',
 			assigns: typeof subject.tracker.assign === 'function',
-			counts: typeof subject.tracker.ticketCounts === 'function'
+			counts: typeof subject.tracker.ticketCounts === 'function',
+			shelves: typeof subject.tracker.shelf === 'function'
 		};
 	} finally {
 		await subject.close?.();
@@ -130,7 +140,7 @@ async function hasFeedback(
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, the open pull requests suite when it has openPulls, and the publish suite when it has publish.
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the shelf suite when it has shelf, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, the open pull requests suite when it has openPulls, and the publish suite when it has publish.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -155,6 +165,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		}
 		if (has.counts) {
 			suites.push(await runSuite('Tracker ticket counts', ticketCountsContract, tracker as never));
+		}
+		if (has.shelves) {
+			suites.push(await runSuite('Tracker shelf', shelfContract, tracker as never));
 		}
 	}
 	if (codeHost !== undefined) {
