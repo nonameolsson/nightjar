@@ -1,0 +1,3 @@
+# Specs assert on strings with regexes that CodeQL reads as filtering; they never ship.
+paths-ignore:
+  - '**/*.spec.ts'

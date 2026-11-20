@@ -73,7 +73,7 @@ export function featureFaults(
 			if (blocker.open && !own.has(blocker.id)) {
 				add(
 					ticket.id,
-					`It is blocked by ${ref(blocker.id)}, which is open and not a Ticket of this Feature, so a build never reaches it; close the blocker or take the link off.`
+					`It is blocked by ${ref(blocker.id)}, which is open and not a Ticket of this Feature, so it waits until that Ticket closes, when its Feature's pull request merges; merge that, then give the Go again.`
 				);
 			}
 		}

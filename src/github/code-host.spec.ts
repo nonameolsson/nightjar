@@ -120,6 +120,34 @@ describe('GitHubCodeHost', () => {
 	});
 });
 
+describe('GitHubCodeHost.conflicts', () => {
+	it("answers from the pull request's mergeable: false is a conflict, null is unknown", async () => {
+		const github = new FakeGitHub('o/r', 'nightjar-bot');
+		const host = new GitHubCodeHost('o/r', github.gh, noGit);
+		github.pushed('factory/1-a', 'sha-1');
+		const pull = await host.createDraft({
+			title: 'A',
+			head: 'factory/1-a',
+			base: 'main',
+			body: 'b'
+		});
+		expect(await host.conflicts(pull)).toBe('no');
+		github.setMergeable(pull.id, false);
+		expect(await host.conflicts(pull)).toBe('yes');
+		github.setMergeable(pull.id, null);
+		expect(await host.conflicts(pull)).toBe('unknown');
+		github.setMergeable(pull.id, true);
+		expect(await host.conflicts(pull)).toBe('no');
+	});
+
+	it('counts a pull request that does not say as unknown', async () => {
+		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/pulls/9', ok({ number: 9, html_url: 'https://github.com/o/r/pull/9' }))
+		);
+		expect(await new GitHubCodeHost('o/r', gh, noGit).conflicts(PULL)).toBe('unknown');
+	});
+});
+
 // o/r signed in as nightjar-bot, whose draft pull requests a spec opens on a pushed branch.
 function draftsWorld() {
 	const github = new FakeGitHub('o/r', 'nightjar-bot');
