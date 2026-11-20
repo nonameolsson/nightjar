@@ -23,6 +23,7 @@ export { openPullsContract } from './contract/open-pulls.js';
 export type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
 	FailedCheck,
 	Feedback,

@@ -296,6 +296,13 @@ describe('makeAdapters and creating Features', () => {
 		expect(await refusal(config({ codeHost: { type: 'module', path: './odd.mjs' } }))).toBe(
 			'factory.json: codeHost: createCodeHost in ./odd.mjs returned a Code host whose feedback is not a function'
 		);
+		moduleFile(
+			'conflicts.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', conflicts: 1 }')});`
+		);
+		expect(await refusal(config({ codeHost: { type: 'module', path: './conflicts.mjs' } }))).toBe(
+			'factory.json: codeHost: createCodeHost in ./conflicts.mjs returned a Code host whose conflicts is not a function'
+		);
 	});
 });
 

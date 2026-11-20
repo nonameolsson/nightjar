@@ -3,6 +3,7 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
 	Feedback,
 	NightjarDraft,
@@ -27,6 +28,8 @@ export interface FakePull extends Pull, DraftRequest {
 	readonly checks: PullChecks;
 	// whether a person other than Nightjar reviewed or commented on it
 	readonly personEngaged: boolean;
+	// what the host says of a conflict with the base; `no` until a spec says otherwise
+	readonly conflict: ConflictState;
 }
 
 const NO_CHECKS: PullChecks = { pending: false, failed: [] };
@@ -38,6 +41,8 @@ export class FakeCodeHost implements CodeHost {
 	commitAt = (folder: string, push: number): string => `${folder}@${String(push)}`;
 	// the messages of the commits a push from `folder` leaves on a branch, oldest first; a harness that keeps commits sets it
 	commitsAt = (_folder: string): readonly string[] => [];
+	// what the host says of a conflict on each pull request it opens from now on
+	conflictOnOpen: ConflictState = 'no';
 	// the commit each branch points at
 	private readonly heads = new Map<string, string>();
 	// the commits each branch holds, each dated when a push first brought it
@@ -76,7 +81,8 @@ export class FakeCodeHost implements CodeHost {
 			references: [],
 			comments: [],
 			checks: NO_CHECKS,
-			personEngaged: false
+			personEngaged: false,
+			conflict: this.conflictOnOpen
 		});
 		return Promise.resolve({ id, url });
 	};
@@ -99,6 +105,15 @@ export class FakeCodeHost implements CodeHost {
 	comment = (pull: Pull, body: string): Promise<void> => {
 		this.change(pull.id, (p) => ({ comments: [...p.comments, body] }));
 		return Promise.resolve();
+	};
+
+	// how many times each pull request's conflict state was asked
+	readonly conflictReads = new Map<number, number>();
+
+	conflicts = (pull: Pull): Promise<ConflictState> => {
+		this.conflictReads.set(pull.id, (this.conflictReads.get(pull.id) ?? 0) + 1);
+		const found = this.pulls.find((p) => p.id === pull.id);
+		return Promise.resolve(found?.conflict ?? 'unknown');
 	};
 
 	// in the order they were opened, which is the order of their ids
@@ -152,6 +167,11 @@ export class FakeCodeHost implements CodeHost {
 	// the Pull checks on the pull request's head commit
 	setChecks(pull: Pull, checks: PullChecks): void {
 		this.change(pull.id, () => ({ checks }));
+	}
+
+	// what the host says of a conflict between the pull request and its base
+	setConflict(pull: Pull, conflict: ConflictState): void {
+		this.change(pull.id, () => ({ conflict }));
 	}
 
 	// a person other than Nightjar reviews or comments

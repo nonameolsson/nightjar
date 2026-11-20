@@ -4,6 +4,7 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
 	FailedCheck,
 	Feedback,
@@ -52,6 +53,8 @@ const PullSchema = z.looseObject({
 	pullRequestId: z.int(),
 	description: z.string().nullish(),
 	artifactId: z.string().nullish(),
+	// notSet, queued, conflicts, succeeded, rejectedByPolicy or failure
+	mergeStatus: z.string().nullish(),
 	repository: z.looseObject({
 		id: z.string(),
 		project: z.looseObject({ id: z.string() }).nullish()
@@ -504,6 +507,13 @@ export class AzureReposCodeHost implements CodeHost {
 	async editBody(pull: Pull, body: string): Promise<void> {
 		const { lines } = split((await this.read(pull)).description ?? '');
 		await this.setBody(pull, join(body.trimEnd(), lines));
+	}
+
+	// Only `conflicts` and `succeeded` say anything: the other statuses mean Azure Repos has not decided or could not merge for another reason.
+	async conflicts(pull: Pull): Promise<ConflictState> {
+		const { mergeStatus } = await this.read(pull);
+		if (mergeStatus === 'conflicts') return 'yes';
+		return mergeStatus === 'succeeded' ? 'no' : 'unknown';
 	}
 
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {

@@ -864,6 +864,64 @@ describe('buildFeature', () => {
 		expect(refs(world)).toEqual(['#2', '#1', '#3']);
 	});
 
+	describe('a draft that conflicts with its base', () => {
+		it('gains a Conflicts section naming the base, with no Signal and no Tracker comment', async () => {
+			const world = makeWorld();
+			world.host.conflictOnOpen = 'yes';
+			await buildFeature(deps(world), setup(world, { baseBranch: 'develop' }), '1');
+
+			const body = world.host.pulls[0]?.body ?? '';
+			expect(body).toContain('## Conflicts with develop');
+			expect(body).toContain('merge or rebase `develop` before review');
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+			expect(world.tracker.said('1')).toEqual([]);
+			expect(world.waits).toEqual([]);
+		});
+
+		it('keeps the Conflicts section out of a draft that does not conflict', async () => {
+			const world = makeWorld();
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
+		});
+
+		it('asks for about ten seconds while the state is unknown, then leaves the body as it is', async () => {
+			const world = makeWorld();
+			world.host.conflictOnOpen = 'unknown';
+			await buildFeature(deps(world), setup(world), '1');
+
+			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
+			expect(world.waits.reduce((a, b) => a + b, 0)).toBe(10_000);
+			expect(world.host.conflictReads.get(100)).toBe(11);
+		});
+
+		it('drops the section of an earlier run once the draft no longer conflicts', async () => {
+			const world = makeWorld();
+			world.acts['3'] = 'ask';
+			world.host.conflictOnOpen = 'yes';
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.host.pulls[0]?.body).toContain('## Conflicts with main');
+
+			world.host.setConflict({ id: 100, url: 'https://code.example/pull/100' }, 'no');
+			world.acts['3'] = 'build';
+			await world.tracker.comment('3', 'Use marks.ts.');
+			await world.tracker.addSignal('3', 'ready');
+			await world.tracker.addSignal('1', 'go');
+			await buildFeature(deps(world), setup(world), '1');
+
+			expect(world.host.pulls).toHaveLength(1);
+			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
+		});
+
+		it('opens a draft as before over a Code host without the method', async () => {
+			const world = makeWorld();
+			delete (world.host as { conflicts?: unknown }).conflicts;
+			const got = await buildFeature(deps(world), setup(world), '1');
+			expect(got).toMatchObject({ kind: 'pull' });
+			expect(world.host.pulls[0]?.body).not.toContain('Conflicts with');
+			expect(world.waits).toEqual([]);
+		});
+	});
+
 	it('hands back a Ticket with no acceptance criteria before a Session', async () => {
 		const world = makeWorld();
 		const item = world.tracker.items.get('2');

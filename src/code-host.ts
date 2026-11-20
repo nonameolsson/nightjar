@@ -95,6 +95,9 @@ export interface OpenPull {
 	readonly changesRequested: readonly ChangeRequest[];
 }
 
+// Whether a pull request conflicts with its base branch; unknown while the host has not worked it out.
+export type ConflictState = 'yes' | 'no' | 'unknown';
+
 export interface CodeHost {
 	// pushes the worktree's HEAD in `folder` to `branch` on the host
 	push(folder: string, branch: string): Promise<void>;
@@ -114,4 +117,6 @@ export interface CodeHost {
 	reply?(pull: Pull, feedbackId: string, body: string): Promise<void>;
 	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with `prefix`, oldest first; a Code host without it, or without feedback and reply, gets no Feedback round a request for changes starts
 	openPulls?(prefix: string): Promise<OpenPull[]>;
+	// optional, so a Code host module written before it still loads: whether the pull request conflicts with its base branch, read now; a Code host without it counts as unknown, and its drafts get no Conflicts section
+	conflicts?(pull: Pull): Promise<ConflictState>;
 }
