@@ -607,6 +607,8 @@ The shape of the file is defined once, in `src/status-shape.ts`, which the packa
 
 ## Develop
 
+With [mise](https://mise.jdx.dev/), `mise.toml` pins Node 24: run `mise trust` and `mise install` once. Without mise, install Node 24 yourself.
+
 ```bash
 npm ci
 npm run check    # typecheck, lint, format check, every spec, then the build

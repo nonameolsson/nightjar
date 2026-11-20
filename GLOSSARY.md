@@ -27,8 +27,12 @@ The order a Feature's Tickets are built in: their blocking links, then the Featu
 _Avoid_: dependency graph, queue
 
 **Queue**:
-The Features assigned to a person with the Go, oldest first, that Nightjar builds one after another.
+The Features assigned to a person with the Go, oldest first, that Nightjar builds as many at once as the run has Slots.
 _Avoid_: backlog, next up
+
+**Slot**:
+One of a run's places for work on one Feature at a time: its build, a Pull-check fix or a Feedback round. A run has as many as the person sets, one unless they say more, and a Feature is never in two at once.
+_Avoid_: lane, worker, runner, thread
 
 ### Workflows
 
@@ -109,6 +113,10 @@ _Avoid_: bot, AI, model, worker
 **Session**:
 One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
+
+**Logbook**:
+Every Session Nightjar spent on a Feature, and each decision it made between them, in order. It stays on the person's machine.
+_Avoid_: log, run log, build log, history, timeline
 
 **Adapter**:
 The piece that connects Nightjar to one Tracker or one Code host, either built in or a module the repo's config names.

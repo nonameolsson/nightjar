@@ -10,7 +10,7 @@ Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement c
 
 ## Build, lint, test
 
-Node 24, TypeScript, npm.
+Node 24, TypeScript, npm. `mise.toml` pins Node 24 (`mise trust`, then `mise install`).
 
 - `npm run check`: typecheck, lint, format check, every spec, then the build. Run it before a commit.
 - `npm test`: every spec (Vitest). One file: `npx vitest run src/build.spec.ts`; one test: `npx vitest run src/build.spec.ts -t 'hands back a Ticket'`.
