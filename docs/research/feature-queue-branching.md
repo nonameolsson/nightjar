@@ -2,6 +2,8 @@
 
 Research note, read 2026-11-20. Every source below was read on that date.
 
+Outcome: decided in ADR 0006 (#241); the hold in §5 was not adopted.
+
 ## 1. Question and short answer
 
 How do autonomous coding agents and stacking or merge-queue tools handle several features built one after another while earlier pull requests are still open? Do they branch from the default branch, stack on unmerged work, rebase or merge when the base moves, and how do they handle dependencies and conflicts? What branching standards should Nightjar follow?
