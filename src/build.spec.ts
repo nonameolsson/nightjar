@@ -1838,28 +1838,29 @@ describe('Workflows', () => {
 
 describe('the publish mark in the pull request', () => {
 	const mark = (world: World) => publishMarkOf(world.host.pulls[0]?.body ?? '');
-	// the loop's deps with a Review that gives `verdict`
-	const reviewing = (world: World, verdict: 'approve' | 'changes'): Deps => {
-		const d = deps(world);
-		const review = (req: ReviewRequest): Promise<ReviewOutcome> =>
-			Promise.resolve({
-				kind: 'reviewed',
-				review: { verdict, summary: 'Read it.', issues: [] },
-				sessionId: req.sessionId,
-				costUsd: 0.5
-			});
-		return { ...d, codingAgent: { ...d.codingAgent, review } };
+	// a Review that asks for changes `times` times, then approves
+	const changesFor = (world: World, times: number) => {
+		let reviews = 0;
+		world.reviewAgent = (req) => reviewed(req, (reviews += 1) <= times ? 'changes' : 'approve');
 	};
 
 	it('says complete and approved when every Ticket is built, the check is green and the Review approves', async () => {
 		const world = makeWorld();
-		await buildFeature(reviewing(world, 'approve'), setup(world), '1');
+		await buildFeature(deps(world), setup(world), '1');
 		expect(mark(world)).toEqual({ complete: true, approved: true });
 	});
 
-	it('says not approved when the Review asks for changes, did not finish or is switched off', async () => {
+	it('reads the last Review of the build: approved once a Review round leads to an approval', async () => {
+		const world = makeWorld();
+		changesFor(world, 1);
+		await buildFeature(deps(world), setup(world), '1');
+		expect(mark(world)).toEqual({ complete: true, approved: true });
+	});
+
+	it('says not approved when the last Review asks for changes, did not finish or is switched off', async () => {
 		const changes = makeWorld();
-		await buildFeature(reviewing(changes, 'changes'), setup(changes), '1');
+		changesFor(changes, 99);
+		await buildFeature(deps(changes), setup(changes), '1');
 		expect(mark(changes)).toEqual({ complete: true, approved: false });
 
 		const failed = makeWorld();
