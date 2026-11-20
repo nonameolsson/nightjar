@@ -2,7 +2,7 @@
 
 Research note, read 2026-11-20. Every source below was read on that date.
 
-Outcome: decided in ADR 0006 (#241); the hold in §5 was not adopted.
+Outcome: decided in ADR 0007 (#241); the hold in §5 was not adopted.
 
 ## 1. Question and short answer
 
