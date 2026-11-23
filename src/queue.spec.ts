@@ -7,7 +7,7 @@ import {
 	type PullFixOutcome,
 	type RedDraft
 } from './build.js';
-import type { PullChecks } from './code-host.js';
+import type { OpenPull, PullChecks } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker, type NewItem } from './fakes/tracker.js';
 import { featureStopStep, nextStepText } from './next-step.js';
@@ -20,10 +20,12 @@ import {
 	pullChecksPass,
 	pullFixExit,
 	queue,
+	slotSay,
 	type QueueDeps
 } from './queue.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import type { Doing, Happened, Queued, WaitingOnYou } from './status.js';
+import { branchFor } from './worktree.js';
 
 function world() {
 	const tracker = new FakeTracker('ann');
@@ -263,9 +265,9 @@ describe('queue --watch with the Pull-check pass', () => {
 			...w.deps,
 			pullChecks: {
 				drafts: d.host.nightjarDrafts,
-				fix: (red) => {
+				fix: (red, say) => {
 					handed.push(red);
-					return fix ? fix(red) : Promise.reject(new Error('no fix'));
+					return fix ? fix(red, say) : Promise.reject(new Error('no fix'));
 				}
 			}
 		};
@@ -474,6 +476,295 @@ describe('queue --once with the Pull-check pass', () => {
 		expect(await queue(off, true)).toBe(0);
 		expect(d.fixed).toEqual([]);
 		expect(w.built).toEqual(['2']);
+	});
+});
+
+// every promise the fakes chain settles before the next macrotask
+const settle = () => new Promise<void>((done) => setImmediate(done));
+
+// The world with `slots` Slots: each build, fix and Feedback round held until the spec ends it, and each sleep until the spec wakes it or the run stops.
+function slotted(w: ReturnType<typeof world>, slots: number) {
+	const stop = new AbortController();
+	const held = new Map<string, (end: FeatureOutcome) => void>();
+	const naps: { ms: number; wake: () => void }[] = [];
+	const hold = (id: string) => new Promise<FeatureOutcome>((end) => held.set(id, end));
+	w.deps = {
+		...w.deps,
+		slots,
+		signal: stop.signal,
+		build: async ({ id }, say) => {
+			w.built.push(id);
+			w.trail.push(`build ${id}`);
+			await w.tracker.removeSignal(id, 'go');
+			say('building');
+			return hold(id);
+		},
+		sleep: (ms, signal) =>
+			new Promise<void>((wake) => {
+				naps.push({ ms, wake });
+				signal?.addEventListener('abort', () => wake(), { once: true });
+			})
+	};
+	return {
+		stop,
+		naps,
+		hold,
+		running: () => [...held.keys()],
+		end: async (id: string, outcome: FeatureOutcome = { kind: 'nothing', waiting: [] }) => {
+			const end = held.get(id);
+			held.delete(id);
+			end?.(outcome);
+			await settle();
+		},
+		// the last sleep ends, as the next tick would
+		tick: async () => {
+			naps.at(-1)?.wake();
+			await settle();
+		}
+	};
+}
+
+// A Feedback pass over one open pull request on Feature 30's branch, whose newest request for changes is `request`; each round held.
+function asking(w: ReturnType<typeof world>, s: ReturnType<typeof slotted>) {
+	w.tracker.add({ id: '30', title: 'Asked', assignees: ['ann'], children: ['31'] });
+	w.tracker.add({ id: '31', title: 'Ticket 31' });
+	let request = 'review:1';
+	const answered: string[] = [];
+	const open = (): OpenPull => ({
+		pull: { id: 30, url: 'https://example.test/o/app/pull/30' },
+		branch: branchFor('30', 'Asked'),
+		body: `Nightjar built it.\n\n${featureMarker('30')}`,
+		commits: [],
+		changesRequested: [{ id: request, author: 'rae', at: '2026-10-30T08:00:00Z', trusted: true }]
+	});
+	w.deps = {
+		...w.deps,
+		feedback: {
+			pulls: () => Promise.resolve([open()]),
+			answer: ({ id }, _asked, say) => {
+				answered.push(id);
+				w.trail.push(`answer ${id}`);
+				say('answering');
+				return s.hold(id);
+			}
+		}
+	};
+	return {
+		answered,
+		askAgain: (id: string) => {
+			request = id;
+		}
+	};
+}
+
+describe('queue with several Slots', () => {
+	function three() {
+		const w = world();
+		w.tracker.add({
+			id: '10',
+			title: 'Third',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['11']
+		});
+		w.tracker.add({ id: '11', title: 'Ticket 11' });
+		return w;
+	}
+
+	it('builds two Features at once with two Slots, and starts the third when one ends', async () => {
+		const w = three();
+		const s = slotted(w, 2);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(s.running()).toEqual(['2', '4']);
+		await s.end('4');
+		expect(s.running()).toEqual(['2', '10']);
+		expect(w.built).toEqual(['2', '4', '10']);
+		s.stop.abort();
+		await s.end('2');
+		await s.end('10');
+		expect(await run).toBe(130);
+	});
+
+	it('never takes a red draft of a Feature being built in another Slot', async () => {
+		const w = world();
+		const s = slotted(w, 2);
+		const d = withDrafts(w);
+		// red from the start, and left alone while Feature 2 holds the Go
+		await d.open('2');
+		const run = queue(w.deps, false);
+		await settle();
+		expect(d.fixed).toEqual([]);
+		expect(s.running()).toEqual(['2', '4']);
+		await s.end('2');
+		expect(d.fixed).toEqual(['2']);
+		s.stop.abort();
+		await s.end('4');
+		await run;
+	});
+
+	it('never starts a Feedback round on a Feature in a Slot, even on a newer request for changes', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const s = slotted(w, 2);
+		const f = asking(w, s);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(f.answered).toEqual(['30']);
+		f.askAgain('review:2');
+		await s.tick();
+		expect(f.answered).toEqual(['30']);
+		s.stop.abort();
+		await s.end('30');
+		await run;
+	});
+
+	it('fills a free Slot with a red draft first, then a Feature with the Go, then a Feedback round', async () => {
+		const w = world();
+		const s = slotted(w, 2);
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(async () => {
+			await s.hold('20');
+			return { kind: 'fixed', pull, round: 1, summary: 'Fixed.', usd: 1 };
+		});
+		const f = asking(w, s);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(work(w.trail)).toEqual(['fix 20', 'build 2']);
+		await s.end('2');
+		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4']);
+		await s.end('20');
+		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4', 'answer 30']);
+		expect(f.answered).toEqual(['30']);
+		s.stop.abort();
+		await s.end('4');
+		await s.end('30');
+		await run;
+	});
+
+	it('--once takes up to its Slots and returns once every one has ended', async () => {
+		const w = world();
+		const s = slotted(w, 3);
+		let returned: number | null = null;
+		const run = queue(w.deps, true).then((code) => (returned = code));
+		await settle();
+		expect(s.running()).toEqual(['2', '4']);
+		await s.end('2');
+		expect(returned).toBeNull();
+		await s.end('4');
+		await run;
+		expect(returned).toBe(0);
+		expect(w.built).toEqual(['2', '4']);
+		expect(s.naps).toEqual([]);
+	});
+
+	it('--once exits 1 when any of its Slots does not end well', async () => {
+		const w = world();
+		const s = slotted(w, 2);
+		const run = queue(w.deps, true);
+		await settle();
+		await s.end('2');
+		expect(s.running()).toEqual(['4']);
+		await s.end('4', { kind: 'paused', why: 'the daily limit was reached' });
+		expect(await run).toBe(1);
+	});
+
+	it('looks again on each tick while a Slot is free, and checks for newer code only once every Slot is empty', async () => {
+		const w = world();
+		await w.tracker.removeSignal('4', 'go');
+		const s = slotted(w, 2);
+		let checked = 0;
+		w.deps = { ...w.deps, newer: () => ((checked += 1), Promise.resolve(null)) };
+		const run = queue(w.deps, false);
+		await settle();
+		expect(s.naps.map((n) => n.ms)).toEqual([120_000]);
+		await w.tracker.addSignal('4', 'go');
+		await s.tick();
+		expect(s.running()).toEqual(['2', '4']);
+		expect(checked).toBe(0);
+		await s.end('2');
+		await s.end('4');
+		expect(checked).toBe(1);
+		expect(w.doing.at(-1)).toMatchObject({ kind: 'idle' });
+		s.stop.abort();
+		await run;
+	});
+
+	it('pauses every Slot when one pauses: none takes work until the pause ends, and the running ones finish', async () => {
+		const w = three();
+		const s = slotted(w, 2);
+		const run = queue(w.deps, false);
+		await settle();
+		await s.end('2', { kind: 'paused', why: 'the daily limit was reached' });
+		expect(s.running()).toEqual(['4']);
+		expect(w.doing.at(-1)).toMatchObject({ kind: 'paused', why: 'the daily limit was reached' });
+		expect(s.naps.map((n) => n.ms)).toEqual([30 * 60_000]);
+		await s.end('4');
+		expect(w.built).toEqual(['2', '4']);
+		await s.tick();
+		expect(s.running()).toEqual(['10']);
+		s.stop.abort();
+		await s.end('10');
+		await run;
+	});
+
+	it('on abort takes no more work, and returns 130 once every running Slot has ended', async () => {
+		const w = three();
+		const s = slotted(w, 2);
+		let returned: number | null = null;
+		const run = queue(w.deps, false).then((code) => (returned = code));
+		await settle();
+		s.stop.abort();
+		await s.end('2', { kind: 'stopped' });
+		expect(returned).toBeNull();
+		expect(s.running()).toEqual(['4']);
+		await s.end('4', { kind: 'stopped' });
+		await run;
+		expect(returned).toBe(130);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it("starts each line a Slot's work says with its Feature's id", async () => {
+		const w = world();
+		const s = slotted(w, 2);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(w.lines).toEqual(['#2: building', '#4: building']);
+		s.stop.abort();
+		await s.end('2');
+		await s.end('4');
+		await run;
+	});
+
+	it('leaves the lines as they are with one Slot', async () => {
+		const w = world();
+		const s = slotted(w, 1);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(w.lines).toEqual(['building']);
+		s.stop.abort();
+		await s.end('2');
+		await run;
+	});
+});
+
+describe('slotSay', () => {
+	it("leaves a line that starts with the Feature's id, and marks every other", () => {
+		const lines: string[] = [];
+		const say = slotSay('2', (l) => lines.push(l));
+		say('#2 Older: building on factory/2-older');
+		say('#2: draft pull request https://example.test/o/app/pull/1');
+		say('#20 Ticket: session s-1');
+		say('paused: the daily limit was reached');
+		expect(lines).toEqual([
+			'#2 Older: building on factory/2-older',
+			'#2: draft pull request https://example.test/o/app/pull/1',
+			'#2: #20 Ticket: session s-1',
+			'#2: paused: the daily limit was reached'
+		]);
 	});
 });
 

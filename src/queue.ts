@@ -30,14 +30,17 @@ export const POLL_MS = DEFAULT_POLL_SECONDS * 1000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
 export const PAUSE_MS = 30 * 60_000;
 
+export type Say = (line: string) => void;
+
 export interface QueueDeps {
 	readonly tracker: Tracker;
 	// whose Features to build
 	readonly person: string;
-	readonly build: (feature: Named) => Promise<FeatureOutcome>;
+	// `say` is the Slot's own, which marks each line with the Feature's id when the run holds several Slots
+	readonly build: (feature: Named, say: Say) => Promise<FeatureOutcome>;
 	readonly status: StatusReport;
 	readonly now: () => Date;
-	readonly say: (line: string) => void;
+	readonly say: Say;
 	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly signal?: AbortSignal;
 	// how long --watch waits when idle; POLL_MS when left out
@@ -58,7 +61,7 @@ export interface FeedbackPass {
 	// the open pull requests on Nightjar's branches
 	readonly pulls: () => Promise<OpenPull[]>;
 	// the Feature built with no Go, its Feedback round started by the request for changes `asked`
-	readonly answer: (feature: Named, asked: string) => Promise<FeatureOutcome>;
+	readonly answer: (feature: Named, asked: string, say: Say) => Promise<FeatureOutcome>;
 }
 
 // Nightjar's open pull requests, or null when the Code host cannot list them or cannot answer their feedback.
@@ -83,7 +86,7 @@ export interface PullChecksPass {
 	// the Code host's open drafts on Nightjar's branches
 	readonly drafts: () => Promise<NightjarDraft[]>;
 	// one Pull-check fix round on a red draft
-	readonly fix: (red: RedDraft) => Promise<PullFixOutcome>;
+	readonly fix: (red: RedDraft, say: Say) => Promise<PullFixOutcome>;
 }
 
 // The revisit pass, or null when factory.json leaves it off or the Code host cannot list Nightjar's drafts.
@@ -131,7 +134,7 @@ export async function handBack(
 export async function buildOne(
 	deps: QueueDeps,
 	feature: Named,
-	build: QueueDeps['build'] = deps.build
+	build: (feature: Named) => Promise<FeatureOutcome> = (f) => deps.build(f, deps.say)
 ): Promise<FeatureOutcome | null> {
 	const startedAt = deps.now().toISOString();
 	try {
@@ -234,6 +237,8 @@ async function nextRedDraft(
 	deps: QueueDeps,
 	pass: PullChecksPass,
 	tried: ReadonlySet<string>,
+	// the Features in a Slot, which no other Slot takes
+	busy: ReadonlySet<ItemId>,
 	// `nightjar <id>`: only this Feature's draft
 	only?: ItemId
 ): Promise<RedDraft | null> {
@@ -246,6 +251,7 @@ async function nextRedDraft(
 		if (handedOver(draft.body)) continue;
 		const feature = featureOfBody(draft.body);
 		if (feature === undefined || (only !== undefined && feature !== only)) continue;
+		if (busy.has(feature)) continue;
 		try {
 			const { assignees, signals } = await deps.tracker.standing(feature);
 			if (!assignees.some((a) => samePerson(a, deps.person)) || signals.length > 0) continue;
@@ -258,32 +264,51 @@ async function nextRedDraft(
 	return null;
 }
 
-// One red draft's Pull-check fix round, or null when none waits; a fault is said, and the Queue goes on.
-async function revisit(
+// The red draft the revisit pass takes next, or null when none waits; a fault is said, and the Queue goes on.
+async function findRed(
 	deps: QueueDeps,
 	pass: PullChecksPass,
-	tried: Set<string>,
+	tried: ReadonlySet<string>,
+	busy: ReadonlySet<ItemId>,
 	only?: ItemId
-): Promise<PullFixOutcome | null> {
-	let red: RedDraft | null;
+): Promise<RedDraft | null> {
 	try {
-		red = await nextRedDraft(deps, pass, tried, only);
+		return await nextRedDraft(deps, pass, tried, busy, only);
 	} catch (fault) {
 		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
 		return null;
 	}
-	if (red === null) return null;
+}
+
+// One red draft's Pull-check fix round; a fault is said, and the round is skipped.
+async function fixRed(
+	pass: PullChecksPass,
+	tried: Set<string>,
+	red: RedDraft,
+	say: Say
+): Promise<PullFixOutcome> {
 	try {
-		const got = await pass.fix(red);
+		const got = await pass.fix(red, say);
 		// the day's limit holds it back, so it is taken once the day is over
 		if (got.kind !== 'paused') tried.add(triedKey(red.draft));
 		return got;
 	} catch (fault) {
 		tried.add(triedKey(red.draft));
 		const reason = why(fault);
-		deps.say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
+		say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
 		return { kind: 'skipped', why: reason };
 	}
+}
+
+// One red draft's Pull-check fix round, or null when none waits.
+async function revisit(
+	deps: QueueDeps,
+	pass: PullChecksPass,
+	tried: Set<string>,
+	only?: ItemId
+): Promise<PullFixOutcome | null> {
+	const red = await findRed(deps, pass, tried, new Set(), only);
+	return red === null ? null : fixRed(pass, tried, red, deps.say);
 }
 
 // Whether a round did a piece of work; a skipped one left the pull request alone, so the Queue's next work is still due.
@@ -366,12 +391,13 @@ async function feedbackLimit(deps: QueueDeps, a: AskedFeature): Promise<void> {
 	}
 }
 
-// One Feedback round a trusted request for changes started, or null when none waits. A pull request is taken once per request in a run, so a round that lands no commit is not started again and again.
-async function answerAsked(
+// The Feature whose Feedback round a trusted request for changes starts next, or null when none waits. A pull request is taken once per request in a run, so a round that lands no commit is not started again and again.
+async function findAsked(
 	deps: QueueDeps,
 	pass: FeedbackPass,
-	tried: Set<string>
-): Promise<{ readonly feature: Named; readonly outcome: FeatureOutcome | null } | null> {
+	tried: Set<string>,
+	busy: ReadonlySet<ItemId>
+): Promise<AskedFeature | null> {
 	let found: AskedFeature[];
 	try {
 		found = await askedFeatures(deps, await pass.pulls());
@@ -380,6 +406,7 @@ async function answerAsked(
 		return null;
 	}
 	for (const a of found) {
+		if (busy.has(a.feature.id)) continue;
 		const key = `${String(a.open.pull.id)} ${a.request.id}`;
 		if (tried.has(key)) continue;
 		if (atLimit(a)) {
@@ -387,9 +414,7 @@ async function answerAsked(
 			continue;
 		}
 		tried.add(key);
-		deps.say(`#${a.feature.id}: ${a.request.author} asked for changes on ${a.open.pull.url}`);
-		const outcome = await buildOne(deps, a.feature, (f) => pass.answer(f, a.request.id));
-		return { feature: a.feature, outcome };
+		return a;
 	}
 	return null;
 }
@@ -397,9 +422,42 @@ async function answerAsked(
 const none = (deps: Pick<QueueDeps, 'person'>) =>
 	`no Feature with the Go is assigned to ${deps.person}`;
 
-// The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
+// With several Slots, each line a Slot's work says starts with its Feature's id, so the lines of work running at once can be told apart.
+export function slotSay(id: ItemId, say: Say): Say {
+	const mark = `#${id}`;
+	const marked = (line: string) => line.startsWith(mark) && !/^\w/.test(line.slice(mark.length));
+	return (line) => say(marked(line) ? line : `${mark}: ${line}`);
+}
+
+// How a Slot's work ended: the exit code it gives --once, or null when it did no work, so the Slot takes the next; the pause it asks of the run; and the Feature it built, for Waiting on you.
+interface Ended {
+	readonly code: number | null;
+	readonly paused?: string;
+	readonly built?: { readonly feature: Named; readonly outcome: FeatureOutcome | null };
+}
+
+// A piece of work a free Slot takes: the Feature it holds the Slot for, and the work.
+interface Work {
+	readonly feature: ItemId;
+	readonly run: (say: Say) => Promise<Ended>;
+}
+
+const builtEnd = (feature: Named, outcome: FeatureOutcome | null): Ended => ({
+	code: outcome === null || outcome.kind === 'paused' ? 1 : 0,
+	...(outcome?.kind === 'paused' ? { paused: outcome.why } : {}),
+	built: { feature, outcome }
+});
+
+const fixEnd = (got: PullFixOutcome): Ended =>
+	got.kind === 'skipped'
+		? { code: null }
+		: { code: pullFixExit(got), ...(got.kind === 'paused' ? { paused: got.why } : {}) };
+
+// Up to `slots` pieces of work at once, one per Slot and a Feature in one Slot at most. A free Slot takes, in order, the oldest red draft, the oldest Feature assigned to the person with the Go, then a Feedback round; it looks on each tick and whenever another Slot frees up. --once takes up to `slots` and returns when they end; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const stop = deps.signal;
+	const slots = Math.max(1, deps.slots ?? 1);
+	const pollMs = deps.pollMs ?? POLL_MS;
 	const waiting = waitingOnYou(deps);
 	let told: string | null = null;
 	// once per version; Nightjar never restarts itself
@@ -413,9 +471,9 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		deps.status.happened({ kind: 'stale', commit: newer });
 		deps.status.codeMoved(newer);
 	};
+	// only with every Slot empty, so the newer-code check never runs beside a build
 	const idle = async () => {
 		await warnIfStale();
-		const pollMs = deps.pollMs ?? POLL_MS;
 		const nextPollAt = new Date(deps.now().getTime() + pollMs).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(pollMs, stop);
@@ -429,60 +487,152 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const tried = new Set<string>();
 	// the pull requests a request for changes started a round on this run, by that request
 	const asked = new Set<string>();
-	while (stop?.aborted !== true) {
-		// a red draft is revisited before the next Feature is taken, and on each idle tick in --watch
+	// the Features in a Slot, each with a promise that settles once its work ended and was told
+	const running = new Map<ItemId, Promise<void>>();
+	// the Queue last read, less the Features in a Slot
+	let queued: Named[] = [];
+
+	// The next piece of work in today's order, skipping the Features in a Slot, or null when none waits. A Tracker fault is thrown.
+	const pick = async (): Promise<Work | null> => {
+		const busy = new Set(running.keys());
 		const pass = deps.pullChecks;
 		if (pass !== undefined) {
-			const got = await revisit(deps, pass, tried);
-			if (once) {
-				// --once is one piece of work: the oldest red draft, else the next Feature
-				if (got?.kind === 'paused') deps.say(got.why);
-				if (didWork(got)) return pullFixExit(got);
-			} else {
-				if (got?.kind === 'paused') await pause(got.why);
-				if (got !== null) continue;
+			const red = await findRed(deps, pass, tried, busy);
+			if (red !== null) {
+				return {
+					feature: red.feature,
+					run: async (say) => {
+						const got = await fixRed(pass, tried, red, say);
+						if (once && got.kind === 'paused') say(got.why);
+						return fixEnd(got);
+					}
+				};
 			}
 		}
-		let features;
-		try {
-			features = await deps.tracker.assignedFeatures(deps.person);
-		} catch (fault) {
-			if (once) throw fault;
-			deps.say(why(fault));
-			await idle();
-			continue;
-		}
+		const features = (await deps.tracker.assignedFeatures(deps.person)).filter(
+			(f) => !busy.has(f.id)
+		);
 		const next = features[0];
 		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
-		const rest = features.slice(1).map(named);
-		await waiting.read(rest);
-		waiting.tell(rest);
-		if (next === undefined) {
-			// with no Feature with the Go, a trusted request for changes on one of Nightjar's pull requests is next
-			const answered =
-				deps.feedback === undefined ? null : await answerAsked(deps, deps.feedback, asked);
-			if (answered !== null) {
-				const { outcome } = answered;
-				waiting.tell(rest, outcome, answered.feature);
-				if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
-				if (outcome?.kind === 'paused') await pause(outcome.why);
-				continue;
+		queued = features.slice(1).map(named);
+		await waiting.read(queued);
+		waiting.tell(queued);
+		if (next !== undefined) {
+			const feature = named(next);
+			return {
+				feature: feature.id,
+				run: async (say) =>
+					builtEnd(feature, await buildOne({ ...deps, say }, feature, (f) => deps.build(f, say)))
+			};
+		}
+		// with no Feature with the Go, a trusted request for changes on one of Nightjar's pull requests is next
+		const feedback = deps.feedback;
+		const a = feedback === undefined ? null : await findAsked(deps, feedback, asked, busy);
+		if (feedback === undefined || a === null) return null;
+		return {
+			feature: a.feature.id,
+			run: async (say) => {
+				say(`#${a.feature.id}: ${a.request.author} asked for changes on ${a.open.pull.url}`);
+				const answer = (f: Named) => feedback.answer(f, a.request.id, say);
+				return builtEnd(a.feature, await buildOne({ ...deps, say }, a.feature, answer));
 			}
+		};
+	};
+
+	// what the Slots' work changes as it ends: the pause under way, in which no Slot takes work, and a fault the run ends on once its Slots are empty
+	const run: { pausing: Promise<void> | null; fault: { readonly error: unknown } | null } = {
+		pausing: null,
+		fault: null
+	};
+	// --once: the pieces of work taken, the exit code of those that ended, and whether it takes more
+	let taken = 0;
+	let code = 0;
+	let takesMore = true;
+
+	const pauseAll = (reason: string) => {
+		if (run.pausing !== null) return;
+		run.pausing = pause(reason).then(() => {
+			run.pausing = null;
+		});
+	};
+
+	const start = (work: Work) => {
+		taken += 1;
+		const say = slots > 1 ? slotSay(work.feature, deps.say) : deps.say;
+		const ended = work
+			.run(say)
+			.then((end) => {
+				running.delete(work.feature);
+				if (end.code === null) taken -= 1;
+				else code = Math.max(code, end.code);
+				if (end.paused !== undefined) {
+					// --once ends on a pause; --watch pauses every Slot, the running ones finishing
+					if (once) takesMore = false;
+					else pauseAll(end.paused);
+				}
+				if (end.built !== undefined) {
+					const rest = queued.filter((f) => !running.has(f.id));
+					waiting.tell(rest, end.built.outcome, end.built.feature);
+				}
+			})
+			.catch((error: unknown) => {
+				running.delete(work.feature);
+				run.fault ??= { error };
+			});
+		running.set(work.feature, ended);
+	};
+
+	const mayTake = () =>
+		running.size < slots &&
+		stop?.aborted !== true &&
+		run.fault === null &&
+		run.pausing === null &&
+		(!once || (takesMore && taken < slots));
+
+	// Free Slots take work until none waits. A Tracker fault ends --once, and --watch says it and looks again on the next tick.
+	const fill = async () => {
+		while (mayTake()) {
+			let work: Work | null;
+			try {
+				work = await pick();
+			} catch (error) {
+				if (once) run.fault = { error };
+				else deps.say(why(error));
+				return;
+			}
+			if (work === null) {
+				if (once) takesMore = false;
+				return;
+			}
+			start(work);
 		}
-		if (next === undefined && once) {
-			deps.say(none(deps));
-			return 0;
-		}
-		if (next === undefined) {
+	};
+
+	for (;;) {
+		await fill();
+		const stopped = stop?.aborted === true;
+		if (running.size === 0 && (run.pausing === null || stopped)) {
+			if (stopped || once || run.fault !== null) break;
 			await idle();
 			continue;
 		}
-		const outcome = await buildOne(deps, named(next));
-		waiting.tell(rest, outcome, next);
-		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
-		if (outcome?.kind === 'paused') await pause(outcome.why);
+		const waits: Promise<void>[] = [...running.values()];
+		if (run.pausing !== null) waits.push(run.pausing);
+		// a free Slot looks again on the next tick, or as soon as another Slot frees up
+		const tick = new AbortController();
+		if (!once && mayTake()) {
+			const signal = stop === undefined ? tick.signal : AbortSignal.any([stop, tick.signal]);
+			waits.push(deps.sleep(pollMs, signal));
+		}
+		await Promise.race(waits);
+		tick.abort();
 	}
-	return 130;
+	if (run.fault !== null) throw run.fault.error;
+	if (!once) return 130;
+	if (taken > 0) return code;
+	if (stop?.aborted === true) return 130;
+	deps.say(none(deps));
+	return 0;
 }
 
 // `nightjar <id>`: the Queue and Waiting on you read once, then the one Feature built. A Tracker fault before the claim is thrown.

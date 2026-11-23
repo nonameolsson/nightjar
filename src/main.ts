@@ -41,7 +41,8 @@ import {
 	pullChecksPass,
 	pullFixExit,
 	queue,
-	type QueueDeps
+	type QueueDeps,
+	type Say
 } from './queue.js';
 import { runSession, sessionExists } from './session.js';
 import { runUiCommand } from './ui-command.js';
@@ -258,25 +259,29 @@ export async function runNightjar(
 		say: runSay,
 		status
 	};
-	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: Named | null = null;
-	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
-		fixPullChecks(deps, setup, red)
+	// the Features being built, so a fault that escapes every catch can still hand them back
+	const building = new Set<Named>();
+	// a Slot's work speaks through the Slot's own say
+	const slotDeps = (say: Say): Deps => (say === deps.say ? deps : { ...deps, say });
+	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red, say) =>
+		fixPullChecks(slotDeps(say), setup, red)
 	);
 	// the build of one Feature, with the request for changes that started it when it has no Go
-	const build = async (feature: Named, started?: Asked) => {
-		building = feature;
+	const build = async (feature: Named, say: Say, started?: Asked) => {
+		building.add(feature);
 		try {
-			return await buildFeature(deps, setup, feature.id, started);
+			return await buildFeature(slotDeps(say), setup, feature.id, started);
 		} finally {
-			building = null;
+			building.delete(feature);
 		}
 	};
-	const feedback = feedbackPass(adapters.codeHost, (feature, asked) => build(feature, { asked }));
+	const feedback = feedbackPass(adapters.codeHost, (feature, asked, say) =>
+		build(feature, say, { asked })
+	);
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
-		build: (feature) => build(feature),
+		build: (feature, say) => build(feature, say),
 		...(feedback === null ? {} : { feedback }),
 		status,
 		now: () => new Date(),
@@ -306,10 +311,8 @@ export async function runNightjar(
 	});
 	process.once('SIGTERM', () => stop.abort());
 	process.once('uncaughtException', (fault) => {
-		const now = building;
-		void (now === null ? Promise.resolve() : handBack(queueDeps, now, fault)).finally(() =>
-			process.exit(1)
-		);
+		const now = [...building].map((f) => handBack(queueDeps, f, fault));
+		void Promise.all(now).finally(() => process.exit(1));
 	});
 
 	try {
