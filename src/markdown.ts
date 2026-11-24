@@ -39,8 +39,7 @@ function stripHtml(prose: string): string {
 			})
 			.replace(DROPPED, '')
 			.replace(TAG, '')
-			.replace(HELD, (_, n: string) => spans[Number(n)] ?? '')
-			.replace(/[<>]/g, '');
+			.replace(HELD, (_, n: string) => spans[Number(n)] ?? '');
 	} while (text !== before);
 	return text;
 }
