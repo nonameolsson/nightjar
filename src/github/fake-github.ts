@@ -175,6 +175,8 @@ export class FakeGitHub {
 	private readonly statuses = new Map<string, CommitStatus[]>();
 	// by id, the id of its check run
 	private readonly jobs = new Map<number, NewJob>();
+	// the `mergeable` of each pull request GitHub has worked out; true when not set, null while it works
+	private readonly mergeable = new Map<number, boolean | null>();
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -293,6 +295,11 @@ export class FakeGitHub {
 	// Makes `login` a collaborator with `permission` (read, write, maintain, admin).
 	grant(login: string, permission: string): void {
 		this.permissions.set(login, permission);
+	}
+
+	// What GitHub says of `mergeable` on pull request `number`: false for a conflict with its base, null while it has not worked it out.
+	setMergeable(number: number, mergeable: boolean | null): void {
+		this.mergeable.set(number, mergeable);
 	}
 
 	// Pull request `number` as GitHub shows it.
@@ -595,7 +602,8 @@ export class FakeGitHub {
 				sha: this.shaOf(issue.number),
 				repo: { full_name: this.repo }
 			},
-			base: { ref: issue.pull?.base ?? '' }
+			base: { ref: issue.pull?.base ?? '' },
+			mergeable: this.mergeable.has(issue.number) ? this.mergeable.get(issue.number) : true
 		};
 	}
 

@@ -144,6 +144,17 @@ To let Nightjar fix the failed Pull checks of its own draft pull requests (`pull
 		nightjarDrafts: todo('nightjarDrafts'),
 ```
 
+To let Nightjar say in a draft pull request's body that it conflicts with its base branch, give the Code host one more optional method. A Code host without it builds as before, and its state counts as unknown, so no draft gets the section.
+
+```js
+		// 'yes' when the pull request conflicts with its base branch, 'no' when it merges cleanly,
+		// 'unknown' while your host has not worked it out (GitHub's `mergeable` is null then;
+		// Azure Repos' `mergeStatus` is anything but `conflicts` or `succeeded`)
+		conflicts: todo('conflicts'),
+```
+
+After Nightjar opens a draft or updates its body, it calls `conflicts(pull)`. While the answer is `'unknown'` it asks again every second for about ten seconds, then leaves the body as it is. A draft that conflicts gets a `## Conflicts with main` section (naming the real base branch) saying to merge or rebase it before review; a draft that does not, or whose state stays unknown, has no such section, and one from an earlier run is dropped. Nightjar never merges or rebases the base into a draft ([ADR 0007](adr/0007-a-feature-never-builds-on-another-features-unmerged-branch.md)), sets no Signal and writes no Tracker comment for a conflict.
+
 To let Nightjar answer feedback on a draft pull request, give the Code host two more optional methods. A Code host without them builds as before and gets no Feedback rounds; one with only one of them is refused at start.
 
 ```js

@@ -27,6 +27,7 @@ export { publishContract } from './contract/publish.js';
 export type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
 	DraftsListing,
 	FailedCheck,

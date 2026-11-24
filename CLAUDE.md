@@ -37,6 +37,10 @@ The module map is `docs/architecture.md`. The rules that are not visible from th
 
 Write the PR body with the `pr` skill.
 
+### Grilling
+
+A `/grill-with-docs` session that settles hands off to `/to-spec`, then `/to-tickets`. Both run only when the person types them, so name them when the frontier empties.
+
 ### Issue tracker
 
 GitHub Issues (`nonameolsson/nightjar`) via `gh api` (REST); `gh issue` and `gh pr` fail in a cloud session. See `docs/agents/issue-tracker.md`.
@@ -55,4 +59,4 @@ Default five labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for
 
 ### Domain docs
 
-Single-context. See `docs/agents/domain.md`.
+Single-context. Before reading or writing `GLOSSARY.md` or an ADR, see `docs/agents/domain.md`.

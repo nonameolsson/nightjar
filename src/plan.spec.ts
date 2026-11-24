@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildOrder, nextTicket, waiting } from './plan.js';
+import { buildOrder, needsAPerson, nextTicket, progress, waiting } from './plan.js';
 import type { Ticket } from './tracker.js';
 
 const ticket = (id: number, over: Partial<Ticket> = {}): Ticket => ({
@@ -104,6 +104,16 @@ describe('waiting on a Ticket outside the Feature', () => {
 			{ id: '1', title: 'Ticket 1', why: 'not reached' },
 			{ id: '2', title: 'Ticket 2', why: 'blocked by', blocker: '1' },
 			{ id: '3', title: 'Ticket 3', why: 'blocked by', blocker: '90', outside: true }
+		]);
+	});
+
+	it('keeps the reason `blocked by`, with the blocker, for the Board and Waiting on you', () => {
+		const tickets = [ticket(3, { blockedBy: [{ id: '90', open: true }] })];
+		const [w] = waiting(tickets, new Set());
+		expect(w).toMatchObject({ why: 'blocked by', blocker: '90' });
+		expect(needsAPerson(w ?? {})).toBe(false);
+		expect(progress(tickets, new Set(), null)).toEqual([
+			{ id: '3', title: 'Ticket 3', state: 'waiting', why: 'blocked by #90' }
 		]);
 	});
 });
