@@ -5,10 +5,19 @@ import { join } from 'node:path';
 import { FakeTracker } from '../src/fakes/tracker.js';
 import { fileSpend, record } from '../src/ledger.js';
 import { StatusFile } from '../src/status.js';
+import { SHELF_MAX } from '../src/tracker.js';
 import { startUi, UI_PORT } from '../src/ui.js';
 import { listsFrom } from '../src/ui-tracker.js';
 
-const SCENARIOS = ['building', 'review-round', 'idle', 'paused', 'stopped', 'off'] as const;
+const SCENARIOS = [
+	'building',
+	'review-round',
+	'idle',
+	'paused',
+	'stopped',
+	'off',
+	'shelf'
+] as const;
 type Scenario = (typeof SCENARIOS)[number];
 
 const arg = process.argv[2] ?? 'building';
@@ -111,6 +120,19 @@ tracker
 	.add({ id: '281', title: 'CSV <export>', assignees: ['ann'], signals: ['go'] })
 	.add({ id: '262', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
 	.add({ id: '264', title: 'SSO', assignees: ['ann'], signals: ['human'] });
+// The Shelf: Features of ann's that carry no Signal. One has a Ticket; the rest are lone issues. Bob's is on no Shelf of hers.
+ticket('301');
+tracker
+	.add({ id: '300', title: 'Dark <mode>', assignees: ['ann'], children: ['301'] })
+	.add({ id: '302', title: 'Fix the typo on the pricing page', assignees: ['ann'] })
+	.add({ id: '303', title: 'Theirs', assignees: ['bob'] });
+// `shelf` has more than a Shelf lists, so the page ends it with "and N more in the Tracker"
+if (scenario === 'shelf') {
+	for (let i = 1; i <= SHELF_MAX + 7; i += 1) {
+		const id = `4${String(i).padStart(2, '0')}`;
+		tracker.add({ id, title: `Idea ${String(i)}`, assignees: ['ann'] });
+	}
+}
 
 if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-round') {
 	const lines = [

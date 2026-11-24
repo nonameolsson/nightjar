@@ -1,4 +1,4 @@
-// `nightjar ui`'s own read of the Tracker (docs/adr/0009): the Queue and Waiting on you, read-only, so both are known while Nightjar is off.
+// `nightjar ui`'s own read of the Tracker (docs/adr/0009): the Queue, Waiting on you and the Shelf, read-only, so all are known while Nightjar is off.
 import { makeAdapters, type Seams } from './adapters.js';
 import { loadConfig } from './config.js';
 import type { Env } from './git.js';
@@ -6,13 +6,22 @@ import { loadPersonConfig } from './person-config.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { why } from './say.js';
 import type { Queued, TicketCounts, WaitingItem } from './status-shape.js';
-import type { ItemId, Tracker, WaitingFeature } from './tracker.js';
+import {
+	SHELF_MAX,
+	type ItemId,
+	type Shelf,
+	type Tracker,
+	type WaitingFeature
+} from './tracker.js';
 
 // how often the page reads the Tracker again; a change under .factory/ never reads it
 export const TRACKER_EVERY_MS = 60_000;
 
 // The Tracker as the page holds it: reads only, so the page can give no Signal, assign no one and write no comment (docs/adr/0003).
-export type ReadingTracker = Pick<Tracker, 'assignedFeatures' | 'waitingOn' | 'ticketCounts'>;
+export type ReadingTracker = Pick<
+	Tracker,
+	'assignedFeatures' | 'waitingOn' | 'ticketCounts' | 'shelf'
+>;
 
 export interface PageTracker {
 	readonly tracker: ReadingTracker;
@@ -28,6 +37,10 @@ export interface Upcoming {
 	readonly waiting: readonly WaitingItem[];
 	// true when the Tracker has no waitingOn, so `waiting` is empty
 	readonly trackerCannotList: boolean;
+	// the person's Shelf, at most SHELF_MAX Features, newest update first; null when the Tracker has no `shelf`
+	readonly shelf: Shelf | null;
+	// whose Features these are; the link to the rest of the Shelf on the Tracker names them
+	readonly person: string;
 	// when it was read, as an ISO date
 	readonly at: string;
 }
@@ -57,9 +70,10 @@ const waitingItem = (f: WaitingFeature): WaitingItem => ({
 // One read of the lists. Ticket counts are a nicety: a fault there leaves each count unknown, never the lists unread.
 export async function readUpcoming(page: PageTracker, now: () => Date): Promise<Upcoming> {
 	const { tracker, person } = page;
-	const [features, waitingOn] = await Promise.all([
+	const [features, waitingOn, shelf] = await Promise.all([
 		tracker.assignedFeatures(person),
-		tracker.waitingOn?.(person)
+		tracker.waitingOn?.(person),
+		tracker.shelf?.(person, SHELF_MAX)
 	]);
 	const waiting = (waitingOn ?? []).map(waitingItem);
 	const queue = features.map((f): Queued => ({ id: f.id, title: f.title }));
@@ -71,6 +85,8 @@ export async function readUpcoming(page: PageTracker, now: () => Date): Promise<
 		queue: queue.map(withCount),
 		waiting: waiting.map(withCount),
 		trackerCannotList: tracker.waitingOn === undefined,
+		shelf: shelf ?? null,
+		person,
 		at: now().toISOString()
 	};
 }

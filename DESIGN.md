@@ -135,6 +135,7 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 
 ### Tertiary
 - **Queue Slate Violet** (#8f98e0): the queue mat only.
+- **Shelf Grey** (#7f979b, the muted ink): the shelf mat only. Work with no Go yet is neither live nor waiting, so it takes the quiet neutral rather than a state hue.
 - **Completed Green** (#3fd17f): the completed mat and a pulled entry's label.
 - **Fault Red** (#ff5a5f): failed entries only.
 
@@ -203,7 +204,7 @@ Square frames, round sockets, hexagonal counters. Mats, the detail panel, meters
 A sticky bar at 94% void with a Line bottom border. The mark is mono, bold, 0.2em tracked, in Signal Teal. View tabs are square, borderless buttons in Soft Ink; hover goes Ink; active is Signal Teal text on a 7% teal wash with a Deep Teal border. Focus shows a 2px teal outline, 2px offset.
 
 ### Habitat Mat
-A bordered rectangle tinted from its left by 12% of its state hue. Left rail is a vertical label tab (mono uppercase, reading bottom-to-top) with a hexagon tally below it, ruled off by a 2px state-hue border. Waiting is amber, building teal, queue slate violet, completed green. Entries are separated by dashed Line rules.
+A bordered rectangle tinted from its left by 12% of its state hue. Left rail is a vertical label tab (mono uppercase, reading bottom-to-top) with a hexagon tally below it, ruled off by a 2px state-hue border. Waiting is amber, building teal, queue slate violet, shelf grey, completed green. Entries are separated by dashed Line rules.
 
 ### Egg and Nest Socket
 - **Built:** solid Deep Teal egg. **Building:** Signal Teal egg with a 2px ring at 3px offset pulsing over 2.4s (`incubate`). **Needs a person:** amber egg with two small amber wings angled 20 degrees (the wing-flash). **Waiting:** dashed Socket Dash outline, no fill (hidden inside a socket, which stands for the empty nest).

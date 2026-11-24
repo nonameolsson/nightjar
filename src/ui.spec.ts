@@ -658,6 +658,24 @@ describe('nightjar ui reads the Tracker', () => {
 		expect(mat(html, 'queue')).not.toContain('Tickets');
 	});
 
+	it("shows the person's Shelf while nightjar is off, and says so when the Tracker cannot list it", async () => {
+		const fake = fakeTracker().add({ id: '6', title: 'Old idea', assignees: ['ann'] });
+		await openOn(readsOf(fake));
+		const html = await read();
+		expect(mat(html, 'shelf')).toContain('Old idea');
+		expect(mat(html, 'shelf')).toContain('Lone issue');
+		expect(html.split('<div class="overview">')[1]).toContain('Old idea');
+		await ui?.close();
+		const without: ReadingTracker = {
+			assignedFeatures: (p) => fake.assignedFeatures(p),
+			waitingOn: (p) => fake.waitingOn(p)
+		};
+		await openOn(readsOf(without));
+		const bare = await read();
+		expect(mat(bare, 'shelf')).toContain('Shelf is not available from this Tracker');
+		expect(mat(bare, 'queue')).toContain('Saved filters');
+	});
+
 	it("takes the Tracker's lists over status.json's, keeps the run's waiting Tickets, and queues no Feature being built", async () => {
 		const file = status();
 		file.refreshed([{ id: '50', title: 'Old queue' }], { items: [], trackerCannotList: false });
@@ -727,7 +745,7 @@ describe('nightjar ui events', () => {
 });
 
 describe('nightjar ui board', () => {
-	it('opens on a Board of four columns with a card per Feature, and keeps Overview', async () => {
+	it('opens on a Board of five Mats with a card per Feature, and keeps Overview', async () => {
 		const file = status();
 		file.doing({
 			kind: 'building',
@@ -755,7 +773,7 @@ describe('nightjar ui board', () => {
 		await open();
 		const page = (await get('/')).text;
 		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
-		for (const name of ['Queue', 'Building', 'Waiting on you', 'Completed'])
+		for (const name of ['Queue', 'Shelf', 'Building', 'Waiting on you', 'Completed'])
 			expect(page).toContain(`<h2>${name}</h2>`);
 		expect(page).toContain('Exports');
 		expect(page).toContain('Ticket 2 of 3, build, round 1 of 3');
@@ -1034,11 +1052,11 @@ describe('nightjar ui board', () => {
 		expect(panel).toContain('tail line &#60;one&#62;');
 	});
 
-	it('reads the Board with Waiting on you first, then Building, Queue and Completed', async () => {
+	it('reads the Board with Waiting on you first, then Building, Queue, Shelf and Completed', async () => {
 		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		await open();
 		const page = (await get('/')).text;
-		const order = ['waiting', 'building', 'queue', 'completed'].map((state) =>
+		const order = ['waiting', 'building', 'queue', 'shelf', 'completed'].map((state) =>
 			page.indexOf(`<section class="mat" data-state="${state}"`)
 		);
 		expect(order.every((i) => i >= 0)).toBe(true);

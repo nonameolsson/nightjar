@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FakeTracker } from './fakes/tracker.js';
+import { SHELF_MAX } from './tracker.js';
+import { NO_LINKS, type Links } from './ui-links.js';
 import { readFactory } from './status-reader.js';
 import { StatusFile } from './status.js';
 import { fileSpend, ledgerPath } from './ledger.js';
@@ -35,6 +37,14 @@ const fakeTracker = () =>
 		.add({ id: '4', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
 		.add({ id: '5', title: 'SSO', assignees: ['ann'], signals: ['human'] });
 
+// the same, with two Features on the Shelf: #6 a lone issue, then #7 with a Ticket, updated later; #9 is Bob's and on no Shelf of Ann's
+const shelfTracker = () =>
+	fakeTracker()
+		.add({ id: '6', title: 'Old idea', assignees: ['ann'] })
+		.add({ id: '8', title: 'Export' })
+		.add({ id: '7', title: 'Reports <b>', assignees: ['ann'], children: ['8'] })
+		.add({ id: '9', title: 'Theirs', assignees: ['bob'] });
+
 describe('readUpcoming', () => {
 	it('reads the Queue and Waiting on you, with Ticket counts, and writes nothing', async () => {
 		const tracker = fakeTracker();
@@ -59,9 +69,24 @@ describe('readUpcoming', () => {
 				}
 			],
 			trackerCannotList: false,
+			shelf: { features: [], total: 0 },
+			person: 'ann',
 			at: at.toISOString()
 		});
 		expect([...tracker.items.values()]).toEqual(before);
+	});
+
+	it("reads the person's Shelf, at most SHELF_MAX of it, with how many there are in all", async () => {
+		const tracker = shelfTracker();
+		for (let i = 0; i < SHELF_MAX; i += 1)
+			tracker.add({ id: `1${String(i)}0`, title: `Idea ${String(i)}`, assignees: ['ann'] });
+		const got = await readUpcoming({ tracker, person: 'ann' }, () => at);
+		expect(got.shelf?.features).toHaveLength(SHELF_MAX);
+		expect(got.shelf?.total).toBe(SHELF_MAX + 2);
+		// the newest update first, and nothing of the Queue or of what waits
+		expect(got.shelf?.features[0]?.title).toBe(`Idea ${String(SHELF_MAX - 1)}`);
+		expect(got.shelf?.features.map((f) => f.id)).not.toContain('1');
+		expect(got.shelf?.features.map((f) => f.id)).not.toContain('4');
 	});
 
 	it('says when the Tracker cannot list what waits, and leaves out counts it cannot read', async () => {
@@ -69,6 +94,7 @@ describe('readUpcoming', () => {
 		const tracker: ReadingTracker = { assignedFeatures: (p) => fake.assignedFeatures(p) };
 		const got = await readUpcoming({ tracker, person: 'ann' }, () => at);
 		expect(got.trackerCannotList).toBe(true);
+		expect(got.shelf).toBeNull();
 		expect(got.waiting).toEqual([]);
 		expect(got.queue).toEqual([{ id: '1', title: 'Saved filters' }]);
 	});
@@ -188,8 +214,8 @@ describe('the page over what it read of the Tracker', () => {
 	afterEach(() => {
 		rmSync(root, { recursive: true, force: true });
 	});
-	const panels = (tracker?: TrackerLists) =>
-		renderPanels(root, readFactory(root, { now: () => at, alive: () => true }), undefined, tracker);
+	const panels = (tracker?: TrackerLists, links?: Links) =>
+		renderPanels(root, readFactory(root, { now: () => at, alive: () => true }), links, tracker);
 	const mat = (html: string, state: string) =>
 		(html.split('<div class="table">')[0] ?? '')
 			.split(`<section class="mat" data-state="${state}"`)[1]
@@ -209,6 +235,108 @@ describe('the page over what it read of the Tracker', () => {
 		expect(html).toContain(`Tracker read <time datetime="${at.toISOString()}">`);
 		expect(html.split('<div class="table">')[1]).toContain('data-title="Saved filters"');
 		expect(html.split('<div class="overview">')[1]).toContain('Audit log');
+	});
+
+	describe('the Shelf', () => {
+		const board = (html: string) => html.split('<div class="table">')[0] ?? '';
+		const onGitHub: Links = {
+			...NO_LINKS,
+			tracker: 'GitHub',
+			issues: 'https://github.com/o/app/issues',
+			assigned: (person) =>
+				`https://github.com/o/app/issues?q=${encodeURIComponent(`is:issue is:open assignee:${person}`)}`
+		};
+
+		it('is a fifth Mat between Queue and Completed, newest update first, with its tally', async () => {
+			const html = panels({ last: await read(shelfTracker()), fault: null });
+			const states = ['waiting', 'building', 'queue', 'shelf', 'completed'];
+			const pos = (s: string) => board(html).indexOf(`<section class="mat" data-state="${s}"`);
+			expect(pos('waiting')).toBeGreaterThanOrEqual(0);
+			expect(states.map(pos)).toEqual(states.map(pos).sort((a, b) => a - b));
+			const shelf = mat(html, 'shelf');
+			expect(shelf).toContain('<h2>Shelf</h2><i class="tally">2</i>');
+			expect(shelf.indexOf('Reports')).toBeGreaterThan(-1);
+			expect(shelf.indexOf('Reports')).toBeLessThan(shelf.indexOf('Old idea'));
+			expect(shelf).not.toContain('Theirs');
+			// Features with the Go or a Signal are in their own Mats, not here
+			expect(shelf).not.toContain('Saved filters');
+			expect(shelf).not.toContain('Audit log');
+			// the Tracker's text is shown as text
+			expect(shelf).toContain('Reports &#60;b&#62;');
+			expect(shelf).not.toContain('<b>Reports');
+		});
+
+		it('labels an item with no Tickets as a Lone issue, and one with Tickets not', async () => {
+			const shelf = mat(panels({ last: await read(shelfTracker()), fault: null }), 'shelf');
+			const [reports = '', idea = ''] = shelf.split('<article').slice(1);
+			expect(idea).toContain('Old idea');
+			expect(idea).toContain('Lone issue');
+			expect(reports).toContain('Reports');
+			expect(reports).not.toContain('Lone issue');
+		});
+
+		it('is a group in the Table and in the Overview too', async () => {
+			const html = panels({ last: await read(shelfTracker()), fault: null });
+			const [, rest = ''] = html.split('<div class="table">');
+			const [table = '', overview = ''] = rest.split('<div class="overview">');
+			expect(table).toContain('<button type="button" data-chip="shelf">Shelf</button>');
+			expect(table).toMatch(/<tr data-state="shelf"[^>]*data-title="Old idea"/);
+			expect(table).toMatch(/<tr data-state="shelf"[^>]*data-title="Reports &#60;b&#62;"/);
+			const [, after = ''] = overview.split('<section id="shelf">');
+			const [section = ''] = after.split('</section>');
+			expect(section).toContain('<h2>Shelf</h2>');
+			expect(section).toContain('Old idea');
+			expect(section).toContain('Lone issue');
+		});
+
+		it('lists at most 50, then "and N more in the Tracker" as a link to their open issues', async () => {
+			const tracker = shelfTracker();
+			for (let i = 0; i < SHELF_MAX; i += 1)
+				tracker.add({ id: `1${String(i)}0`, title: `Idea ${String(i)}`, assignees: ['ann'] });
+			const lists = { last: await read(tracker), fault: null };
+			const shelf = mat(panels(lists, onGitHub), 'shelf');
+			expect(shelf.match(/<article/g)).toHaveLength(SHELF_MAX);
+			// the tally counts them all, the Mat lists 50
+			expect(shelf).toContain(`<i class="tally">${String(SHELF_MAX + 2)}</i>`);
+			expect(shelf).toContain(
+				'<a class="ext" href="https://github.com/o/app/issues?q=is%3Aissue%20is%3Aopen%20assignee%3Aann" target="_blank" rel="noreferrer noopener">and 2 more in the Tracker</a>'
+			);
+			expect(shelf).not.toContain('Old idea');
+			// no link when the page knows no Tracker page; the words stay
+			const unlinked = mat(panels(lists), 'shelf');
+			expect(unlinked).toContain('<p class="more">and 2 more in the Tracker</p>');
+		});
+
+		it('names no more when the whole Shelf is listed, and says when it is empty', async () => {
+			const whole = mat(panels({ last: await read(shelfTracker()), fault: null }), 'shelf');
+			expect(whole).not.toContain('more in the Tracker');
+			const empty = mat(panels({ last: await read(), fault: null }), 'shelf');
+			expect(empty).toContain('empty');
+			expect(empty).toContain('<i class="tally">0</i>');
+		});
+
+		it('says it is not available from a Tracker without it, and the rest of the page works', async () => {
+			const fake = shelfTracker();
+			const tracker: ReadingTracker = {
+				assignedFeatures: (p) => fake.assignedFeatures(p),
+				waitingOn: (p) => fake.waitingOn(p)
+			};
+			const html = panels({ last: await read(tracker), fault: null });
+			expect(mat(html, 'shelf')).toContain('Shelf is not available from this Tracker');
+			expect(mat(html, 'shelf')).not.toContain('class="tally"');
+			expect(mat(html, 'queue')).toContain('Saved filters');
+			expect(mat(html, 'waiting')).toContain('Audit log');
+			expect(mat(html, 'waiting')).not.toContain('not available');
+			const rest = html.split('<div class="table">')[1] ?? '';
+			expect(rest).toContain('Shelf is not available from this Tracker');
+			expect(rest).toContain('data-title="Saved filters"');
+		});
+
+		it('says it is reading, or why it could not read, until a read has gone well', () => {
+			expect(mat(panels({ last: null, fault: null }), 'shelf')).toContain('reading the Tracker');
+			const failed = panels({ last: null, fault: { at: at.toISOString(), why: 'gh: down' } });
+			expect(mat(failed, 'shelf')).toContain('could not read the Tracker: gh: down');
+		});
 	});
 
 	it('marks the lists it kept with their age when the last read failed', async () => {

@@ -9,6 +9,8 @@ export interface Links {
 	// the Feature or Ticket on the Tracker; null for an id the Tracker has no page for
 	readonly issue: (id: string) => string | null;
 	readonly issues: string | null;
+	// the open issues assigned to a person on the Tracker, where its address can say so; else all its issues; null with no Tracker page
+	readonly assigned: (person: string) => string | null;
 	readonly pulls: string | null;
 	readonly signals: SignalNames;
 }
@@ -17,6 +19,7 @@ export const NO_LINKS: Links = {
 	tracker: null,
 	issue: () => null,
 	issues: null,
+	assigned: () => null,
 	pulls: null,
 	signals: DEFAULT_SIGNAL_NAMES
 };
@@ -39,6 +42,7 @@ export function linksFor(root: string, origin: string | null): Links {
 
 	let issue: Links['issue'] = () => null;
 	let issues: string | null = null;
+	let assigned: Links['assigned'] = () => null;
 	let name: string | null = null;
 	if (tracker.type === 'github') {
 		const repo = tracker.repo ?? fromOrigin;
@@ -46,12 +50,16 @@ export function linksFor(root: string, origin: string | null): Links {
 			name = 'GitHub';
 			issues = `https://github.com/${part(repo)}/issues`;
 			issue = (id) => (numeric(id) ? `${issues ?? ''}/${id}` : null);
+			assigned = (person) =>
+				`${issues ?? ''}?q=${encodeURIComponent(`is:issue is:open assignee:${person}`)}`;
 		}
 	} else if (tracker.type === 'azure-devops') {
 		name = 'Azure DevOps';
 		const base = `${azure(tracker.organization, tracker.project)}/_workitems`;
 		issues = base;
 		issue = (id) => (numeric(id) ? `${base}/edit/${id}` : null);
+		// its work item pages take no assignee in the address
+		assigned = () => base;
 	}
 
 	let pulls: string | null = null;
@@ -61,5 +69,5 @@ export function linksFor(root: string, origin: string | null): Links {
 	} else if (codeHost.type === 'azure-devops')
 		pulls = `${azure(codeHost.organization, codeHost.project)}/_git/${part(codeHost.repo)}/pullrequests`;
 
-	return { tracker: name, issue, issues, pulls, signals: config.signals };
+	return { tracker: name, issue, issues, assigned, pulls, signals: config.signals };
 }

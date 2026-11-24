@@ -19,6 +19,7 @@ import type {
 	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
+import type { Shelf, ShelfFeature } from './tracker.js';
 import { watchTracker, type TrackerLists, type Upcoming } from './ui-tracker.js';
 import {
 	countdown,
@@ -70,13 +71,17 @@ const idHtml = (id: string, links: Links = NO_LINKS) => {
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-// The Queue and Waiting on you as the page shows them: the Tracker's last read when there is one, else what a running Nightjar wrote to status.json.
+// The Queue, Waiting on you and the Shelf as the page shows them: the Tracker's last read when there is one, else what a running Nightjar wrote to status.json (which has no Shelf).
 type Lists =
 	| {
 			readonly known: true;
 			// each undefined while status.json has not got it yet
 			readonly queue: readonly Queued[] | undefined;
 			readonly waitingOnYou: WaitingOnYou | undefined;
+			// undefined until the Tracker is read; null when the Tracker cannot list a Shelf
+			readonly shelf: Shelf | null | undefined;
+			// whose Shelf it is, once read
+			readonly person: string | undefined;
 			// when they were read
 			readonly at: string | undefined;
 	  }
@@ -102,6 +107,8 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined): Lists {
 				items: [...last.waiting, ...tickets],
 				trackerCannotList: last.trackerCannotList
 			},
+			shelf: last.shelf,
+			person: last.person,
 			at: last.at
 		};
 	}
@@ -110,6 +117,8 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined): Lists {
 			known: true,
 			queue: status?.queue,
 			waitingOnYou: status?.waitingOnYou,
+			shelf: undefined,
+			person: undefined,
 			at: status?.refreshedAt
 		};
 	}
@@ -235,6 +244,15 @@ function waiting(view: FactoryView, lists: Lists, links: Links): string {
 	return `<section id="waiting"><h2>Waiting on you</h2>${body}</section>`;
 }
 
+function shelf(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
+	const li = (c: ShelfCard) =>
+		`<li>${idHtml(c.id, links)} ${escape(c.title ?? '')}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}</li>`;
+	const items = (all.shelf ?? []).map(li).join('');
+	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
+	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
+}
+
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
@@ -293,6 +311,15 @@ interface QueuedCard extends FeatureCard {
 	readonly ticketCounts: TicketCounts | null | undefined;
 	// null when there is nothing to estimate from
 	readonly estimateMs: number | null;
+}
+
+// An open Feature of the person's with no Signal: work they could give the Go
+interface ShelfCard extends FeatureCard {
+	readonly state: 'shelf';
+	// a lone issue is built as itself; `none` is a Feature with no Tickets that the Tracker would not build alone
+	readonly tickets: 'lone' | 'none' | 'some';
+	// when it was last updated, as an ISO date
+	readonly updated: string;
 }
 
 const estimateHtml = (ms: number | null) =>
@@ -367,6 +394,11 @@ interface Features {
 	readonly building: BuildingCard | null;
 	readonly waiting: readonly WaitingCard[] | undefined;
 	readonly trackerCannotList: boolean;
+	// newest update first; undefined while the Tracker has not been read
+	readonly shelf: readonly ShelfCard[] | undefined;
+	// how many Features the Shelf holds in all, those listed and those left out
+	readonly shelfTotal: number;
+	readonly shelfCannotList: boolean;
 	// newest first
 	readonly completed: readonly CompletedCard[];
 }
@@ -499,11 +531,25 @@ function features(view: FactoryView, lists: Lists): Features {
 				: view.medianTicketMs * q.ticketCounts.total
 	});
 	const queue = listed?.map(queued);
+	const onShelf = (f: ShelfFeature): ShelfCard => ({
+		state: 'shelf',
+		id: f.id,
+		title: f.title,
+		waitingTickets: [],
+		progress: null,
+		tickets: f.hasTickets ? 'some' : f.lone === true ? 'lone' : 'none',
+		updated: f.updated
+	});
+	const shelved = lists.known ? lists.shelf : undefined;
 	return {
 		queue,
 		building,
 		waiting,
 		trackerCannotList: found?.trackerCannotList ?? false,
+		// the Tracker's order, newest update first, which its contract suite holds it to
+		shelf: shelved?.features.map(onShelf),
+		shelfTotal: shelved?.total ?? 0,
+		shelfCannotList: shelved === null,
 		completed
 	};
 }
@@ -614,6 +660,49 @@ function completedCard(card: CompletedCard, links: Links): string {
 	);
 }
 
+const SHELF_CANNOT = 'Shelf is not available from this Tracker';
+
+// What a Shelf item says of its Tickets: a lone issue is built as itself
+const shelfNote = (card: ShelfCard) =>
+	card.tickets === 'lone' ? 'Lone issue' : card.tickets === 'none' ? 'no Tickets yet' : '';
+
+// The day a Feature was last updated; nothing when the Tracker gave none
+const updatedHtml = (iso: string) =>
+	Number.isNaN(Date.parse(iso))
+		? ''
+		: `updated <time datetime="${escape(iso)}">${new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' })}</time>`;
+
+function shelfCard(card: ShelfCard, links: Links): string {
+	const note = shelfNote(card);
+	return nest(
+		'shelf',
+		card,
+		links,
+		note === '' ? '' : `<p class="meta count">${note}</p>`,
+		'<p class="label">On the Shelf</p>',
+		updatedHtml(card.updated)
+	);
+}
+
+// The Shelf lists at most SHELF_MAX Features; the rest are one link to the person's open issues on the Tracker.
+function shelfMore(all: Features, lists: Lists, links: Links): string {
+	const more = all.shelfTotal - (all.shelf?.length ?? 0);
+	if (more <= 0) return '';
+	const text = `and ${String(more)} more in the Tracker`;
+	const href = lists.known && lists.person !== undefined ? links.assigned(lists.person) : null;
+	return `<p class="more">${href === null ? text : `<a class="ext" href="${escape(href)}" ${EXTERNAL}>${text}</a>`}</p>`;
+}
+
+// What the Shelf says in place of Features: why it is not there, or that it is empty; null when it lists some
+function shelfEmpty(all: Features, lists: Lists): string | null {
+	if (!lists.known) return lists.empty;
+	if (all.shelfCannotList) return `<p class="empty">${SHELF_CANNOT}</p>`;
+	if (all.shelf === undefined) return '<p class="empty">not read yet</p>';
+	if (all.shelf.length === 0)
+		return `<p class="empty">empty${hint('Features assigned to you that carry no Signal show here.')}</p>`;
+	return null;
+}
+
 function group(state: string, name: string, count: number | null, body: string): string {
 	const shown = count === null ? '' : `<i class="tally">${String(count)}</i>`;
 	return `<section class="mat" data-state="${state}"><div class="tab"><h2>${name}</h2>${shown}</div><div class="lines">${body}</div></section>`;
@@ -715,6 +804,8 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 		const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
 	}
+	const shelfCards = (all.shelf ?? []).map((c) => shelfCard(c, links)).join('');
+	const shelf = shelfEmpty(all, lists) ?? shelfCards + shelfMore(all, lists, links);
 	const completed =
 		all.completed.length === 0
 			? none('nothing has finished yet')
@@ -726,6 +817,7 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
 		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
 		group('queue', 'Queue', known ? (all.queue?.length ?? null) : null, queued) +
+		group('shelf', 'Shelf', known && all.shelf !== undefined ? all.shelfTotal : null, shelf) +
 		group('completed', 'Completed', all.completed.length, completed) +
 		`</div>${side}</div></div>`
 	);
@@ -735,6 +827,7 @@ const STATES = [
 	['queue', 'Queue'],
 	['building', 'Building'],
 	['waiting', 'Waiting on you'],
+	['shelf', 'Shelf'],
 	['completed', 'Completed']
 ] as const;
 
@@ -799,6 +892,17 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			progress: card.progress
 		});
 	}
+	for (const card of all.shelf ?? [])
+		rows.push({
+			card,
+			state: 'shelf',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: shelfNote(card),
+			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>`,
+			progress: null
+		});
 	for (const card of all.completed) {
 		const { event, costUsd } = card.done;
 		const took = tookMs(event);
@@ -824,15 +928,17 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
-	const note = !lists.known
-		? lists.empty
-		: all.trackerCannotList
-			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
-			: '';
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+	let note = '';
+	if (!lists.known) note = lists.empty;
+	else {
+		if (all.trackerCannotList)
+			note += '<p class="empty">Waiting on you is not available from this Tracker</p>';
+		if (all.shelfCannotList) note += `<p class="empty">${SHELF_CANNOT}</p>`;
+	}
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
 }
 
 // Splits what stays in view (the run's state and numbers) from the content that scrolls beneath it.
@@ -847,13 +953,20 @@ export function renderPanels(
 	tracker?: TrackerLists
 ): string {
 	const lists = listsOf(view, tracker);
+	const overview = [
+		current(view, links),
+		queue(lists, links),
+		shelf(view, lists, links),
+		waiting(view, lists, links),
+		completed(view, lists, links)
+	].join('\n');
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view, tracker),
 		cards(view, lists),
 		MAIN,
 		board(view, lists, links),
 		table(view, lists, links),
-		`<div class="overview">${[current(view, links), queue(lists, links), waiting(view, lists, links), completed(view, lists, links)].join('\n')}</div>`
+		`<div class="overview">${overview}</div>`
 	].join('\n');
 }
 
@@ -1154,6 +1267,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .mat::after { border-left: 0; border-top: 0; bottom: -1px; }
 .mat[data-state="waiting"] { --h: var(--amber); }
 .mat[data-state="queue"] { --h: var(--slate); }
+.mat[data-state="shelf"] { --h: var(--muted); }
 .mat[data-state="completed"] { --h: var(--ok); }
 .tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
@@ -1162,6 +1276,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
+.more { border-top: 1px dashed var(--line); font: 0.85rem var(--mono); margin: 0; padding: 12px 0 8px; }
+.table .more { border: 0; padding: 12px 12px 0; }
 .entry p { margin: 0; }
 .who { font-size: 1.05rem; font-weight: 600; }
 .who b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 10px; }
@@ -1223,6 +1339,7 @@ td.progress p { display: inline; margin: 0 0 0 14px; }
 tr[data-state] td:first-child { border-left: 3px solid var(--teal); }
 tr[data-state="waiting"] td:first-child { border-left-color: var(--amber); }
 tr[data-state="queue"] td:first-child { border-left-color: var(--slate); }
+tr[data-state="shelf"] td:first-child { border-left-color: var(--muted); }
 tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
 tr[data-failed] td:first-child { border-left-color: var(--err); }
 table { border-collapse: collapse; width: 100%; }
