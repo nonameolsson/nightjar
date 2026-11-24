@@ -13,8 +13,10 @@ import {
 	featureWriterContract,
 	nightjarDraftsContract,
 	openPullsContract,
+	publishContract,
 	sourcesContract,
 	feedbackContract,
+	shelfContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
@@ -120,6 +122,10 @@ function gitHubDrafts(github: FakeGitHub): DraftsWorld {
 	};
 	return {
 		checks: (pull, checks) => done(() => setChecks(github, pull, checks)),
+		passed: (pull) =>
+			done(() => {
+				github.checkRun(github.headOf(pull.id), { name: 'lint', conclusion: 'success' });
+			}),
 		engage: (pull) => done(() => github.say(pull.id, 'bea', 'Why this change?')),
 		ready: (pull) => done(() => github.markReady(pull.id)),
 		closePull: (pull) => done(() => github.close(pull.id))
@@ -291,6 +297,18 @@ describe('GitHubTracker meets the ticketCounts contract', () => {
 	for (const c of ticketCountsContract) it(c.name, () => c.run(harness));
 });
 
+describe('GitHubTracker meets the shelf contract', () => {
+	for (const [label, names, trust] of [
+		['default', DEFAULT_SIGNAL_NAMES, 'write access'],
+		['configured', CONFIGURED, 'trusted list']
+	] as const) {
+		describe(`with the ${label} Signal names`, () => {
+			const harness = gitHubTracker(names, trust);
+			for (const c of shelfContract) it(c.name, () => c.run(harness));
+		});
+	}
+});
+
 // real git on a busy machine is slow
 describe('GitHubCodeHost meets the Code host contract', { timeout: 30_000 }, () => {
 	for (const c of codeHostContract) it(c.name, () => c.run(gitHubCodeHost));
@@ -306,4 +324,8 @@ describe('GitHubCodeHost meets the feedback contract', { timeout: 30_000 }, () =
 
 describe('GitHubCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
 	for (const c of openPullsContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the publish contract', { timeout: 30_000 }, () => {
+	for (const c of publishContract) it(c.name, () => c.run(gitHubCodeHost));
 });

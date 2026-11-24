@@ -10,15 +10,15 @@ Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement c
 
 ## Build, lint, test
 
-Node 24, TypeScript, npm.
+Node 24, TypeScript, npm. `mise.toml` pins Node 24 (`mise trust`, then `mise install`).
 
 - `npm run check`: typecheck, lint, format check, every spec, then the build. Run it before a commit.
 - `npm test`: every spec (Vitest). One file: `npx vitest run src/build.spec.ts`; one test: `npx vitest run src/build.spec.ts -t 'hands back a Ticket'`.
 - `npm run build`: compiles `src/` to `dist/`; `dist/cli.js` is the `nightjar` bin.
 - `npm run lint`, `npm run format`, `npm run typecheck`.
-- CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you edit.
+- CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you change with Edit or Write; after any other edit (a script, `sed`), run `npx prettier --write <file>`.
 - `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
-- `npm run ui:dev [building|idle|paused|stopped|off]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
+- `npm run ui:dev [building|review-round|idle|paused|stopped|off|shelf]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
 
 ## Architecture
 
@@ -36,6 +36,10 @@ The module map is `docs/architecture.md`. The rules that are not visible from th
 ### Pull requests
 
 Write the PR body with the `pr` skill.
+
+### Grilling
+
+A `/grill-with-docs` session that settles hands off to `/to-spec`, then `/to-tickets`. Both run only when the person types them, so name them when the frontier empties.
 
 ### Issue tracker
 
@@ -55,4 +59,4 @@ Default five labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for
 
 ### Domain docs
 
-Single-context. See `docs/agents/domain.md`.
+Single-context. Before reading or writing `GLOSSARY.md` or an ADR, see `docs/agents/domain.md`.

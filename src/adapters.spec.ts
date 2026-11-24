@@ -281,6 +281,29 @@ describe('makeAdapters and creating Features', () => {
 		}
 	});
 
+	it('loads a Code host module without publish, and one with it, and refuses one whose publish is no function', async () => {
+		moduleFile('old.mjs', `export const createCodeHost = () => (${HOST_BODY});`);
+		moduleFile(
+			'publishes.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', publish: async () => {} }')});`
+		);
+		for (const path of ['./old.mjs', './publishes.mjs']) {
+			const { codeHost } = await makeAdapters(
+				config({ codeHost: { type: 'module', path } }),
+				dir,
+				env()
+			);
+			expect(typeof codeHost.publish).toBe(path === './old.mjs' ? 'undefined' : 'function');
+		}
+		moduleFile(
+			'odd-publish.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', publish: true }')});`
+		);
+		expect(await refusal(config({ codeHost: { type: 'module', path: './odd-publish.mjs' } }))).toBe(
+			'factory.json: codeHost: createCodeHost in ./odd-publish.mjs returned a Code host whose publish is not a function'
+		);
+	});
+
 	it('refuses a Code host module with only one of feedback and reply, or one that is no function', async () => {
 		moduleFile(
 			'half.mjs',
@@ -295,6 +318,13 @@ describe('makeAdapters and creating Features', () => {
 		);
 		expect(await refusal(config({ codeHost: { type: 'module', path: './odd.mjs' } }))).toBe(
 			'factory.json: codeHost: createCodeHost in ./odd.mjs returned a Code host whose feedback is not a function'
+		);
+		moduleFile(
+			'conflicts.mjs',
+			`export const createCodeHost = () => (${HOST_BODY.replace(/\}$/, ', conflicts: 1 }')});`
+		);
+		expect(await refusal(config({ codeHost: { type: 'module', path: './conflicts.mjs' } }))).toBe(
+			'factory.json: codeHost: createCodeHost in ./conflicts.mjs returned a Code host whose conflicts is not a function'
 		);
 	});
 });
@@ -453,6 +483,40 @@ describe('makeAdapters and waitingOn', () => {
 		moduleFile('bad.mjs', `export const createTracker = () => (${trackerBody('waitingOn: 1,')});`);
 		expect(await refusal(config({ tracker: { type: 'module', path: './bad.mjs' } }))).toBe(
 			'factory.json: tracker: createTracker in ./bad.mjs returned a Tracker whose waitingOn is not a function'
+		);
+	});
+});
+
+describe('makeAdapters and shelf', () => {
+	it('keeps it on a Tracker whose references it rewrites for Azure Repos', async () => {
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		const adapters = await makeAdapters(
+			config({ tracker: boards('contoso'), codeHost: { ...repos, organization: 'other' } }),
+			dir,
+			env(),
+			{ request: ado.request }
+		);
+		signedInAz();
+		expect(await adapters.tracker.shelf?.('ann@contoso.com', 50)).toEqual({
+			features: [],
+			total: 0
+		});
+	});
+
+	it('loads a module Tracker that lacks it, and leaves it off', async () => {
+		moduleFile('reads.mjs', `export const createTracker = () => (${trackerBody()});`);
+		const adapters = await makeAdapters(
+			config({ tracker: { type: 'module', path: './reads.mjs' }, codeHost: repos }),
+			dir,
+			env()
+		);
+		expect('shelf' in adapters.tracker).toBe(false);
+	});
+
+	it('refuses a module whose shelf is not a function', async () => {
+		moduleFile('bad.mjs', `export const createTracker = () => (${trackerBody('shelf: 1,')});`);
+		expect(await refusal(config({ tracker: { type: 'module', path: './bad.mjs' } }))).toBe(
+			'factory.json: tracker: createTracker in ./bad.mjs returned a Tracker whose shelf is not a function'
 		);
 	});
 });

@@ -1,4 +1,4 @@
-// `nightjar ui`: a read-only page about the repo, drawn from .factory/ alone, pushed to the browser as server-sent events.
+// `nightjar ui`: a read-only page about the repo, drawn from .factory/ and a read of the Tracker, pushed to the browser as server-sent events.
 import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -7,7 +7,8 @@ import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
-import { linksFor, NO_LINKS, type Links } from './ui-links.js';
+import { escapeHtml as escape } from './markdown.js';
+import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
@@ -15,9 +16,18 @@ import type {
 	Queued,
 	TicketCounts,
 	TicketProgress,
-	WaitingItem
+	WaitingItem,
+	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
+import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
+import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
+import {
+	watchTracker,
+	type FeatureDetail,
+	type TrackerLists,
+	type Upcoming
+} from './ui-tracker.js';
 import {
 	countdown,
 	dollars,
@@ -41,30 +51,104 @@ export interface Ui {
 }
 
 export interface UiOptions {
-	// the repo root; the page reads its .factory/ and nothing else
+	// the repo root, whose .factory/ the page reads
 	readonly root: string;
 	readonly port: number;
 	readonly now?: () => Date;
 	// whether a pid is alive; the machine's own answer unless a spec passes one
 	readonly alive?: (pid: number) => boolean;
+	// reads the Queue and Waiting on you from the Tracker; left out, the page knows them only from a run's status.json
+	readonly tracker?: () => Promise<Upcoming>;
+	// reads one Feature for its detail panel, when the panel opens; left out, no Feature opens one
+	readonly feature?: (id: ItemId) => Promise<FeatureDetail>;
+	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
+	readonly every?: (ms: number, read: () => void) => () => void;
 }
 
-const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
-
-const EXTERNAL = 'target="_blank" rel="noreferrer noopener"';
-
-// An id, as a link to its page on the Tracker when the page knows one
-const idHtml = (id: string, links: Links = NO_LINKS) => {
-	const text = escape(idText(id));
-	const href = links.issue(id);
-	return href === null
-		? text
-		: `<a class="ext" href="${escape(href)}" ${EXTERNAL} title="Open ${text} on ${links.tracker ?? 'the Tracker'}">${text}</a>`;
-};
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function header(repo: string, view: FactoryView): string {
+// The Queue, Waiting on you and the Shelf as the page shows them: the Tracker's last read when there is one, else what a running Nightjar wrote to status.json (which has no Shelf).
+type Lists =
+	| {
+			readonly known: true;
+			// each undefined while status.json has not got it yet
+			readonly queue: readonly Queued[] | undefined;
+			readonly waitingOnYou: WaitingOnYou | undefined;
+			// undefined until the Tracker is read; null when the Tracker cannot list a Shelf
+			readonly shelf: Shelf | null | undefined;
+			// whose Shelf it is, once read
+			readonly person: string | undefined;
+			// when they were read
+			readonly at: string | undefined;
+			// whether a Feature listed opens its detail panel, read from the Tracker
+			readonly opens: boolean;
+	  }
+	// what the page says in their place
+	| { readonly known: false; readonly empty: string };
+
+function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: boolean): Lists {
+	const on = running(view);
+	const status = view.status;
+	const last = tracker?.last ?? null;
+	if (last !== null) {
+		const doing = status?.doing;
+		// a Feature claimed since the read is Building, not queued
+		const building = on && doing?.kind === 'building' ? doing.feature : null;
+		// the run knows which Tickets wait; the Tracker lists only Features
+		const tickets = on
+			? (status?.waitingOnYou?.items ?? []).filter((i) => i.kind === 'ticket')
+			: [];
+		return {
+			known: true,
+			queue: last.queue.filter((q) => q.id !== building),
+			waitingOnYou: {
+				items: [...last.waiting, ...tickets],
+				trackerCannotList: last.trackerCannotList
+			},
+			shelf: last.shelf,
+			person: last.person,
+			at: last.at,
+			opens
+		};
+	}
+	if (on) {
+		return {
+			known: true,
+			queue: status?.queue,
+			waitingOnYou: status?.waitingOnYou,
+			shelf: undefined,
+			person: undefined,
+			at: status?.refreshedAt,
+			opens
+		};
+	}
+	if (tracker === undefined) return { known: false, empty: OFF };
+	return {
+		known: false,
+		empty:
+			tracker.fault === null
+				? '<p class="empty">reading the Tracker</p>'
+				: `<p class="empty">could not read the Tracker: ${escape(tracker.fault.why)}</p>`
+	};
+}
+
+// When the page last read the Tracker; after a failed read, the lists it kept are marked with their age.
+function trackerRead(tracker: TrackerLists | undefined): string {
+	if (tracker === undefined) return '';
+	const { last, fault } = tracker;
+	if (last === null) {
+		return fault === null
+			? ' <span class="read">reading the Tracker</span>'
+			: ` <span class="read stale">could not read the Tracker: ${escape(fault.why)}</span>`;
+	}
+	const read = `Tracker read <time datetime="${escape(last.at)}">${clock(last.at)}</time>`;
+	return fault === null
+		? ` <span class="read">${read}</span>`
+		: ` <span class="read stale">${read}, <time data-since="${escape(last.at)}"></time> ago; could not read it at <time datetime="${escape(fault.at)}">${clock(fault.at)}</time>: ${escape(fault.why)}</span>`;
+}
+
+function header(repo: string, view: FactoryView, tracker: TrackerLists | undefined): string {
 	const doing = view.status?.doing;
 	const after = pollAfter(view);
 	const poll =
@@ -75,31 +159,28 @@ function header(repo: string, view: FactoryView): string {
 				: doing?.kind === 'paused' && running(view)
 					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
 					: '';
-	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}</header>`;
+	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}${trackerRead(tracker)}</header>`;
 }
 
-function cards(view: FactoryView): string {
+function cards(view: FactoryView, lists: Lists): string {
 	const status = view.status;
 	const spent =
 		status === null
 			? 'no spend recorded'
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
-	const waiting = status?.waitingOnYou?.items.length;
+	const waiting = lists.known ? lists.waitingOnYou?.items.length : undefined;
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
-function queue(view: FactoryView, links: Links): string {
-	const status = view.status;
+function queue(lists: Lists, links: Links): string {
 	let body: string;
-	if (!running(view)) body = OFF;
-	else if (status?.queue === undefined) body = '<p class="empty">not read yet</p>';
-	else if (status.queue.length === 0) body = emptyQueue(links);
+	if (!lists.known) body = lists.empty;
+	else if (lists.queue === undefined) body = '<p class="empty">not read yet</p>';
+	else if (lists.queue.length === 0) body = emptyQueue(links);
 	else
-		body = `<ul>${status.queue.map((q) => `<li>${idHtml(q.id, links)} ${escape(q.title)}</li>`).join('')}</ul>`;
+		body = `<ul>${lists.queue.map((q) => `<li>${idHtml(q.id, links)} ${titleHtml(q.id, q.title, lists.opens)}</li>`).join('')}</ul>`;
 	const refreshed =
-		running(view) && status?.refreshedAt !== undefined
-			? ` <small>refreshed ${clock(status.refreshedAt)}</small>`
-			: '';
+		lists.known && lists.at !== undefined ? ` <small>refreshed ${clock(lists.at)}</small>` : '';
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
 }
 
@@ -142,10 +223,10 @@ function current(view: FactoryView, links: Links): string {
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
-function waiting(view: FactoryView, links: Links): string {
-	const found = view.status?.waitingOnYou;
+function waiting(view: FactoryView, lists: Lists, links: Links): string {
+	const found = lists.known ? lists.waitingOnYou : undefined;
 	let body: string;
-	if (!running(view)) body = OFF;
+	if (!lists.known) body = lists.empty;
 	else if (found === undefined) body = '<p class="empty">not read yet</p>';
 	else {
 		const note = found.trackerCannotList
@@ -156,7 +237,8 @@ function waiting(view: FactoryView, links: Links): string {
 		const items = found.items
 			.map((i) => {
 				const back = lastHandBack(view, i.feature ?? i.id, i.kind === 'ticket' ? i.id : null);
-				return `<li>${idHtml(i.id, links)} ${escape(i.title)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
+				const opens = lists.opens && i.kind === 'feature';
+				return `<li>${idHtml(i.id, links)} ${titleHtml(i.id, i.title, opens)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
 			})
 			.join('');
 		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
@@ -164,13 +246,22 @@ function waiting(view: FactoryView, links: Links): string {
 	return `<section id="waiting"><h2>Waiting on you</h2>${body}</section>`;
 }
 
+function shelf(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
+	const li = (c: ShelfCard) =>
+		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}</li>`;
+	const items = (all.shelf ?? []).map(li).join('');
+	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
+	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
+}
+
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
-function completed(view: FactoryView, links: Links): string {
+function completed(view: FactoryView, lists: Lists, links: Links): string {
 	const li = ({ done: { event, costUsd }, runs }: CompletedCard) =>
 		`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
-	const rows = features(view).completed.map(li).join('');
+	const rows = features(view, lists).completed.map(li).join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
 
@@ -215,6 +306,30 @@ interface FeatureCard {
 	readonly waitingTickets: readonly WaitingTicket[];
 	// Tickets built of the Feature's Tickets; null when there is no count to show
 	readonly progress: Progress | null;
+	// its title opens the Feature detail panel: a Feature on Waiting on you, the Queue or the Shelf, when the page reads the Tracker
+	readonly opens?: true;
+	// the Feature's finished runs, on a card that is not on Completed because it is active again
+	readonly earlier?: Earlier;
+}
+// how many finished runs a Feature had in status.json's recent events, and the latest of them
+interface Earlier {
+	readonly runs: number;
+	readonly done: Completed;
+	// what the latest run built, when the Feature's Ticket count is known
+	readonly progress: Progress | null;
+}
+
+// The earlier runs of a Feature on its active card, linking the latest one's pull request
+function earlierHtml(card: FeatureCard): string {
+	const e = card.earlier;
+	if (e === undefined) return '';
+	const count = `${String(e.runs)} earlier ${e.runs === 1 ? 'run' : 'runs'}`;
+	const { event } = e.done;
+	const latest =
+		event.kind === 'pull'
+			? `, the latest: ${outcomeHtml(event)}`
+			: `, the latest failed${e.progress === null ? '' : ` (${progressText(e.progress)})`}`;
+	return `<p class="meta runs" title="counted from the recent events only">${count}${latest}</p>`;
 }
 interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
@@ -222,6 +337,15 @@ interface QueuedCard extends FeatureCard {
 	readonly ticketCounts: TicketCounts | null | undefined;
 	// null when there is nothing to estimate from
 	readonly estimateMs: number | null;
+}
+
+// An open Feature of the person's with no Signal: work they could give the Go
+interface ShelfCard extends FeatureCard {
+	readonly state: 'shelf';
+	// a lone issue is built as itself; `none` is a Feature with no Tickets that the Tracker would not build alone
+	readonly tickets: 'lone' | 'none' | 'some';
+	// when it was last updated, as an ISO date
+	readonly updated: string;
 }
 
 const estimateHtml = (ms: number | null) =>
@@ -291,17 +415,22 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 }
 
 interface Features {
-	// each is undefined while Nightjar is off or has not read it yet
+	// each is undefined while the lists are not known or not read yet
 	readonly queue: readonly QueuedCard[] | undefined;
 	readonly building: BuildingCard | null;
 	readonly waiting: readonly WaitingCard[] | undefined;
 	readonly trackerCannotList: boolean;
+	// newest update first; undefined while the Tracker has not been read
+	readonly shelf: readonly ShelfCard[] | undefined;
+	// how many Features the Shelf holds in all, those listed and those left out
+	readonly shelfTotal: number;
+	readonly shelfCannotList: boolean;
 	// newest first
 	readonly completed: readonly CompletedCard[];
 }
 
-// The one list of Features, built from what the reader gives.
-function features(view: FactoryView): Features {
+// The one list of Features, built from what the reader and the Tracker give.
+function features(view: FactoryView, lists: Lists): Features {
 	const status = view.status;
 	const doing = status?.doing;
 	const on = running(view);
@@ -327,14 +456,14 @@ function features(view: FactoryView): Features {
 					doing
 				}
 			: null;
-	const found = on ? status?.waitingOnYou : undefined;
+	const found = lists.known ? lists.waitingOnYou : undefined;
+	const listed = lists.known ? lists.queue : undefined;
+	const opens = lists.known && lists.opens ? { opens: true as const } : {};
 	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
 	const totals = new Map<string, number>();
-	if (on) {
-		for (const q of status?.queue ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
-		for (const i of found?.items ?? [])
-			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
-	}
+	for (const q of listed ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
+	for (const i of found?.items ?? [])
+		if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
 	const completedCard = (done: Completed, runs: number): CompletedCard => {
 		const { event } = done;
 		const built = done.builtTickets ?? 0;
@@ -382,7 +511,8 @@ function features(view: FactoryView): Features {
 					waitingTickets: [],
 					progress: i.ticketCounts
 						? { built: i.ticketCounts.closed, total: i.ticketCounts.total, counts: BUILT_NOW }
-						: null
+						: null,
+					...opens
 				};
 			});
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
@@ -411,7 +541,9 @@ function features(view: FactoryView): Features {
 					why: 'needs info',
 					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: tickets,
-					progress: null
+					progress: null,
+					// an older file may name no Feature, so there is none to open
+					...(id === '' ? {} : opens)
 				});
 		}
 	}
@@ -426,20 +558,53 @@ function features(view: FactoryView): Features {
 		estimateMs:
 			view.medianTicketMs == null || !q.ticketCounts
 				? null
-				: view.medianTicketMs * q.ticketCounts.total
+				: view.medianTicketMs * q.ticketCounts.total,
+		...opens
 	});
-	const queue = on ? status?.queue?.map(queued) : undefined;
+	const queue = listed?.map(queued);
+	const onShelf = (f: ShelfFeature): ShelfCard => ({
+		state: 'shelf',
+		id: f.id,
+		title: f.title,
+		waitingTickets: [],
+		progress: null,
+		tickets: f.hasTickets ? 'some' : f.lone === true ? 'lone' : 'none',
+		updated: f.updated,
+		...opens
+	});
+	const shelved = lists.known ? lists.shelf : undefined;
+	// a Feature active again sits on its active Mat alone, with its finished runs on its card
+	const active = new Set([building, ...(waiting ?? []), ...(queue ?? [])].map((c) => c?.id));
+	const withEarlier = <C extends FeatureCard>(card: C): C => {
+		const done = completed.find((c) => c.id === card.id);
+		return done === undefined
+			? card
+			: { ...card, earlier: { runs: done.runs, done: done.done, progress: done.progress } };
+	};
 	return {
-		queue,
-		building,
-		waiting,
+		queue: queue?.map(withEarlier),
+		building: building === null ? null : withEarlier(building),
+		waiting: waiting?.map(withEarlier),
 		trackerCannotList: found?.trackerCannotList ?? false,
-		completed
+		// the Tracker's order, newest update first, which its contract suite holds it to
+		shelf: shelved?.features.map(onShelf),
+		shelfTotal: shelved?.total ?? 0,
+		shelfCannotList: shelved === null,
+		completed: completed.filter((c) => !active.has(c.id))
 	};
 }
 
+// A Feature's title; one that opens the Feature detail panel is a button, so a mouse and a keyboard both reach it
+function titleHtml(id: string, title: string | undefined, opens: boolean): string {
+	if (!opens) return title === undefined ? '' : escape(title);
+	const text = escape(title ?? idText(id));
+	return `<button type="button" class="open" data-feature="${escape(id)}" aria-haspopup="dialog" aria-controls="feature" title="Show ${escape(idText(id))}: its spec and Tickets">${text}</button>`;
+}
+
+const cardTitle = (card: FeatureCard) => titleHtml(card.id, card.title, card.opens === true);
+
 const feature = (card: FeatureCard, links: Links) =>
-	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${cardTitle(card)}`;
 
 // A Next step as the Tracker comment numbers it, a Signal's `name` set as code
 function nextStepHtml(back: HandBack | undefined): string {
@@ -471,7 +636,7 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why,
+		whyHtml(card, u) + why + earlierHtml(card),
 		actionLink(u, links),
 		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
 	);
@@ -498,7 +663,7 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		card,
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
-		`<p class="label">Building</p><p>${stepLine(doing)}</p>`,
+		`<p class="label">Building</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`
 	);
 }
@@ -527,7 +692,7 @@ function queuedCard(card: QueuedCard, links: Links): string {
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
-	return nest('queue', card, links, count, '<p class="label">Queued</p>', est);
+	return nest('queue', card, links, count, `<p class="label">Queued</p>${earlierHtml(card)}`, est);
 }
 
 function completedCard(card: CompletedCard, links: Links): string {
@@ -542,6 +707,49 @@ function completedCard(card: CompletedCard, links: Links): string {
 		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
 		`${duration}${dollars(costUsd)}`
 	);
+}
+
+const SHELF_CANNOT = 'Shelf is not available from this Tracker';
+
+// What a Shelf item says of its Tickets: a lone issue is built as itself
+const shelfNote = (card: ShelfCard) =>
+	card.tickets === 'lone' ? 'Lone issue' : card.tickets === 'none' ? 'no Tickets yet' : '';
+
+// The day a Feature was last updated; nothing when the Tracker gave none
+const updatedHtml = (iso: string) =>
+	Number.isNaN(Date.parse(iso))
+		? ''
+		: `updated <time datetime="${escape(iso)}">${new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' })}</time>`;
+
+function shelfCard(card: ShelfCard, links: Links): string {
+	const note = shelfNote(card);
+	return nest(
+		'shelf',
+		card,
+		links,
+		note === '' ? '' : `<p class="meta count">${note}</p>`,
+		'<p class="label">On the Shelf</p>',
+		updatedHtml(card.updated)
+	);
+}
+
+// The Shelf lists at most SHELF_MAX Features; the rest are one link to the person's open issues on the Tracker.
+function shelfMore(all: Features, lists: Lists, links: Links): string {
+	const more = all.shelfTotal - (all.shelf?.length ?? 0);
+	if (more <= 0) return '';
+	const text = `and ${String(more)} more in the Tracker`;
+	const href = lists.known && lists.person !== undefined ? links.assigned(lists.person) : null;
+	return `<p class="more">${href === null ? text : `<a class="ext" href="${escape(href)}" ${EXTERNAL}>${text}</a>`}</p>`;
+}
+
+// What the Shelf says in place of Features: why it is not there, or that it is empty; null when it lists some
+function shelfEmpty(all: Features, lists: Lists): string | null {
+	if (!lists.known) return lists.empty;
+	if (all.shelfCannotList) return `<p class="empty">${SHELF_CANNOT}</p>`;
+	if (all.shelf === undefined) return '<p class="empty">not read yet</p>';
+	if (all.shelf.length === 0)
+		return `<p class="empty">empty${hint('Features assigned to you that carry no Signal show here.')}</p>`;
+	return null;
 }
 
 function group(state: string, name: string, count: number | null, body: string): string {
@@ -623,12 +831,13 @@ function helpHtml(card: WaitingCard, u: Unblock | null, links: Links): string {
 const LEGEND =
 	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
 
-function board(view: FactoryView, links: Links): string {
-	const all = features(view);
+function board(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
 	const on = running(view);
+	const { known } = lists;
 	const none = (text: string) => `<p class="empty">${text}</p>`;
-	const queued = !on
-		? OFF
+	const queued = !lists.known
+		? lists.empty
 		: all.queue === undefined
 			? none('not read yet')
 			: all.queue.length === 0
@@ -637,13 +846,15 @@ function board(view: FactoryView, links: Links): string {
 	const building =
 		all.building === null ? none('nothing is being built') : buildingCard(all.building, links);
 	let waiting: string;
-	if (!on) waiting = OFF;
+	if (!lists.known) waiting = lists.empty;
 	else if (all.waiting === undefined) waiting = none('not read yet');
 	else {
 		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
 		const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
 	}
+	const shelfCards = (all.shelf ?? []).map((c) => shelfCard(c, links)).join('');
+	const shelf = shelfEmpty(all, lists) ?? shelfCards + shelfMore(all, lists, links);
 	const completed =
 		all.completed.length === 0
 			? none('nothing has finished yet')
@@ -652,9 +863,10 @@ function board(view: FactoryView, links: Links): string {
 	return (
 		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
-		group('waiting', 'Waiting on you', on ? (all.waiting?.length ?? null) : null, waiting) +
+		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
 		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
-		group('queue', 'Queue', on ? (all.queue?.length ?? null) : null, queued) +
+		group('queue', 'Queue', known ? (all.queue?.length ?? null) : null, queued) +
+		group('shelf', 'Shelf', known && all.shelf !== undefined ? all.shelfTotal : null, shelf) +
 		group('completed', 'Completed', all.completed.length, completed) +
 		`</div>${side}</div></div>`
 	);
@@ -664,6 +876,7 @@ const STATES = [
 	['queue', 'Queue'],
 	['building', 'Building'],
 	['waiting', 'Waiting on you'],
+	['shelf', 'Shelf'],
 	['completed', 'Completed']
 ] as const;
 
@@ -678,8 +891,8 @@ const COLUMNS = [
 ] as const;
 
 // One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
-function table(view: FactoryView, links: Links): string {
-	const all = features(view);
+function table(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
 	interface Row {
 		readonly card: FeatureCard;
 		readonly state: (typeof STATES)[number][0];
@@ -699,7 +912,7 @@ function table(view: FactoryView, links: Links): string {
 			timeText: estimateHtml(card.estimateMs),
 			cost: null,
 			outcome: '',
-			outcomeText: '',
+			outcomeText: earlierHtml(card),
 			progress: card.progress
 		});
 	if (all.building !== null) {
@@ -711,7 +924,7 @@ function table(view: FactoryView, links: Links): string {
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
 			outcome: '',
-			outcomeText: '',
+			outcomeText: earlierHtml(all.building),
 			progress: all.building.progress
 		});
 	}
@@ -724,10 +937,21 @@ function table(view: FactoryView, links: Links): string {
 			timeText: '',
 			cost: null,
 			outcome,
-			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}`,
+			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}${earlierHtml(card)}`,
 			progress: card.progress
 		});
 	}
+	for (const card of all.shelf ?? [])
+		rows.push({
+			card,
+			state: 'shelf',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: shelfNote(card),
+			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>`,
+			progress: null
+		});
 	for (const card of all.completed) {
 		const { event, costUsd } = card.done;
 		const took = tookMs(event);
@@ -753,29 +977,46 @@ function table(view: FactoryView, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
-	const note = !running(view)
-		? OFF
-		: all.trackerCannotList
-			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
-			: '';
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+	let note = '';
+	if (!lists.known) note = lists.empty;
+	else {
+		if (all.trackerCannotList)
+			note += '<p class="empty">Waiting on you is not available from this Tracker</p>';
+		if (all.shelfCannotList) note += `<p class="empty">${SHELF_CANNOT}</p>`;
+	}
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
 }
 
 // Splits what stays in view (the run's state and numbers) from the content that scrolls beneath it.
 const MAIN = '<!--main-->';
 
 // The panels, which the page replaces whole each time an event brings new ones.
-export function renderPanels(root: string, view: FactoryView, links: Links = NO_LINKS): string {
+// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel.
+export function renderPanels(
+	root: string,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	tracker?: TrackerLists,
+	opens = false
+): string {
+	const lists = listsOf(view, tracker, opens);
+	const overview = [
+		current(view, links),
+		queue(lists, links),
+		shelf(view, lists, links),
+		waiting(view, lists, links),
+		completed(view, lists, links)
+	].join('\n');
 	return [
-		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
-		cards(view),
+		header(lastRepo(ledgerPath(root)) ?? basename(root), view, tracker),
+		cards(view, lists),
 		MAIN,
-		board(view, links),
-		table(view, links),
-		`<div class="overview">${[current(view, links), queue(view, links), waiting(view, links), completed(view, links)].join('\n')}</div>`
+		board(view, lists, links),
+		table(view, lists, links),
+		`<div class="overview">${overview}</div>`
 	].join('\n');
 }
 
@@ -807,8 +1048,10 @@ const PAGE = (panels: string, links: Links) => {
 <div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}</div>
 <div id="top">${top}</div>
 <div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
+${FEATURE_DIALOG}
 <script>${SCRIPT}</script>
 <script>${PARALLAX}</script>
+<script>${FEATURE_SCRIPT}</script>
 </body>
 </html>
 `;
@@ -976,10 +1219,10 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header, chip, help or copy button or link; put focus back on its twin
+	// a swap drops the focused sort header, chip, help, copy or Feature button or link; put focus back on its twin
 	const was = document.activeElement;
 	const data = (was && was.dataset) || {};
-	const key = ['sort', 'chip', 'help', 'copy'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const key = ['sort', 'chip', 'help', 'copy', 'feature'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	// links can share an href, so remember which of them had focus
 	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
@@ -1037,6 +1280,7 @@ header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; p
 h1 { font: 700 1.6rem var(--mono); }
 header span { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; }
 header .state { color: var(--teal); font-weight: 600; }
+header .stale { color: var(--amber); }
 #cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
 .stat b { color: var(--ink); }
 .empty, small, .meta { color: var(--muted); }
@@ -1075,6 +1319,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .mat::after { border-left: 0; border-top: 0; bottom: -1px; }
 .mat[data-state="waiting"] { --h: var(--amber); }
 .mat[data-state="queue"] { --h: var(--slate); }
+.mat[data-state="shelf"] { --h: var(--muted); }
 .mat[data-state="completed"] { --h: var(--ok); }
 .tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
@@ -1083,6 +1328,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
+.more { border-top: 1px dashed var(--line); font: 0.85rem var(--mono); margin: 0; padding: 12px 0 8px; }
+.table .more { border: 0; padding: 12px 12px 0; }
 .entry p { margin: 0; }
 .who { font-size: 1.05rem; font-weight: 600; }
 .who b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 10px; }
@@ -1144,6 +1391,7 @@ td.progress p { display: inline; margin: 0 0 0 14px; }
 tr[data-state] td:first-child { border-left: 3px solid var(--teal); }
 tr[data-state="waiting"] td:first-child { border-left-color: var(--amber); }
 tr[data-state="queue"] td:first-child { border-left-color: var(--slate); }
+tr[data-state="shelf"] td:first-child { border-left-color: var(--muted); }
 tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
 tr[data-failed] td:first-child { border-left-color: var(--err); }
 table { border-collapse: collapse; width: 100%; }
@@ -1177,6 +1425,50 @@ code { background: color-mix(in srgb, var(--teal) 10%, transparent); color: var(
 .hint { color: var(--ink2); display: block; font-size: 0.85rem; margin-top: 2px; }
 button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; min-height: 24px; padding: 1px 8px; }
 button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+button.open:hover { color: var(--teal); text-decoration-style: solid; }
+#feature { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; scrollbar-color: var(--teal2) var(--void); width: 640px; }
+#feature::backdrop { background: var(--shade-deep); }
+.fp { min-height: 100%; padding: 18px 22px 32px; position: relative; }
+.fp::before, .fp::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
+.fp::before { border-bottom: 0; border-right: 0; left: 0; top: 0; }
+.fp::after { border-left: 0; border-top: 0; bottom: 0; right: 0; }
+.fp-bar { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.fp-bar .dk { font-family: var(--mono); }
+button.close { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 10px; }
+button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+#feature h2 { font: 700 1.2rem system-ui, sans-serif; margin: 8px 0 6px; overflow-wrap: anywhere; }
+#feature h2 b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 8px; }
+#feature .sub { font-family: var(--mono); margin: 0 0 6px; }
+#feature section { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 10px; }
+#feature h3 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; margin: 0 0 8px; text-transform: uppercase; }
+#feature .fault { color: var(--err); }
+.md { overflow-wrap: anywhere; }
+.md p { margin: 6px 0; }
+#feature .md :is(h3, h4, h5, h6) { color: var(--ink); font: 600 1rem system-ui, sans-serif; letter-spacing: 0; margin: 14px 0 4px; text-transform: none; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.6em; }
+.md li { padding: 1px 0; }
+.md li.task { list-style: none; margin-left: -1.2em; }
+.md input[type="checkbox"] { accent-color: var(--teal2); margin: 0 6px 0 0; vertical-align: middle; }
+.md blockquote { border-left: 2px solid var(--line); color: var(--ink2); margin: 8px 0; padding-left: 12px; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+#feature .steps { margin: 4px 0 0; }
+#feature .steps li { color: var(--ink); }
+#feature .steps li p { margin: 2px 0; }
+#feature .steps li.closed { color: var(--muted); }
+#feature .steps li.closed::before { background: var(--teal2); border-color: var(--teal2); }
+.tk b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 6px; }
+.st, .blockers small { font-family: var(--mono); }
+.blockers { color: var(--ink2); }
+#feature .contract { font-family: var(--mono); font-size: 0.75rem; margin: 6px 0; }
+#feature .contract.ok, #feature .verdict.ok { color: var(--teal); }
+#feature .contract.bad, #feature .verdict.bad { color: var(--err); }
+#feature .verdict { font: 0.75rem var(--mono); }
+#feature ul.faults { color: var(--err); font-size: 0.85rem; list-style: disc; margin: 2px 0 4px; padding-left: 1.4em; }
+.criteria summary { color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 0; }
+.criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.criteria .md { color: var(--ink2); }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -1187,7 +1479,7 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }
+	th button, #views button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1218,6 +1510,17 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 const hostOk = (host: string | undefined, port: number) =>
 	host === `127.0.0.1:${String(port)}` || host === `localhost:${String(port)}`;
 
+// A request's path and query, read against this machine as the Host check has made sure it is; a target that does not read is no path the page serves.
+const urlOf = (url: string | undefined) => {
+	try {
+		return new URL(url ?? '/', `http://${HOST}`);
+	} catch {
+		return new URL('http://invalid/-');
+	}
+};
+const pathOf = (url: string | undefined) => urlOf(url).pathname;
+const searchOf = (url: string | undefined) => urlOf(url).searchParams;
+
 // The origin remote's url, which names the GitHub repo when factory.json does not; null with no remote
 function originOf(root: string): string | null {
 	try {
@@ -1234,6 +1537,17 @@ function originOf(root: string): string | null {
 export function startUi(o: UiOptions): Promise<Ui> {
 	const origin = originOf(o.root);
 	const clients = new Set<ServerResponse>();
+	// The Tracker is read on open and once a minute, never on a file change; each read pushes the panels when they changed.
+	const read = o.tracker;
+	const tracker =
+		read === undefined
+			? null
+			: watchTracker({
+					read,
+					changed: () => refresh(),
+					...(o.every === undefined ? {} : { every: o.every }),
+					...(o.now === undefined ? {} : { now: o.now })
+				});
 	const panelsNow = () =>
 		renderPanels(
 			o.root,
@@ -1241,7 +1555,9 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				...(o.alive === undefined ? {} : { alive: o.alive }),
 				...(o.now === undefined ? {} : { now: o.now })
 			}),
-			linksFor(o.root, origin)
+			linksFor(o.root, origin),
+			tracker?.lists(),
+			o.feature !== undefined
 		);
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);
@@ -1269,6 +1585,19 @@ export function startUi(o: UiOptions): Promise<Ui> {
 			send(res, panelsNow());
 			clients.add(res);
 			res.on('close', () => clients.delete(res));
+		} else if (o.feature !== undefined && pathOf(req.url) === FEATURE_PATH) {
+			// read from the Tracker as the panel opens; the read gives no Signal and writes nothing
+			const answered = featureAnswer(searchOf(req.url), o.feature, linksFor(o.root, origin));
+			void answered.then(({ status, body }) => {
+				res.writeHead(status, {
+					'content-type': 'text/html; charset=utf-8',
+					'cache-control': 'no-store',
+					'x-content-type-options': 'nosniff',
+					// opened as a page of its own, the panel's markup may run and load nothing
+					'content-security-policy': "default-src 'none'"
+				});
+				res.end(req.method === 'HEAD' ? undefined : body);
+			});
 		} else if (req.url === '/') {
 			res.writeHead(200, {
 				'content-type': 'text/html; charset=utf-8',
@@ -1302,19 +1631,27 @@ export function startUi(o: UiOptions): Promise<Ui> {
 	}, 2000);
 
 	return new Promise((done, fail) => {
-		server.once('error', fail);
+		// a port that is taken leaves nothing running behind it
+		server.once('error', (fault) => {
+			tracker?.stop();
+			clearInterval(slow);
+			clearTimeout(timer);
+			watcher?.close();
+			fail(fault);
+		});
 		server.listen(o.port, HOST, () => {
 			const { address, port } = server.address() as AddressInfo;
 			done({
 				address,
 				port,
 				close: () =>
-					new Promise<void>((closed) => {
+					new Promise<void>((ended) => {
+						tracker?.stop();
 						clearInterval(slow);
 						clearTimeout(timer);
 						watcher?.close();
 						server.closeAllConnections();
-						server.close(() => closed());
+						server.close(() => ended());
 					})
 			});
 		});

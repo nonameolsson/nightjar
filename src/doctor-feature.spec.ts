@@ -109,6 +109,9 @@ describe('nightjar doctor FEATURE', () => {
 			expect(await doctor(github, ['doctor', '1'])).toBe(1);
 			expect(out[0]).toBe('nightjar: #2: ok');
 			expect(out[1]).toMatch(/^nightjar: #3: It is blocked by #5, which is open and not a Ticket/);
+			expect(out[1]).toContain(
+				"it waits until that Ticket closes, when its Feature's pull request merges; merge that, then give the Go again."
+			);
 			expect(out).toHaveLength(2);
 			noWrites(github);
 		});

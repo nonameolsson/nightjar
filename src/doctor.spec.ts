@@ -6,7 +6,13 @@ import { oneEscape } from './fakes/github.js';
 import { machine, type Machine, type SandboxTool, type Tool } from './fakes/machine.js';
 import type { Adapters } from './adapters.js';
 import { FakeTracker } from './fakes/tracker.js';
-import { checkMachine, leftWorkingCheck, pullChecksCheck, type CheckOptions } from './checks.js';
+import {
+	checkMachine,
+	leftWorkingCheck,
+	publishCheck,
+	pullChecksCheck,
+	type CheckOptions
+} from './checks.js';
 import type { PersonConfig } from './person-config.js';
 import { loadConfig, type Config } from './config.js';
 import { failures, printLines } from './doctor.js';
@@ -266,6 +272,51 @@ describe('nightjar doctor over a working Signal left on a Ticket', () => {
 	it('still exits 0 in the real command, and lists nothing on a clean Tracker', async () => {
 		expect(await doctor()).toBe(0);
 		expect(out.join('\n')).not.toContain('working Signal');
+	});
+});
+
+describe('nightjar doctor over publish', () => {
+	const run = (adapters: Adapters, config: Config) =>
+		publishCheck.run({ adapters, loaded: { config, rules: null } }, {} as CheckOptions);
+
+	it('says nothing with publish off, or a Code host that can publish', async () => {
+		expect(await doctor()).toBe(0);
+		expect(out.join('\n')).not.toContain('publish');
+		out = [];
+		m.writeConfig({ ...GITHUB, publish: true });
+		expect(await start()).toBe(0);
+		expect(out.join('\n')).not.toContain('publish');
+		expect(err).toEqual([]);
+	});
+
+	it('warns, without failing, when publish is on and the Code host cannot publish', async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, publish: true });
+		const config = loadConfig(m.root);
+		const lists = { nightjarDrafts: () => Promise.resolve([]) };
+		const lines = (await run({ codeHost: lists } as unknown as Adapters, config)).lines ?? [];
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.status).toBe('warn');
+		expect(lines[0]?.detail).toMatch(/no publish\b.*stays a draft/);
+		expect(failures(lines)).toBe(0);
+		printLines(lines);
+		expect(err).toEqual([]);
+		expect(out.join('\n')).toMatch(/warn {2}publish: .*stays a draft/);
+		// publish off: no line, though the Code host lacks the method
+		m.writeConfig(GITHUB);
+		const off = loadConfig(m.root);
+		expect((await run({ codeHost: lists } as unknown as Adapters, off)).lines ?? []).toEqual([]);
+	});
+
+	it("warns when the Code host can publish but cannot list Nightjar's drafts, which the revisit pass needs", async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, publish: true });
+		const publishes = { publish: () => Promise.resolve() };
+		const lines =
+			(await run({ codeHost: publishes } as unknown as Adapters, loadConfig(m.root))).lines ?? [];
+		expect(lines.map((l) => [l.status, l.detail])).toEqual([
+			['warn', expect.stringMatching(/no nightjarDrafts\b.*stays a draft/)]
+		]);
 	});
 });
 

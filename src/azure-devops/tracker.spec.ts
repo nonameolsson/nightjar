@@ -70,6 +70,30 @@ describe('AzureBoardsTracker', () => {
 		expect(calls.every((c) => c.method === 'GET')).toBe(true);
 	});
 
+	it("lists a person's Shelf from the open items of featureType, one with no Tickets too, changed last first", async () => {
+		const { ado, tracker } = setUp();
+		const mine = (title: string, more: { tags?: string[]; closed?: boolean } = {}) =>
+			ado.workItem({ type: 'Product Backlog Item', title, assignedTo: ANN, ...more });
+		const planned = mine('Planned');
+		const bare = mine('No Tickets yet', { tags: ['someday'] });
+		mine('Given the Go', { tags: [DEFAULT_SIGNAL_NAMES.go] });
+		mine('Closed', { closed: true });
+		ado.workItem({ type: 'Task', title: 'A Task of mine', assignedTo: ANN });
+		ado.addChild(planned, ado.workItem({ type: 'Task', title: 'Ticket' }));
+		const shelf = await tracker.shelf(ANN, 50);
+		expect(shelf.features.map((f) => [f.title, f.hasTickets])).toEqual([
+			// linking a Ticket changed it after the other was made
+			['Planned', true],
+			['No Tickets yet', false]
+		]);
+		expect(shelf.total).toBe(2);
+		await tracker.comment(String(bare), 'Next week.');
+		expect((await tracker.shelf(ANN, 1)).features.map((f) => f.id)).toEqual([String(bare)]);
+		for (const call of ado.asked) {
+			expect(`${call.url} ${JSON.stringify(call.body)}`).not.toMatch(/state/i);
+		}
+	});
+
 	it('references a Ticket as AB#<id>, which the Azure Boards app links from a pull request', () => {
 		const { tracker } = setUp();
 		expect(tracker.reference('42')).toEqual({ id: '42', text: 'AB#42' });

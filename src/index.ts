@@ -5,25 +5,31 @@ export type {
 	Feature,
 	FeatureWriter,
 	ItemText,
+	Shelf,
+	ShelfFeature,
 	SourcedFeature,
 	Standing,
 	Ticket,
 	TicketReference,
 	Tracker
 } from './tracker.js';
-export { canCreate } from './tracker.js';
+export { canCreate, SHELF_MAX } from './tracker.js';
 export { sourceMarker } from './template.js';
 export { featureWriterContract } from './contract/feature-writer.js';
 export { sourcesContract } from './contract/sources.js';
 export { assignContract } from './contract/assign.js';
 export { waitingOnContract } from './contract/waiting-on.js';
 export { ticketCountsContract } from './contract/ticket-counts.js';
+export { shelfContract } from './contract/shelf.js';
 export { nightjarDraftsContract } from './contract/nightjar-drafts.js';
 export { openPullsContract } from './contract/open-pulls.js';
+export { publishContract } from './contract/publish.js';
 export type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
+	DraftsListing,
 	FailedCheck,
 	Feedback,
 	FeedbackKind,

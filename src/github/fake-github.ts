@@ -114,6 +114,9 @@ const INVALID = (why: string) => failed(`gh: Validation Failed: ${why} (HTTP 422
 // GitHub's own id of an issue, which its sub-issue and dependency calls take, apart from its number.
 const databaseId = (number: number) => 4_000_000 + number * 7;
 
+// GitHub's GraphQL id of a pull request, which its GraphQL mutations take, apart from its number.
+const nodeId = (number: number) => `PR_kwDO${String(number)}`;
+
 // GitHub's own paging: thirty to a page unless per_page says otherwise.
 function page<T>(list: readonly T[], query: URLSearchParams): T[] {
 	const size = Number(query.get('per_page') ?? 30);
@@ -160,6 +163,9 @@ export class FakeGitHub {
 	// one count for every kind of comment, so no two ids are alike
 	private lastId = 0;
 	private lastMinute = 0;
+	// when each issue was last changed: made, labelled, commented on, given a sub-issue
+	private readonly updated = new Map<number, string>();
+	private lastUpdate = 0;
 	private readonly repoLabels = new Set<string>();
 	// the commit each branch points at, as pushed
 	private readonly heads = new Map<string, string>();
@@ -169,6 +175,8 @@ export class FakeGitHub {
 	private readonly statuses = new Map<string, CommitStatus[]>();
 	// by id, the id of its check run
 	private readonly jobs = new Map<number, NewJob>();
+	// the `mergeable` of each pull request GitHub has worked out; true when not set, null while it works
+	private readonly mergeable = new Map<number, boolean | null>();
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -184,7 +192,14 @@ export class FakeGitHub {
 	issue(issue: NewIssue): number {
 		const number = this.issues.size + 1;
 		this.issues.set(number, { ...issue, number, subIssues: [], blockedBy: [] });
+		this.updated.set(number, this.createdAt(number));
 		return number;
+	}
+
+	// a time later than every issue's making and every change before, one minute on from the last
+	private touch(number: number): void {
+		this.lastUpdate += 1;
+		this.updated.set(number, new Date(Date.UTC(2026, 10, 1, 0, this.lastUpdate)).toISOString());
 	}
 
 	addSubIssue(parent: number, child: number): void {
@@ -199,6 +214,7 @@ export class FakeGitHub {
 		const at = new Date(Date.UTC(2026, 9, 30, 9, this.commentCount())).toISOString();
 		const comment = { id: this.nextId(), login, body, createdAt: at };
 		this.comments.set(number, [...(this.comments.get(number) ?? []), comment]);
+		this.touch(number);
 		return comment;
 	}
 
@@ -279,6 +295,11 @@ export class FakeGitHub {
 	// Makes `login` a collaborator with `permission` (read, write, maintain, admin).
 	grant(login: string, permission: string): void {
 		this.permissions.set(login, permission);
+	}
+
+	// What GitHub says of `mergeable` on pull request `number`: false for a conflict with its base, null while it has not worked it out.
+	setMergeable(number: number, mergeable: boolean | null): void {
+		this.mergeable.set(number, mergeable);
 	}
 
 	// Pull request `number` as GitHub shows it.
@@ -390,6 +411,7 @@ export class FakeGitHub {
 			return failed('To get started with GitHub CLI, please run:  gh auth login');
 		}
 		if (method === 'GET' && path === 'user') return ok({ login: this.person });
+		if (method === 'POST' && path === 'graphql') return this.graphql(call);
 		if (method === 'POST' && path === `${repo}/labels`) return this.createLabel(call);
 		const named = new RegExp(`^${repo}/labels/([^/]+)$`).exec(path);
 		if (method === 'GET' && named) {
@@ -544,21 +566,44 @@ export class FakeGitHub {
 		return page(found, query).map((i) => this.renderPull(i));
 	}
 
+	// GraphQL as far as Nightjar asks: marking a draft pull request ready for review, by its node id.
+	private graphql(call: GhCall): Run {
+		const query = call.fields.query;
+		if (typeof query !== 'string' || !query.includes('markPullRequestReadyForReview')) {
+			return failed('gh: the fake GitHub knows no such GraphQL query');
+		}
+		const pull = [...this.issues.values()].find(
+			(i) => i.pull !== undefined && nodeId(i.number) === call.fields.id
+		);
+		if (pull?.pull === undefined) {
+			return failed(
+				`gh: Could not resolve to a node with the global id of '${String(call.fields.id)}'.`
+			);
+		}
+		// a cautious stand-in: Nightjar reads the pull request first, and never asks of one out of draft
+		if (!pull.pull.draft) return failed('gh: Pull request is not a draft');
+		this.markReady(pull.number);
+		return ok({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } });
+	}
+
 	private renderPull(issue: Issue) {
 		const head = issue.pull?.head ?? '';
 		return {
 			number: issue.number,
+			node_id: nodeId(issue.number),
 			html_url: this.url(issue.number),
 			title: issue.title,
 			body: issue.body,
 			state: issue.state,
 			draft: issue.pull?.draft ?? false,
+			created_at: this.createdAt(issue.number),
 			head: {
 				ref: head,
 				sha: this.shaOf(issue.number),
 				repo: { full_name: this.repo }
 			},
-			base: { ref: issue.pull?.base ?? '' }
+			base: { ref: issue.pull?.base ?? '' },
+			mergeable: this.mergeable.has(issue.number) ? this.mergeable.get(issue.number) : true
 		};
 	}
 
@@ -648,7 +693,7 @@ export class FakeGitHub {
 		return match ? this.issues.get(Number(match[1])) : undefined;
 	}
 
-	// GitHub's filters: state open by default, every label named, the assignee, newest first by default.
+	// GitHub's filters: state open by default, every label named, the assignee, sorted by when made or last updated, newest first by default, a page at a time.
 	private list(query: URLSearchParams) {
 		const state = query.get('state') ?? 'open';
 		const labels = (query.get('labels') ?? '').split(',').filter((l) => l !== '');
@@ -659,8 +704,18 @@ export class FakeGitHub {
 				labels.every((l) => i.labels.includes(l)) &&
 				(assignee === null || i.assignees.includes(assignee))
 		);
+		if (query.get('sort') === 'updated') {
+			found.sort(
+				(a, b) =>
+					this.updatedAt(a.number).localeCompare(this.updatedAt(b.number)) || a.number - b.number
+			);
+		}
 		if (query.get('direction') !== 'asc') found.reverse();
-		return found.map((i) => this.render(i));
+		return page(found, query).map((i) => this.render(i));
+	}
+
+	private updatedAt(number: number): string {
+		return this.updated.get(number) ?? this.createdAt(number);
 	}
 
 	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, optionally only the open ones, and quoted phrases that must all be in it.
@@ -804,6 +859,7 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			created_at: this.createdAt(issue.number),
+			updated_at: this.updatedAt(issue.number),
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },
@@ -836,5 +892,6 @@ export class FakeGitHub {
 	private change(number: number, over: (issue: Issue) => Partial<Issue>): void {
 		const issue = this.get(number);
 		this.issues.set(number, { ...issue, ...over(issue) });
+		this.touch(number);
 	}
 }

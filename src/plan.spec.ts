@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextTicket, waiting } from './plan.js';
+import { buildOrder, needsAPerson, nextTicket, progress, waiting } from './plan.js';
 import type { Ticket } from './tracker.js';
 
 const ticket = (id: number, over: Partial<Ticket> = {}): Ticket => ({
@@ -10,6 +10,42 @@ const ticket = (id: number, over: Partial<Ticket> = {}): Ticket => ({
 	signals: ['ready'],
 	blockedBy: [],
 	...over
+});
+
+describe('buildOrder', () => {
+	const ids = (tickets: readonly Ticket[]) => tickets.map((t) => t.id);
+
+	it("puts a Ticket after its blockers, else keeps the Feature's own order, closed Tickets among them", () => {
+		const tickets = [
+			ticket(1, { blockedBy: [{ id: '3', open: true }] }),
+			ticket(2, { open: false }),
+			ticket(3, { blockedBy: [{ id: '2', open: false }] }),
+			ticket(4)
+		];
+		expect(ids(buildOrder(tickets))).toEqual(['2', '3', '1', '4']);
+	});
+
+	it('puts last, in their order, the Tickets an open blocker of another Feature or a loop holds back', () => {
+		const tickets = [
+			ticket(1, { blockedBy: [{ id: '99', open: true }] }),
+			ticket(2, { blockedBy: [{ id: '3', open: true }] }),
+			ticket(3, { blockedBy: [{ id: '2', open: true }] }),
+			ticket(4),
+			ticket(5, { blockedBy: [{ id: '99', open: false }] })
+		];
+		expect(ids(buildOrder(tickets))).toEqual(['4', '5', '1', '2', '3']);
+	});
+
+	it('is the order nextTicket builds them in', () => {
+		const tickets = [ticket(1, { blockedBy: [{ id: '2', open: true }] }), ticket(2), ticket(3)];
+		const built = new Set<string>();
+		const order: string[] = [];
+		for (let next = nextTicket(tickets, built); next !== null; next = nextTicket(tickets, built)) {
+			order.push(next.id);
+			built.add(next.id);
+		}
+		expect(ids(buildOrder(tickets))).toEqual(order);
+	});
 });
 
 describe('nextTicket', () => {
@@ -53,6 +89,31 @@ describe('waiting', () => {
 			{ id: '3', title: 'Ticket 3', why: 'needs a person' },
 			{ id: '4', title: 'Ticket 4', why: 'blocked by', blocker: '2' },
 			{ id: '5', title: 'Ticket 5', why: 'not marked ready' }
+		]);
+	});
+});
+
+describe('waiting on a Ticket outside the Feature', () => {
+	it("marks a blocker that is not among the Feature's Tickets, and only that", () => {
+		const tickets = [
+			ticket(1),
+			ticket(2, { blockedBy: [{ id: '1', open: true }] }),
+			ticket(3, { blockedBy: [{ id: '90', open: true }] })
+		];
+		expect(waiting(tickets, new Set())).toEqual([
+			{ id: '1', title: 'Ticket 1', why: 'not reached' },
+			{ id: '2', title: 'Ticket 2', why: 'blocked by', blocker: '1' },
+			{ id: '3', title: 'Ticket 3', why: 'blocked by', blocker: '90', outside: true }
+		]);
+	});
+
+	it('keeps the reason `blocked by`, with the blocker, for the Board and Waiting on you', () => {
+		const tickets = [ticket(3, { blockedBy: [{ id: '90', open: true }] })];
+		const [w] = waiting(tickets, new Set());
+		expect(w).toMatchObject({ why: 'blocked by', blocker: '90' });
+		expect(needsAPerson(w ?? {})).toBe(false);
+		expect(progress(tickets, new Set(), null)).toEqual([
+			{ id: '3', title: 'Ticket 3', state: 'waiting', why: 'blocked by #90' }
 		]);
 	});
 });

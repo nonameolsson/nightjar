@@ -277,6 +277,31 @@ export const pullChecksCheck = check({
 	}
 });
 
+// a warning only: nothing is published, but every build still runs
+export const publishCheck = check({
+	name: 'publish',
+	needs: ['adapters', 'loaded'],
+	unmet: null,
+	run: ({ adapters, loaded }) => {
+		if (loaded.config.publish !== true) return {};
+		const { codeHost } = adapters;
+		const lacking = (['publish', 'nightjarDrafts'] as const).filter(
+			(method) => typeof codeHost[method] !== 'function'
+		);
+		if (lacking.length === 0) return {};
+		return {
+			lines: [
+				{
+					name: 'publish',
+					status: 'warn',
+					detail: `publish is on, but this Code host cannot publish its pull requests (its Adapter has no ${lacking.join(' and no ')}), so every pull request stays a draft.`,
+					summary: null
+				}
+			]
+		};
+	}
+});
+
 // a warning only: an install in allowedCommands cannot fetch in a sandbox, but the build still runs
 export const installsCheck = check({
 	name: 'allowedCommands',
@@ -505,6 +530,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	trackerCheck,
 	codeHostCheck,
 	pullChecksCheck,
+	publishCheck,
 	installsCheck,
 	leftWorkingCheck,
 	claudeCheck,

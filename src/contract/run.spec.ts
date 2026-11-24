@@ -6,9 +6,11 @@ import { codeHostContract, type CodeHostHarness } from './code-host.js';
 import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { openPullsContract } from './open-pulls.js';
+import { publishContract } from './publish.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
+import { shelfContract } from './shelf.js';
 import { sourcesContract } from './sources.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
@@ -35,10 +37,12 @@ describe('runContract', () => {
 			'Tracker sources',
 			'Tracker assign',
 			'Tracker ticket counts',
+			'Tracker shelf',
 			'Code host',
 			'Code host Nightjar drafts',
 			'Code host feedback',
-			'Code host open pull requests'
+			'Code host open pull requests',
+			'Code host publish'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -56,17 +60,21 @@ describe('runContract', () => {
 		expect(report.suites[5]?.results.map((r) => r.name)).toEqual(
 			ticketCountsContract.map((c) => c.name)
 		);
-		expect(report.suites[6]?.results.map((r) => r.name)).toEqual(
+		expect(report.suites[6]?.results.map((r) => r.name)).toEqual(shelfContract.map((c) => c.name));
+		expect(report.suites[7]?.results.map((r) => r.name)).toEqual(
 			codeHostContract.map((c) => c.name)
 		);
-		expect(report.suites[7]?.results.map((r) => r.name)).toEqual(
+		expect(report.suites[8]?.results.map((r) => r.name)).toEqual(
 			nightjarDraftsContract.map((c) => c.name)
 		);
-		expect(report.suites[8]?.results.map((r) => r.name)).toEqual(
+		expect(report.suites[9]?.results.map((r) => r.name)).toEqual(
 			feedbackContract.map((c) => c.name)
 		);
-		expect(report.suites[9]?.results.map((r) => r.name)).toEqual(
+		expect(report.suites[10]?.results.map((r) => r.name)).toEqual(
 			openPullsContract.map((c) => c.name)
+		);
+		expect(report.suites[11]?.results.map((r) => r.name)).toEqual(
+			publishContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
 	});
@@ -74,7 +82,13 @@ describe('runContract', () => {
 	it('runs no feedback suite over a Code host without feedback and reply, as a module written before them', async () => {
 		const reads: CodeHostHarness = async () => {
 			const { codeHost, ...rest } = await fakeCodeHostHarness();
-			const { feedback: _a, reply: _b, openPulls: _c, ...only } = codeHost as FakeCodeHost;
+			const {
+				feedback: _a,
+				reply: _b,
+				openPulls: _c,
+				publish: _d,
+				...only
+			} = codeHost as FakeCodeHost;
 			return { ...rest, codeHost: only };
 		};
 		const report = await runContract({ codeHostHarness: reads });
@@ -92,7 +106,8 @@ describe('runContract', () => {
 		expect(report.suites.map((s) => s.title)).toEqual([
 			'Code host',
 			'Code host feedback',
-			'Code host open pull requests'
+			'Code host open pull requests',
+			'Code host publish'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -107,9 +122,42 @@ describe('runContract', () => {
 		expect(report.suites.map((s) => s.title)).toEqual([
 			'Code host',
 			'Code host Nightjar drafts',
-			'Code host feedback'
+			'Code host feedback',
+			'Code host publish'
 		]);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no publish suite over a Code host without the method, as a module written before it', async () => {
+		const lacks: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			const { publish: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			return { ...subject, codeHost: without };
+		};
+		const report = await runContract({ codeHostHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Code host',
+			'Code host Nightjar drafts',
+			'Code host feedback',
+			'Code host open pull requests'
+		]);
+		expect(report.failed).toBe(0);
+	});
+
+	it('names a publish that is wrong', async () => {
+		const wrong: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			return {
+				...subject,
+				codeHost: Object.assign(subject.codeHost, { publish: () => Promise.resolve() })
+			};
+		};
+		const report = await runContract({ codeHostHarness: wrong });
+		const suite = report.suites.find((s) => s.title === 'Code host publish')?.results ?? [];
+		expect(suite).toHaveLength(publishContract.length);
+		expect(suite.filter((r) => !r.ok).map((r) => r.name)).toEqual(
+			publishContract.map((c) => c.name)
+		);
 	});
 
 	it('names an openPulls that is wrong', async () => {
@@ -165,6 +213,7 @@ describe('runContract', () => {
 				assign: _f,
 				trusts: _g,
 				ticketCounts: _h,
+				shelf: _i,
 				...only
 			} = tracker as FakeTracker;
 			return { ...rest, tracker: only };
@@ -186,9 +235,60 @@ describe('runContract', () => {
 			'Tracker creation',
 			'Tracker sources',
 			'Tracker assign',
+			'Tracker ticket counts',
+			'Tracker shelf'
+		]);
+		expect(report.failed).toBe(0);
+	});
+
+	it('runs no shelf suite over a Tracker without the method, as a module written before it', async () => {
+		const lacks: TrackerHarness = async (world) => {
+			const { tracker, ...rest } = await fakeTrackerHarness(world);
+			const { shelf: _gone, ...without } = tracker as FakeTracker;
+			return { ...rest, tracker: without };
+		};
+		const report = await runContract({ trackerHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Tracker',
+			'Tracker creation',
+			'Tracker waiting on',
+			'Tracker sources',
+			'Tracker assign',
 			'Tracker ticket counts'
 		]);
 		expect(report.failed).toBe(0);
+	});
+
+	it('names a shelf that lists the oldest first, counts only those listed, or lists nothing', async () => {
+		// the fake's own shelf, its answer changed by `wrong`
+		const changed =
+			(wrong: (shelf: FakeTracker['shelf']) => FakeTracker['shelf']): TrackerHarness =>
+			async (world) => {
+				const subject = await fakeTrackerHarness(world);
+				const fake = subject.tracker as FakeTracker;
+				return { ...subject, tracker: Object.assign(fake, { shelf: wrong(fake.shelf) }) };
+			};
+		const failing = async (harness: TrackerHarness) => {
+			const report = await runContract({ trackerHarness: harness });
+			const suite = report.suites.find((s) => s.title === 'Tracker shelf')?.results ?? [];
+			expect(suite).toHaveLength(shelfContract.length);
+			return suite.filter((r) => !r.ok).map((r) => r.name);
+		};
+		const oldestFirst = changed((shelf) => async (person, max) => {
+			const all = await shelf(person, Infinity);
+			return { features: [...all.features].reverse().slice(0, max), total: all.total };
+		});
+		expect(await failing(oldestFirst)).toEqual(
+			expect.arrayContaining([shelfContract[1]?.name, shelfContract[2]?.name])
+		);
+		const countsListed = changed((shelf) => async (person, max) => {
+			const got = await shelf(person, max);
+			return { ...got, total: got.features.length };
+		});
+		expect(await failing(countsListed)).toEqual([shelfContract[2]?.name]);
+		const empty = changed(() => () => Promise.resolve({ features: [], total: 0 }));
+		// only the case of a person with no Features passes
+		expect(await failing(empty)).toHaveLength(shelfContract.length - 1);
 	});
 
 	it('runs no sources suite over a Tracker without featuresFrom', async () => {
@@ -203,7 +303,8 @@ describe('runContract', () => {
 			'Tracker creation',
 			'Tracker waiting on',
 			'Tracker assign',
-			'Tracker ticket counts'
+			'Tracker ticket counts',
+			'Tracker shelf'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -294,7 +395,8 @@ describe('runContract', () => {
 			'Code host',
 			'Code host Nightjar drafts',
 			'Code host feedback',
-			'Code host open pull requests'
+			'Code host open pull requests',
+			'Code host publish'
 		]);
 	});
 
@@ -314,7 +416,8 @@ describe('runContract', () => {
 				waitingOnContract.length +
 				sourcesContract.length +
 				assignContract.length +
-				ticketCountsContract.length
+				ticketCountsContract.length +
+				shelfContract.length
 		);
 		const text = formatReport(report);
 		expect(text).toContain('FAIL  names the signed-in person');

@@ -8,7 +8,7 @@ import {
 	type FixOutcome,
 	type ReviewOutcome
 } from './coding-agent.js';
-import { DEFAULT_PULL_CHECKS } from './config.js';
+import { DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
 import { pullChecksReport } from './gate.js';
 import {
 	feedbackRound,
@@ -23,8 +23,17 @@ import { FOOTER } from './footer.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { conflicts, withConflicts, withoutConflicts } from './conflicts-section.js';
+import { why } from './say.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
-import { questionRounds, questionsComment, type Question, type Review } from './prompt.js';
+import {
+	issueLine,
+	questionRounds,
+	questionsComment,
+	type Declined,
+	type Question,
+	type Review
+} from './prompt.js';
 import type { Serve } from './serve.js';
 import { NOTES_FOLDER } from './settings.js';
 import {
@@ -34,16 +43,21 @@ import {
 	nextStepText,
 	noteStep,
 	pullChecksStep,
+	reviewStep,
 	stoppedStep,
 	ticketStep,
 	type NextStep,
 	type TicketHandBack
 } from './next-step.js';
+import { markPublished, publishedByNightjar, publishMark } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
-import type { Entry, Spend } from './spend.js';
+import { reviewRound } from './review-round.js';
+import { reviewSection, type ReviewSession } from './review-section.js';
+import type { Entry, LogEntry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
+import { dollars } from './view-text.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import {
 	SESSION_TRAILER,
@@ -161,6 +175,8 @@ export interface Setup extends WorkflowSettings {
 		readonly enabled?: boolean;
 		readonly model?: string;
 		readonly effort?: string;
+		// how many Review rounds a build gets; DEFAULT_REVIEW_FIX_ROUNDS when it says nothing
+		readonly fixRounds?: number;
 	};
 	readonly signals: SignalNames;
 	readonly limits: Limits;
@@ -182,13 +198,10 @@ export type FeatureOutcome =
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
-const dollars = (n: number) => `$${n.toFixed(2)}`;
 const hash = (id: ItemId) => `#${id}`;
 
-type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
-
-// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback'.
-type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback';
+// The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
+type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback' | 'reviewRound';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -774,7 +787,7 @@ class FeatureRun {
 
 	private building(
 		ticket: ItemId | null,
-		step: 'build' | 'fix' | 'step' | 'feedback',
+		step: 'build' | 'fix' | 'step' | 'feedback' | 'reviewRound',
 		session: string,
 		rounds: { readonly round: number | null; readonly rounds: number | null },
 		attempt = 1
@@ -797,13 +810,7 @@ class FeatureRun {
 		const left = waiting(this.tickets, this.built);
 		let paused = last.kind === 'paused' ? last.why : null;
 		await tracker.removeSignal(id, 'working');
-		if (this.aborted || last.kind === 'aborted') {
-			await tracker.comment(
-				id,
-				withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
-			);
-			return { kind: 'stopped' };
-		}
+		if (this.aborted || last.kind === 'aborted') return this.stopped();
 		if (paused) await this.pause(paused);
 		const repeated =
 			last.kind === 'repeated'
@@ -837,25 +844,32 @@ class FeatureRun {
 			last.kind === 'red' ? { ticket: [...this.built].at(-1) ?? '', tail: last.tail } : null;
 		const done = [...this.built].flatMap((n) => this.tickets.filter((t) => t.id === n));
 		let review: Review | 'off' | null = 'off';
+		let open: ReviewLeftOpen | null = null;
+		let declined: readonly Declined[] = [];
+		let reviewSessions: readonly ReviewSession[] | 'off' = 'off';
 		if (this.setup.review?.enabled !== false) {
-			const got = await reviewFeature(
-				this.deps,
-				this.setup,
-				this.tree,
-				this.feature,
-				done,
-				progress(this.tickets, this.built, null),
-				this.show,
-				(e) => this.log(e)
-			);
+			const got = await this.review(done);
 			if (got !== null && 'paused' in got) {
 				// the pull request's Paused section says why, so it gets no Review section
 				if (paused === null) {
 					paused = got.paused;
 					await this.pause(paused);
 				}
+			} else if (left.length === 0 && red === null && paused === null) {
+				const rounds = await this.reviewRounds(got, done);
+				review = rounds.review;
+				open = rounds.open;
+				declined = rounds.declined;
+				reviewSessions = rounds.sessions;
+				// a round a person stopped ends the run as any Session they stop does
+				if (rounds.stopped) return this.stopped();
+				if (rounds.paused !== null) {
+					paused = rounds.paused;
+					await this.pause(paused);
+				}
 			} else {
 				review = got;
+				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
 		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
@@ -872,7 +886,8 @@ class FeatureRun {
 			done,
 			left,
 			red,
-			review,
+			reviewSessions,
+			declined,
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
@@ -886,6 +901,7 @@ class FeatureRun {
 			})
 		});
 		const pull = await this.openDraft(body);
+		await noteConflicts(this.deps, this.setup, pull, body);
 		// a lone issue is its own Ticket, so it is named once
 		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
@@ -932,10 +948,152 @@ class FeatureRun {
 					next
 				)
 			);
+		} else if (open !== null && review !== null && review !== 'off') {
+			await this.handReview(pull, open, review);
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
 		}
 		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+	}
+
+	private async stopped(): Promise<FeatureOutcome> {
+		await this.deps.tracker.comment(
+			this.feature.id,
+			withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
+		);
+		return { kind: 'stopped' };
+	}
+
+	private review(done: readonly Ticket[], declined: readonly Declined[] = []) {
+		return reviewFeature(
+			this.deps,
+			this.setup,
+			this.tree,
+			this.feature,
+			done,
+			declined,
+			progress(this.tickets, this.built, null),
+			this.show,
+			(e) => this.log(e)
+		);
+	}
+
+	// On a complete Feature, while the Review says changes: a Review round, then the Review again, up to review.fixRounds in the build. A round that fails ends them, the Review before it the last; one a person stops ends the run. `open` says why a person must look: a round that failed, or rounds that ran out on changes.
+	private async reviewRounds(
+		first: Review | null,
+		done: readonly Ticket[]
+	): Promise<{
+		readonly review: Review | null;
+		readonly sessions: readonly ReviewSession[];
+		readonly paused: string | null;
+		// a person stopped a round, whose work is thrown away
+		readonly stopped: boolean;
+		readonly open: ReviewLeftOpen | null;
+		// the issues the rounds declined, in the order they did
+		readonly declined: readonly Declined[];
+	}> {
+		const { deps } = this;
+		const rounds = this.setup.review?.fixRounds ?? DEFAULT_REVIEW_FIX_ROUNDS;
+		let declined: readonly Declined[] = [];
+		let review = first;
+		let ran = 0;
+		const sessions: ReviewSession[] = [{ kind: 'review', review }];
+		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
+			if (this.aborted)
+				return { review, sessions, paused: null, stopped: true, open: null, declined };
+			const before = this.costs.length;
+			const end = await reviewRound({
+				codingAgent: deps.codingAgent,
+				runCheck: deps.runCheck,
+				newId: deps.newId,
+				say: deps.say,
+				setup: this.setup,
+				feature: this.feature,
+				tree: this.tree,
+				round,
+				issues: review.issues,
+				declined,
+				...this.output,
+				dailyPause: () => this.dailyPause(),
+				allowance: (cap, spent) => deps.spend.allowance(cap, spent),
+				fix: (work) => this.fixReviewRound(work, { round, rounds }),
+				log: (entry) => this.log(entry),
+				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
+			});
+			if (end.kind === 'paused') {
+				return { review, sessions, paused: end.why, stopped: false, open: null, declined };
+			}
+			if (end.kind === 'aborted') {
+				return { review, sessions, paused: null, stopped: true, open: null, declined };
+			}
+			// what the round and its fix rounds cost
+			const usd = this.costs
+				.slice(before)
+				.filter((c) => c.work === 'reviewRound')
+				.reduce((n, c) => n + c.usd, 0);
+			sessions.push(
+				end.kind === 'fixed'
+					? { kind: 'round', round, outcome: 'fixed', text: end.summary, usd }
+					: { kind: 'round', round, outcome: 'thrown away', text: end.why, usd }
+			);
+			if (end.kind === 'failed') {
+				return {
+					review,
+					sessions,
+					paused: null,
+					stopped: false,
+					open: { kind: 'failed', round, why: end.why, side: end.side },
+					declined
+				};
+			}
+			ran = round;
+			declined = [...declined, ...end.declined];
+			const again = await this.review(done, declined);
+			if (again !== null && 'paused' in again) {
+				return { review, sessions, paused: again.paused, stopped: false, open: null, declined };
+			}
+			review = again;
+			sessions.push({ kind: 'review', review });
+		}
+		const open: ReviewLeftOpen | null =
+			ran > 0 && review?.verdict === 'changes' ? { kind: 'exhausted', rounds: ran } : null;
+		return { review, sessions, paused: null, stopped: false, open, declined };
+	}
+
+	// A Review round's fix rounds show as the round they belong to, its round of the build's, and are logged as it.
+	private fixReviewRound(
+		o: FixWork,
+		rounds: { readonly round: number; readonly rounds: number }
+	): Promise<FixEnd> {
+		return fixUntilGreen(
+			{
+				deps: this.deps,
+				setup: this.setup,
+				tree: this.tree,
+				building: (ticket, session, _fix, attempt) =>
+					this.building(ticket, 'reviewRound', session, rounds, attempt),
+				log: (entry) => this.log({ ...entry, step: 'reviewRound' })
+			},
+			o
+		);
+	}
+
+	// The Feature is a person's now: the Review still asks for changes, and Nightjar's Review rounds could not, or did not get to, answer them.
+	private async handReview(pull: Pull, open: ReviewLeftOpen, review: Review): Promise<void> {
+		const id = this.feature.id;
+		const next = reviewStep(this.setup.signals);
+		this.deps.status.happened({
+			kind: 'needs-info',
+			feature: id,
+			ticket: null,
+			why:
+				open.kind === 'failed'
+					? `its Review round ${String(open.round)} was thrown away: ${open.why}`
+					: 'its Review still asks for changes',
+			next
+		});
+		await this.deps.tracker.addSignal(id, 'human');
+		await this.deps.tracker.comment(id, withNext(reviewOpenComment(pull.url, open, review), next));
 	}
 
 	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
@@ -967,11 +1125,21 @@ class FeatureRun {
 	}
 
 	// The branch's open pull request with a new body, else a new draft.
+	// Whether Nightjar published the open pull request a rebuild rewrites, which its body's mark says; a Code host that cannot list its open pull requests has none to tell.
+	private async publishedBefore(open: Pull): Promise<boolean> {
+		const pulls = await this.deps.codeHost.openPulls?.(this.tree.at.branch);
+		const body = pulls?.find((p) => p.pull.id === open.id)?.body ?? '';
+		return publishedByNightjar(body);
+	}
+
 	private async openDraft(body: string): Promise<Pull> {
 		const { codeHost } = this.deps;
 		const open = await codeHost.openPull(this.tree.at.branch);
 		if (open) {
-			await codeHost.editBody(open, body);
+			await codeHost.editBody(
+				open,
+				(await this.publishedBefore(open)) ? markPublished(body) : body
+			);
 			return open;
 		}
 		return codeHost.createDraft({
@@ -1170,10 +1338,9 @@ export async function fixPullChecks(
 		const ran = (r: Pick<PullRound, 'outcome' | 'summary' | 'usd'>) =>
 			withPullRound(draft.body, { round, failed: draft.checks.failed, ...r });
 		if (got.kind === 'fixed') {
-			await deps.codeHost.editBody(
-				pull,
-				ran({ outcome: 'pushed', summary: got.summary, usd: got.usd })
-			);
+			const body = ran({ outcome: 'pushed', summary: got.summary, usd: got.usd });
+			await deps.codeHost.editBody(pull, body);
+			await noteConflicts(deps, setup, pull, body);
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
@@ -1183,6 +1350,23 @@ export async function fixPullChecks(
 		await tracker.removeSignal(feature.id, 'working');
 	}
 	return got;
+}
+
+// Says in the pull request body whether it conflicts with the base branch: the section is added when it does and dropped when it does not. Nothing else happens, no Signal and no comment.
+async function noteConflicts(deps: Deps, setup: Setup, pull: Pull, body: string): Promise<void> {
+	const { codeHost } = deps;
+	let conflicting: boolean;
+	try {
+		conflicting = await conflicts(codeHost, pull, deps.sleep, setup.signal);
+	} catch (fault) {
+		// the note is advice for a reviewer, so a read that fails leaves the body as it is and never stops the build
+		deps.say(
+			`could not read whether ${pull.url} conflicts with ${setup.baseBranch}: ${why(fault)}`
+		);
+		return;
+	}
+	const wanted = conflicting ? withConflicts(body, setup.baseBranch) : withoutConflicts(body);
+	if (wanted !== body) await codeHost.editBody(pull, wanted);
 }
 
 const HANDED_OVER = '<!-- nightjar-pull-checks: handed to a person -->';
@@ -1355,6 +1539,7 @@ async function reviewFeature(
 	tree: Worktree,
 	feature: Feature,
 	built: readonly Ticket[],
+	declined: readonly Declined[],
 	tickets: TicketProgress[],
 	show: ShowBuilding,
 	log: (entry: LogEntry) => void
@@ -1386,6 +1571,7 @@ async function reviewFeature(
 				sessionId,
 				feature,
 				tickets: built,
+				declined,
 				budgetUsd
 			});
 		},
@@ -1426,11 +1612,14 @@ async function reviewFeature(
 	}
 }
 
+const BLOCKED_FROM_OUTSIDE =
+	", a Ticket outside this Feature: it closes when its Feature's pull request merges. Merge that, then give the Go again.";
+
 // `name` is how the place the list goes names a Ticket: #N on the Tracker, its reference on the Code host.
 function waitingList(left: readonly Waiting[], name: (id: ItemId) => string = hash): string {
 	if (left.length === 0) return 'No Ticket is waiting.';
 	const line = (w: Waiting) =>
-		`- ${name(w.id)} ${w.title}: ${w.why}${w.blocker === undefined ? '' : ` ${name(w.blocker)}`}`;
+		`- ${name(w.id)} ${w.title}: ${w.why}${w.blocker === undefined ? '' : ` ${name(w.blocker)}`}${w.outside ? BLOCKED_FROM_OUTSIDE : ''}`;
 	return `Waiting:\n\n${left.map(line).join('\n')}`;
 }
 
@@ -1443,7 +1632,10 @@ function pullBody(p: {
 	done: readonly Ticket[];
 	left: readonly Waiting[];
 	red: { ticket: ItemId; tail: string } | null;
-	review: Review | 'off' | null;
+	// the Reviews and Review rounds of the build in order, or 'off' when the Review is switched off or paused
+	reviewSessions: readonly ReviewSession[] | 'off';
+	// the issues the Review rounds declined, with their reasons
+	declined: readonly Declined[];
 	spent: number;
 	costs: readonly Cost[];
 	titleOf: (id: ItemId) => string | undefined;
@@ -1484,12 +1676,14 @@ function pullBody(p: {
 	}
 	if (p.workflow !== null) parts.push(p.workflow);
 	if (p.feedback !== null) parts.push(p.feedback);
-	if (p.review !== 'off')
-		parts.push(
-			`## Review\n\n${p.review ? `${p.review.verdict === 'approve' ? 'Approve' : 'Changes asked'}: ${p.review.summary}` : 'The review did not finish.'}`
-		);
+	if (p.reviewSessions !== 'off') parts.push(reviewSection(p.reviewSessions, p.declined));
 	parts.push(costSection(p.spent, p.costs, ref, p.titleOf));
 	parts.push(featureMarker(p.feature.id));
+	// the last Review of the build, whatever a round did after it
+	const last =
+		p.reviewSessions === 'off' ? undefined : p.reviewSessions.findLast((r) => r.kind === 'review');
+	const approved = last?.kind === 'review' && last.review?.verdict === 'approve';
+	parts.push(publishMark({ complete: p.complete, approved }));
 	return `${parts.join('\n\n')}${FOOTER}`;
 }
 
@@ -1505,7 +1699,7 @@ export function featureOfBody(body: string): string | undefined {
 	return MARKER.exec(body)?.[1];
 }
 
-// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round and the review; a kind with no Session is left out.
+// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round, the review and its rounds; a kind with no Session is left out.
 function costSection(
 	spent: number,
 	costs: readonly Cost[],
@@ -1533,13 +1727,35 @@ function costSection(
 	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
 	if (has(null, 'feedback')) lines.push(`- Feedback round: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
+	if (has(null, 'reviewRound')) lines.push(`- Review rounds: ${dollars(sum(null, 'reviewRound'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
 	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
 }
 
+const issueLines = (issues: Review['issues']) => issues.map(issueLine).join('\n');
+
+// Why the Feature needs a person after its Review rounds: one failed and was thrown away, or the rounds ran out with the Review still saying changes.
+type ReviewLeftOpen =
+	| {
+			readonly kind: 'failed';
+			readonly round: number;
+			readonly why: string;
+			// the branch the thrown-away attempt is kept on, when it left anything
+			readonly side: string | null;
+	  }
+	| { readonly kind: 'exhausted'; readonly rounds: number };
+
+// What the last Review left open, as the comment on the Feature says it.
+function reviewOpenComment(url: string, open: ReviewLeftOpen, review: Review): string {
+	const cause =
+		open.kind === 'failed'
+			? `Review round ${String(open.round)} was thrown away: ${open.why}.${open.side === null ? '' : ` Its work is kept on the branch \`${open.side}\`.`} The branch keeps the commits before it, and no more Review rounds ran.\n\nThe last Review said changes`
+			: `Nightjar ran ${String(open.rounds)} Review round${open.rounds === 1 ? '' : 's'}, and the last Review still says changes`;
+	const issues = issueLines(review.issues);
+	return `Nightjar opened ${url}, and this Feature still needs a person.\n\n${cause}: ${review.summary}${issues ? `\n\n${issues}` : ''}`;
+}
+
 function reviewComment(review: Review): string {
-	const issues = review.issues
-		.map((i) => `- \`${i.file}${i.line ? `:${String(i.line)}` : ''}\`: ${i.problem}`)
-		.join('\n');
+	const issues = issueLines(review.issues);
 	return `**Nightjar review: ${review.verdict === 'approve' ? 'approve' : 'changes'}**\n\n${review.summary}${issues ? `\n\n${issues}` : ''}${FOOTER}`;
 }

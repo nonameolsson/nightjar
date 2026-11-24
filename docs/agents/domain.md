@@ -10,6 +10,10 @@ How the engineering skills should consume this repo's domain documentation when 
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
+## Before writing an ADR or the glossary
+
+Write from the default branch's tip: a session's checkout can lag `main`, and another session may have added an ADR or a term since. Run `git fetch origin main` first, and number a new ADR one past the highest in `git ls-tree --name-only origin/main docs/adr/`, not in the local `docs/adr/`. `scripts/adr.spec.ts` catches a clash only once CI merges `main`.
+
 ## File structure
 
 Single-context repo (most repos):
