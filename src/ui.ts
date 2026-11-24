@@ -1431,6 +1431,11 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 .tk b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 6px; }
 .st, .blockers small { font-family: var(--mono); }
 .blockers { color: var(--ink2); }
+#feature .contract { font-family: var(--mono); font-size: 0.75rem; margin: 6px 0; }
+#feature .contract.ok, #feature .verdict.ok { color: var(--teal); }
+#feature .contract.bad, #feature .verdict.bad { color: var(--err); }
+#feature .verdict { font: 0.75rem var(--mono); }
+#feature ul.faults { color: var(--err); font-size: 0.85rem; list-style: disc; margin: 2px 0 4px; padding-left: 1.4em; }
 .criteria summary { color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 0; }
 .criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .criteria .md { color: var(--ink2); }

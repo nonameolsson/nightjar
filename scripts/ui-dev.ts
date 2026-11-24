@@ -213,7 +213,7 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 	file.doing({ kind: 'off' });
 }
 
-const page = () => Promise.resolve({ tracker, person: 'ann' });
+const page = () => Promise.resolve({ tracker, person: 'ann', workflows: [] });
 const ui = await startUi({
 	root,
 	port: Number(process.env.PORT ?? UI_PORT),

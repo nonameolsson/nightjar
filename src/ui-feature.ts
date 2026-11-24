@@ -1,5 +1,6 @@
 // The Feature detail panel of `nightjar ui`: a Feature's spec, then its Tickets in Build order with their Signals, blockers and acceptance criteria, read from the Tracker when the panel opens (docs/adr/0009).
-import { escapeHtml as escape, markdown } from './markdown.js';
+import { tallyChecks, type TicketChecks } from './feature-faults.js';
+import { escapeHtml as escape, inline, markdown } from './markdown.js';
 import { why } from './say.js';
 import type { Signal } from './signals.js';
 import { acceptanceCriteria } from './ticket-contract.js';
@@ -55,10 +56,41 @@ function criteriaHtml(body: string): string {
 	return `<details class="criteria"><summary>Acceptance criteria</summary><div class="md">${markdown(criteria)}</div></details>`;
 }
 
-function ticketHtml(ticket: Ticket, own: ReadonlySet<ItemId>, links: Links): string {
+// The faults the contract check names, each worded as `nightjar doctor` words it; the wording holds Markdown (a **Model:** line) and Tracker ids
+const faultsHtml = (faults: readonly string[]) =>
+	`<ul class="faults">${faults.map((f) => `<li>${inline(f)}</li>`).join('')}</ul>`;
+
+// Whether an open Ticket meets the Ticket contract, or what it lacks; a closed Ticket is not checked, as `nightjar doctor` skips it
+function verdictHtml(ticket: Ticket, checks: TicketChecks): string {
+	const faults = checks.tickets.get(ticket.id);
+	if (faults === undefined) return '';
+	if (faults.length === 0) return '<p class="verdict ok">would build</p>';
+	return `<p class="verdict bad">would not build</p>${faultsHtml(faults)}`;
+}
+
+// How many open Tickets meet the contract, and what is wrong with the Feature as a whole
+function contractHtml(checks: TicketChecks): string {
+	const { meet, of } = tallyChecks(checks);
+	const whole = checks.feature.length === 0 ? '' : faultsHtml(checks.feature);
+	if (of === 0 && whole === '') return '';
+	const text =
+		of === 0
+			? 'no open Ticket to check against the Ticket contract'
+			: `${String(meet)} of ${String(of)} open ${of === 1 ? 'Ticket meets' : 'Tickets meet'} the Ticket contract`;
+	const good = meet === of && whole === '';
+	return `<p class="contract ${good ? 'ok' : 'bad'}">${text}</p>${whole}`;
+}
+
+function ticketHtml(
+	ticket: Ticket,
+	own: ReadonlySet<ItemId>,
+	checks: TicketChecks,
+	links: Links
+): string {
 	const state = ticket.open ? 'open' : 'closed';
 	return (
 		`<li class="${state}"><p class="tk"><b>${idHtml(ticket.id, links)}</b> ${escape(ticket.title)} <small class="st">${state}</small></p>` +
+		verdictHtml(ticket, checks) +
 		signalsHtml(ticket.signals, links) +
 		blockersHtml(ticket, own, links) +
 		criteriaHtml(ticket.body) +
@@ -68,7 +100,7 @@ function ticketHtml(ticket: Ticket, own: ReadonlySet<ItemId>, links: Links): str
 
 // The panel for a Feature read well: its spec, then its Tickets in Build order.
 export function featurePanel(detail: FeatureDetail, links: Links): string {
-	const { feature, tickets } = detail;
+	const { feature, tickets, checks } = detail;
 	const lone = feature.lone === true;
 	const own = new Set(tickets.map((t) => t.id));
 	const spec =
@@ -78,10 +110,11 @@ export function featurePanel(detail: FeatureDetail, links: Links): string {
 	const list =
 		tickets.length === 0
 			? '<p class="empty">no Tickets yet</p>'
-			: `<ol class="steps">${tickets.map((t) => ticketHtml(t, own, links)).join('')}</ol>`;
+			: `<ol class="steps">${tickets.map((t) => ticketHtml(t, own, checks, links)).join('')}</ol>`;
 	return (
 		title(feature.id, feature.title, links) +
 		(lone ? '<p class="sub">Lone issue: its body is both the spec and its one Ticket</p>' : '') +
+		contractHtml(checks) +
 		onTracker(feature.id, links) +
 		`<section class="spec"><h3>Spec</h3>${spec}</section>` +
 		`<section class="build"><h3>Tickets in Build order</h3>${list}</section>`

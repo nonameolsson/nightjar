@@ -721,7 +721,7 @@ describe('nightjar ui reads the Tracker', () => {
 
 	describe('the Feature detail panel', () => {
 		const openWithPanel = async (tracker: FakeTracker) => {
-			const page = () => Promise.resolve({ tracker, person: 'ann' });
+			const page = () => Promise.resolve({ tracker, person: 'ann', workflows: [] });
 			ui = await startUi({
 				root,
 				port: 0,
@@ -751,6 +751,8 @@ describe('nightjar ui reads the Tracker', () => {
 			expect(panel.text).toContain('Tickets in Build order');
 			expect(panel.text).toContain('Model');
 			expect(panel.text).toContain('<details class="criteria">');
+			// the Ticket contract check, as `nightjar doctor` runs it
+			expect(panel.text).toMatch(/\d+ of \d+ open Tickets? meets? the Ticket contract/);
 			const lone = await get('/feature?id=4');
 			expect(lone.text).toContain('Lone issue');
 			// read-only: nothing on the Tracker changed

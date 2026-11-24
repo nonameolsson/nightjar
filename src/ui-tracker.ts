@@ -1,6 +1,7 @@
 // `nightjar ui`'s own read of the Tracker (docs/adr/0009): the Queue, Waiting on you and the Shelf, read-only, so all are known while Nightjar is off; and one Feature for its detail panel.
 import { makeAdapters, type Seams } from './adapters.js';
 import { loadConfig } from './config.js';
+import { checkTickets, type TicketChecks } from './feature-faults.js';
 import type { Env } from './git.js';
 import { loadPersonConfig } from './person-config.js';
 import { buildOrder, NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
@@ -26,7 +27,7 @@ export type ReadingTracker = Pick<
 >;
 
 // The reads the Feature detail panel makes of one Feature, when it opens.
-export type FeatureReader = Pick<Tracker, 'feature' | 'tickets'>;
+export type FeatureReader = Pick<Tracker, 'feature' | 'tickets' | 'reference'>;
 
 export interface PageTracker<T = ReadingTracker> {
 	readonly tracker: T;
@@ -111,8 +112,8 @@ async function countsOf(
 }
 
 // Opens the Tracker on the first call and again after a call that could not open it, so the lists and the Feature detail panel share one.
-export function openOnce<T>(open: () => Promise<PageTracker<T>>): () => Promise<PageTracker<T>> {
-	let opened: Promise<PageTracker<T>> | null = null;
+export function openOnce<P>(open: () => Promise<P>): () => Promise<P> {
+	let opened: Promise<P> | null = null;
 	return async () => {
 		opened ??= open();
 		try {
@@ -139,20 +140,36 @@ export interface FeatureDetail {
 	readonly feature: Feature;
 	// open and closed, in Build order; a lone issue's one Ticket is itself
 	readonly tickets: readonly Ticket[];
+	// the Ticket contract check of its open Tickets, the one `nightjar doctor` runs
+	readonly checks: TicketChecks;
 }
 
-// One read of a Feature and its Tickets, put in Build order as src/plan.ts orders them.
-export async function readFeature(tracker: FeatureReader, id: ItemId): Promise<FeatureDetail> {
+// One read of a Feature and its Tickets, put in Build order as src/plan.ts orders them, and checked against the Ticket contract.
+// `workflows` are the names of the Workflows factory.json defines.
+export async function readFeature(
+	tracker: FeatureReader,
+	id: ItemId,
+	workflows: readonly string[]
+): Promise<FeatureDetail> {
 	const [feature, tickets] = await Promise.all([tracker.feature(id), tracker.tickets(id)]);
-	return { feature, tickets: buildOrder(tickets) };
+	const checks = checkTickets(feature, tickets, workflows, (i) => tracker.reference(i).text);
+	return { feature, tickets: buildOrder(tickets), checks };
+}
+
+// A page's Tracker with the Workflows factory.json names, which the Ticket contract check holds a Feature's Workflow line against.
+export interface DetailTracker extends PageTracker<FeatureReader> {
+	readonly workflows: readonly string[];
 }
 
 // Reads one Feature for its detail panel, when the panel opens, through the Tracker the lists read.
 export function detailFrom(
-	open: () => Promise<PageTracker<FeatureReader>>
+	open: () => Promise<DetailTracker>
 ): (id: ItemId) => Promise<FeatureDetail> {
 	const page = openOnce(open);
-	return async (id) => readFeature((await page()).tracker, id);
+	return async (id) => {
+		const { tracker, workflows } = await page();
+		return readFeature(tracker, id, workflows);
+	};
 }
 
 // The Tracker factory.json names, built as a run builds it, and the person a run would build for.
@@ -160,11 +177,11 @@ export async function openPageTracker(
 	root: string,
 	env: Env,
 	seams: Seams
-): Promise<PageTracker<ReadingTracker & FeatureReader>> {
+): Promise<PageTracker<ReadingTracker & FeatureReader> & DetailTracker> {
 	const config = loadConfig(root);
 	const { tracker } = await makeAdapters(config, root, env, seams);
 	const person = loadPersonConfig(env).assignee ?? (await tracker.me());
-	return { tracker, person };
+	return { tracker, person, workflows: Object.keys(config.workflows ?? {}) };
 }
 
 export interface WatchOptions {
