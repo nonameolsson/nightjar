@@ -8,6 +8,7 @@ import type {
 	FeatureWriter,
 	ItemId,
 	ItemText,
+	Shelf,
 	Standing,
 	Ticket,
 	TicketCount,
@@ -41,6 +42,8 @@ const PARENT = 'System.LinkTypes.Hierarchy-Reverse';
 const PREDECESSOR = 'System.LinkTypes.Dependency-Reverse';
 // Set when an item reaches a closed state of the team's process: whether it is closed, without reading the state.
 const CLOSED_DATE = 'Microsoft.VSTS.Common.ClosedDate';
+// Set on every change to an item: its fields, its links, its comments.
+const CHANGED_DATE = 'System.ChangedDate';
 
 const ItemSchema = z.looseObject({
 	id: z.int(),
@@ -174,26 +177,10 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 
 	// The open Features assigned to `person` that carry the Signal, oldest first.
 	private async featuresWith(person: string, signal: Signal): Promise<Feature[]> {
-		// @Me matches the signed-in person however the directory spells their name
-		const assignee = same(person, await this.me()) ? '@Me' : quoted(person);
-		const query =
-			'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project' +
-			` AND [System.WorkItemType] = ${quoted(this.settings.featureType)}` +
-			` AND [System.AssignedTo] = ${assignee}` +
-			` AND [System.Tags] CONTAINS ${quoted(this.names[signal])}` +
-			' ORDER BY [System.Id]';
-		const found = await this.api.parse(
+		const items = await this.assignedItems(
+			person,
 			`find the Features assigned with ${this.names[signal]}`,
-			{
-				method: 'POST',
-				url: this.api.at(`${this.project}/_apis/wit/wiql?${API}`),
-				body: { query }
-			},
-			WiqlSchema
-		);
-		const items = await this.items(
-			found.workItems.map((w) => w.id),
-			true
+			` AND [System.Tags] CONTAINS ${quoted(this.names[signal])}`
 		);
 		return items
 			.filter(
@@ -204,6 +191,48 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			)
 			.sort((a, b) => a.id - b.id)
 			.map((i) => this.toFeature(i));
+	}
+
+	// The WIQL here has no NOT, so the open ones with no Signal are read from every item of `featureType` assigned to `person`; a Feature with no Tickets is on the Shelf too.
+	async shelf(person: string, max: number): Promise<Shelf> {
+		const items = await this.assignedItems(person, `find the Features assigned to ${person}`, '');
+		const shelved = items
+			.filter((i) => i.fields[CLOSED_DATE] === undefined && this.signalsOf(i).length === 0)
+			.map((i) => ({ item: i, updated: text(i.fields[CHANGED_DATE]) }))
+			.sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated) || b.item.id - a.item.id);
+		return {
+			features: shelved.slice(0, max).map(({ item, updated }) => ({
+				...this.toFeature(item),
+				hasTickets: linked(item, CHILD).length > 0,
+				updated
+			})),
+			total: shelved.length
+		};
+	}
+
+	// Every work item of `featureType` assigned to `person`, open or closed, with its fields and links; `more` adds WIQL clauses.
+	private async assignedItems(person: string, what: string, more: string): Promise<Item[]> {
+		// @Me matches the signed-in person however the directory spells their name
+		const assignee = same(person, await this.me()) ? '@Me' : quoted(person);
+		const query =
+			'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project' +
+			` AND [System.WorkItemType] = ${quoted(this.settings.featureType)}` +
+			` AND [System.AssignedTo] = ${assignee}` +
+			more +
+			' ORDER BY [System.Id]';
+		const found = await this.api.parse(
+			what,
+			{
+				method: 'POST',
+				url: this.api.at(`${this.project}/_apis/wit/wiql?${API}`),
+				body: { query }
+			},
+			WiqlSchema
+		);
+		return this.items(
+			found.workItems.map((w) => w.id),
+			true
+		);
 	}
 
 	// The Features of the Source's marker, open or closed, oldest first: WIQL finds the descriptions that hold it, and the marker itself is read from each.

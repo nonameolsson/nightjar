@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { needsAPerson, nextTicket, progress, waiting } from './plan.js';
+import { buildOrder, needsAPerson, nextTicket, progress, waiting } from './plan.js';
 import type { Ticket } from './tracker.js';
 
 const ticket = (id: number, over: Partial<Ticket> = {}): Ticket => ({
@@ -10,6 +10,42 @@ const ticket = (id: number, over: Partial<Ticket> = {}): Ticket => ({
 	signals: ['ready'],
 	blockedBy: [],
 	...over
+});
+
+describe('buildOrder', () => {
+	const ids = (tickets: readonly Ticket[]) => tickets.map((t) => t.id);
+
+	it("puts a Ticket after its blockers, else keeps the Feature's own order, closed Tickets among them", () => {
+		const tickets = [
+			ticket(1, { blockedBy: [{ id: '3', open: true }] }),
+			ticket(2, { open: false }),
+			ticket(3, { blockedBy: [{ id: '2', open: false }] }),
+			ticket(4)
+		];
+		expect(ids(buildOrder(tickets))).toEqual(['2', '3', '1', '4']);
+	});
+
+	it('puts last, in their order, the Tickets an open blocker of another Feature or a loop holds back', () => {
+		const tickets = [
+			ticket(1, { blockedBy: [{ id: '99', open: true }] }),
+			ticket(2, { blockedBy: [{ id: '3', open: true }] }),
+			ticket(3, { blockedBy: [{ id: '2', open: true }] }),
+			ticket(4),
+			ticket(5, { blockedBy: [{ id: '99', open: false }] })
+		];
+		expect(ids(buildOrder(tickets))).toEqual(['4', '5', '1', '2', '3']);
+	});
+
+	it('is the order nextTicket builds them in', () => {
+		const tickets = [ticket(1, { blockedBy: [{ id: '2', open: true }] }), ticket(2), ticket(3)];
+		const built = new Set<string>();
+		const order: string[] = [];
+		for (let next = nextTicket(tickets, built); next !== null; next = nextTicket(tickets, built)) {
+			order.push(next.id);
+			built.add(next.id);
+		}
+		expect(ids(buildOrder(tickets))).toEqual(order);
+	});
 });
 
 describe('nextTicket', () => {

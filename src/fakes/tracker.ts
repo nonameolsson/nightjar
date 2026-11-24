@@ -6,6 +6,7 @@ import type {
 	FeatureWriter,
 	ItemId,
 	ItemText,
+	Shelf,
 	Standing,
 	Ticket,
 	TicketCount,
@@ -27,6 +28,8 @@ export interface FakeItem {
 	readonly comments: readonly Comment[];
 	// when it was made, as an ISO date; left out, the order it was added in says
 	readonly at?: string;
+	// when it was last changed, as an ISO date; each change through the fake stamps it a minute after the change before
+	readonly updated?: string;
 }
 
 export type NewItem = Pick<FakeItem, 'id' | 'title'> & Partial<FakeItem>;
@@ -36,6 +39,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	readonly items = new Map<ItemId, FakeItem>();
 	// the people it trusts besides the signed-in person
 	private readonly trustedPeople = new Set<string>();
+	private changes = 0;
 
 	constructor(
 		// the signed-in person, whose comments are trusted
@@ -54,16 +58,28 @@ export class FakeTracker implements Tracker, FeatureWriter {
 			children: [],
 			blockedBy: [],
 			comments: [],
+			updated: this.stamp(),
 			...item
 		});
 		return this;
+	}
+
+	// a time one minute after the change before, so the order of changes is the order of times however `now` is set
+	private stamp(): string {
+		this.changes += 1;
+		return new Date(Date.UTC(2026, 9, 30, 10, this.changes)).toISOString();
+	}
+
+	// keeps the item as changed, stamped as the latest change
+	private put(item: FakeItem): void {
+		this.items.set(item.id, { ...item, updated: this.stamp() });
 	}
 
 	// A comment by anyone, trusted or not.
 	say(id: ItemId, comment: Omit<Comment, 'at'> & Partial<Pick<Comment, 'at'>>): this {
 		const item = this.get(id);
 		const at = comment.at ?? this.now().toISOString();
-		this.items.set(id, { ...item, comments: [...item.comments, { ...comment, at }] });
+		this.put({ ...item, comments: [...item.comments, { ...comment, at }] });
 		return this;
 	}
 
@@ -74,7 +90,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	}
 
 	close(id: ItemId): this {
-		this.items.set(id, { ...this.get(id), open: false });
+		this.put({ ...this.get(id), open: false });
 		return this;
 	}
 
@@ -162,6 +178,32 @@ export class FakeTracker implements Tracker, FeatureWriter {
 			)
 		);
 
+	// a Ticket of another item is no Feature, so it is on no Shelf
+	shelf = (person: string, max: number): Promise<Shelf> => {
+		const shelved = [...this.items.values()]
+			.filter(
+				(i) =>
+					i.open &&
+					this.parentOf(i.id) === undefined &&
+					i.assignees.includes(person) &&
+					i.signals.length === 0
+			)
+			.map((i) => ({ item: i, updated: i.updated ?? '' }))
+			.sort(
+				(a, b) =>
+					b.updated.localeCompare(a.updated) ||
+					b.item.id.localeCompare(a.item.id, 'en', { numeric: true })
+			);
+		return Promise.resolve({
+			features: shelved.slice(0, max).map(({ item, updated }) => ({
+				...this.asFeature(item),
+				hasTickets: item.children.length > 0,
+				updated
+			})),
+			total: shelved.length
+		});
+	};
+
 	feature = (id: ItemId): Promise<Feature> => Promise.resolve(this.asFeature(this.get(id)));
 
 	standing = (id: ItemId): Promise<Standing> => {
@@ -200,14 +242,16 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	addSignal = (id: ItemId, signal: Signal): Promise<void> => {
 		const item = this.get(id);
 		if (!item.signals.includes(signal)) {
-			this.items.set(id, { ...item, signals: [...item.signals, signal] });
+			this.put({ ...item, signals: [...item.signals, signal] });
 		}
 		return Promise.resolve();
 	};
 
 	removeSignal = (id: ItemId, signal: Signal): Promise<void> => {
 		const item = this.get(id);
-		this.items.set(id, { ...item, signals: item.signals.filter((s) => s !== signal) });
+		if (item.signals.includes(signal)) {
+			this.put({ ...item, signals: item.signals.filter((s) => s !== signal) });
+		}
 		return Promise.resolve();
 	};
 
@@ -221,7 +265,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	assign = (id: ItemId, person: string): Promise<void> => {
 		const item = this.get(id);
 		if (!item.assignees.includes(person)) {
-			this.items.set(id, { ...item, assignees: [...item.assignees, person] });
+			this.put({ ...item, assignees: [...item.assignees, person] });
 		}
 		return Promise.resolve();
 	};
@@ -240,7 +284,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 	createTicket = async (featureId: ItemId, ticket: ItemText): Promise<ItemId> => {
 		const feature = this.get(featureId);
 		const id = await this.createFeature(ticket);
-		this.items.set(featureId, { ...feature, children: [...feature.children, id] });
+		this.put({ ...feature, children: [...feature.children, id] });
 		return id;
 	};
 
@@ -248,7 +292,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		const item = this.get(id);
 		this.get(blocker);
 		if (!item.blockedBy.includes(blocker)) {
-			this.items.set(id, { ...item, blockedBy: [...item.blockedBy, blocker] });
+			this.put({ ...item, blockedBy: [...item.blockedBy, blocker] });
 		}
 		return Promise.resolve();
 	};

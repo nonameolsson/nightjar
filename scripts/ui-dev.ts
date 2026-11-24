@@ -1,12 +1,23 @@
-// `npm run ui:dev [SCENARIO]`: the ui page over made-up .factory/ files in a temp dir, to work on the page without a run.
+// `npm run ui:dev [SCENARIO]`: the ui page over made-up .factory/ files in a temp dir and a fake Tracker, to work on the page without a run.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { FakeTracker } from '../src/fakes/tracker.js';
 import { fileSpend, record } from '../src/ledger.js';
 import { StatusFile } from '../src/status.js';
+import { SHELF_MAX } from '../src/tracker.js';
 import { startUi, UI_PORT } from '../src/ui.js';
+import { detailFrom, listsFrom } from '../src/ui-tracker.js';
 
-const SCENARIOS = ['building', 'review-round', 'idle', 'paused', 'stopped', 'off'] as const;
+const SCENARIOS = [
+	'building',
+	'review-round',
+	'idle',
+	'paused',
+	'stopped',
+	'off',
+	'shelf'
+] as const;
 type Scenario = (typeof SCENARIOS)[number];
 
 const arg = process.argv[2] ?? 'building';
@@ -94,21 +105,65 @@ file.happened({
 	startedAt: ago(55)
 });
 
-if (scenario !== 'off') {
-	file.refreshed(
-		[
-			{ id: '275', title: 'Saved filters v2', ticketCounts: { total: 4, closed: 1 } },
-			{ id: '281', title: 'CSV <export>', ticketCounts: null },
-			{ id: '290', title: 'Reports' }
-		],
-		{
-			items: [
-				{ kind: 'feature', id: '262', title: 'Audit log', why: 'needs info' },
-				{ kind: 'feature', id: '264', title: 'SSO', why: 'needs a person' }
-			],
-			trackerCannotList: false
-		}
-	);
+// The Tracker the page reads, in memory: the Queue and Waiting on you come from it in every scenario, `off` too.
+const tracker = new FakeTracker('ann');
+const ticket = (id: string, open = true) => tracker.add({ id, title: `Ticket ${id}`, open });
+for (const id of ['276', '277', '279']) ticket(id, id !== '276');
+// #278 waits for #279 and for #999 of another Feature, so #275's panel lists it last; its body carries markup the panel strips
+tracker.add({
+	id: '278',
+	title: 'Share a saved filter',
+	signals: ['ready'],
+	blockedBy: ['279', '999'],
+	body: [
+		'Share a filter by link. <img src=x onerror="alert(1)"><script>alert(2)</script>',
+		'',
+		'### Acceptance criteria',
+		'',
+		'- [ ] a link opens the filter',
+		'- [x] the link names no account',
+		'',
+		'**Model:** sonnet'
+	].join('\n')
+});
+tracker
+	.add({
+		id: '275',
+		title: 'Saved filters v2',
+		assignees: ['ann'],
+		signals: ['go'],
+		children: ['276', '277', '278', '279'],
+		body: [
+			'## Problem Statement',
+			'',
+			'A person sets the same filters **every day**. See [the ADR](https://example.com/adr).',
+			'',
+			'## Solution',
+			'',
+			'1. Save a filter by name.',
+			'2. Share it by link.',
+			'   - read-only for others',
+			'',
+			'```ts',
+			'const filter = { tag: "<b>" };',
+			'```'
+		].join('\n')
+	})
+	.add({ id: '281', title: 'CSV <export>', assignees: ['ann'], signals: ['go'] })
+	.add({ id: '262', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
+	.add({ id: '264', title: 'SSO', assignees: ['ann'], signals: ['human'] });
+// The Shelf: Features of ann's that carry no Signal. One has a Ticket; the rest are lone issues. Bob's is on no Shelf of hers.
+ticket('301');
+tracker
+	.add({ id: '300', title: 'Dark <mode>', assignees: ['ann'], children: ['301'] })
+	.add({ id: '302', title: 'Fix the typo on the pricing page', assignees: ['ann'] })
+	.add({ id: '303', title: 'Theirs', assignees: ['bob'] });
+// `shelf` has more than a Shelf lists, so the page ends it with "and N more in the Tracker"
+if (scenario === 'shelf') {
+	for (let i = 1; i <= SHELF_MAX + 7; i += 1) {
+		const id = `4${String(i).padStart(2, '0')}`;
+		tracker.add({ id, title: `Idea ${String(i)}`, assignees: ['ann'] });
+	}
 }
 
 if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-round') {
@@ -158,7 +213,13 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 	file.doing({ kind: 'off' });
 }
 
-const ui = await startUi({ root, port: Number(process.env.PORT ?? UI_PORT) });
+const page = () => Promise.resolve({ tracker, person: 'ann', workflows: [] });
+const ui = await startUi({
+	root,
+	port: Number(process.env.PORT ?? UI_PORT),
+	tracker: listsFrom(page),
+	feature: detailFrom(page)
+});
 console.log(`${scenario}: http://127.0.0.1:${String(ui.port)}  (Ctrl-C to stop)`);
 console.log(`mock .factory/ in ${root}; edit it by hand and the page follows`);
 
