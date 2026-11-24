@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { markdown } from './markdown.js';
 
+// an escaped `<` that opens a script tag
+const TAG_LEFT = /&#60;\/?script\b/i;
+
 describe('markdown', () => {
 	it('renders headings, lists, nested lists, checkboxes, code and quotes', () => {
 		const html = markdown(
@@ -44,5 +47,12 @@ describe('markdown', () => {
 		expect(markdown('a <b onclick="x()">b</b> `<b>` <!-- gone -->')).toBe(
 			'<p>a b <code>&#60;b&#62;</code></p>'
 		);
+	});
+
+	it('leaves no tag behind however deep the nesting', () => {
+		// each pass takes out one level, so a bounded loop would leave a tag behind
+		const depth = 40;
+		const nested = `${'<'.repeat(depth)}${'script>'.repeat(depth)}alert(1)`;
+		expect(markdown(nested)).not.toMatch(TAG_LEFT);
 	});
 });

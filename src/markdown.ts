@@ -24,11 +24,12 @@ const held = (n: number) => `${HOLD}${String(n)}${HOLD}`;
 const HELD = new RegExp(`${HOLD}(\\d+)${HOLD}`, 'g');
 const unheld = (text: string) => text.replaceAll(HOLD, '');
 
-// HTML out of prose, outside its code spans; again until nothing changes, so `<<b>script>` cannot leave a tag behind
+// HTML out of prose, outside its code spans; again until nothing changes, so `<<b>script>` cannot leave a tag behind however deep it is nested. A pass only takes characters out, so the loop ends.
 function stripHtml(prose: string): string {
 	let text = prose;
-	for (let i = 0; i < 5; i += 1) {
-		const before = text;
+	let before: string;
+	do {
+		before = text;
 		text = text.replace(COMMENT, '');
 		const spans: string[] = [];
 		text = text
@@ -39,8 +40,7 @@ function stripHtml(prose: string): string {
 			.replace(DROPPED, '')
 			.replace(TAG, '')
 			.replace(HELD, (_, n: string) => spans[Number(n)] ?? '');
-		if (text === before) break;
-	}
+	} while (text !== before);
 	return text;
 }
 
