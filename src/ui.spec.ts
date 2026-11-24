@@ -10,7 +10,13 @@ import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
-import { listsFrom, TRACKER_EVERY_MS, type ReadingTracker, type Upcoming } from './ui-tracker.js';
+import {
+	detailFrom,
+	listsFrom,
+	TRACKER_EVERY_MS,
+	type ReadingTracker,
+	type Upcoming
+} from './ui-tracker.js';
 
 let root: string;
 let ui: Ui | null;
@@ -711,6 +717,63 @@ describe('nightjar ui reads the Tracker', () => {
 			expect((await get('/', method)).status).toBe(405);
 		}
 		expect((await get('/', 'HEAD')).status).toBe(200);
+	});
+
+	describe('the Feature detail panel', () => {
+		const openWithPanel = async (tracker: FakeTracker) => {
+			const page = () => Promise.resolve({ tracker, person: 'ann' });
+			ui = await startUi({
+				root,
+				port: 0,
+				now: () => at,
+				alive: () => alive,
+				tracker: listsFrom(page, () => at),
+				feature: detailFrom(page),
+				every
+			});
+			return ui;
+		};
+
+		it('opens from a Feature on Waiting on you, the Queue or the Shelf, read through a GET route when it opens', async () => {
+			const tracker = fakeTracker().add({ id: '6', title: 'Old idea', assignees: ['ann'] });
+			const before = structuredClone([...tracker.items.values()]);
+			await openWithPanel(tracker);
+			const html = await read();
+			for (const [state, id] of [
+				['queue', '1'],
+				['waiting', '4'],
+				['shelf', '6']
+			] as const)
+				expect(mat(html, state)).toContain(`data-feature="${id}"`);
+			expect(html).toContain('<dialog id="feature"');
+			const panel = await get('/feature?id=1');
+			expect(panel.status).toBe(200);
+			expect(panel.text).toContain('Tickets in Build order');
+			expect(panel.text).toContain('Model');
+			expect(panel.text).toContain('<details class="criteria">');
+			const lone = await get('/feature?id=4');
+			expect(lone.text).toContain('Lone issue');
+			// read-only: nothing on the Tracker changed
+			expect([...tracker.items.values()]).toEqual(before);
+		});
+
+		it('shows an error in the panel when the read fails, and still answers nothing but GET and HEAD', async () => {
+			await openWithPanel(fakeTracker());
+			await read();
+			const missing = await get('/feature?id=404');
+			expect(missing.status).toBe(502);
+			expect(missing.text).toContain('could not read #404 from the Tracker');
+			for (const method of ['POST', 'PUT', 'DELETE', 'PATCH'])
+				expect((await get('/feature?id=1', method)).status).toBe(405);
+			expect((await get('/feature?id=1', 'HEAD')).status).toBe(200);
+		});
+
+		it('has no route when the page reads no Feature', async () => {
+			await openOn(readsOf(fakeTracker()));
+			const html = await read();
+			expect(html).not.toContain('data-feature=');
+			expect((await get('/feature?id=1')).status).toBe(404);
+		});
 	});
 });
 

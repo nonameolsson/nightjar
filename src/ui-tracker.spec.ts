@@ -414,4 +414,32 @@ describe('the page over what it read of the Tracker', () => {
 		file.refreshed([{ id: '50', title: 'Old queue' }], { items: [], trackerCannotList: false });
 		expect(mat(panels({ last: null, fault: null }), 'queue')).toContain('Old queue');
 	});
+
+	it('makes the title of each Feature on Waiting on you, the Queue and the Shelf a button that opens its panel, in every view', async () => {
+		const file = new StatusFile({
+			path: join(root, '.factory', 'status.json'),
+			spend: fileSpend(ledgerPath(root)),
+			now: () => at,
+			pid: 42,
+			dailyUsd: 8
+		});
+		file.happened({ kind: 'pull', feature: '40', title: 'Done thing', url: 'https://x.test/1' });
+		const lists = { last: await read(shelfTracker()), fault: null };
+		const view = readFactory(root, { now: () => at, alive: () => true });
+		const html = renderPanels(root, view, NO_LINKS, lists, true);
+		const opener = /<button type="button" class="open" data-feature="(\d+)"/g;
+		const opened = (part: string) => [...part.matchAll(opener)].map((m) => m[1]);
+		const [board = '', rest = ''] = html.split('<div class="table">');
+		const [table = '', overview = ''] = rest.split('<div class="overview">');
+		for (const part of [board, table, overview])
+			expect(opened(part).sort()).toEqual(['1', '4', '5', '6', '7']);
+		expect(mat(html, 'queue')).toContain('aria-haspopup="dialog" aria-controls="feature"');
+		// the title is still text, never markup
+		expect(mat(html, 'shelf')).toContain('>Reports &#60;b&#62;</button>');
+		// a Feature that is done opens nothing
+		expect(mat(html, 'completed')).toContain('Done thing');
+		expect(mat(html, 'completed')).not.toContain('data-feature');
+		// without a reader for the panel, a title is plain text
+		expect(renderPanels(root, view, NO_LINKS, lists)).not.toContain('data-feature');
+	});
 });

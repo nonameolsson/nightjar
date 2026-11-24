@@ -7,7 +7,8 @@ import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
-import { linksFor, NO_LINKS, type Links } from './ui-links.js';
+import { escapeHtml as escape } from './markdown.js';
+import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
@@ -19,8 +20,14 @@ import type {
 	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
-import type { Shelf, ShelfFeature } from './tracker.js';
-import { watchTracker, type TrackerLists, type Upcoming } from './ui-tracker.js';
+import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
+import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
+import {
+	watchTracker,
+	type FeatureDetail,
+	type TrackerLists,
+	type Upcoming
+} from './ui-tracker.js';
 import {
 	countdown,
 	dollars,
@@ -52,22 +59,12 @@ export interface UiOptions {
 	readonly alive?: (pid: number) => boolean;
 	// reads the Queue and Waiting on you from the Tracker; left out, the page knows them only from a run's status.json
 	readonly tracker?: () => Promise<Upcoming>;
+	// reads one Feature for its detail panel, when the panel opens; left out, no Feature opens one
+	readonly feature?: (id: ItemId) => Promise<FeatureDetail>;
 	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
 	readonly every?: (ms: number, read: () => void) => () => void;
 }
 
-const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
-
-const EXTERNAL = 'target="_blank" rel="noreferrer noopener"';
-
-// An id, as a link to its page on the Tracker when the page knows one
-const idHtml = (id: string, links: Links = NO_LINKS) => {
-	const text = escape(idText(id));
-	const href = links.issue(id);
-	return href === null
-		? text
-		: `<a class="ext" href="${escape(href)}" ${EXTERNAL} title="Open ${text} on ${links.tracker ?? 'the Tracker'}">${text}</a>`;
-};
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -84,11 +81,13 @@ type Lists =
 			readonly person: string | undefined;
 			// when they were read
 			readonly at: string | undefined;
+			// whether a Feature listed opens its detail panel, read from the Tracker
+			readonly opens: boolean;
 	  }
 	// what the page says in their place
 	| { readonly known: false; readonly empty: string };
 
-function listsOf(view: FactoryView, tracker: TrackerLists | undefined): Lists {
+function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: boolean): Lists {
 	const on = running(view);
 	const status = view.status;
 	const last = tracker?.last ?? null;
@@ -109,7 +108,8 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined): Lists {
 			},
 			shelf: last.shelf,
 			person: last.person,
-			at: last.at
+			at: last.at,
+			opens
 		};
 	}
 	if (on) {
@@ -119,7 +119,8 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined): Lists {
 			waitingOnYou: status?.waitingOnYou,
 			shelf: undefined,
 			person: undefined,
-			at: status?.refreshedAt
+			at: status?.refreshedAt,
+			opens
 		};
 	}
 	if (tracker === undefined) return { known: false, empty: OFF };
@@ -177,7 +178,7 @@ function queue(lists: Lists, links: Links): string {
 	else if (lists.queue === undefined) body = '<p class="empty">not read yet</p>';
 	else if (lists.queue.length === 0) body = emptyQueue(links);
 	else
-		body = `<ul>${lists.queue.map((q) => `<li>${idHtml(q.id, links)} ${escape(q.title)}</li>`).join('')}</ul>`;
+		body = `<ul>${lists.queue.map((q) => `<li>${idHtml(q.id, links)} ${titleHtml(q.id, q.title, lists.opens)}</li>`).join('')}</ul>`;
 	const refreshed =
 		lists.known && lists.at !== undefined ? ` <small>refreshed ${clock(lists.at)}</small>` : '';
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
@@ -236,7 +237,8 @@ function waiting(view: FactoryView, lists: Lists, links: Links): string {
 		const items = found.items
 			.map((i) => {
 				const back = lastHandBack(view, i.feature ?? i.id, i.kind === 'ticket' ? i.id : null);
-				return `<li>${idHtml(i.id, links)} ${escape(i.title)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
+				const opens = lists.opens && i.kind === 'feature';
+				return `<li>${idHtml(i.id, links)} ${titleHtml(i.id, i.title, opens)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
 			})
 			.join('');
 		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
@@ -247,7 +249,7 @@ function waiting(view: FactoryView, lists: Lists, links: Links): string {
 function shelf(view: FactoryView, lists: Lists, links: Links): string {
 	const all = features(view, lists);
 	const li = (c: ShelfCard) =>
-		`<li>${idHtml(c.id, links)} ${escape(c.title ?? '')}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}</li>`;
+		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}</li>`;
 	const items = (all.shelf ?? []).map(li).join('');
 	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
 	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
@@ -304,6 +306,8 @@ interface FeatureCard {
 	readonly waitingTickets: readonly WaitingTicket[];
 	// Tickets built of the Feature's Tickets; null when there is no count to show
 	readonly progress: Progress | null;
+	// its title opens the Feature detail panel: a Feature on Waiting on you, the Queue or the Shelf, when the page reads the Tracker
+	readonly opens?: true;
 }
 interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
@@ -432,6 +436,7 @@ function features(view: FactoryView, lists: Lists): Features {
 			: null;
 	const found = lists.known ? lists.waitingOnYou : undefined;
 	const listed = lists.known ? lists.queue : undefined;
+	const opens = lists.known && lists.opens ? { opens: true as const } : {};
 	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
 	const totals = new Map<string, number>();
 	for (const q of listed ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
@@ -484,7 +489,8 @@ function features(view: FactoryView, lists: Lists): Features {
 					waitingTickets: [],
 					progress: i.ticketCounts
 						? { built: i.ticketCounts.closed, total: i.ticketCounts.total, counts: BUILT_NOW }
-						: null
+						: null,
+					...opens
 				};
 			});
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
@@ -513,7 +519,9 @@ function features(view: FactoryView, lists: Lists): Features {
 					why: 'needs info',
 					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: tickets,
-					progress: null
+					progress: null,
+					// an older file may name no Feature, so there is none to open
+					...(id === '' ? {} : opens)
 				});
 		}
 	}
@@ -528,7 +536,8 @@ function features(view: FactoryView, lists: Lists): Features {
 		estimateMs:
 			view.medianTicketMs == null || !q.ticketCounts
 				? null
-				: view.medianTicketMs * q.ticketCounts.total
+				: view.medianTicketMs * q.ticketCounts.total,
+		...opens
 	});
 	const queue = listed?.map(queued);
 	const onShelf = (f: ShelfFeature): ShelfCard => ({
@@ -538,7 +547,8 @@ function features(view: FactoryView, lists: Lists): Features {
 		waitingTickets: [],
 		progress: null,
 		tickets: f.hasTickets ? 'some' : f.lone === true ? 'lone' : 'none',
-		updated: f.updated
+		updated: f.updated,
+		...opens
 	});
 	const shelved = lists.known ? lists.shelf : undefined;
 	return {
@@ -554,8 +564,17 @@ function features(view: FactoryView, lists: Lists): Features {
 	};
 }
 
+// A Feature's title; one that opens the Feature detail panel is a button, so a mouse and a keyboard both reach it
+function titleHtml(id: string, title: string | undefined, opens: boolean): string {
+	if (!opens) return title === undefined ? '' : escape(title);
+	const text = escape(title ?? idText(id));
+	return `<button type="button" class="open" data-feature="${escape(id)}" aria-haspopup="dialog" aria-controls="feature" title="Show ${escape(idText(id))}: its spec and Tickets">${text}</button>`;
+}
+
+const cardTitle = (card: FeatureCard) => titleHtml(card.id, card.title, card.opens === true);
+
 const feature = (card: FeatureCard, links: Links) =>
-	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${cardTitle(card)}`;
 
 // A Next step as the Tracker comment numbers it, a Signal's `name` set as code
 function nextStepHtml(back: HandBack | undefined): string {
@@ -928,7 +947,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
 	let note = '';
@@ -945,14 +964,15 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 const MAIN = '<!--main-->';
 
 // The panels, which the page replaces whole each time an event brings new ones.
-// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker.
+// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel.
 export function renderPanels(
 	root: string,
 	view: FactoryView,
 	links: Links = NO_LINKS,
-	tracker?: TrackerLists
+	tracker?: TrackerLists,
+	opens = false
 ): string {
-	const lists = listsOf(view, tracker);
+	const lists = listsOf(view, tracker, opens);
 	const overview = [
 		current(view, links),
 		queue(lists, links),
@@ -998,8 +1018,10 @@ const PAGE = (panels: string, links: Links) => {
 <div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}</div>
 <div id="top">${top}</div>
 <div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
+${FEATURE_DIALOG}
 <script>${SCRIPT}</script>
 <script>${PARALLAX}</script>
+<script>${FEATURE_SCRIPT}</script>
 </body>
 </html>
 `;
@@ -1167,10 +1189,10 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header, chip, help or copy button or link; put focus back on its twin
+	// a swap drops the focused sort header, chip, help, copy or Feature button or link; put focus back on its twin
 	const was = document.activeElement;
 	const data = (was && was.dataset) || {};
-	const key = ['sort', 'chip', 'help', 'copy'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const key = ['sort', 'chip', 'help', 'copy', 'feature'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	// links can share an href, so remember which of them had focus
 	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
@@ -1373,6 +1395,45 @@ code { background: color-mix(in srgb, var(--teal) 10%, transparent); color: var(
 .hint { color: var(--ink2); display: block; font-size: 0.85rem; margin-top: 2px; }
 button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; min-height: 24px; padding: 1px 8px; }
 button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+button.open:hover { color: var(--teal); text-decoration-style: solid; }
+#feature { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; scrollbar-color: var(--teal2) var(--void); width: 640px; }
+#feature::backdrop { background: var(--shade-deep); }
+.fp { min-height: 100%; padding: 18px 22px 32px; position: relative; }
+.fp::before, .fp::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
+.fp::before { border-bottom: 0; border-right: 0; left: 0; top: 0; }
+.fp::after { border-left: 0; border-top: 0; bottom: 0; right: 0; }
+.fp-bar { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.fp-bar .dk { font-family: var(--mono); }
+button.close { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 10px; }
+button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+#feature h2 { font: 700 1.2rem system-ui, sans-serif; margin: 8px 0 6px; overflow-wrap: anywhere; }
+#feature h2 b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 8px; }
+#feature .sub { font-family: var(--mono); margin: 0 0 6px; }
+#feature section { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 10px; }
+#feature h3 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; margin: 0 0 8px; text-transform: uppercase; }
+#feature .fault { color: var(--err); }
+.md { overflow-wrap: anywhere; }
+.md p { margin: 6px 0; }
+#feature .md :is(h3, h4, h5, h6) { color: var(--ink); font: 600 1rem system-ui, sans-serif; letter-spacing: 0; margin: 14px 0 4px; text-transform: none; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.6em; }
+.md li { padding: 1px 0; }
+.md li.task { list-style: none; margin-left: -1.2em; }
+.md input[type="checkbox"] { accent-color: var(--teal2); margin: 0 6px 0 0; vertical-align: middle; }
+.md blockquote { border-left: 2px solid var(--line); color: var(--ink2); margin: 8px 0; padding-left: 12px; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+#feature .steps { margin: 4px 0 0; }
+#feature .steps li { color: var(--ink); }
+#feature .steps li p { margin: 2px 0; }
+#feature .steps li.closed { color: var(--muted); }
+#feature .steps li.closed::before { background: var(--teal2); border-color: var(--teal2); }
+.tk b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 6px; }
+.st, .blockers small { font-family: var(--mono); }
+.blockers { color: var(--ink2); }
+.criteria summary { color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 0; }
+.criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.criteria .md { color: var(--ink2); }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -1383,7 +1444,7 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }
+	th button, #views button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1413,6 +1474,17 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.
 const hostOk = (host: string | undefined, port: number) =>
 	host === `127.0.0.1:${String(port)}` || host === `localhost:${String(port)}`;
+
+// A request's path and query, read against this machine as the Host check has made sure it is; a target that does not read is no path the page serves.
+const urlOf = (url: string | undefined) => {
+	try {
+		return new URL(url ?? '/', `http://${HOST}`);
+	} catch {
+		return new URL('http://invalid/-');
+	}
+};
+const pathOf = (url: string | undefined) => urlOf(url).pathname;
+const searchOf = (url: string | undefined) => urlOf(url).searchParams;
 
 // The origin remote's url, which names the GitHub repo when factory.json does not; null with no remote
 function originOf(root: string): string | null {
@@ -1449,7 +1521,8 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				...(o.now === undefined ? {} : { now: o.now })
 			}),
 			linksFor(o.root, origin),
-			tracker?.lists()
+			tracker?.lists(),
+			o.feature !== undefined
 		);
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);
@@ -1477,6 +1550,19 @@ export function startUi(o: UiOptions): Promise<Ui> {
 			send(res, panelsNow());
 			clients.add(res);
 			res.on('close', () => clients.delete(res));
+		} else if (o.feature !== undefined && pathOf(req.url) === FEATURE_PATH) {
+			// read from the Tracker as the panel opens; the read gives no Signal and writes nothing
+			const answered = featureAnswer(searchOf(req.url), o.feature, linksFor(o.root, origin));
+			void answered.then(({ status, body }) => {
+				res.writeHead(status, {
+					'content-type': 'text/html; charset=utf-8',
+					'cache-control': 'no-store',
+					'x-content-type-options': 'nosniff',
+					// opened as a page of its own, the panel's markup may run and load nothing
+					'content-security-policy': "default-src 'none'"
+				});
+				res.end(req.method === 'HEAD' ? undefined : body);
+			});
 		} else if (req.url === '/') {
 			res.writeHead(200, {
 				'content-type': 'text/html; charset=utf-8',

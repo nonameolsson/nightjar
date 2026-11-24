@@ -1,7 +1,9 @@
 // Where the page sends a click: a Feature or Ticket on the Tracker, the pull requests on the Code host.
 import { loadConfig } from './config.js';
 import { repoFromRemote } from './github/api.js';
+import { escapeHtml } from './markdown.js';
 import { DEFAULT_SIGNAL_NAMES, type SignalNames } from './signals.js';
+import { idText } from './view-text.js';
 
 export interface Links {
 	// "GitHub" or "Azure DevOps"; null for a Tracker the page cannot link to
@@ -22,6 +24,18 @@ export const NO_LINKS: Links = {
 	assigned: () => null,
 	pulls: null,
 	signals: DEFAULT_SIGNAL_NAMES
+};
+
+// a link that opens elsewhere, in a new tab that cannot reach back to the page
+export const EXTERNAL = 'target="_blank" rel="noreferrer noopener"';
+
+// An id, as a link to its page on the Tracker when the page knows one
+export const idHtml = (id: string, links: Links = NO_LINKS) => {
+	const text = escapeHtml(idText(id));
+	const href = links.issue(id);
+	return href === null
+		? text
+		: `<a class="ext" href="${escapeHtml(href)}" ${EXTERNAL} title="Open ${text} on ${links.tracker ?? 'the Tracker'}">${text}</a>`;
 };
 
 const part = (text: string) => text.split('/').map(encodeURIComponent).join('/');

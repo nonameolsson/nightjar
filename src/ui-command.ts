@@ -4,7 +4,7 @@ import type { GhRunner } from './github/api.js';
 import { run, type Env } from './git.js';
 import { say, why } from './say.js';
 import { startUi, UI_PORT } from './ui.js';
-import { listsFrom, openPageTracker } from './ui-tracker.js';
+import { detailFrom, listsFrom, openOnce, openPageTracker } from './ui-tracker.js';
 
 export const UI_USAGE = 'usage: nightjar ui [--port PORT]';
 
@@ -53,12 +53,15 @@ export async function runUiCommand(argv: readonly string[], host: UiHost): Promi
 		...(host.request === undefined ? {} : { request: host.request }),
 		...(host.gh === undefined ? {} : { gh: host.gh })
 	};
+	// one Tracker for the lists and the Feature detail panel, opened on the first read
+	const page = openOnce(() => openPageTracker(root, env, seams));
 	try {
 		const ui = await startUi({
 			root,
 			port,
 			// read-only: the page never writes to the Tracker (docs/adr/0009)
-			tracker: listsFrom(() => openPageTracker(root, env, seams))
+			tracker: listsFrom(page),
+			feature: detailFrom(page)
 		});
 		say(`http://127.0.0.1:${String(ui.port)}  (Ctrl-C to stop)`);
 		const stop = host.stop ?? onSignals();

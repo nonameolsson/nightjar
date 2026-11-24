@@ -7,7 +7,7 @@ import { fileSpend, record } from '../src/ledger.js';
 import { StatusFile } from '../src/status.js';
 import { SHELF_MAX } from '../src/tracker.js';
 import { startUi, UI_PORT } from '../src/ui.js';
-import { listsFrom } from '../src/ui-tracker.js';
+import { detailFrom, listsFrom } from '../src/ui-tracker.js';
 
 const SCENARIOS = [
 	'building',
@@ -108,14 +108,46 @@ file.happened({
 // The Tracker the page reads, in memory: the Queue and Waiting on you come from it in every scenario, `off` too.
 const tracker = new FakeTracker('ann');
 const ticket = (id: string, open = true) => tracker.add({ id, title: `Ticket ${id}`, open });
-for (const id of ['276', '277', '278', '279']) ticket(id, id !== '276');
+for (const id of ['276', '277', '279']) ticket(id, id !== '276');
+// #278 waits for #279 and for #999 of another Feature, so #275's panel lists it last; its body carries markup the panel strips
+tracker.add({
+	id: '278',
+	title: 'Share a saved filter',
+	signals: ['ready'],
+	blockedBy: ['279', '999'],
+	body: [
+		'Share a filter by link. <img src=x onerror="alert(1)"><script>alert(2)</script>',
+		'',
+		'### Acceptance criteria',
+		'',
+		'- [ ] a link opens the filter',
+		'- [x] the link names no account',
+		'',
+		'**Model:** sonnet'
+	].join('\n')
+});
 tracker
 	.add({
 		id: '275',
 		title: 'Saved filters v2',
 		assignees: ['ann'],
 		signals: ['go'],
-		children: ['276', '277', '278', '279']
+		children: ['276', '277', '278', '279'],
+		body: [
+			'## Problem Statement',
+			'',
+			'A person sets the same filters **every day**. See [the ADR](https://example.com/adr).',
+			'',
+			'## Solution',
+			'',
+			'1. Save a filter by name.',
+			'2. Share it by link.',
+			'   - read-only for others',
+			'',
+			'```ts',
+			'const filter = { tag: "<b>" };',
+			'```'
+		].join('\n')
 	})
 	.add({ id: '281', title: 'CSV <export>', assignees: ['ann'], signals: ['go'] })
 	.add({ id: '262', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
@@ -181,10 +213,12 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 	file.doing({ kind: 'off' });
 }
 
+const page = () => Promise.resolve({ tracker, person: 'ann' });
 const ui = await startUi({
 	root,
 	port: Number(process.env.PORT ?? UI_PORT),
-	tracker: listsFrom(() => Promise.resolve({ tracker, person: 'ann' }))
+	tracker: listsFrom(page),
+	feature: detailFrom(page)
 });
 console.log(`${scenario}: http://127.0.0.1:${String(ui.port)}  (Ctrl-C to stop)`);
 console.log(`mock .factory/ in ${root}; edit it by hand and the page follows`);

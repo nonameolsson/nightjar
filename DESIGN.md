@@ -213,6 +213,9 @@ A bordered rectangle tinted from its left by 12% of its state hue. Left rail is 
 ### Building-Now Panel
 Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
 
+### Feature Detail Panel
+A modal drawer on the right, 640px wide (full width on a phone), full height and scrolling on its own over a 45% black backdrop. Same frame as the Building-now panel: translucent with a teal top wash, a Deep Teal border and teal corner brackets (top-left, bottom-right). A mono caption and a Close button, then the Feature's title in sans with a mono id. Spec and Tickets sit under Line-ruled mono section heads; the spec's own headings drop to 1rem sans. Tickets use the Building-now stepper: a closed Ticket is a filled Deep Teal hexagon in muted text, an open one an outline, and each says `open` or `closed` in words. Each Ticket's acceptance criteria fold under a teal mono `<summary>`. A Feature's title that opens the panel is a text button with a dotted underline that goes teal on hover.
+
 ### Chips and Table
 Filter chips are pill outlines in Deep Teal with teal text; on state they fill Signal Teal with void text. Table headers are tracked mono buttons that turn teal when sorted, with a rotated-border chevron for direction; rows have Line bottom borders.
 
