@@ -4,6 +4,7 @@ import {
 	DEFAULT_SIGNAL_NAMES,
 	assignContract,
 	featureWriterContract,
+	shelfContract,
 	sourcesContract,
 	ticketCountsContract,
 	trackerContract,
@@ -123,6 +124,18 @@ describe('AzureBoardsTracker meets the waitingOn contract', () => {
 		describe(`with the ${label} Signal names`, () => {
 			const harness = azureBoardsTracker(names, trust);
 			for (const c of waitingOnContract) it(c.name, () => c.run(harness));
+		});
+	}
+});
+
+describe('AzureBoardsTracker meets the shelf contract', () => {
+	for (const [label, names, trust] of [
+		['default', DEFAULT_SIGNAL_NAMES, 'Contributors'],
+		['configured', CONFIGURED, 'trusted list']
+	] as const) {
+		describe(`with the ${label} Signal names`, () => {
+			const harness = azureBoardsTracker(names, trust);
+			for (const c of shelfContract) it(c.name, () => c.run(harness));
 		});
 	}
 });

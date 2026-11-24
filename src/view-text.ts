@@ -52,7 +52,7 @@ export function runState(view: FactoryView): RunState {
 	}
 }
 
-// With no run going there is no Queue to show, only history.
+// With no run going, .factory/ holds no Queue, only history; the page's own read of the Tracker still has one.
 export const running = (view: FactoryView) => {
 	const state = runState(view);
 	return state !== 'off' && state !== 'stopped';

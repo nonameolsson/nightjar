@@ -15,6 +15,21 @@ export function nextTicket(tickets: readonly Ticket[], built: ReadonlySet<ItemId
 	return tickets.find((t) => buildable(t, built)) ?? null;
 }
 
+// All of a Feature's Tickets in Build order, open and closed, as nextTicket would reach them were each built in turn: the first in the Feature's order whose blockers are closed or placed before it. Those an open blocker outside the Feature, or a loop of blockers, holds back come last, in the Feature's order.
+export function buildOrder(tickets: readonly Ticket[]): Ticket[] {
+	const placed = new Set<ItemId>();
+	const order: Ticket[] = [];
+	let left = [...tickets];
+	for (;;) {
+		const next = left.find((t) => unblocked(t, placed));
+		if (next === undefined) break;
+		order.push(next);
+		placed.add(next.id);
+		left = left.filter((t) => t !== next);
+	}
+	return [...order, ...left];
+}
+
 export interface Waiting {
 	readonly id: ItemId;
 	readonly title: string;

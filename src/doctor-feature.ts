@@ -4,9 +4,8 @@ import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { ConfigError, loadConfig } from './config.js';
 import type { GhRunner } from './github/api.js';
 import { run, type Env } from './git.js';
-import { featureFaults } from './feature-faults.js';
+import { checkTickets } from './feature-faults.js';
 import { say, why } from './say.js';
-import { ticketFaults } from './ticket-contract.js';
 import type { ItemId, Tracker } from './tracker.js';
 
 // One line per open Ticket: its reference, then `ok` or each fault; then one line per fault of the Feature as a whole.
@@ -19,13 +18,11 @@ export async function checkFeatureTickets(
 ): Promise<number> {
 	const [item, tickets] = await Promise.all([tracker.feature(feature), tracker.tickets(feature)]);
 	const ref = (id: ItemId) => tracker.reference(id).text;
-	const across = featureFaults(item, tickets, workflows, ref);
+	const across = checkTickets(item, tickets, workflows, ref);
 	let failing = 0;
-	for (const ticket of tickets) {
-		if (!ticket.open) continue;
-		const faults = [...ticketFaults(ticket.body), ...(across.tickets.get(ticket.id) ?? [])];
+	for (const [id, faults] of across.tickets) {
 		if (faults.length > 0) failing += 1;
-		tell(`${ref(ticket.id)}: ${faults.length === 0 ? 'ok' : faults.join(' ')}`);
+		tell(`${ref(id)}: ${faults.length === 0 ? 'ok' : faults.join(' ')}`);
 	}
 	for (const fault of across.feature) {
 		failing += 1;

@@ -16,6 +16,7 @@ import {
 	publishContract,
 	sourcesContract,
 	feedbackContract,
+	shelfContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
@@ -294,6 +295,18 @@ describe('GitHubTracker meets the assign contract', () => {
 describe('GitHubTracker meets the ticketCounts contract', () => {
 	const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, 'write access');
 	for (const c of ticketCountsContract) it(c.name, () => c.run(harness));
+});
+
+describe('GitHubTracker meets the shelf contract', () => {
+	for (const [label, names, trust] of [
+		['default', DEFAULT_SIGNAL_NAMES, 'write access'],
+		['configured', CONFIGURED, 'trusted list']
+	] as const) {
+		describe(`with the ${label} Signal names`, () => {
+			const harness = gitHubTracker(names, trust);
+			for (const c of shelfContract) it(c.name, () => c.run(harness));
+		});
+	}
 });
 
 // real git on a busy machine is slow
