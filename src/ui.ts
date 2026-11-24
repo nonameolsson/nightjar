@@ -308,6 +308,28 @@ interface FeatureCard {
 	readonly progress: Progress | null;
 	// its title opens the Feature detail panel: a Feature on Waiting on you, the Queue or the Shelf, when the page reads the Tracker
 	readonly opens?: true;
+	// the Feature's finished runs, on a card that is not on Completed because it is active again
+	readonly earlier?: Earlier;
+}
+// how many finished runs a Feature had in status.json's recent events, and the latest of them
+interface Earlier {
+	readonly runs: number;
+	readonly done: Completed;
+	// what the latest run built, when the Feature's Ticket count is known
+	readonly progress: Progress | null;
+}
+
+// The earlier runs of a Feature on its active card, linking the latest one's pull request
+function earlierHtml(card: FeatureCard): string {
+	const e = card.earlier;
+	if (e === undefined) return '';
+	const count = `${String(e.runs)} earlier ${e.runs === 1 ? 'run' : 'runs'}`;
+	const { event } = e.done;
+	const latest =
+		event.kind === 'pull'
+			? `, the latest: ${outcomeHtml(event)}`
+			: `, the latest failed${e.progress === null ? '' : ` (${progressText(e.progress)})`}`;
+	return `<p class="meta runs" title="counted from the recent events only">${count}${latest}</p>`;
 }
 interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
@@ -551,16 +573,24 @@ function features(view: FactoryView, lists: Lists): Features {
 		...opens
 	});
 	const shelved = lists.known ? lists.shelf : undefined;
+	// a Feature active again sits on its active Mat alone, with its finished runs on its card
+	const active = new Set([building, ...(waiting ?? []), ...(queue ?? [])].map((c) => c?.id));
+	const withEarlier = <C extends FeatureCard>(card: C): C => {
+		const done = completed.find((c) => c.id === card.id);
+		return done === undefined
+			? card
+			: { ...card, earlier: { runs: done.runs, done: done.done, progress: done.progress } };
+	};
 	return {
-		queue,
-		building,
-		waiting,
+		queue: queue?.map(withEarlier),
+		building: building === null ? null : withEarlier(building),
+		waiting: waiting?.map(withEarlier),
 		trackerCannotList: found?.trackerCannotList ?? false,
 		// the Tracker's order, newest update first, which its contract suite holds it to
 		shelf: shelved?.features.map(onShelf),
 		shelfTotal: shelved?.total ?? 0,
 		shelfCannotList: shelved === null,
-		completed
+		completed: completed.filter((c) => !active.has(c.id))
 	};
 }
 
@@ -606,7 +636,7 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why,
+		whyHtml(card, u) + why + earlierHtml(card),
 		actionLink(u, links),
 		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
 	);
@@ -633,7 +663,7 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		card,
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
-		`<p class="label">Building</p><p>${stepLine(doing)}</p>`,
+		`<p class="label">Building</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`
 	);
 }
@@ -662,7 +692,7 @@ function queuedCard(card: QueuedCard, links: Links): string {
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
-	return nest('queue', card, links, count, '<p class="label">Queued</p>', est);
+	return nest('queue', card, links, count, `<p class="label">Queued</p>${earlierHtml(card)}`, est);
 }
 
 function completedCard(card: CompletedCard, links: Links): string {
@@ -882,7 +912,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			timeText: estimateHtml(card.estimateMs),
 			cost: null,
 			outcome: '',
-			outcomeText: '',
+			outcomeText: earlierHtml(card),
 			progress: card.progress
 		});
 	if (all.building !== null) {
@@ -894,7 +924,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
 			outcome: '',
-			outcomeText: '',
+			outcomeText: earlierHtml(all.building),
 			progress: all.building.progress
 		});
 	}
@@ -907,7 +937,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			timeText: '',
 			cost: null,
 			outcome,
-			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}`,
+			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}${earlierHtml(card)}`,
 			progress: card.progress
 		});
 	}
