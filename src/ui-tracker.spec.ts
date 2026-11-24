@@ -12,6 +12,7 @@ import { fileSpend, ledgerPath } from './ledger.js';
 import { renderPanels } from './ui.js';
 import {
 	listsFrom,
+	openOnce,
 	readUpcoming,
 	TRACKER_EVERY_MS,
 	watchTracker,
@@ -112,15 +113,17 @@ describe('readUpcoming', () => {
 	});
 });
 
-describe('listsFrom', () => {
+describe('openOnce', () => {
 	it('opens the Tracker once, and again after an open that failed', async () => {
 		let opens = 0;
-		const read = listsFrom(() => {
-			opens += 1;
-			return opens === 1
-				? Promise.reject(new Error('gh: not signed in'))
-				: Promise.resolve({ tracker: fakeTracker(), person: 'ann' });
-		});
+		const read = listsFrom(
+			openOnce(() => {
+				opens += 1;
+				return opens === 1
+					? Promise.reject(new Error('gh: not signed in'))
+					: Promise.resolve({ tracker: fakeTracker(), person: 'ann' });
+			})
+		);
 		await expect(read()).rejects.toThrow('gh: not signed in');
 		expect((await read()).queue.map((q) => q.id)).toEqual(['1']);
 		await read();

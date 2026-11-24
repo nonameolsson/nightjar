@@ -126,12 +126,11 @@ export function openOnce<P>(open: () => Promise<P>): () => Promise<P> {
 	};
 }
 
-// Reads the lists, opening the Tracker on the first read and again after a read that could not open it.
+// Reads the lists through `page`, which gives the Tracker; wrap it in `openOnce` so the lists and the detail panel share one.
 export function listsFrom(
-	open: () => Promise<PageTracker>,
+	page: () => Promise<PageTracker>,
 	now: () => Date = () => new Date()
 ): () => Promise<Upcoming> {
-	const page = openOnce(open);
 	return async () => readUpcoming(await page(), now);
 }
 
@@ -161,11 +160,10 @@ export interface DetailTracker extends PageTracker<FeatureReader> {
 	readonly workflows: readonly string[];
 }
 
-// Reads one Feature for its detail panel, when the panel opens, through the Tracker the lists read.
+// Reads one Feature for its detail panel, when the panel opens, through the Tracker `page` gives, the one the lists read.
 export function detailFrom(
-	open: () => Promise<DetailTracker>
+	page: () => Promise<DetailTracker>
 ): (id: ItemId) => Promise<FeatureDetail> {
-	const page = openOnce(open);
 	return async (id) => {
 		const { tracker, workflows } = await page();
 		return readFeature(tracker, id, workflows);

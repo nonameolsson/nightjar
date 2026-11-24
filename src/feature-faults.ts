@@ -1,4 +1,4 @@
-// What is wrong across a Feature's Tickets rather than in one Ticket's body (docs/ticket-contract.md): checked by `nightjar doctor FEATURE` only, never before a Session.
+// What is wrong across a Feature's Tickets rather than in one Ticket's body (docs/ticket-contract.md): checked by `nightjar doctor FEATURE` and shown in the `nightjar ui` detail panel (`readFeature` in src/ui-tracker.ts), never before a Session.
 import { ticketFaults } from './ticket-contract.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
 import { workflowLine } from './workflow.js';
