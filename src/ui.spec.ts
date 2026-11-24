@@ -247,7 +247,11 @@ describe('nightjar ui page', () => {
 		// the ledger holds 3 built sessions, but the branch is 3 of the Feature's 4
 		expect(card(board, 'Done one')).toContain('3 of 4 built by the end of this run');
 		expect(card(board, 'Old one')).toContain('>count unknown<');
-		expect(card(board, 'it broke')).toContain('1 of 5 built in this run');
+		// #8 failed and is queued again: it sits in the Queue, its failed run on its card
+		expect(card(board, 'Retry')).toContain('entry queue');
+		expect(card(board, 'Retry')).toContain(
+			'1 earlier run, the latest failed (1 of 5 built in this run)'
+		);
 		expect(row('Billing')).toContain('2 of 6 built now');
 		expect(row('Done one')).toContain('3 of 4 built by the end of this run');
 		expect(row('Unknown')).not.toContain('class="eggs"');
@@ -629,6 +633,57 @@ describe('nightjar ui board', () => {
 		expect(table.split('<tr ').filter((r) => r.includes('Retries'))).toHaveLength(1);
 		expect(table).toContain('latest of 3 recent runs');
 		expect(overview.split('<li>').filter((r) => r.includes('Retries'))).toHaveLength(1);
+	});
+
+	it('shows a Feature built again on one Mat, where it is now, with its earlier runs on its card', async () => {
+		const file = status(true);
+		const url = (n: number) => `https://example.test/pull/${String(n)}`;
+		file.happened({ kind: 'pull', feature: '278', title: 'Shelf', url: url(40) });
+		file.happened({ kind: 'pull', feature: '278', title: 'Shelf', url: url(41) });
+		file.happened({ kind: 'failed', feature: '190', title: 'Several', why: 'push refused' });
+		file.happened({ kind: 'pull', feature: '9', title: 'Exports', url: url(42) });
+		file.happened({ kind: 'pull', feature: '147', title: 'Retries', url: url(43) });
+		file.doing({
+			kind: 'building',
+			feature: '278',
+			title: 'Shelf',
+			ticket: null,
+			step: 'setup',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		file.refreshed([{ id: '9', title: 'Exports' }], {
+			items: [{ kind: 'feature', id: '190', title: 'Several', why: 'needs info' }],
+			trackerCannotList: false
+		});
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const [table = '', overview = ''] = rest.split('<div class="overview">');
+		const cards = (title: string) =>
+			board
+				.split('<article')
+				.slice(1)
+				.map((a) => a.split('</article>')[0] ?? '')
+				.filter((a) => a.includes(title));
+		for (const title of ['Shelf', 'Several', 'Exports', 'Retries'])
+			expect(cards(title)).toHaveLength(1);
+		expect(cards('Shelf')[0]).toContain('entry building');
+		expect(cards('Shelf')[0]).toContain('2 earlier runs');
+		expect(cards('Shelf')[0]).toContain('pull/41"');
+		expect(cards('Several')[0]).toContain('entry waiting');
+		expect(cards('Several')[0]).toContain('1 earlier run, the latest failed');
+		expect(cards('Exports')[0]).toContain('entry queue');
+		expect(cards('Retries')[0]).toContain('entry pulled');
+		expect(page).toContain('<h2>Completed</h2><i class="tally">1</i>');
+		for (const title of ['Shelf', 'Several', 'Exports', 'Retries'])
+			expect(table.split('<tr ').filter((r) => r.includes(title))).toHaveLength(1);
+		expect(table.split('<tr ').find((r) => r.includes('Shelf'))).toContain('2 earlier runs');
+		const done = overview.split('<section id="completed">')[1] ?? '';
+		expect(done).toContain('Retries');
+		expect(done).not.toContain('Shelf');
 	});
 
 	it('shows on a Waiting card why its Ticket was handed back and the Next step, after the events moved on', async () => {
