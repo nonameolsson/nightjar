@@ -2500,7 +2500,7 @@ describe('the Pull-check pass in --watch', () => {
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toContain('factory/1-one-escape');
 			expect(comments[0]).toContain(`\`${SIDE}\``);
-			expect(comments[0]).toContain('will not push to this draft pull request again');
+			expect(comments[0]).toContain('will not push to it again');
 			expect(comments[0]).toContain('**Next step**');
 			expect(comments[0]?.endsWith(FOOTER)).toBe(true);
 			// the fix is kept aside, and the branch here is the person's
@@ -2554,10 +2554,31 @@ describe('the Pull-check pass in --watch', () => {
 			const comments = world.tracker.said('1').slice(said);
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toMatch(/^Nightjar stopped on a fault: the connection was reset/);
+			expect(comments[0]).toContain(`the work is kept on ${SIDE}`);
 			expect(comments[0]?.endsWith(FOOTER)).toBe(true);
 			// the fix is kept aside, and the branch here is the Code host's again
 			expect(world.trees.sides.get(SIDE)).toEqual(['ci.txt']);
 			expect(world.trees.messages(tree())).toEqual(before);
+		});
+
+		it('still hands the Feature back when the branch has no Code host head to go back to', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			const fix = world.fixAgent;
+			// the fetch after the failed push finds no remote branch
+			world.fixAgent = (req) => {
+				world.host.branchMessages = () => null;
+				return fix(req);
+			};
+			const said = world.tracker.said('1').length;
+			world.host.failPushes = { why: 'the connection was reset', lands: false };
+			await queue(watch(world), false);
+
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			const comments = world.tracker.said('1').slice(said);
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toMatch(/^Nightjar stopped on a fault: the connection was reset/);
+			expect(world.trees.sides.has(SIDE)).toBe(false);
 		});
 
 		it('does not hold the next pass back with a commit the Code host lacks', async () => {
@@ -3488,7 +3509,7 @@ describe('a push of the build that a person beat', () => {
 		const comments = world.tracker.said('1').slice(said);
 		expect(comments).toHaveLength(1);
 		expect(comments[0]).toContain(`\`${SIDE}\``);
-		expect(comments[0]).toContain('will not push to this draft pull request again');
+		expect(comments[0]).toContain('will not push to it again');
 		expect(comments[0]?.endsWith(FOOTER)).toBe(true);
 		expect(world.host.threads).toEqual([]);
 		expect(world.host.pulls[0]?.body).toBe(bodyBefore);
@@ -3521,6 +3542,9 @@ describe('a push of the build that a person beat', () => {
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toContain(`\`${SIDE}\``);
 			expect(comments[0]).not.toContain('rejected');
+			// no draft was opened, so the comment speaks of none
+			expect(comments[0]).not.toContain('draft');
+			expect(comments[0]).toContain('will not push to it again');
 			expect(world.host.pulls).toEqual([]);
 			expect(world.trees.sides.get(SIDE)).toEqual(['ticket-2.txt', 'ticket-3.txt']);
 			expect(subjects(world)).toEqual(['Fix a typo']);
@@ -3635,6 +3659,35 @@ describe('a push of the build that a person beat', () => {
 			await run(world, d);
 			expect(world.host.branchMessages(BRANCH)).toHaveLength(2);
 			expect(world.host.pulls).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+
+		it("keeps the Ticket commits an earlier faulted run left, when a later run's Feedback commit sits on top", async () => {
+			const world = makeWorld();
+			const { d, pull } = await opened(world);
+			world.tracker.add({ id: '4', title: 'Mark the rest', signals: ['ready'] });
+			const item = world.tracker.items.get('1');
+			if (item) world.tracker.items.set('1', { ...item, children: ['3', '2', '4'] });
+			feedbackOn(world, pull);
+			world.host.failPushes = FAULT;
+			await world.tracker.addSignal('1', 'go');
+			await run(world, d);
+
+			// the second run builds no Ticket, but answers new Feedback over the first's unpushed Ticket commit
+			feedbackOn(world, pull);
+			await goAgain(world);
+			await run(world, d);
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			expect(world.trees.sides.has(SIDE)).toBe(false);
+			expect(subjects(world)).toContain('Mark the rest (#4)');
+
+			world.host.failPushes = null;
+			await goAgain(world);
+			await run(world, d);
+			expect(world.host.branchMessages(BRANCH)?.some((m) => m.includes('Mark the rest (#4)'))).toBe(
+				true
+			);
+			expect(askedOf(world, 'build').filter((r) => r.ticket.id === '4')).toHaveLength(1);
 			expect(world.tracker.signalsOf('1')).toEqual([]);
 		});
 	});

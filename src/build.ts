@@ -198,7 +198,7 @@ export type FeatureOutcome =
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' }
-	// a person pushed to the branch first: the build's work waits on the local branch `side`, and the Feature is the person's
+	// a person pushed to the branch first: the work waits on the local branch `side`, and the Feature is theirs
 	| { readonly kind: 'diverged'; readonly side: string };
 
 // A comment for a person: what happened, then what they do next.
@@ -369,8 +369,6 @@ class FeatureRun {
 	private answered: Extract<FeedbackRoundEnd, { kind: 'answered' }> | null = null;
 	// the feedback the run's Feedback round left unanswered, which the pull request lists
 	private unanswered: readonly Unanswered[] = [];
-	// how many Tickets this run built, as against those the branch already held
-	private ticketsBuilt = 0;
 	// the Feature's Workflow, which runs its own Steps
 	private steps: WorkflowRun | null = null;
 	// what the status file shows now, so a Ticket built can change its Tickets alone
@@ -773,7 +771,6 @@ class FeatureRun {
 			return NEXT;
 		}
 		this.built.add(ticket.id);
-		this.ticketsBuilt += 1;
 		if (test !== undefined) this.tests.set(ticket.id, test);
 		if (this.shown?.kind === 'building') {
 			// no round of its own any more, so it is not counted as another fix round
@@ -893,15 +890,13 @@ class FeatureRun {
 				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
-		// a push of only a Feedback round's commit leaves nothing on the branch when it fails; one with a Ticket's commit keeps it for the next Go
-		const feedbackOnly = this.answered !== null && this.ticketsBuilt === 0;
-		const pushed = await pushBranch(this.deps, this.setup, this.tree, id, !feedbackOnly);
+		const carries = this.answered === null ? 'build' : 'feedbackRound';
+		const pushed = await pushBranch(this.deps, this.setup, this.tree, id, carries);
 		if (pushed.kind === 'diverged') {
 			// a pause put the Go back, and the Feature is now with a person
 			await tracker.removeSignal(id, 'go');
 			return { kind: 'diverged', side: pushed.side };
 		}
-		// handed back as any fault of a build is, with its Feedback unanswered
 		if (pushed.kind === 'fault') throw pushed.fault;
 		const complete = left.length === 0 && red === null && paused === null;
 		const ids = done.map((t) => t.id);
@@ -1327,7 +1322,7 @@ export type PullFixOutcome =
 	  }
 	// the pull request has had its `rounds` fix rounds: no Session, and the Feature is handed to a person
 	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
-	// a green fix whose push was rejected because a person pushed to the branch: it is kept on `side`, and the Feature is handed to a person
+	// a green fix whose push was rejected because a person pushed to the branch: it waits on `side`, and the Feature is handed to a person
 	| {
 			readonly kind: 'diverged';
 			readonly pull: Pull;
@@ -1335,7 +1330,7 @@ export type PullFixOutcome =
 			readonly side: string;
 			readonly usd: number;
 	  }
-	// a green fix whose push failed on a fault: it is kept on a side branch, the branch is the Code host's again, and the queue hands the Feature back with needs info
+	// a green fix whose push failed on a fault: the queue hands the Feature back with needs info
 	| {
 			readonly kind: 'faulted';
 			readonly pull: Pull;
@@ -1598,7 +1593,7 @@ async function pullFixRound(
 	if (!(await tree.commitPullFix(round, summary, session))) {
 		return gaveUp('the Session changed no file', fixed.spent);
 	}
-	const pushed = await pushBranch(deps, setup, tree, feature.id, false);
+	const pushed = await pushBranch(deps, setup, tree, feature.id, 'pullFix');
 	if (pushed.kind === 'diverged') {
 		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
 	}
@@ -1616,19 +1611,22 @@ async function pullFixRound(
 	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
 }
 
-// How a push of a Feature's branch ended: on the Code host; set aside on `side` because a person pushed to the branch first; or failed on a fault, with the work set aside on `side` so the branch holds no unpushed commit.
+// How a push ended: on the Code host; set aside on `side` because a person pushed first; or failed on a fault.
 export type PushEnd =
 	| { readonly kind: 'pushed' }
 	| { readonly kind: 'diverged'; readonly side: string }
-	| { readonly kind: 'fault'; readonly fault: unknown; readonly side: string };
+	| { readonly kind: 'fault'; readonly fault: unknown };
 
-// Every push of a Feature's branch. One that fails is sorted by git, never by what the push said (ADR 0010): a branch a person pushed to hands the Feature to them. Any other failure is thrown with the branch left ahead when `keeps` (it holds Ticket commits, which the next Go pushes); otherwise the work is set aside, so a Feedback round's commit never counts as answered and a Pull-check fix never blocks the next pass, and the fault is handed back.
+// What a push carries: on a fault a Pull-check fix is set aside, and a Feedback round's commit too unless an unpushed Ticket's commit lies under it.
+type Carries = 'build' | 'feedbackRound' | 'pullFix';
+
+// Every push of a Feature's branch; a failure is sorted by git, never by the message (ADR 0010).
 async function pushBranch(
 	deps: Deps,
 	setup: Setup,
 	tree: Worktree,
 	feature: ItemId,
-	keeps: boolean
+	carries: Carries
 ): Promise<PushEnd> {
 	const { branch } = tree.at;
 	try {
@@ -1636,21 +1634,18 @@ async function pushBranch(
 		return { kind: 'pushed' };
 	} catch (fault) {
 		const outcome = await tree.pushOutcome();
-		if (outcome === 'fault') {
-			if (keeps) throw fault;
-			const side = await tree.setAsidePush();
-			deps.say(
-				`${hash(feature)}: the push of ${branch} failed: ${why(fault)}; the work is kept on ${side}`
-			);
-			return { kind: 'fault', fault, side };
-		}
 		if (outcome === 'pushed') {
 			deps.say(
 				`${hash(feature)}: the push of ${branch} failed, yet the Code host holds it: ${why(fault)}`
 			);
 			return { kind: 'pushed' };
 		}
+		if (outcome === 'fault') {
+			return { kind: 'fault', fault: await setAsideOnFault(tree, carries, fault) };
+		}
 		const side = await tree.setAsidePush();
+		// a branch that diverged has a remote head, so none to go back to is a fault like any other
+		if (side === null) return { kind: 'fault', fault };
 		await deps.tracker.addSignal(feature, 'human');
 		await deps.tracker.comment(feature, branchMovedComment(setup.signals, branch, side));
 		deps.say(
@@ -1658,6 +1653,14 @@ async function pushBranch(
 		);
 		return { kind: 'diverged', side };
 	}
+}
+
+// The fault a push ended on, naming the side branch when the work was set aside so that no unpushed commit counts as done or holds a pass back.
+async function setAsideOnFault(tree: Worktree, carries: Carries, fault: unknown): Promise<unknown> {
+	const keeps =
+		carries === 'build' || (carries === 'feedbackRound' && (await tree.holdsUnpushedTicket()));
+	const side = keeps ? null : await tree.setAsidePush();
+	return side === null ? fault : new Error(`${why(fault)}; the work is kept on ${side}`);
 }
 
 async function reviewFeature(
@@ -1885,7 +1888,7 @@ function reviewOpenComment(url: string, open: ReviewLeftOpen, review: Review): s
 // What a Feature is told when a push of its branch is rejected because a person pushed to it, whatever the push followed.
 export function branchMovedComment(n: SignalNames, branch: string, side: string): string {
 	return withNext(
-		`Nightjar could not push to \`${branch}\`: the branch moved on the Code host while Nightjar worked, so a person has pushed to it. Nightjar set its own work aside on the local branch \`${side}\`, put \`${branch}\` back at the Code host's head, and will not push to this draft pull request again on its own.`,
+		`Nightjar could not push to \`${branch}\`: the branch moved on the Code host while Nightjar worked, so a person has pushed to it. Nightjar set its own work aside on the local branch \`${side}\`, put \`${branch}\` back at the Code host's head, and will not push to it again on its own.`,
 		pushRejectedStep(n, side)
 	);
 }
