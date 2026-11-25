@@ -5,6 +5,7 @@ import { codeHostContract, type CodeHostHarness, type CodeHostSubject } from './
 import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { openPullsContract } from './open-pulls.js';
+import { botPullsContract } from './bot-pulls.js';
 import { publishContract } from './publish.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
@@ -104,7 +105,7 @@ async function optionalSuites(harness: TrackerHarness): Promise<{
 // Whether the Code host has `method`; a harness that cannot build one has failed every case already.
 async function hasMethod(
 	harness: CodeHostHarness,
-	method: 'nightjarDrafts' | 'publish'
+	method: 'nightjarDrafts' | 'publish' | 'botPulls'
 ): Promise<boolean> {
 	let subject: CodeHostSubject;
 	try {
@@ -188,6 +189,11 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		}
 		if (await hasMethod(codeHost as CodeHostHarness, 'publish')) {
 			suites.push(await runSuite('Code host publish', publishContract, codeHost as never));
+		}
+		if (await hasMethod(codeHost as CodeHostHarness, 'botPulls')) {
+			suites.push(
+				await runSuite('Code host bot pull requests', botPullsContract, codeHost as never)
+			);
 		}
 	}
 	const all = suites.flatMap((s) => s.results);

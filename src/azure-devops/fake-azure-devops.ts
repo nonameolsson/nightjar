@@ -212,6 +212,8 @@ export class FakeAzureDevOps {
 	private readonly pulls: FakePullRequest[] = [];
 	// the `mergeStatus` of each pull request Azure Repos has settled; succeeded when not set
 	private readonly mergeStatuses = new Map<number, string>();
+	// the pull requests whose source branch is in a fork
+	private readonly forked = new Set<number>();
 	// the artifact links on each work item, such as one to a pull request
 	private readonly artifacts = new Map<number, string[]>();
 	// the commit each pushed branch points at
@@ -364,6 +366,12 @@ export class FakeAzureDevOps {
 	// A person publishes the draft, abandons it, or completes it.
 	markReady(id: number): void {
 		this.replacePull({ ...this.pullRequestAt(id), isDraft: false });
+	}
+
+	// The pull request comes from a fork of the repo.
+	fork(id: number): void {
+		this.pullRequestAt(id);
+		this.forked.add(id);
 	}
 
 	abandon(id: number): void {
@@ -1000,6 +1008,9 @@ export class FakeAzureDevOps {
 			description: pull.description,
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
+			...(this.forked.has(pull.pullRequestId)
+				? { forkSource: { repository: { name: 'fork' } } }
+				: {}),
 			isDraft: pull.isDraft,
 			mergeStatus: this.mergeStatuses.get(pull.pullRequestId) ?? 'succeeded',
 			// each pull request opens a minute after the one before

@@ -2,6 +2,7 @@
 import { describe, it } from 'vitest';
 import {
 	assignContract,
+	botPullsContract,
 	codeHostContract,
 	featureWriterContract,
 	nightjarDraftsContract,
@@ -77,4 +78,8 @@ describe('FakeCodeHost meets the openPulls contract', () => {
 
 describe('FakeCodeHost meets the publish contract', () => {
 	for (const c of publishContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the botPulls contract', () => {
+	for (const c of botPullsContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });

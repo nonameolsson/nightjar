@@ -377,6 +377,31 @@ describe('nightjar doctor over Sources', () => {
 		);
 	});
 
+	it('lists a botPulls Source with its prefixes and its next read, and wants no secret', async () => {
+		withSources({
+			deps: {
+				type: 'botPulls',
+				branchPrefixes: ['dependabot/', 'renovate/'],
+				cron: '@daily',
+				template: 'bot-pull'
+			}
+		});
+		const checked = await checkMachine({
+			useApiKey: false,
+			os: LINUX,
+			env: m.env,
+			cwd: m.root,
+			failFast: false,
+			gh: github.gh,
+			now: () => new Date(2026, 10, 3, 12, 0)
+		});
+		const line = checked.lines.find((l) => l.source === 'deps');
+		expect(line?.status).toBe('ok');
+		expect(line?.detail).toBe(
+			'botPulls of dependabot/, renovate/, next read 2026-11-04 00:00, template bot-pull is in shape'
+		);
+	});
+
 	it('refuses a Source whose secretEnv variable is unset or empty, and names it', async () => {
 		withSources();
 		for (const env of [{} as Record<string, string>, { SENTRY_HOOK_SECRET: '' }]) {

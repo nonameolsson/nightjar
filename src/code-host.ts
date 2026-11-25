@@ -107,6 +107,18 @@ export interface OpenPull {
 	readonly changesRequested: readonly ChangeRequest[];
 }
 
+// An open pull request a dependency bot opened from one of this repo's own branches, as a botPulls Source reads it.
+export interface BotPull {
+	readonly pull: Pull;
+	// the bot's title, such as `Bump left-pad from 1.0.0 to 1.1.0`; outside text, so the Source cleans it
+	readonly title: string;
+	// its head branch, which starts with one of the Source's prefixes
+	readonly branch: string;
+	// the commit its head branch points at, which its Pull checks ran on
+	readonly headCommit: string;
+	readonly checks: PullChecks;
+}
+
 // Whether a pull request conflicts with its base branch; unknown while the host has not worked it out.
 export type ConflictState = 'yes' | 'no' | 'unknown';
 
@@ -133,4 +145,6 @@ export interface CodeHost {
 	conflicts?(pull: Pull): Promise<ConflictState>;
 	// optional, so a Code host module written before it still loads: takes Nightjar's own draft pull request out of draft (docs/adr/0006); one already out of draft stays so. It never merges, approves or closes one, and never turns one back into a draft. A Code host without it never publishes.
 	publish?(pull: Pull): Promise<void>;
+	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with any of `prefixes`, oldest first, with the Pull checks on each head commit; one from a fork is left out. A Code host without it cannot serve a botPulls Source.
+	botPulls?(prefixes: readonly string[]): Promise<BotPull[]>;
 }

@@ -49,7 +49,7 @@ One instruction in a Workflow, given to the Coding agent at a fixed point in a b
 _Avoid_: Stage, phase, hook, task
 
 **Source**:
-A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule or a signed webhook. `nightjar intake` runs it; it builds nothing, and makes no Signal unless it has `"go": true`, which gives each Feature a standing Go in its owner's name. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
+A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule, a signed webhook, or a `botPulls` Source, which reads a dependency bot's red pull requests at a cron time and makes a Feature for each, built on the bot's branch (its `**Base:**` line). `nightjar intake` runs it; it builds nothing, and makes no Signal unless it has `"go": true`, which gives each Feature a standing Go in its owner's name. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
 _Avoid_: trigger, automation, integration, hook, feed
 
 ### Steering

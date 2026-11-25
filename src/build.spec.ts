@@ -53,7 +53,8 @@ import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
 import { DEFAULT_SIGNAL_NAMES, type Signal } from './signals.js';
-import { openWorktree } from './worktree.js';
+import { openWorktree, type OpenWorktree } from './worktree.js';
+import { baseLine, botPullMarker } from './base-line.js';
 
 // A test over real git runs a few dozen processes, which take seconds on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
@@ -4369,5 +4370,86 @@ describe('pullFixLimits', () => {
 			pullFixUsd: 5,
 			pullFixMinutes: 10
 		});
+	});
+});
+
+describe('a Feature with a **Base:** line, as a botPulls Source makes one', () => {
+	const BOT_BRANCH = 'dependabot/npm_and_yarn/left-pad-1.1.0';
+
+	// the Feature of the world, its body naming the bot's branch and pull request
+	const fromBot = async (world: World, body: string) => {
+		world.tracker.add({
+			id: '1',
+			title: 'One escape',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['3', '2'],
+			body
+		});
+		const bot = await world.host.createDraft({
+			title: 'Bump left-pad from 1.0.0 to 1.1.0',
+			head: BOT_BRANCH,
+			base: 'main',
+			body: 'Release notes.'
+		});
+		world.host.markReady(bot);
+		return bot;
+	};
+
+	const opening = (world: World) => {
+		const bases: string[] = [];
+		const inner = deps(world);
+		const open: OpenWorktree = (root, worktrees, branch, baseBranch, env) => {
+			bases.push(`${branch} from ${baseBranch}`);
+			return inner.openWorktree(root, worktrees, branch, baseBranch, env);
+		};
+		return { bases, deps: { ...inner, openWorktree: open } };
+	};
+
+	it("cuts the Feature's branch from that ref, and opens its own draft against the base branch", async () => {
+		const world = makeWorld();
+		const bot = await fromBot(world, `A red bot pull request.\n\n${baseLine(BOT_BRANCH)}\n`);
+		const { bases, deps: withBases } = opening(world);
+		await buildFeature(withBases, setup(world), '1');
+		expect(bases).toEqual([`factory/1-one-escape from ${BOT_BRANCH}`]);
+		const mine = world.host.pulls.filter((p) => p.id !== bot.id);
+		expect(mine).toHaveLength(1);
+		expect(mine[0]).toMatchObject({ base: 'main', head: 'factory/1-one-escape' });
+		// the bot's branch is never pushed to
+		expect(world.host.pushes.map((p) => p.branch)).not.toContain(BOT_BRANCH);
+	});
+
+	it("comments on the bot's pull request with a link to its own, once, and closes nothing", async () => {
+		const world = makeWorld();
+		const body = `A red bot pull request.\n\n${baseLine(BOT_BRANCH)}\n`;
+		const bot = await fromBot(world, `${body}<!-- placeholder -->`);
+		world.tracker.add({
+			id: '1',
+			title: 'One escape',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['3', '2'],
+			body: `${body}${botPullMarker(bot)}\n`
+		});
+		await buildFeature(deps(world), setup(world), '1');
+		const mine = world.host.pulls.find((p) => p.id !== bot.id);
+		const shown = world.host.pulls.find((p) => p.id === bot.id);
+		expect(shown?.comments).toHaveLength(1);
+		expect(shown?.comments[0]).toContain(mine?.url ?? 'no draft');
+		expect(shown?.open).toBe(true);
+		// a later run updates its own draft and says nothing more on the bot's
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.host.pulls.find((p) => p.id === bot.id)?.comments).toHaveLength(1);
+	});
+
+	it('builds nothing and says why when the line names no branch', async () => {
+		const world = makeWorld();
+		await fromBot(world, 'A Feature.\n\n**Base:** a..b\n');
+		const outcome = await buildFeature(deps(world), setup(world), '1');
+		expect(outcome.kind).toBe('nothing');
+		expect(world.host.pushes).toEqual([]);
+		expect(world.tracker.items.get('1')?.signals).toContain('needsInfo');
+		expect(world.tracker.said('1').join('\n')).toContain('a..b');
 	});
 });
