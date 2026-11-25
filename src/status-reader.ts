@@ -16,6 +16,7 @@ import {
 	featureStart,
 	readStatus,
 	statusPath,
+	type Building,
 	type Event,
 	type Status
 } from './status.js';
@@ -30,15 +31,26 @@ export interface Completed {
 	readonly builtTickets?: number;
 }
 
+// One busy Slot's build as a view shows it: its own Session tail and what its sessions cost.
+export interface BuildView {
+	readonly build: Building;
+	// the last readable lines of this build's Session log, oldest first
+	readonly tail: readonly string[];
+	// what this build's sessions cost since it started
+	readonly costUsd: number;
+}
+
 export interface FactoryView {
 	readonly status: Status | null;
 	// status.json's pid is not alive, whatever `doing` says
 	readonly stopped: boolean;
-	// the last readable lines of the current session's log, oldest first
+	// the last readable lines of the oldest build's Session log, oldest first
 	readonly tail: readonly string[];
+	// one entry per busy Slot, oldest first; absent in a hand-made view, where `buildViews` makes one from `tail` and `featureCostUsd`
+	readonly builds?: readonly BuildView[];
 	// the pull and failed events in `recent`, oldest first
 	readonly completed: readonly Completed[];
-	// what the current build's sessions cost since it started; 0 when nothing is building
+	// what the oldest build's sessions cost since it started; 0 when nothing is building
 	readonly featureCostUsd: number;
 	// Tickets built on the local day
 	readonly builtToday: number;
@@ -123,9 +135,7 @@ function readEnd(path: string): string | null {
 	}
 }
 
-function sessionTail(root: string, status: Status | null, keep: number): string[] {
-	// the oldest build's Session; each Slot's own tail is a view's to ask for
-	const session = status === null ? null : (buildsOf(status)[0]?.session ?? null);
+function sessionTail(root: string, session: string | null, keep: number): string[] {
 	if (session === null) return [];
 	const text = readEnd(join(logsPath(root), `${session}.jsonl`));
 	if (text === null) return [];
@@ -139,20 +149,25 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 	const status = readStatus(statusPath(root));
 	const alive = options.alive ?? pidAlive;
 	const spent = spends(ledgerPath(root));
-	// the oldest build, which `featureCostUsd` follows; an older file's `doing` is its one build
-	const oldest = status === null ? undefined : buildsOf(status)[0];
+	const keep = options.tail ?? TAIL_LINES;
+	// an older file's `doing` is its one build
+	const busy = status === null ? [] : buildsOf(status);
+	const builds = busy.map((build): BuildView => ({
+		build,
+		tail: sessionTail(root, build.session, keep),
+		// a session recorded the moment the build starts is its own
+		costUsd: spentOnFeature(spent, build.feature, Date.parse(featureStart(build)) - 1, null)
+	}));
 	const done = (status?.recent ?? []).filter(isDone);
 	return {
 		status,
-		featureCostUsd:
-			oldest === undefined
-				? 0
-				: // a session recorded the moment the build starts is its own
-					spentOnFeature(spent, oldest.feature, Date.parse(featureStart(oldest)) - 1, null),
+		builds,
+		// the oldest build's, which an older reader follows
+		featureCostUsd: builds[0]?.costUsd ?? 0,
 		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),
-		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
+		tail: builds[0]?.tail ?? [],
 		completed: done.map((event, i) => {
 			const before = done.slice(0, i).findLast((e) => e.feature === event.feature);
 			const after = before === undefined ? null : Date.parse(before.at);

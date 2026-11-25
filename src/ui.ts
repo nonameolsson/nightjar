@@ -8,7 +8,7 @@ import { lastRepo, ledgerPath } from './ledger.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
 import { linksFor, NO_LINKS, type Links } from './ui-links.js';
-import { readFactory, type Completed, type FactoryView } from './status-reader.js';
+import { readFactory, type BuildView, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
 	HandBack,
@@ -19,10 +19,12 @@ import type {
 } from './status-shape.js';
 import { featureStart } from './status.js';
 import {
+	buildViews,
 	countdown,
 	dollars,
 	elapsed,
 	idText,
+	pauseOf,
 	pollAfter,
 	running,
 	retryText,
@@ -67,13 +69,14 @@ const clock = (iso: string) =>
 function header(repo: string, view: FactoryView): string {
 	const doing = view.status?.doing;
 	const after = pollAfter(view);
+	const pause = pauseOf(view);
 	const poll =
 		after !== null
 			? ` <span>next poll after ${escape(after)}</span>`
 			: doing?.kind === 'idle' && running(view)
 				? ` <span>next poll <time data-until="${escape(doing.nextPollAt)}"></time></span>`
-				: doing?.kind === 'paused' && running(view)
-					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
+				: pause !== null && running(view)
+					? ` <span>${escape(pause.why)}${pause.until === null ? '' : ` until <time datetime="${escape(pause.until)}">${clock(pause.until)}</time>`}</span>`
 					: '';
 	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}</header>`;
 }
@@ -116,6 +119,9 @@ function stepLine(doing: Building): string {
 	return `${where}${stepText(doing.step)}${round}${again}`;
 }
 
+// A paused run lets the Sessions it has finish; their panels say so.
+const finishingText = (paused: boolean) => (paused ? 'Finishing: ' : '');
+
 // One `<li>` per Ticket, in order, with its state and why.
 function ticketItems(tickets: readonly TicketProgress[], links: Links): string {
 	return tickets
@@ -127,18 +133,21 @@ function ticketItems(tickets: readonly TicketProgress[], links: Links): string {
 }
 
 function current(view: FactoryView, links: Links): string {
-	const doing = view.status?.doing;
-	let body = '<p class="empty">nothing is being built</p>';
-	if (doing?.kind === 'building' && running(view)) {
-		const tickets = doing.tickets ?? [];
-		const progress = ticketItems(tickets, links);
-		const tail = view.tail.map(escape).join('\n');
-		body =
-			`<p>${idHtml(doing.feature, links)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
-			`<p>${stepLine(doing)}</p>` +
+	const builds = running(view) ? buildViews(view) : [];
+	const paused = pauseOf(view) !== null;
+	// one block per busy Slot, oldest first, each with its own Session tail
+	const one = ({ build: doing, tail, costUsd }: BuildView) => {
+		const progress = ticketItems(doing.tickets ?? [], links);
+		const lines = tail.map(escape).join('\n');
+		return (
+			`<p>${idHtml(doing.feature, links)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(costUsd)}</p>` +
+			`<p>${finishingText(paused)}${stepLine(doing)}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
-			(tail === '' ? '' : `<pre>${tail}</pre>`);
-	}
+			(lines === '' ? '' : `<pre>${lines}</pre>`)
+		);
+	};
+	const body =
+		builds.length === 0 ? '<p class="empty">nothing is being built</p>' : builds.map(one).join('');
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
@@ -229,6 +238,11 @@ const estimateHtml = (ms: number | null) =>
 interface BuildingCard extends FeatureCard {
 	readonly state: 'building';
 	readonly doing: Building;
+	// the build's own Session tail and cost
+	readonly tail: readonly string[];
+	readonly costUsd: number;
+	// the run is paused and this Session runs on to its end
+	readonly finishing: boolean;
 }
 interface Progress {
 	readonly built: number;
@@ -293,7 +307,8 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 interface Features {
 	// each is undefined while Nightjar is off or has not read it yet
 	readonly queue: readonly QueuedCard[] | undefined;
-	readonly building: BuildingCard | null;
+	// one per busy Slot, oldest first
+	readonly building: readonly BuildingCard[];
 	readonly waiting: readonly WaitingCard[] | undefined;
 	readonly trackerCannotList: boolean;
 	// newest first
@@ -303,30 +318,33 @@ interface Features {
 // The one list of Features, built from what the reader gives.
 function features(view: FactoryView): Features {
 	const status = view.status;
-	const doing = status?.doing;
 	const on = running(view);
-	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
-	const building: BuildingCard | null =
-		doing?.kind === 'building' && on
-			? {
-					state: 'building',
-					id: doing.feature,
-					...(doing.title === undefined ? {} : { title: doing.title }),
-					waitingTickets: tickets
-						.filter((t) => t.state === 'waiting')
-						.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
-					// from its own Ticket list, which is empty until the Tickets are planned
-					progress:
-						tickets.length === 0
-							? null
-							: {
-									built: tickets.filter((t) => t.state === 'built').length,
-									total: tickets.length,
-									counts: BUILT_NOW
-								},
-					doing
-				}
-			: null;
+	const finishing = pauseOf(view) !== null;
+	const building = (on ? buildViews(view) : []).map(({ build: doing, tail, costUsd }) => {
+		const tickets = doing.tickets ?? [];
+		const card: BuildingCard = {
+			state: 'building',
+			id: doing.feature,
+			...(doing.title === undefined ? {} : { title: doing.title }),
+			waitingTickets: tickets
+				.filter((t) => t.state === 'waiting')
+				.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
+			// from its own Ticket list, which is empty until the Tickets are planned
+			progress:
+				tickets.length === 0
+					? null
+					: {
+							built: tickets.filter((t) => t.state === 'built').length,
+							total: tickets.length,
+							counts: BUILT_NOW
+						},
+			doing,
+			tail,
+			costUsd,
+			finishing
+		};
+		return card;
+	});
 	const found = on ? status?.waitingOnYou : undefined;
 	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
 	const totals = new Map<string, number>();
@@ -386,9 +404,9 @@ function features(view: FactoryView): Features {
 				};
 			});
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
-		const owner = (building ?? completed[0])?.id ?? '';
+		const owner = (building[0] ?? completed[0])?.id ?? '';
 		const titleOf = (id: string) =>
-			[building, ...completed].find((c) => c?.id === id && c.title !== undefined)?.title;
+			[...building, ...completed].find((c) => c.id === id && c.title !== undefined)?.title;
 		const byFeature = new Map<string, WaitingTicket[]>();
 		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
 			const id = t.feature ?? owner;
@@ -498,22 +516,22 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		card,
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
-		`<p class="label">Building</p><p>${stepLine(doing)}</p>`,
+		`<p class="label">${card.finishing ? 'Finishing' : 'Building'}</p><p>${stepLine(doing)}</p>`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`
 	);
 }
 
-// What the one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its Session.
-function detail(card: BuildingCard, view: FactoryView, links: Links): string {
+// What one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its own Session. A paused run's build says it is finishing.
+function detail(card: BuildingCard, links: Links): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
 	const steps = ticketItems(tickets, links);
-	const tail = view.tail.map(escape).join('\n');
+	const tail = card.tail.map(escape).join('\n');
 	return (
 		`<aside class="detail" aria-label="Building now"><p class="dk"><i></i>Building now</p>` +
-		`<h3>${feature(card, links)}</h3><p class="sub">${stepLine(doing)}</p>` +
+		`<h3>${feature(card, links)}</h3><p class="sub">${finishingText(card.finishing)}${stepLine(doing)}</p>` +
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
-		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
+		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(card.costUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
 		'</aside>'
 	);
@@ -635,7 +653,9 @@ function board(view: FactoryView, links: Links): string {
 				? emptyQueue(links)
 				: all.queue.map((q) => queuedCard(q, links)).join('');
 	const building =
-		all.building === null ? none('nothing is being built') : buildingCard(all.building, links);
+		all.building.length === 0
+			? none('nothing is being built')
+			: all.building.map((b) => buildingCard(b, links)).join('');
 	let waiting: string;
 	if (!on) waiting = OFF;
 	else if (all.waiting === undefined) waiting = none('not read yet');
@@ -648,12 +668,16 @@ function board(view: FactoryView, links: Links): string {
 		all.completed.length === 0
 			? none('nothing has finished yet')
 			: all.completed.map((c) => completedCard(c, links)).join('');
-	const side = all.building === null ? '' : detail(all.building, view, links);
+	// one panel per build, oldest first, stacked in one column beside the Mats
+	const side =
+		all.building.length === 0
+			? ''
+			: `<div class="details">${all.building.map((b) => detail(b, links)).join('')}</div>`;
 	return (
 		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
 		group('waiting', 'Waiting on you', on ? (all.waiting?.length ?? null) : null, waiting) +
-		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
+		group('building', 'Building', on ? all.building.length : null, building) +
 		group('queue', 'Queue', on ? (all.queue?.length ?? null) : null, queued) +
 		group('completed', 'Completed', all.completed.length, completed) +
 		`</div>${side}</div></div>`
@@ -702,17 +726,17 @@ function table(view: FactoryView, links: Links): string {
 			outcomeText: '',
 			progress: card.progress
 		});
-	if (all.building !== null) {
+	for (const card of all.building) {
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
-			card: all.building,
+			card,
 			state: 'building',
 			time: null,
-			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
-			cost: view.featureCostUsd,
+			timeText: `<time data-since="${escape(featureStart(card.doing))}"></time>`,
+			cost: card.costUsd,
 			outcome: '',
 			outcomeText: '',
-			progress: all.building.progress
+			progress: card.progress
 		});
 	}
 	for (const card of all.waiting ?? []) {
@@ -1108,7 +1132,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .entry.failed .now .label, .entry.failed .now p { color: var(--err); }
 .tickets li { font: 0.85rem var(--mono); padding: 2px 0 2px 4px; }
 .tickets li.waiting { color: var(--amber); }
-.detail { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: sticky; top: 16px; }
+.details { display: grid; gap: 16px; position: sticky; top: 16px; }
+.detail { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: relative; }
 .detail::before, .detail::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
 .detail::before { border-bottom: 0; border-right: 0; left: -1px; top: -1px; }
 .detail::after { border-left: 0; border-top: 0; bottom: -1px; right: -1px; }
@@ -1184,7 +1209,7 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 }
 @media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
-	.detail { order: -1; position: static; }
+	.details { order: -1; position: static; }
 }
 @media (pointer: coarse) {
 	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }

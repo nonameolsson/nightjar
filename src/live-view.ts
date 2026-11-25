@@ -1,11 +1,13 @@
 // The live terminal view's block: a pure function from what the reader found, the clock and a width to lines.
-import type { FactoryView } from './status-reader.js';
-import { featureStart, type Doing, type Status, type TicketProgress } from './status.js';
+import type { BuildView, FactoryView } from './status-reader.js';
+import { featureStart, type Building, type Status, type TicketProgress } from './status.js';
 import {
+	buildViews,
 	countdown,
 	dollars,
 	elapsed,
 	idText,
+	pauseOf,
 	pollAfter,
 	running,
 	retryText,
@@ -50,13 +52,12 @@ function header(o: BlockOptions, view: FactoryView): string {
 	const doing = status.doing;
 	const until = (at: string | null) =>
 		at === null ? '' : `${SEP}next poll ${countdown(new Date(at).getTime() - o.now.getTime())}`;
+	const pause = pauseOf(view);
+	if (pause !== null) return `${head}${SEP}paused: ${pause.why}${until(pause.until)}`;
 	if (doing.kind === 'idle') return `${head}${SEP}idle${until(doing.nextPollAt)}`;
-	if (doing.kind === 'paused') return `${head}${SEP}paused: ${doing.why}${until(doing.until)}`;
 	const after = pollAfter(view);
 	return `${head}${SEP}watching${after === null ? '' : `${SEP}next poll after ${after}`}`;
 }
-
-type Building = Extract<Doing, { kind: 'building' }>;
 
 function progressText(doing: Building, tickets: readonly TicketProgress[] | undefined): string {
 	const round =
@@ -73,19 +74,25 @@ function progressText(doing: Building, tickets: readonly TicketProgress[] | unde
 	return `${position}  ${step}`;
 }
 
-function current(o: BlockOptions, view: FactoryView, doing: Building): string[] {
+// One Slot's build: its Feature with clock and cost, where it stands, its bar and the newest line of its own Session. A paused run's running build says it is finishing.
+function current(
+	o: BlockOptions,
+	{ build: doing, tail, costUsd }: BuildView,
+	paused: boolean
+): string[] {
 	const label = `● ${idText(doing.feature)}${doing.title === undefined ? '' : ` ${doing.title}`}`;
-	const right = `${elapsed(o.now.getTime() - new Date(featureStart(doing)).getTime())}   ${dollars(view.featureCostUsd)}`;
+	const right = `${elapsed(o.now.getTime() - new Date(featureStart(doing)).getTime())}   ${dollars(costUsd)}`;
 	const room = Math.max(1, o.width - Array.from(right).length - 1);
 	const left = fit(label, room);
 	const gap = ' '.repeat(Math.max(1, o.width - Array.from(left).length - Array.from(right).length));
-	const lines = [`${left}${gap}${right}`, `  ${progressText(doing, doing.tickets)}`];
+	const finishing = paused ? 'finishing: ' : '';
+	const lines = [`${left}${gap}${right}`, `  ${finishing}${progressText(doing, doing.tickets)}`];
 	const { tickets } = doing;
 	if (tickets !== undefined && tickets.length > 0) {
 		const built = tickets.filter((t) => t.state === 'built').length;
 		lines.push(`  ${bar(built, tickets.length, Math.min(BAR_MAX, o.width - 2))}`);
 	}
-	const newest = view.tail.at(-1);
+	const newest = tail.at(-1);
 	if (newest !== undefined) lines.push(`  ▸ ${newest}`);
 	return lines;
 }
@@ -136,8 +143,11 @@ export function renderBlock(view: FactoryView, o: BlockOptions): string[] {
 	const out: string[] = [header(o, view)];
 	const { status } = view;
 	if (status !== null) {
-		const building = running(view) && status.doing.kind === 'building' ? status.doing : null;
-		if (building !== null) out.push('', ...current(o, view, building));
+		// one panel per busy Slot, oldest first
+		const paused = pauseOf(view) !== null;
+		if (running(view)) {
+			for (const build of buildViews(view)) out.push('', ...current(o, build, paused));
+		}
 		out.push('', today(status, view.builtToday));
 		if (running(view)) out.push('', ...listed(status));
 		const done = recent(view);

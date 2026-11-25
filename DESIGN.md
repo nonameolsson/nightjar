@@ -210,7 +210,7 @@ A bordered rectangle tinted from its left by 12% of its state hue. Left rail is 
 - Sockets are 1.75rem circles on 35% black with a Socket Border ring.
 
 ### Building-Now Panel
-Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
+One panel per busy Slot, oldest first, stacked in one column with a 16px gap; the column is the sticky element, so the panels move together. While the run is paused, a panel's step line starts "Finishing:" and its Building Mat row says Finishing. Mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
 
 ### Chips and Table
 Filter chips are pill outlines in Deep Teal with teal text; on state they fill Signal Teal with void text. Table headers are tracked mono buttons that turn teal when sorted, with a rotated-border chevron for direction; rows have Line bottom borders.
