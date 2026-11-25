@@ -292,6 +292,51 @@ describe('the page over what it read of the Tracker', () => {
 			expect(section).toContain('Lone issue');
 		});
 
+		it('takes a Feature with finished runs off Completed while it sits on the Shelf, its runs on its card', async () => {
+			const file = new StatusFile({
+				path: join(root, '.factory', 'status.json'),
+				spend: fileSpend(ledgerPath(root)),
+				now: () => at,
+				pid: 42,
+				dailyUsd: 8
+			});
+			file.happened({ kind: 'failed', feature: '6', title: 'Old idea', why: 'push refused' });
+			file.happened({
+				kind: 'pull',
+				feature: '7',
+				title: 'Reports',
+				url: 'https://example.test/pull/7'
+			});
+			file.happened({
+				kind: 'pull',
+				feature: '7',
+				title: 'Reports',
+				url: 'https://example.test/pull/8'
+			});
+			file.happened({
+				kind: 'pull',
+				feature: '40',
+				title: 'Exports',
+				url: 'https://example.test/pull/9'
+			});
+			const html = panels({ last: await read(shelfTracker()), fault: null });
+			const shelf = mat(html, 'shelf');
+			expect(shelf).toContain('1 earlier run, the latest failed');
+			expect(shelf).toContain('2 earlier runs, the latest:');
+			expect(shelf).toContain('pull/8"');
+			const done = mat(html, 'completed');
+			expect(done).toContain('<h2>Completed</h2><i class="tally">1</i>');
+			expect(done).toContain('Exports');
+			expect(done).not.toContain('Old idea');
+			expect(done).not.toContain('Reports');
+			const [, rest = ''] = html.split('<div class="table">');
+			const table = rest.split('<div class="overview">')[0] ?? '';
+			expect(table).toMatch(/<tr data-state="shelf"[^>]*data-title="Old idea"[^]*?1 earlier run/);
+			const overview = rest.split('<div class="overview">')[1] ?? '';
+			const onShelf = overview.split('<section id="shelf">')[1]?.split('</section>')[0] ?? '';
+			expect(onShelf).toContain('1 earlier run, the latest failed');
+		});
+
 		it('lists at most 50, then "and N more in the Tracker" as a link to their open issues', async () => {
 			const tracker = shelfTracker();
 			for (let i = 0; i < SHELF_MAX; i += 1)
