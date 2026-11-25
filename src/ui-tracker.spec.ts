@@ -402,7 +402,9 @@ describe('the page over what it read of the Tracker', () => {
 		expect(mat(html, 'queue')).not.toContain('Saved filters');
 		expect(mat(html, 'building')).toContain('Saved filters');
 		expect(mat(html, 'waiting')).toContain('Audit log');
-		expect(mat(html, 'waiting')).toContain('Facets');
+		// the building Feature's waiting Ticket sits on its Building card
+		expect(mat(html, 'building')).toContain('Facets');
+		expect(mat(html, 'waiting')).not.toContain('Facets');
 	});
 
 	it("shows status.json's lists while a run goes and no read has gone well yet", () => {

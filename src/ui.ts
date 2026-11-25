@@ -93,7 +93,7 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: bo
 	const last = tracker?.last ?? null;
 	if (last !== null) {
 		const doing = status?.doing;
-		// a Feature claimed since the read is Building, not queued
+		// a Feature claimed since the read is Building, not queued or waiting
 		const building = on && doing?.kind === 'building' ? doing.feature : null;
 		// the run knows which Tickets wait; the Tracker lists only Features
 		const tickets = on
@@ -103,7 +103,7 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: bo
 			known: true,
 			queue: last.queue.filter((q) => q.id !== building),
 			waitingOnYou: {
-				items: [...last.waiting, ...tickets],
+				items: [...last.waiting.filter((w) => w.id !== building), ...tickets],
 				trackerCannotList: last.trackerCannotList
 			},
 			shelf: last.shelf,
@@ -435,7 +435,7 @@ function features(view: FactoryView, lists: Lists): Features {
 	const doing = status?.doing;
 	const on = running(view);
 	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
-	const building: BuildingCard | null =
+	let building: BuildingCard | null =
 		doing?.kind === 'building' && on
 			? {
 					state: 'building',
@@ -527,6 +527,11 @@ function features(view: FactoryView, lists: Lists): Features {
 			byFeature.set(id, [...(byFeature.get(id) ?? []), ticket]);
 		}
 		for (const [id, tickets] of byFeature) {
+			// the building Feature's own waiting Tickets go on its Building card
+			if (building !== null && id === building.id) {
+				building = { ...building, waitingTickets: tickets };
+				continue;
+			}
 			const at = waiting.findIndex((w) => w.id === id);
 			const own = at < 0 ? undefined : waiting[at];
 			const title = titleOf(id);
@@ -664,7 +669,8 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
 		`<p class="label">Building</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
-		`<time data-since="${escape(featureStart(doing))}"></time>`
+		`<time data-since="${escape(featureStart(doing))}"></time>`,
+		waitingTicketsHtml(card, links)
 	);
 }
 
@@ -916,6 +922,10 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			progress: card.progress
 		});
 	if (all.building !== null) {
+		// its Tickets that wait on the person, as the Waiting rows say why
+		const waits = all.building.waitingTickets
+			.map((t) => `${idText(t.id)} ${t.title}: ${t.why}`)
+			.join('; ');
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
 			card: all.building,
@@ -923,8 +933,8 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: null,
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
-			outcome: '',
-			outcomeText: earlierHtml(all.building),
+			outcome: waits,
+			outcomeText: escape(waits) + earlierHtml(all.building),
 			progress: all.building.progress
 		});
 	}
