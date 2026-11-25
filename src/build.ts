@@ -195,7 +195,9 @@ export type FeatureOutcome =
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
-	| { readonly kind: 'stopped' };
+	| { readonly kind: 'stopped' }
+	// a person pushed to the branch first: the build's work waits on the local branch `side`, and the Feature is the person's
+	| { readonly kind: 'diverged'; readonly side: string };
 
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
@@ -886,7 +888,12 @@ class FeatureRun {
 				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
-		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
+		const pushed = await pushBranch(this.deps, this.setup, this.tree, id);
+		if (pushed.kind === 'diverged') {
+			// a pause put the Go back, and the Feature is now with a person
+			await tracker.removeSignal(id, 'go');
+			return { kind: 'diverged', side: pushed.side };
+		}
 		const complete = left.length === 0 && red === null && paused === null;
 		const ids = done.map((t) => t.id);
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;

@@ -236,8 +236,13 @@ export class FakeCodeHost implements CodeHost {
 		const found = this.pulls.find((p) => p.id === pull.id);
 		if (found === undefined)
 			throw new Error(`the fake Code host has no pull request ${String(pull.id)}`);
-		const had = this.branchCommits.get(found.head) ?? [];
-		this.branchCommits.set(found.head, [...had, { message, at: this.tick() }]);
+		this.branchMovedByPerson(found.head, message);
+	}
+
+	// a person pushes a commit of their own to a branch, which may have no pull request yet
+	branchMovedByPerson(branch: string, message = 'Fix a typo'): void {
+		const had = this.branchCommits.get(branch) ?? [];
+		this.branchCommits.set(branch, [...had, { message, at: this.tick() }]);
 	}
 
 	// what the host says of a conflict between the pull request and its base

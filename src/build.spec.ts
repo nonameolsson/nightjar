@@ -3404,6 +3404,146 @@ describe('a Feedback round on the draft pull request', () => {
 	});
 });
 
+describe('a push of the build that a person beat', () => {
+	const BRANCH = 'factory/1-one-escape';
+	const SIDE = `${BRANCH}-attempt-push`;
+
+	// the person pushes to the branch while a Session of the kind runs
+	const beatenDuring = (world: World, kind: Work['kind'], ticket?: string) => {
+		world.settle = (req) => {
+			const here = ticket === undefined || ('ticket' in req && req.ticket?.id === ticket);
+			if (req.kind === kind && here) world.host.branchMovedByPerson(BRANCH);
+			return undefined;
+		};
+	};
+
+	const feedbackOn = (world: World, pull: Pull) =>
+		world.host.give(pull, {
+			kind: 'comment',
+			author: 'ann',
+			body: 'Name it escapeHtml.',
+			trusted: true,
+			path: 'src/marks.ts',
+			line: 3
+		});
+
+	// Feature 1 built into a draft pull request
+	async function opened(world: World) {
+		const d = deps(world);
+		await buildFeature(d, setup(world), '1');
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		return { d, pull };
+	}
+
+	it("hands a complete Feature's Feedback round to a person, with no reply and no new body", async () => {
+		const world = makeWorld();
+		const { d, pull } = await opened(world);
+		const id = feedbackOn(world, pull);
+		const bodyBefore = world.host.pulls[0]?.body;
+		const said = world.tracker.said('1').length;
+		beatenDuring(world, 'feedback');
+
+		const got = await buildFeature(d, setup(world), '1');
+		expect(got).toEqual({ kind: 'diverged', side: SIDE });
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		const comments = world.tracker.said('1').slice(said);
+		expect(comments).toHaveLength(1);
+		expect(comments[0]).toContain(`\`${SIDE}\``);
+		expect(comments[0]).toContain('will not push to this draft pull request again');
+		expect(comments[0]?.endsWith(FOOTER)).toBe(true);
+		expect(world.host.threads).toEqual([]);
+		expect(world.host.pulls[0]?.body).toBe(bodyBefore);
+		expect(world.host.pulls[0]?.comments.some((c) => c.includes('Answered in'))).toBe(false);
+		// the round's commit is kept aside, and the branch here is the person's
+		expect(world.trees.sides.has(SIDE)).toBe(true);
+		expect(subjects(world).at(0)).toBe('Fix a typo');
+		expect(subjects(world)).not.toContain('Answer feedback on the pull request');
+
+		// the Go given again: the Feedback is unanswered, so it is answered on top of the person's commit
+		await world.tracker.removeSignal('1', 'human');
+		world.settle = () => undefined;
+		world.asked.length = 0;
+		await buildFeature(d, setup(world), '1');
+		expect(askedOf(world, 'feedback').flatMap((r) => r.feedback.map((f) => f.id))).toEqual([id]);
+		expect(subjects(world).at(0)).toBe('Answer feedback on the pull request');
+		expect(subjects(world)).toContain('Fix a typo');
+		expect(world.host.threads.map((t) => t.id)).toEqual([id]);
+	});
+
+	describe('a build with Ticket commits', () => {
+		it('sets its work aside, hands the Feature to a person with the Go off, and opens no draft', async () => {
+			const world = makeWorld();
+			beatenDuring(world, 'build', '3');
+
+			const got = await buildFeature(deps(world), setup(world), '1');
+			expect(got).toEqual({ kind: 'diverged', side: SIDE });
+			expect(world.tracker.signalsOf('1')).toEqual(['human']);
+			const comments = world.tracker.said('1');
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toContain(`\`${SIDE}\``);
+			expect(comments[0]).not.toContain('rejected');
+			expect(world.host.pulls).toEqual([]);
+			expect(world.trees.sides.get(SIDE)).toEqual(['ticket-2.txt', 'ticket-3.txt']);
+			expect(subjects(world)).toEqual(['Fix a typo']);
+		});
+
+		it('leaves the Go off also when the build paused before it pushed', async () => {
+			const world = makeWorld();
+			beatenDuring(world, 'build', '2');
+
+			const limits = { ...LIMITS, dailyUsd: 3 };
+			await buildFeature(deps(world), setup(world, { limits }), '1');
+			expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		});
+
+		it("builds on top of the person's commits when the Go is given again", async () => {
+			const world = makeWorld();
+			const d = deps(world);
+			beatenDuring(world, 'build', '3');
+			await buildFeature(d, setup(world), '1');
+			await world.tracker.removeSignal('1', 'human');
+			await world.tracker.addSignal('1', 'go');
+			world.settle = () => undefined;
+
+			const got = await buildFeature(d, setup(world), '1');
+			expect(got).toMatchObject({ kind: 'pull', built: ['2', '3'] });
+			expect(subjects(world)).toEqual([
+				'Use it in marks (#3)',
+				'Share the function (#2)',
+				'Fix a typo'
+			]);
+			expect(world.host.branchMessages(BRANCH)?.[0]).toBe('Fix a typo');
+			expect(world.host.pulls).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+	});
+
+	describe('a push that failed though the Code host holds the commit', () => {
+		it('opens the draft as if it had succeeded', async () => {
+			const world = makeWorld();
+			world.host.failPushes = { why: 'the connection was reset', lands: true };
+
+			const got = await buildFeature(deps(world), setup(world), '1');
+			expect(got).toMatchObject({ kind: 'pull', built: ['2', '3'] });
+			expect(world.host.pulls).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+			expect(world.trees.sides.has(SIDE)).toBe(false);
+		});
+
+		it('posts the Feedback replies of a round', async () => {
+			const world = makeWorld();
+			const { d, pull } = await opened(world);
+			const id = feedbackOn(world, pull);
+			world.host.failPushes = { why: 'the connection was reset', lands: true };
+
+			await buildFeature(d, setup(world), '1');
+			expect(world.host.threads.map((t) => t.id)).toEqual([id]);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+	});
+});
+
 describe('a Review round', () => {
 	const NOW = new Date(2026, 9, 30, 9);
 	const ISSUE = { file: 'src/marks.ts', line: 3, problem: 'It escapes twice.' };
