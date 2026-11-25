@@ -72,9 +72,78 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 
 	it('lets a piece of work spend what is left of its cap while that is $1 or more', () => {
 		const spend = make();
-		expect(spend.allowance(15, 3)).toEqual({ usd: 12, enough: true });
-		expect(spend.allowance(15, 14)).toEqual({ usd: 1, enough: true });
-		expect(spend.allowance(15, 14.5)).toEqual({ usd: 0.5, enough: false });
-		expect(spend.allowance(15, 16)).toEqual({ usd: -1, enough: false });
+		expect(spend.allowance(15, 3, morning, 60)).toEqual({ usd: 12, enough: true });
+		expect(spend.allowance(15, 14, morning, 60)).toEqual({ usd: 1, enough: true });
+		expect(spend.allowance(15, 14.5, morning, 60)).toEqual({ usd: 0.5, enough: false });
+		expect(spend.allowance(15, 16, morning, 60)).toEqual({ usd: -1, enough: false });
+	});
+
+	describe('with Sessions running in other Slots', () => {
+		it('does not start a second Session when the day cannot hold its cap beside the one running', () => {
+			const spend = make();
+			spend.record(entry(morning, 50));
+			spend.reserve(5);
+			expect(spend.dayOver(morning, 60, 10)).toBe(
+				"today's estimated spend, $50.00, plus $5.00 held for the Sessions running in other Slots and $10.00 for this Session would pass the daily limit of $60.00"
+			);
+			expect(spend.allowance(10, 0, morning, 60)).toEqual({ usd: 10, enough: false });
+			// one that fits still starts
+			expect(spend.dayOver(morning, 60, 5)).toBeNull();
+			expect(spend.allowance(5, 0, morning, 60)).toEqual({ usd: 5, enough: true });
+		});
+
+		it('says the day is over when the spend and the caps running reach the limit', () => {
+			const spend = make();
+			spend.record(entry(morning, 50));
+			spend.reserve(10);
+			expect(spend.dayOver(morning, 60)).toBe(
+				"today's estimated spend, $50.00, plus $10.00 held for the Sessions running in other Slots, reached the daily limit of $60.00"
+			);
+		});
+
+		it('counts every Session running', () => {
+			const spend = make();
+			spend.reserve(10);
+			spend.reserve(10);
+			expect(spend.dayOver(morning, 30, 10)).toBeNull();
+			expect(spend.dayOver(morning, 29, 10)).not.toBeNull();
+		});
+
+		it('gives the cap back when its Session ends, and counts what it spent in its place', () => {
+			const spend = make();
+			spend.record(entry(morning, 50));
+			const running = spend.reserve(5);
+			expect(spend.dayOver(morning, 60, 10)).not.toBeNull();
+			// the Session ends having spent $2, and its ledger line takes the cap's place
+			spend.record(entry(morning, 2));
+			running.release();
+			expect(spend.today(morning)).toBe(52);
+			expect(spend.dayOver(morning, 60, 10)).toBeNull();
+			expect(spend.allowance(8, 0, morning, 60)).toEqual({ usd: 8, enough: true });
+			// a second release gives nothing back twice
+			spend.reserve(3);
+			running.release();
+			expect(spend.dayOver(morning, 60, 6)).not.toBeNull();
+		});
+
+		it('leaves the day over once it is, while the Session running finishes', () => {
+			const spend = make();
+			spend.record(entry(morning, 60));
+			spend.reserve(5);
+			expect(spend.dayOver(morning, 60)).not.toBeNull();
+			expect(spend.dayOver(morning, 60, 1)).not.toBeNull();
+		});
+	});
+
+	it('checks the day as it always did when no other Session is running', () => {
+		const spend = make();
+		spend.record(entry(morning, 59));
+		// a Session whose cap passes the limit still starts: only the spend so far counts
+		expect(spend.dayOver(morning, 60, 15)).toBeNull();
+		expect(spend.allowance(15, 0, morning, 60)).toEqual({ usd: 15, enough: true });
+		const running = spend.reserve(5);
+		running.release();
+		expect(spend.dayOver(morning, 60, 15)).toBeNull();
+		expect(spend.allowance(15, 0, morning, 60)).toEqual({ usd: 15, enough: true });
 	});
 });

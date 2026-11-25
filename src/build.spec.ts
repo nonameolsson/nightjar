@@ -2284,6 +2284,30 @@ describe('the Pull-check pass in --watch', () => {
 		expect(world.asked).toEqual([]);
 		expect(world.tracker.signalsOf('1')).toEqual([]);
 	});
+
+	it('takes no draft while the caps of the Sessions in other Slots leave no room for its own, and takes it once they end', async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		// room for the day's spend and one fix Session, but not with another Slot's $5 Session running
+		const spent = world.spend.today(new Date(2026, 9, 30, 9));
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: spent + LIMITS.pullFixUsd + 4 } });
+		const red = {
+			feature: '1',
+			draft: {
+				pull: { id: pull.id, url: pull.url },
+				branch: pull.head,
+				headCommit: '',
+				body: pull.body,
+				checks: pull.checks,
+				personEngaged: false
+			}
+		};
+		const other = world.spend.reserve(5);
+		expect(await fixPullChecks(deps(world), s, red)).toMatchObject({ kind: 'paused' });
+		expect(world.asked).toEqual([]);
+		other.release();
+		expect(await fixPullChecks(deps(world), s, red)).not.toMatchObject({ kind: 'paused' });
+	});
 });
 
 describe('the limits of the Pull-check pass', () => {

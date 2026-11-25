@@ -45,7 +45,7 @@ import {
 	type QueueDeps,
 	type Say
 } from './queue.js';
-import { runSession, sessionExists } from './session.js';
+import { runSession, sessionExists, type Session } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -251,10 +251,19 @@ export async function runNightjar(
 		},
 		signal: stop.signal
 	};
+	// A Session's cap counts as spent against dailyUsd from its start until it ends, when its ledger line takes its place; so the Sessions in the other Slots cannot together pass the day's limit.
+	const session: Session = async (req) => {
+		const hold = spend.reserve(req.budgetUsd);
+		try {
+			return await runSession(req);
+		} finally {
+			hold.release();
+		}
+	};
 	const deps: Deps = {
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
-		codingAgent: codingAgent(setup, (req) => runSession(req)),
+		codingAgent: codingAgent(setup, session),
 		runCheck: (command, cwd, env) => runCheck(command, cwd, env, config.gate ?? {}),
 		runSetup: runCheck,
 		serve: startServe,
@@ -276,7 +285,7 @@ export async function runNightjar(
 		if (portEnv === undefined) return { deps: slotDeps(say), setup };
 		const own: Setup = { ...setup, portEnv };
 		return {
-			deps: { ...slotDeps(say), codingAgent: codingAgent(own, (req) => runSession(req)) },
+			deps: { ...slotDeps(say), codingAgent: codingAgent(own, session) },
 			setup: own
 		};
 	};

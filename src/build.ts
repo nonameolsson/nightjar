@@ -42,7 +42,7 @@ import {
 import type { Signal, SignalNames } from './signals.js';
 import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
-import type { Entry, Spend } from './spend.js';
+import type { Allowance, Entry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import {
@@ -183,6 +183,12 @@ export type FeatureOutcome =
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
 const dollars = (n: number) => `$${n.toFixed(2)}`;
+
+// What a piece of work with a `cap` that has spent `spent` may still spend, with the day's limit and the caps of the Sessions running in the other Slots counted.
+const allowanceOf =
+	(deps: Pick<Deps, 'spend' | 'now'>, setup: Pick<Setup, 'limits'>) =>
+	(cap: number, spent: number): Allowance =>
+		deps.spend.allowance(cap, spent, deps.now(), setup.limits.dailyUsd);
 const hash = (id: ItemId) => `#${id}`;
 
 type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
@@ -374,7 +380,7 @@ class FeatureRun {
 		if (this.workflow !== null) this.steps = await this.openSteps(this.workflow);
 		let last: Step = NEXT;
 		while (last.kind === 'next' && !this.aborted) {
-			const paused = this.dailyPause();
+			const paused = this.dailyPause(this.setup.limits.ticketUsd);
 			if (paused !== null) {
 				last = { kind: 'paused', why: paused };
 				break;
@@ -405,8 +411,8 @@ class FeatureRun {
 			setup: this.setup,
 			feature: this.feature,
 			tree: this.tree,
-			dailyPause: () => this.dailyPause(),
-			allowance: (cap, spent) => deps.spend.allowance(cap, spent),
+			dailyPause: (cap) => this.dailyPause(cap),
+			allowance: allowanceOf(deps, this.setup),
 			fix: (work) => this.fixFeedback(work),
 			log: (entry) => this.log(entry),
 			building: (session) => this.building(null, 'feedback', session, NO_ROUND),
@@ -481,14 +487,15 @@ class FeatureRun {
 			log: (entry) => this.log(entry),
 			building: (ticket, session, rounds, attempt) =>
 				this.building(ticket, 'step', session, rounds, attempt),
-			dailyPause: () => this.dailyPause(),
-			allowance: (cap, spent) => this.deps.spend.allowance(cap, spent),
+			dailyPause: (cap) => this.dailyPause(cap),
+			allowance: allowanceOf(this.deps, this.setup),
 			aborted: () => this.aborted
 		});
 	}
 
-	private dailyPause(): string | null {
-		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd);
+	// Why a Session with a `cap` may not start now, once the day's spend and the caps of the Sessions running in other Slots leave no room for it.
+	private dailyPause(cap: number): string | null {
+		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd, cap);
 	}
 
 	private async trusted(id: ItemId): Promise<Comment[]> {
@@ -592,7 +599,7 @@ class FeatureRun {
 		};
 		const { outcome: got, earlierUsd } = await retryPassing<BuildOutcome>({
 			budgetUsd: this.setup.limits.ticketUsd,
-			enough: (usd) => this.deps.spend.allowance(usd, 0).enough,
+			enough: (usd) => allowanceOf(this.deps, this.setup)(usd, 0).enough,
 			reset: () => this.tree.revert(before),
 			sleep: this.deps.sleep,
 			signal: this.setup.signal,
@@ -995,11 +1002,12 @@ interface FixContext {
 async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 	const { deps, setup, tree } = ctx;
 	const { limits, check: command } = setup;
+	const allowance = allowanceOf(deps, setup);
 	const summaries: string[] = [];
 	const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
 	let { check, spent } = o;
 	for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
-		const { usd: budget, enough } = deps.spend.allowance(o.cap, spent);
+		const { usd: budget, enough } = allowance(o.cap, spent);
 		if (!enough) break;
 		const minutes = minutesLeft(deps.now, o.deadline);
 		if (minutes !== undefined && minutes <= 0) break;
@@ -1008,7 +1016,7 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		const mark = await tree.snapshot();
 		const { outcome: got, earlierUsd } = await retryPassing<FixOutcome>({
 			budgetUsd: budget,
-			enough: (usd) => deps.spend.allowance(usd, 0).enough,
+			enough: (usd) => allowance(usd, 0).enough,
 			reset: () => tree.restore(mark),
 			sleep: deps.sleep,
 			signal: setup.signal,
@@ -1115,7 +1123,7 @@ export async function fixPullChecks(
 	const { tracker } = deps;
 	const { draft } = red;
 	const { pull } = draft;
-	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
+	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd, setup.limits.pullFixUsd);
 	if (day !== null) return { kind: 'paused', why: day };
 	const feature = await tracker.feature(red.feature);
 	const tree = await deps.openWorktree(
@@ -1274,7 +1282,9 @@ async function pullFixRound(
 	const deadline = deps.now().getTime() + minutes * 60_000;
 	// why the round stopped short of a green check: one of its own caps, else the fix rounds ran out
 	const stillRed = (spent: number) => {
-		if (!deps.spend.allowance(cap, spent).enough) return `it reached its cap of ${dollars(cap)}`;
+		if (!allowanceOf(deps, setup)(cap, spent).enough) {
+			return `it reached its cap of ${dollars(cap)}`;
+		}
 		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
 		return `\`${setup.check}\` still fails after the fix rounds`;
 	};
@@ -1356,7 +1366,7 @@ async function reviewFeature(
 	const before = await tree.head();
 	const { outcome: got } = await retryPassing<ReviewOutcome>({
 		budgetUsd: setup.limits.reviewUsd,
-		enough: (usd) => deps.spend.allowance(usd, 0).enough,
+		enough: (usd) => allowanceOf(deps, setup)(usd, 0).enough,
 		reset: () => tree.revert(before),
 		sleep: deps.sleep,
 		signal: setup.signal,

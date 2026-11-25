@@ -57,8 +57,8 @@ export interface FeedbackRoundContext {
 		Worktree,
 		'at' | 'head' | 'diff' | 'discard' | 'answeredFeedback' | 'commitFeedback'
 	>;
-	// why the day is over, once it is; checked only when there is feedback to answer
-	readonly dailyPause: () => string | null;
+	// why a Session with this `cap` may not start, once the day leaves no room for it; checked only when there is feedback to answer
+	readonly dailyPause: (cap: number) => string | null;
 	readonly allowance: (cap: number, spent: number) => Allowance;
 	// the check's fix rounds, in the round's Session
 	readonly fix: (work: FixWork) => Promise<FixEnd>;
@@ -89,10 +89,10 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 	if (pull === null) return NONE;
 	const todo = await unanswered(codeHost, tree, pull);
 	if (todo.length === 0) return NONE;
-	const day = ctx.dailyPause();
+	const cap = setup.limits.ticketUsd;
+	const day = ctx.dailyPause(cap);
 	if (day !== null) return { kind: 'paused', why: day };
 
-	const cap = setup.limits.ticketUsd;
 	const before = await tree.head();
 	const sessionId = ctx.newId();
 	const name = `#${feature.id} Feedback round`;
