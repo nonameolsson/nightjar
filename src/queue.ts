@@ -151,7 +151,8 @@ async function publishNext(
 	}
 }
 
-// Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
+// Hands a Feature back to a person after a fault: the claim and the Go off, needs info on, the reason said.
+// A paused build puts the Go back before it pushes, so a fault after that would otherwise build it again on every pass.
 export async function handBack(
 	deps: QueueDeps,
 	feature: Named,
@@ -173,6 +174,7 @@ export async function handBack(
 	});
 	try {
 		await tracker.removeSignal(id, 'working');
+		await tracker.removeSignal(id, 'go');
 		await tracker.addSignal(id, 'needsInfo');
 		const step = next === undefined ? '' : `\n\n${nextStepText(next)}`;
 		await tracker.comment(id, `Nightjar stopped on a fault: ${reason}${step}${FOOTER}`);

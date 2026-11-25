@@ -16,7 +16,7 @@ import type {
 	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
-import { firstLine, type Run } from '../git.js';
+import { pushFault, type Run } from '../git.js';
 import { logTail } from '../log-tail.js';
 import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
@@ -232,7 +232,7 @@ export class GitHubCodeHost implements CodeHost {
 	async push(folder: string, branch: string): Promise<void> {
 		const got = await this.git(['push', '-q', '-u', 'origin', `HEAD:refs/heads/${branch}`], folder);
 		if (got.missing) throw new GitHubFailure('git is not on the PATH.');
-		if (!got.ok) throw new GitHubFailure(`git could not push ${branch}: ${firstLine(got.err)}`);
+		if (!got.ok) throw new GitHubFailure(`git could not push ${branch}: ${pushFault(got.err)}`);
 	}
 
 	async openPull(branch: string): Promise<Pull | null> {

@@ -119,6 +119,19 @@ describe('queue --once', () => {
 		expect(w.lines).toContain('no Feature with the Go is assigned to ann');
 	});
 
+	// a paused build puts the Go back before it pushes; a push that then fails must not leave it on
+	it('takes the Go off a Feature it hands back, so the next pass does not build it again', async () => {
+		const w = world();
+		const pausedThenRejected: QueueDeps['build'] = async ({ id }) => {
+			await w.tracker.addSignal(id, 'working');
+			await w.tracker.removeSignal(id, 'go');
+			await w.tracker.addSignal(id, 'go');
+			throw new Error('git could not push factory/2-older: ! [rejected]');
+		};
+		expect(await queue({ ...w.deps, build: pausedThenRejected }, true)).toBe(1);
+		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
+	});
+
 	it('hands the Feature back when its build fails on a fault', async () => {
 		const w = world();
 		w.failWith(new Error('the network went away'));

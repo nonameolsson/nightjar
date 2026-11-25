@@ -411,6 +411,37 @@ describe('the git worktree against its remote', () => {
 		expect(await again.headTrailers()).toEqual(new Map());
 	});
 
+	// a person who fixes the draft by hand pushes to the branch; a build that went on from the stale copy could not push
+	it('opens at a commit pushed from elsewhere, so a build goes on from it', async () => {
+		const { branch } = await pushed();
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'fix.txt'), 'by hand\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'Fix the check');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
+		expect(await again.head()).toBe(sh('-C', other, 'rev-parse', 'HEAD'));
+		expect(await again.built()).toEqual(new Set(['2']));
+	});
+
+	it('opens with its own commits when both it and the remote moved, and leaves the push to say so', async () => {
+		const { branch, tree } = await pushed();
+		writeFileSync(join(tree.at.folder, 'b.txt'), 'work\n');
+		await tree.commitTicket('3', 'Use it', 'Done.', 's2');
+		const head = await tree.head();
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'fix.txt'), 'by hand\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'Fix the check');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
+		expect(await again.head()).toBe(head);
+	});
+
 	it('keeps commits the remote lacks, and says so', async () => {
 		const { tree } = await pushed();
 		writeFileSync(join(tree.at.folder, 'b.txt'), 'work\n');
