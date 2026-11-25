@@ -25,6 +25,7 @@ import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js'
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
+	FeaturePull,
 	HandBack,
 	Queued,
 	TicketCounts,
@@ -325,6 +326,8 @@ interface FeatureCard {
 	readonly opens?: true;
 	// the Feature's finished runs, on a card that is not on Completed because it is active again
 	readonly earlier?: Earlier;
+	// its open pull request, whose branch holds Tickets the Tracker still shows open
+	readonly pull?: FeaturePull;
 }
 // how many finished runs a Feature had in status.json's recent events, and the latest of them
 interface Earlier {
@@ -377,6 +380,25 @@ interface Progress {
 }
 // the Tickets built as things stand
 const BUILT_NOW = 'built now';
+
+// The Tickets built of a Feature: those the Tracker shows closed, and those its open pull request's branch built, which stay open until it merges.
+const builtOf = (counts: TicketCounts, pull: FeaturePull | undefined, label: string): Progress => ({
+	built: Math.min(counts.closed + (pull?.built.length ?? 0), counts.total),
+	total: counts.total,
+	counts: label
+});
+
+// A link to the Feature's open pull request, which holds what was built so far; nothing without one
+function pullHtml(card: FeatureCard): string {
+	const pull = card.pull;
+	if (pull === undefined) return '';
+	const text = `pull request #${String(pull.id)}`;
+	const link = safeUrl(pull.url)
+		? `<a class="ext" href="${escape(pull.url)}" ${EXTERNAL}>${text}</a>`
+		: escape(text);
+	const n = pull.built.length;
+	return `<p class="meta pull">${String(n)} ${n === 1 ? 'Ticket' : 'Tickets'} built on ${link}</p>`;
+}
 // the Tickets a failed run's own sessions built
 const BUILT_IN_RUN = 'built in this run';
 // the Tickets a pull request's branch held when its run ended, earlier runs' among them
@@ -524,9 +546,8 @@ function features(view: FactoryView, lists: Lists): Features {
 					why: i.why,
 					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: [],
-					progress: i.ticketCounts
-						? { built: i.ticketCounts.closed, total: i.ticketCounts.total, counts: BUILT_NOW }
-						: null,
+					progress: i.ticketCounts ? builtOf(i.ticketCounts, i.pull, BUILT_NOW) : null,
+					...(i.pull === undefined ? {} : { pull: i.pull }),
 					...opens
 				};
 			});
@@ -567,20 +588,22 @@ function features(view: FactoryView, lists: Lists): Features {
 				});
 		}
 	}
-	const queued = (q: Queued): QueuedCard => ({
-		state: 'queue',
-		id: q.id,
-		title: q.title,
-		waitingTickets: [],
-		ticketCounts: q.ticketCounts,
-		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total, counts: 'built' } : null,
-		// the median Ticket duration times the Feature's Tickets; none without history or a count
-		estimateMs:
-			view.medianTicketMs == null || !q.ticketCounts
-				? null
-				: view.medianTicketMs * q.ticketCounts.total,
-		...opens
-	});
+	const queued = (q: Queued): QueuedCard => {
+		const progress = q.ticketCounts ? builtOf(q.ticketCounts, q.pull, 'built') : null;
+		const left = progress === null ? 0 : progress.total - progress.built;
+		return {
+			state: 'queue',
+			id: q.id,
+			title: q.title,
+			waitingTickets: [],
+			ticketCounts: q.ticketCounts,
+			progress,
+			...(q.pull === undefined ? {} : { pull: q.pull }),
+			// the median Ticket duration times the Tickets not built yet; none without history, a count, or a Ticket left
+			estimateMs: view.medianTicketMs == null || left === 0 ? null : view.medianTicketMs * left,
+			...opens
+		};
+	};
 	const queue = listed?.map(queued);
 	const onShelf = (f: ShelfFeature): ShelfCard => ({
 		state: 'shelf',
@@ -659,7 +682,7 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why + earlierHtml(card),
+		whyHtml(card, u) + why + pullHtml(card) + earlierHtml(card),
 		actionLink(u, links),
 		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
 	);
@@ -724,7 +747,7 @@ const logbookLink = (id: string) =>
 		? ''
 		: ` <a class="open book-link" href="${featureHref(id)}" aria-label="Logbook of ${escape(idText(id))}">Logbook</a>`;
 
-// A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
+// A Feature in the Queue: its Ticket count, `k of N` built (closed, or on its open pull request) and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard, links: Links): string {
 	const counts = card.ticketCounts;
 	let count = '';
@@ -732,7 +755,14 @@ function queuedCard(card: QueuedCard, links: Links): string {
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
-	return nest('queue', card, links, count, `<p class="label">Queued</p>${earlierHtml(card)}`, est);
+	return nest(
+		'queue',
+		card,
+		links,
+		count,
+		`<p class="label">Queued</p>${pullHtml(card)}${earlierHtml(card)}`,
+		est
+	);
 }
 
 function completedCard(card: CompletedCard, links: Links): string {

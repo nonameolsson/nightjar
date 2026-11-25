@@ -19,9 +19,18 @@ export interface TicketCounts {
 	readonly closed: number;
 }
 
-// A Feature in the Queue. `ticketCounts` is null when the Tracker could not read them, and absent when it cannot count or the file is older.
+// A Feature's open pull request, and the Tickets its branch built: they stay open on the Tracker until it merges.
+export interface FeaturePull {
+	readonly id: number;
+	readonly url: string;
+	// the Tickets its commits' trailers name, oldest first
+	readonly built: readonly string[];
+}
+
+// A Feature in the Queue. `ticketCounts` is null when the Tracker could not read them, and absent when it cannot count or the file is older. `pull` is set only by `nightjar ui`'s own read, when the Feature has an open pull request.
 export interface Queued extends Named {
 	readonly ticketCounts?: TicketCounts | null;
+	readonly pull?: FeaturePull;
 }
 
 // A Feature or Ticket that carries needs info or needs a person; counts only on a Feature.
@@ -31,6 +40,8 @@ export interface WaitingItem extends Named {
 	readonly ticketCounts?: TicketCounts | null;
 	// the Feature a Ticket belongs to; older files lack it
 	readonly feature?: string;
+	// a Feature's open pull request, as on Queued
+	readonly pull?: FeaturePull;
 }
 
 export interface WaitingOnYou {

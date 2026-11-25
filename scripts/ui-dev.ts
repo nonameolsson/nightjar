@@ -3,6 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTracker } from '../src/fakes/tracker.js';
+import { FakeCodeHost } from '../src/fakes/code-host.js';
+import { featureMarker } from '../src/build.js';
+import { ticketCommitMessage } from '../src/worktree.js';
 import { fileSpend, record } from '../src/ledger.js';
 import { fileLogbook, type Decision, type Place } from '../src/logbook.js';
 import { StatusFile } from '../src/status.js';
@@ -273,7 +276,18 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 	file.doing({ kind: 'off' });
 }
 
-const page = () => Promise.resolve({ tracker, person: 'ann', workflows: [] });
+// #275's open pull request, whose branch built #277: its Tracker issue stays open until the pull request merges
+const codeHost = new FakeCodeHost();
+codeHost.commitsAt = () => [ticketCommitMessage('277', 'Ticket 277', 'Built it.', 'dev')];
+await codeHost.push('/dev/275', 'factory/275-saved-filters-v2');
+await codeHost.createDraft({
+	title: 'Saved filters v2',
+	head: 'factory/275-saved-filters-v2',
+	base: 'main',
+	body: `Nightjar built part of #275.\n\n${featureMarker('275')}`
+});
+
+const page = () => Promise.resolve({ tracker, codeHost, person: 'ann', workflows: [] });
 const ui = await startUi({
 	root,
 	port: Number(process.env.PORT ?? UI_PORT),
