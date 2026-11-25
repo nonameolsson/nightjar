@@ -471,4 +471,81 @@ describe('the git worktree against its remote', () => {
 		expect(await tree.toRemote()).toBe(false);
 		expect(await tree.head()).toBe(head);
 	});
+
+	describe('after a push that failed', () => {
+		// a person pushes a commit of one file to the branch from a clone of their own; its head
+		const personPushes = (branch: string, file: string) => {
+			const other = join(repo, `person-${String((n += 1))}`);
+			sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+			writeFileSync(join(other, file), 'by hand\n');
+			sh('-C', other, 'add', '-A');
+			sh('-C', other, 'commit', '-q', '-m', 'By hand');
+			sh('-C', other, 'push', '-q', 'origin', branch);
+			return sh('-C', other, 'rev-parse', 'HEAD');
+		};
+		// Nightjar's own commit of one file on the branch here, which it has not pushed
+		const commit = async (tree: Worktree, file: string) => {
+			writeFileSync(join(tree.at.folder, file), 'work\n');
+			await tree.commitTicket('3', 'Use it', 'Done.', 's2');
+			return tree.head();
+		};
+
+		it('counts the push as done when the remote already holds the commit', async () => {
+			const { tree } = await pushed();
+			expect(await tree.pushOutcome()).toBe('pushed');
+		});
+
+		it('counts the push as done when the remote holds the commit and a person pushed on top', async () => {
+			const { branch, tree } = await pushed();
+			personPushes(branch, 'mine.txt');
+			expect(await tree.pushOutcome()).toBe('pushed');
+		});
+
+		it('says the branch diverged when both it and the remote have commits the other lacks', async () => {
+			const { branch, tree } = await pushed();
+			await commit(tree, 'b.txt');
+			personPushes(branch, 'mine.txt');
+			expect(await tree.pushOutcome()).toBe('diverged');
+		});
+
+		it('calls it a fault when the remote did not move', async () => {
+			const { tree } = await pushed();
+			await commit(tree, 'b.txt');
+			expect(await tree.pushOutcome()).toBe('fault');
+		});
+
+		it('calls it a fault when the remote has no such branch', async () => {
+			const tree = await open(`factory/r${String((n += 1))}-unpushed`);
+			await commit(tree, 'b.txt');
+			expect(await tree.pushOutcome()).toBe('fault');
+		});
+
+		it("sets its own commits aside on the -attempt-push branch and takes the remote's head", async () => {
+			const { branch, tree } = await pushed();
+			const mine = await commit(tree, 'b.txt');
+			const theirs = personPushes(branch, 'mine.txt');
+			await tree.pushOutcome();
+
+			expect(await tree.setAsidePush()).toBe(`${branch}-attempt-push`);
+			expect(await tree.head()).toBe(theirs);
+			expect(inTree(tree, 'rev-parse', `${branch}-attempt-push`)).toBe(mine);
+			expect(inTree(tree, 'status', '--porcelain')).toBe('');
+			expect(await tree.toRemote()).toBe(true);
+		});
+
+		it('overwrites the -attempt-push branch on a second set-aside', async () => {
+			const { branch, tree } = await pushed();
+			await commit(tree, 'b.txt');
+			personPushes(branch, 'mine.txt');
+			await tree.pushOutcome();
+			await tree.setAsidePush();
+
+			const mine = await commit(tree, 'c.txt');
+			const theirs = personPushes(branch, 'more.txt');
+			expect(await tree.pushOutcome()).toBe('diverged');
+			expect(await tree.setAsidePush()).toBe(`${branch}-attempt-push`);
+			expect(inTree(tree, 'rev-parse', `${branch}-attempt-push`)).toBe(mine);
+			expect(await tree.head()).toBe(theirs);
+		});
+	});
 });
