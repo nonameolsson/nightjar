@@ -426,11 +426,11 @@ describe('the git worktree against its remote', () => {
 		expect(await again.built()).toEqual(new Set(['2']));
 	});
 
-	it('opens with its own commits when both it and the remote moved, and leaves the push to say so', async () => {
+	// the build's commits and a person's fix both stand, so the push is a fast-forward
+	it('merges the remote in when both it and the remote moved without clashing', async () => {
 		const { branch, tree } = await pushed();
 		writeFileSync(join(tree.at.folder, 'b.txt'), 'work\n');
 		await tree.commitTicket('3', 'Use it', 'Done.', 's2');
-		const head = await tree.head();
 		const other = join(repo, `other-${String(n)}`);
 		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
 		writeFileSync(join(other, 'fix.txt'), 'by hand\n');
@@ -439,7 +439,28 @@ describe('the git worktree against its remote', () => {
 		sh('-C', other, 'push', '-q', 'origin', branch);
 
 		const again = await open(branch);
+		expect(await again.built()).toEqual(new Set(['2', '3']));
+		expect(existsSync(join(again.at.folder, 'fix.txt'))).toBe(true);
+		expect(existsSync(join(again.at.folder, 'b.txt'))).toBe(true);
+		expect(await again.toRemote()).toBe(false);
+		inTree(again, 'push', '-q', 'origin', `HEAD:refs/heads/${branch}`);
+	});
+
+	it('opens with its own commits when both it and the remote changed the same lines, and leaves the push to say so', async () => {
+		const { branch, tree } = await pushed();
+		writeFileSync(join(tree.at.folder, 'a.txt'), 'mine\n');
+		await tree.commitTicket('3', 'Use it', 'Done.', 's2');
+		const head = await tree.head();
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'a.txt'), 'theirs\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'Fix the check');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
 		expect(await again.head()).toBe(head);
+		expect(inTree(again, 'status', '--porcelain')).toBe('');
 	});
 
 	it('keeps commits the remote lacks, and says so', async () => {
