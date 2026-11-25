@@ -6,6 +6,7 @@ import {
 	feedbackCommitMessage,
 	feedbackIds,
 	folderFor,
+	pushAttemptBranch,
 	pullFixCommitMessage,
 	reviewCommitMessage,
 	stepCommitMessage,
@@ -13,6 +14,7 @@ import {
 	trailersOf,
 	type FeatureBranch,
 	type OpenWorktree,
+	type PushOutcome,
 	type StepCommit,
 	type Worktree
 } from '../worktree.js';
@@ -50,7 +52,11 @@ export interface MemoryWorktrees {
 	commitAsPerson(folder: string, message: string, file: string): void;
 }
 
-export function memoryWorktrees(): MemoryWorktrees {
+// The messages of the commits the Code host holds on a branch, oldest first, or null for one it lacks.
+export type RemoteBranch = (branch: string) => readonly string[] | null;
+
+// With no `remote`, the model has one copy of each branch, which is the remote's too.
+export function memoryWorktrees(remote?: RemoteBranch): MemoryWorktrees {
 	const folders = new Map<string, Folder>();
 	const sides = new Map<string, string[]>();
 	const state = (folder: string): Folder => {
@@ -70,7 +76,7 @@ export function memoryWorktrees(): MemoryWorktrees {
 		};
 		// a worktree a stopped run left dirty is cleaned, as the real one is
 		state(at.folder).dirty.clear();
-		return Promise.resolve(new MemoryWorktree(at, state(at.folder), sides));
+		return Promise.resolve(new MemoryWorktree(at, state(at.folder), sides, remote));
 	};
 
 	return {
@@ -97,7 +103,8 @@ class MemoryWorktree implements Worktree {
 	constructor(
 		readonly at: FeatureBranch,
 		private readonly folder: Folder,
-		private readonly sides: Map<string, string[]>
+		private readonly sides: Map<string, string[]>,
+		private readonly remote: RemoteBranch | undefined
 	) {}
 
 	isSetUp = () => Promise.resolve(this.folder.setUp);
@@ -170,8 +177,52 @@ class MemoryWorktree implements Worktree {
 		return Promise.resolve();
 	}
 
-	// The model has one copy of the branch, which is the remote's too.
-	toRemote = () => Promise.resolve(true);
+	// How many commits the branch here shares with the remote's from the start, by message, and the remote's; null for a branch the remote lacks.
+	private fetched(): { theirs: readonly string[]; same: number } | null {
+		const theirs = this.remote?.(this.at.branch) ?? null;
+		if (theirs === null) return null;
+		const ours = this.folder.commits;
+		let same = 0;
+		while (same < ours.length && same < theirs.length && ours[same]?.message === theirs[same]) {
+			same += 1;
+		}
+		return { theirs, same };
+	}
+
+	// The branch here as the remote's: the commits they share, then the remote's own, which carry no file of the model.
+	private takeRemote(theirs: readonly string[], same: number) {
+		this.folder.commits.length = same;
+		this.folder.commits.push(
+			...theirs.slice(same).map((message) => ({ message, files: new Map() }))
+		);
+		this.folder.dirty.clear();
+	}
+
+	toRemote = () => {
+		if (this.remote === undefined) return Promise.resolve(true);
+		const got = this.fetched();
+		if (got === null || got.same < this.folder.commits.length) return Promise.resolve(false);
+		this.takeRemote(got.theirs, got.same);
+		return Promise.resolve(true);
+	};
+
+	pushOutcome = (): Promise<PushOutcome> => {
+		const got = this.fetched();
+		if (got === null) return Promise.resolve('fault');
+		if (got.same === this.folder.commits.length) return Promise.resolve('pushed');
+		return Promise.resolve(got.same === got.theirs.length ? 'fault' : 'diverged');
+	};
+
+	setAsidePush = () => {
+		const got = this.fetched() ?? { theirs: [], same: 0 };
+		const side = pushAttemptBranch(this.at.branch);
+		this.sides.set(
+			side,
+			this.folder.commits.slice(got.same).flatMap((c) => [...c.files.keys()])
+		);
+		this.takeRemote(got.theirs, got.same);
+		return Promise.resolve(side);
+	};
 
 	headTrailers = (): Promise<ReadonlyMap<string, string>> => {
 		const head = this.folder.commits.at(-1);
