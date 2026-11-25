@@ -5,7 +5,19 @@ import type { AddressInfo } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
-import { isSessionId, readSession, type SessionView } from './logbook-reader.js';
+import {
+	isSessionId,
+	listLogbooks,
+	readLogbook,
+	readSession,
+	sessionSummary,
+	type LoggedSession,
+	type LogbookListing,
+	type LogbookView,
+	type SessionView
+} from './logbook-reader.js';
+import type { LogbookEntry } from './logbook.js';
+import { decisionText } from './logbook-text.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
 import { linksFor, NO_LINKS, type Links } from './ui-links.js';
@@ -489,7 +501,7 @@ function nest(
 	meta: string,
 	beneath = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
 }
 
 function buildingCard(card: BuildingCard, links: Links): string {
@@ -517,16 +529,25 @@ function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
-		sessionLink(doing.session) +
+		`<p class="more">${sessionLink(doing.session)}<a class="open" href="${featureHref(doing.feature)}">Open its Logbook</a></p>` +
 		'</aside>'
 	);
 }
 
 // A link to a Session's own page; nothing for a build that has no Session yet
-function sessionLink(session: string | null): string {
+function sessionLink(session: string | null, text = 'Open this Session'): string {
 	if (session === null || !isSessionId(session)) return '';
-	return `<p class="more"><a class="open" href="/sessions/${session}">Open this Session</a></p>`;
+	return `<a class="open" href="/sessions/${session}">${text}</a>`;
 }
+
+// A Feature's Logbook page, its id made safe as one part of the path
+const featureHref = (id: string) => escape(`/features/${encodeURIComponent(id)}`);
+
+// The link to a Feature's Logbook on its card and its row; none for a card that names no Feature
+const logbookLink = (id: string) =>
+	id === ''
+		? ''
+		: ` <a class="open book-link" href="${featureHref(id)}" aria-label="Logbook of ${escape(idText(id))}">Logbook</a>`;
 
 // A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard, links: Links): string {
@@ -762,7 +783,7 @@ function table(view: FactoryView, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
 	const note = !running(view)
@@ -772,6 +793,51 @@ function table(view: FactoryView, links: Links): string {
 			: '';
 	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
 }
+
+// The titles the page knows, by Feature: from the build in flight, the Queue, Waiting on you and the recent events.
+function titlesOf(view: FactoryView): ReadonlyMap<string, string> {
+	const titles = new Map<string, string>();
+	const put = (id: string, title: string | undefined) => {
+		if (title !== undefined && title !== '') titles.set(id, title);
+	};
+	for (const done of view.completed) put(done.event.feature, done.event.title);
+	for (const item of view.status?.waitingOnYou?.items ?? [])
+		if (item.kind === 'feature') put(item.id, item.title);
+	for (const q of view.status?.queue ?? []) put(q.id, q.title);
+	const doing = view.status?.doing;
+	if (doing?.kind === 'building') put(doing.feature, doing.title);
+	return titles;
+}
+
+const sessionsText = (n: number) => (n === 1 ? '1 Session' : `${String(n)} Sessions`);
+
+// Every Feature with a Logbook or ledger lines, the one touched last first, so a Feature off the Board stays reachable.
+function allLogbooks(
+	found: readonly LogbookListing[],
+	titles: ReadonlyMap<string, string>
+): string {
+	const items = found
+		.map((f) => {
+			const title = titles.get(f.feature);
+			return `<li class="book-item"><a class="open" href="${featureHref(f.feature)}">${escape(idText(f.feature))}${title === undefined ? '' : ` ${escape(title)}`}</a> <small>${sessionsText(f.sessions)}, ${dollars(f.costUsd)}, last ${stampHtml(f.lastAt)}</small></li>`;
+		})
+		.join('');
+	return `<section id="logbooks"><h2>All Logbooks</h2>${items === '' ? '<p class="empty">no Logbook yet</p>' : `<ul>${items}</ul>`}</section>`;
+}
+
+const STAMP: Intl.DateTimeFormatOptions = {
+	month: 'short',
+	day: 'numeric',
+	hour: '2-digit',
+	minute: '2-digit'
+};
+
+// A moment in a Logbook, with its day, as Logbooks reach back past today
+const stampHtml = (iso: string) => {
+	const when = new Date(iso);
+	const text = Number.isNaN(when.getTime()) ? iso : when.toLocaleString([], STAMP);
+	return `<time datetime="${escape(iso)}">${escape(text)}</time>`;
+};
 
 // Splits what stays in view (the run's state and numbers) from the content that scrolls beneath it.
 const MAIN = '<!--main-->';
@@ -784,7 +850,7 @@ export function renderPanels(root: string, view: FactoryView, links: Links = NO_
 		MAIN,
 		board(view, links),
 		table(view, links),
-		`<div class="overview">${[current(view, links), queue(view, links), waiting(view, links), completed(view, links)].join('\n')}</div>`
+		`<div class="overview">${[current(view, links), queue(view, links), waiting(view, links), completed(view, links), allLogbooks(listLogbooks(root), titlesOf(view))].join('\n')}</div>`
 	].join('\n');
 }
 
@@ -1201,6 +1267,21 @@ a.open { align-items: center; display: inline-flex; font-size: 0.85rem; min-heig
 .log summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; }
 .log summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .log pre { max-height: 24rem; }
+a.book-link { font: 400 0.75rem var(--mono); margin-left: 10px; vertical-align: middle; }
+.detail .more { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.book { margin: 16px 0 0; }
+.book > li { border-left: 2px solid var(--line); overflow-wrap: anywhere; padding: 6px 0 6px 16px; }
+.book > li > p { color: var(--ink2); font-size: 0.85rem; margin: 0; }
+.book > li.session { border-left-color: var(--teal2); }
+.book > li.handed { border-left-color: var(--amber); }
+.book > li.live { border-left-color: var(--teal); }
+.book time { color: var(--muted); font: 0.75rem var(--mono); margin-right: 8px; }
+.book .run { margin: 4px 0; }
+.book .when { margin: 0 0 8px; }
+.book .label { color: var(--teal); font: 700 0.75rem var(--mono); letter-spacing: 0.08em; margin-right: 8px; text-transform: uppercase; }
+.book summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding-top: 4px; }
+.book summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.book pre { max-height: 24rem; }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -1211,7 +1292,7 @@ a.open { align-items: center; display: inline-flex; font-size: 0.85rem; min-heig
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act, a.open, .log summary { min-height: 44px; }
+	th button, #views button, .chips button, button.copy, a.act, a.open, .log summary, .book summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1238,8 +1319,31 @@ a.open { align-items: center; display: inline-flex; font-size: 0.85rem; min-heig
 }
 `;
 
-// A Session's own page chrome: the bar with a way back, the banner, and what the page shows, still and without events.
-function sessionShell(title: string, main: string, links: Links): string {
+// The Logbook page's own script: each event brings the page's content again, and the folds the person opened and the link they were on stay as they were.
+const LOGBOOK_SCRIPT = `
+const panels = document.getElementById('panels');
+new EventSource(panels.dataset.events).onmessage = (e) => {
+	const opened = Array.from(panels.querySelectorAll('details[open]')).map((d) => d.dataset.key);
+	const was = document.activeElement;
+	const href = was && was.tagName === 'A' ? was.getAttribute('href') : null;
+	const fold = was && was.tagName === 'SUMMARY' && was.parentNode ? was.parentNode.dataset.key : null;
+	panels.innerHTML = JSON.parse(e.data);
+	for (const d of panels.querySelectorAll('details[data-key]')) if (opened.includes(d.dataset.key)) d.open = true;
+	const back = href ? Array.from(panels.querySelectorAll('a[href]')).find((a) => a.getAttribute('href') === href)
+		: fold ? Array.from(panels.querySelectorAll('details[data-key]')).find((d) => d.dataset.key === fold)?.querySelector('summary')
+		: null;
+	if (back) back.focus();
+};
+`;
+
+// A page of its own: the bar with a way back, the banner, and what the page shows. `events` is where a live page gets its content again.
+function shell(
+	title: string,
+	region: string,
+	main: string,
+	links: Links,
+	events: string | null = null
+): string {
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -1249,9 +1353,9 @@ function sessionShell(title: string, main: string, links: Links): string {
 <style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
 </head>
 <body>
-<a class="skip" href="#panels">Skip to the Session</a>
+<a class="skip" href="#panels">Skip to the ${region}</a>
 <div class="bar"><p class="mark">nightjar</p><nav aria-label="Pages"><a class="open" href="/">Back to the Board</a></nav>${elsewhere(links)}</div>
-<div id="scroll" role="region" aria-label="Session" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" tabindex="-1">${main}</main></div>
+<div id="scroll" role="region" aria-label="${region}" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" tabindex="-1"${events === null ? '' : ` data-events="${events}"`}>${main}</main></div>
 <script>
 const scroller = document.getElementById('scroll');
 const flow = matchMedia('(max-height: 480px), (max-width: 400px)');
@@ -1259,11 +1363,14 @@ const place = () => { scroller.tabIndex = flow.matches ? -1 : 0; };
 place();
 flow.addEventListener('change', place);
 </script>
-<script>${PARALLAX}</script>
+${events === null ? '' : `<script>${LOGBOOK_SCRIPT}</script>\n`}<script>${PARALLAX}</script>
 </body>
 </html>
 `;
 }
+
+const sessionShell = (title: string, main: string, links: Links) =>
+	shell(title, 'Session', main, links);
 
 // One ledger line of a Session: its Feature and Ticket, the kind of work, how it ended, what it cost and how long it ran.
 function sessionRun(run: SessionView['runs'][number], links: Links): string {
@@ -1276,7 +1383,9 @@ function sessionRun(run: SessionView['runs'][number], links: Links): string {
 		field('Outcome', escape(run.outcome)) +
 		field('Cost', dollars(run.costUsd)) +
 		(run.durationMs === undefined ? '' : field('Duration', elapsed(run.durationMs))) +
-		'</dl></section>'
+		'</dl>' +
+		`<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>` +
+		'</section>'
 	);
 }
 
@@ -1317,6 +1426,125 @@ export function noSessionPage(id: string, links: Links = NO_LINKS): string {
 	);
 }
 
+// A fold of a Logbook item: closed until opened, keyed so a live swap keeps it open
+const fold = (key: string, label: string, body: string) =>
+	`<details data-key="${key}"><summary>${label}</summary>${body}</details>`;
+
+const linesText = (n: number) => (n === 1 ? '1 line' : `${String(n)} lines`);
+
+// One Session in a Logbook: its kind, Ticket, outcome, cost and duration, a link to its page, and its summary folded.
+function logbookSession(
+	session: LoggedSession,
+	key: string,
+	links: Links,
+	summary: SessionView['lines']
+): string {
+	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	const kind = escape(KIND_TEXT[session.kind] ?? session.kind);
+	const open = sessionLink(session.id, `Open the ${kind} Session`);
+	const label = `Summary <small>${linesText(summary.length)}</small>`;
+	const shown =
+		summary.length === 0
+			? '<p class="empty">No transcript of this Session on this machine.</p>'
+			: fold(key, label, transcriptHtml(summary));
+	return (
+		`<li class="session"><section class="run" aria-label="${kind} Session">` +
+		`<p class="when">${stampHtml(session.at)} ${open}</p><dl>` +
+		field('Kind', kind) +
+		field('Ticket', session.ticket === null ? 'the whole Feature' : idHtml(session.ticket, links)) +
+		field('Outcome', escape(session.outcome)) +
+		field('Cost', dollars(session.costUsd)) +
+		(session.durationMs === undefined ? '' : field('Duration', elapsed(session.durationMs))) +
+		`</dl>${shown}</section></li>`
+	);
+}
+
+// One decision in a Logbook, in a line, with what it holds folded beneath it.
+function logbookDecision(entry: LogbookEntry, key: string, links: Links): string {
+	const said = decisionText(entry, links.signals);
+	let line = escape(said.line).replace(/`([^`]*)`/g, '<code>$1</code>');
+	if (entry.kind === 'pullOpened' && safeUrl(entry.url)) {
+		const url = escape(entry.url);
+		line = line.replace(url, `<a class="ext" href="${url}" ${EXTERNAL}>${url}</a>`);
+	}
+	const ticket = entry.ticket === undefined ? '' : `Ticket ${idHtml(entry.ticket, links)}: `;
+	let more = '';
+	if (said.more !== undefined) {
+		const lines = linesText(said.more.text.split('\n').length);
+		more = fold(
+			key,
+			`${escape(said.more.label)} <small>${lines}</small>`,
+			`<pre>${escape(said.more.text)}</pre>`
+		);
+	}
+	return `<li class="decision ${entry.kind}"><p>${stampHtml(entry.at)} ${ticket}${line}</p>${more}</li>`;
+}
+
+// The build of the Feature in flight, at the end of its Logbook, as the ledger has no line for its Session yet
+function buildingNow(view: FactoryView, feature: string): string {
+	const doing = view.status?.doing;
+	if (doing?.kind !== 'building' || doing.feature !== feature || !running(view)) return '';
+	return `<li class="live"><p><span class="label">Building now</span> ${stepLine(doing)} ${sessionLink(doing.session)}</p></li>`;
+}
+
+// What the Logbook page shows, which each event brings again while the Feature builds.
+export function logbookMain(
+	book: LogbookView,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	summaryOf: (session: LoggedSession) => SessionView['lines'] = sessionSummary
+): string {
+	const title = titlesOf(view).get(book.feature);
+	const sessions = book.items.flatMap((i) => (i.kind === 'session' ? [i.session] : []));
+	const cost = sessions.reduce((sum, s) => sum + s.costUsd, 0);
+	const itemHtml = (item: LogbookView['items'][number], i: number) =>
+		item.kind === 'session'
+			? logbookSession(item.session, `i${String(i)}`, links, summaryOf(item.session))
+			: logbookDecision(item.entry, `i${String(i)}`, links);
+	const items = book.items.map(itemHtml).join('');
+	const live = buildingNow(view, book.feature);
+	let note = '';
+	if (book.items.length === 0 && live === '') {
+		note = '<p class="empty">Nightjar has recorded nothing for this Feature yet.</p>';
+	} else if (book.items.length > 0 && !book.recorded) {
+		note = `<p class="empty note">Builds before the Logbook did not record Nightjar's decisions, so this shows the Feature's Sessions only.</p>`;
+	}
+	const list = items + live;
+	return (
+		`<header><h1>Logbook</h1> <span>${idHtml(book.feature, links)}${title === undefined ? '' : ` ${escape(title)}`}</span></header>` +
+		`<p class="meta">${sessionsText(sessions.length)}, ${dollars(cost)}</p>${note}` +
+		(list === '' ? '' : `<ol class="book" aria-label="Logbook">${list}</ol>`)
+	);
+}
+
+// `/features/<id>`: the Feature's Logbook, which follows the build live
+export function logbookPage(
+	book: LogbookView,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	summaryOf?: (session: LoggedSession) => SessionView['lines']
+): string {
+	return shell(
+		`nightjar: Logbook of ${idText(book.feature)}`,
+		'Logbook',
+		logbookMain(book, view, links, summaryOf),
+		links,
+		`${featureHref(book.feature)}/events`
+	);
+}
+
+// A Feature id from a path: decoded, one to 128 characters, none of them a control character; null otherwise
+function featureId(raw: string): string | null {
+	let id: string;
+	try {
+		id = decodeURIComponent(raw);
+	} catch {
+		return null;
+	}
+	// eslint-disable-next-line no-control-regex
+	return /^[^\u0000-\u001f\u007f]{1,128}$/.test(id) ? id : null;
+}
+
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.
 const hostOk = (host: string | undefined, port: number) =>
 	host === `127.0.0.1:${String(port)}` || host === `localhost:${String(port)}`;
@@ -1336,27 +1564,51 @@ function originOf(root: string): string | null {
 
 export function startUi(o: UiOptions): Promise<Ui> {
 	const origin = originOf(o.root);
-	const clients = new Set<ServerResponse>();
-	const panelsNow = () =>
-		renderPanels(
-			o.root,
-			readFactory(o.root, {
-				...(o.alive === undefined ? {} : { alive: o.alive }),
-				...(o.now === undefined ? {} : { now: o.now })
-			}),
-			linksFor(o.root, origin)
-		);
+	const factoryNow = () =>
+		readFactory(o.root, {
+			...(o.alive === undefined ? {} : { alive: o.alive }),
+			...(o.now === undefined ? {} : { now: o.now })
+		});
+	const panelsNow = () => renderPanels(o.root, factoryNow(), linksFor(o.root, origin));
+	const logbookNow = (feature: string) =>
+		logbookMain(readLogbook(o.root, feature), factoryNow(), linksFor(o.root, origin));
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);
 
-	let last = panelsNow();
-	// pushes only when what the page shows has changed
-	const refresh = () => {
-		const panels = panelsNow();
-		if (panels === last) return;
-		last = panels;
-		for (const res of clients) send(res, panels);
+	// each page that listens: what it shows (`key`, drawn once per refresh for all its listeners) and what it was sent last
+	interface Client {
+		readonly key: string;
+		readonly render: () => string;
+		last: string;
+	}
+	const clients = new Map<ServerResponse, Client>();
+	const listen = (res: ServerResponse, key: string, render: () => string) => {
+		res.writeHead(200, {
+			'content-type': 'text/event-stream',
+			'cache-control': 'no-store'
+		});
+		const first = render();
+		send(res, first);
+		clients.set(res, { key, render, last: first });
+		res.on('close', () => clients.delete(res));
 	};
+	// pushes to a page only when what it shows has changed
+	const refresh = () => {
+		const drawn = new Map<string, string>();
+		for (const [res, client] of clients) {
+			const now = drawn.get(client.key) ?? client.render();
+			drawn.set(client.key, now);
+			if (now === client.last) continue;
+			client.last = now;
+			send(res, now);
+		}
+	};
+	const html = (res: ServerResponse, status: number, live: boolean) =>
+		res.writeHead(status, {
+			'content-type': 'text/html; charset=utf-8',
+			'cache-control': 'no-store',
+			'content-security-policy': `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';${live ? " connect-src 'self';" : ''} img-src data:`
+		});
 
 	const server = createServer((req, res) => {
 		const { port } = server.address() as AddressInfo;
@@ -1365,21 +1617,28 @@ export function startUi(o: UiOptions): Promise<Ui> {
 		} else if (req.method !== 'GET' && req.method !== 'HEAD') {
 			res.writeHead(405, { allow: 'GET, HEAD' }).end();
 		} else if (req.url === '/events') {
-			res.writeHead(200, {
-				'content-type': 'text/event-stream',
-				'cache-control': 'no-store'
-			});
-			send(res, panelsNow());
-			clients.add(res);
-			res.on('close', () => clients.delete(res));
+			listen(res, '/', panelsNow);
 		} else if (req.url === '/') {
-			res.writeHead(200, {
-				'content-type': 'text/html; charset=utf-8',
-				'cache-control': 'no-store',
-				'content-security-policy':
-					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
-			});
+			html(res, 200, true);
 			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow(), linksFor(o.root, origin)));
+		} else if (req.url?.startsWith('/features/')) {
+			// `<id>` or `<id>/events`; the id is decoded, and reaches a file only through logbookPath, which encodes it again
+			const path = req.url.slice('/features/'.length).split(/[?#]/)[0] ?? '';
+			const [raw = '', events, ...more] = path.split('/');
+			const id = featureId(raw);
+			if (more.length > 0 || (events !== undefined && events !== 'events')) {
+				res.writeHead(404).end();
+			} else if (id === null) {
+				res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+				res.end('Not a Feature id\n');
+			} else if (events !== undefined) {
+				listen(res, `/features/${id}`, () => logbookNow(id));
+			} else {
+				html(res, 200, true);
+				const links = linksFor(o.root, origin);
+				const page = logbookPage(readLogbook(o.root, id), factoryNow(), links);
+				res.end(req.method === 'HEAD' ? undefined : page);
+			}
 		} else if (req.url?.startsWith('/sessions/')) {
 			// the id is taken as it is, never decoded: only letters, digits, `-` and `_` name a transcript
 			const id = req.url.slice('/sessions/'.length).split(/[?#]/)[0] ?? '';
@@ -1390,12 +1649,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 			}
 			const session = readSession(o.root, id);
 			const links = linksFor(o.root, origin);
-			res.writeHead(session === null ? 404 : 200, {
-				'content-type': 'text/html; charset=utf-8',
-				'cache-control': 'no-store',
-				'content-security-policy':
-					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:"
-			});
+			html(res, session === null ? 404 : 200, false);
 			const page = session === null ? noSessionPage(id, links) : sessionPage(session, links);
 			res.end(req.method === 'HEAD' ? undefined : page);
 		} else {

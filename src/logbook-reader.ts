@@ -1,9 +1,9 @@
 // The one reader of a Feature's Logbook, for the page and the CLI: its decisions from .factory/logbook/, joined with its Sessions from the ledger, each with its transcript's path.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logsPath } from './coding-agent.js';
 import { ledgerPath, readEntries } from './ledger.js';
-import { fileLogbook, type LogbookEntry } from './logbook.js';
+import { fileLogbook, logbookFolder, type LogbookEntry } from './logbook.js';
 import { renderSession, type SessionLine } from './session-render.js';
 import type { Entry } from './spend.js';
 import type { ItemId } from './tracker.js';
@@ -121,4 +121,62 @@ export function readLogbook(root: string, feature: ItemId): LogbookView {
 		recorded: decisions !== null,
 		items: merge(decisions ?? [], sessions)
 	};
+}
+
+// A Session's transcript in the summary rendering: the Coding agent's text and one line per tool call; none when it has no transcript on this machine.
+export function sessionSummary(session: LoggedSession): SessionLine[] {
+	try {
+		return renderSession(readFileSync(session.transcript, 'utf8').split('\n'), 'summary');
+	} catch {
+		return [];
+	}
+}
+
+// One Feature that has a Logbook file or ledger lines, as a list of every Logbook shows it.
+export interface LogbookListing {
+	readonly feature: ItemId;
+	// the time of its latest entry or Session
+	readonly lastAt: string;
+	readonly sessions: number;
+	readonly costUsd: number;
+	// false with ledger lines and no Logbook file
+	readonly recorded: boolean;
+}
+
+// Every Feature with a Logbook file or ledger lines, the one touched last first.
+export function listLogbooks(root: string): LogbookListing[] {
+	const found = new Map<ItemId, Omit<LogbookListing, 'feature'>>();
+	const later = (a: string, b: string) => (Date.parse(b) > Date.parse(a) ? b : a);
+	let files: string[];
+	try {
+		files = readdirSync(logbookFolder(root));
+	} catch {
+		files = [];
+	}
+	const book = fileLogbook(root);
+	for (const name of files) {
+		if (!name.endsWith('.jsonl')) continue;
+		let feature: string;
+		try {
+			feature = decodeURIComponent(name.slice(0, -'.jsonl'.length));
+		} catch {
+			continue;
+		}
+		const entries = book.read(feature) ?? [];
+		const last = entries.reduce((a, e) => later(a, e.at), entries[0]?.at ?? '');
+		if (last === '') continue;
+		found.set(feature, { lastAt: last, sessions: 0, costUsd: 0, recorded: true });
+	}
+	for (const e of readEntries(ledgerPath(root))) {
+		const was = found.get(e.feature);
+		found.set(e.feature, {
+			lastAt: was === undefined ? e.at : later(was.lastAt, e.at),
+			sessions: (was?.sessions ?? 0) + 1,
+			costUsd: (was?.costUsd ?? 0) + e.costUsd,
+			recorded: was?.recorded ?? false
+		});
+	}
+	return [...found]
+		.map(([feature, f]) => ({ feature, ...f }))
+		.sort((a, b) => (Date.parse(b.lastAt) || 0) - (Date.parse(a.lastAt) || 0));
 }

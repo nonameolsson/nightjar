@@ -4,7 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ledgerPath, record } from './ledger.js';
-import { isSessionId, readLogbook, readSession, type LogbookItem } from './logbook-reader.js';
+import {
+	isSessionId,
+	listLogbooks,
+	readLogbook,
+	readSession,
+	sessionSummary,
+	type LogbookItem
+} from './logbook-reader.js';
 import {
 	fileLogbook,
 	logbookPath,
@@ -161,6 +168,47 @@ describe('readLogbook', () => {
 		appendFileSync(logbookPath(root, '1'), 'not json\n');
 		book.write(decision(1, { kind: 'signal', signal: 'go', on: true }));
 		expect(readLogbook(root, '1').items.map(line)).toEqual(['paused', 'signal']);
+	});
+});
+
+describe('listLogbooks', () => {
+	it('lists every Feature with a Logbook file or ledger lines, the one touched last first', () => {
+		const book = fileLogbook(root);
+		book.write(decision(0, { kind: 'paused', why: 'the day is over' }));
+		record(ledgerPath(root), session(5, { costUsd: 2 }));
+		record(ledgerPath(root), session(3, { feature: '7', session: 'session-7' }));
+		book.write({ ...decision(9, { kind: 'madeBySource', source: 'sentry' }), feature: 'a/b' });
+		expect(listLogbooks(root)).toEqual([
+			{ feature: 'a/b', lastAt: at(9), sessions: 0, costUsd: 0, recorded: true },
+			{ feature: '1', lastAt: at(5), sessions: 1, costUsd: 2, recorded: true },
+			{ feature: '7', lastAt: at(3), sessions: 1, costUsd: 3, recorded: false }
+		]);
+	});
+
+	it('lists nothing when nothing was recorded', () => {
+		expect(listLogbooks(root)).toEqual([]);
+	});
+});
+
+describe('sessionSummary', () => {
+	it("reads a Session's transcript as its text and tool calls, and nothing when it has none here", () => {
+		record(ledgerPath(root), session(4, {}));
+		const [item] = readLogbook(root, '1').items;
+		if (item?.kind !== 'session') throw new Error('no Session');
+		expect(sessionSummary(item.session)).toEqual([]);
+		mkdirSync(join(root, '.factory', 'logs'), { recursive: true });
+		const call = { type: 'tool_use', name: 'Bash', input: { command: 'npm test' } };
+		const result = { type: 'tool_result', tool_use_id: 't', content: 'ok' };
+		const lines = [
+			{ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading' }] } },
+			{ type: 'assistant', message: { content: [call] } },
+			{ type: 'user', message: { content: [result] } }
+		];
+		writeFileSync(item.session.transcript, lines.map((l) => JSON.stringify(l)).join('\n'));
+		expect(sessionSummary(item.session)).toEqual([
+			{ kind: 'text', text: 'Reading' },
+			{ kind: 'tool', text: 'Bash: npm test' }
+		]);
 	});
 });
 

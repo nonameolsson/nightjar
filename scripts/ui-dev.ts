@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileSpend, record } from '../src/ledger.js';
+import { fileLogbook, type Decision, type Place } from '../src/logbook.js';
 import { StatusFile } from '../src/status.js';
 import { startUi, UI_PORT } from '../src/ui.js';
 
@@ -46,10 +47,61 @@ const session = (feature: string, ticket: string | null, minutes: number, costUs
 		durationMs: 6 * 60_000
 	});
 
+// #268 was built before the Logbook: its Sessions only, and the note that says so
 session('268', '1', 95, 1.4);
 session('268', '2', 80, 2.1);
 session('268', null, 70, 0.6);
 session('270', '1', 50, 1.9);
+
+// a transcript as the Coding agent streams it, for a Session's summary and its page
+function transcript(id: string, steps: readonly (readonly [string, string])[]) {
+	const lines = steps.flatMap(([text, command]) => {
+		const call = { type: 'tool_use', name: 'Bash', input: { command } };
+		const result = { type: 'tool_result', tool_use_id: 't', content: `$ ${command}\nok` };
+		return [
+			{ type: 'assistant', message: { content: [{ type: 'text', text }] } },
+			{ type: 'assistant', message: { content: [call] } },
+			{ type: 'user', message: { content: [result] } }
+		];
+	});
+	const text = lines.map((l) => JSON.stringify(l)).join('\n');
+	writeFileSync(join(root, '.factory', 'logs', `${id}.jsonl`), text);
+}
+transcript('s-270-1', [
+	['Reading the filter store.', 'npm test'],
+	['The saved filter needs an owner; adding it.', 'npm run lint']
+]);
+transcript('s-268-1', [['Adding the retry queue.', 'npm test']]);
+
+// #270's Logbook: a build whose check stayed red, thrown away and handed to a person
+const logbook = fileLogbook(root);
+const note = (minutes: number, entry: Decision & Place) =>
+	logbook.write({ at: ago(minutes), feature: '270', ...entry });
+note(56, { kind: 'buildStarted', by: 'go', branch: 'nightjar/270', workflow: null });
+note(56, { kind: 'signal', signal: 'working', on: true });
+note(55, { kind: 'setup', command: 'npm ci', ok: true });
+note(55, { kind: 'ticketStarted', ticket: '1' });
+note(50, {
+	kind: 'checkRed',
+	report: 'src/filters.ts:12:3 error  owner is possibly undefined\n1 problem',
+	round: 1,
+	rounds: 3,
+	ticket: '1',
+	session: 's-270-1'
+});
+note(46, {
+	kind: 'thrownAway',
+	branch: 'nightjar/270-attempt-1',
+	why: 'the check failed after 3 fix rounds',
+	ticket: '1'
+});
+note(46, { kind: 'signal', signal: 'working', on: false });
+note(46, {
+	kind: 'handed',
+	to: 'needsInfo',
+	why: 'the check failed after 3 fix rounds',
+	ticket: '1'
+});
 
 const file = new StatusFile({
 	path: join(root, '.factory', 'status.json'),
@@ -109,6 +161,14 @@ if (scenario === 'building' || scenario === 'stopped') {
 		join(root, '.factory', 'logs', 'dev.jsonl'),
 		lines.map((l) => JSON.stringify(l)).join('\n')
 	);
+	// the build in flight writes its Logbook as it goes: open /features/272 to watch it
+	const building = (minutes: number, entry: Decision & Place) =>
+		logbook.write({ at: ago(minutes), feature: '272', ...entry });
+	building(20, { kind: 'buildStarted', by: 'go', branch: 'nightjar/272', workflow: 'default' });
+	building(20, { kind: 'ticketStarted', ticket: '1' });
+	session('272', '1', 12, 1.2);
+	building(11, { kind: 'ticketBuilt', commit: 'a1b2c3d', ticket: '1' });
+	building(11, { kind: 'ticketStarted', ticket: '3' });
 	file.doing({
 		kind: 'building',
 		feature: '272',
