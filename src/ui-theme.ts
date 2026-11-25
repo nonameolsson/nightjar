@@ -256,6 +256,14 @@ td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: 
 .split dt { overflow-wrap: anywhere; }
 .split dd { margin: 0; overflow-wrap: anywhere; }
 .split .empty { margin: 4px 0; }
+.stepsbar { display: flex; gap: 2px; list-style: none; margin: 6px 0 0; padding: 0; }
+.seg { border-radius: 2px; display: inline-block; flex: none; height: 8px; width: 18px; }
+.seg.passed { background: var(--built); }
+.seg.retried { background: repeating-linear-gradient(135deg, var(--built) 0 2px, transparent 2px 4px); border: 1px solid var(--built); }
+.seg.failed { background: linear-gradient(90deg, var(--fault) 0 40%, transparent 40% 60%, var(--fault) 60%); }
+.seg.running { background: linear-gradient(90deg, var(--blue) 0 50%, transparent 50%); border: 1px solid var(--blue); }
+.seg.notReached { border: 1px dashed var(--pending); }
+.seg.notNeeded { background: linear-gradient(var(--pending), var(--pending)) center / 100% 2px no-repeat; }
 @media (prefers-reduced-motion: reduce) { .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }

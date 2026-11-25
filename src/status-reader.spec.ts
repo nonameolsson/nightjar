@@ -295,9 +295,99 @@ describe('the cost of each build', () => {
 		expect(view.featureCost?.usd).toBe(view.featureCostUsd);
 	});
 
+	it('gives each build its stages over the same Sessions, the one in flight its running stage', () => {
+		const runs = join(root, '.factory', 'runs.jsonl');
+		const line = (
+			step: 'build' | 'fix' | 'review',
+			session: string,
+			outcome: string,
+			when: Date,
+			failure?: 'lasting'
+		) =>
+			record(runs, {
+				at: when.toISOString(),
+				repo: 'o/r',
+				feature: '1',
+				ticket: step === 'review' ? null : '2',
+				branch: 'b',
+				step,
+				session,
+				costUsd: 1,
+				outcome,
+				...(failure === undefined ? {} : { failure })
+			});
+		let now = time(0);
+		const file = new StatusFile({
+			path: join(root, '.factory', 'status.json'),
+			spend: fileSpend(runs),
+			now: () => now,
+			pid: 42,
+			dailyUsd: 60
+		});
+		line('build', 's', 'built', time(5));
+		line('fix', 's', 'round 1 gave up', time(6), 'lasting');
+		now = time(10);
+		file.happened({ kind: 'failed', feature: '1', why: 'check red' });
+		line('build', 't', 'built', time(20));
+		line('review', 'r', 'approve', time(25));
+		now = time(30);
+		file.happened({ kind: 'pull', feature: '1', url: 'https://pr/1' });
+		line('build', 'u', 'built', time(40));
+		file.doing({
+			...building(null),
+			step: 'review',
+			ticket: null,
+			featureStartedAt: time(35).toISOString()
+		});
+
+		const view = readFactory(root, { alive: live });
+		const states = (stages: readonly { stage: string; state: string }[] | undefined) =>
+			stages?.map((s) => `${s.stage} ${s.state}`);
+		// with no factory.json, a stage the failed build did not get to is not reached
+		expect(states(view.completed[0]?.stages)).toEqual([
+			'tickets failed',
+			'steps notReached',
+			'review notReached',
+			'reviewRounds notReached',
+			'pullChecks notReached',
+			'feedback notReached'
+		]);
+		expect(states(view.completed[1]?.stages)?.slice(0, 3)).toEqual([
+			'tickets passed',
+			'steps notNeeded',
+			'review passed'
+		]);
+		expect(view.featureStages?.find((s) => s.stage === 'review')).toMatchObject({
+			state: 'running',
+			sessions: 0
+		});
+		expect(view.featureStages?.[0]).toMatchObject({ stage: 'tickets', state: 'passed', usd: 1 });
+
+		// factory.json that switches the Review off and has no Workflow: the failed build never needed them
+		writeFileSync(
+			join(root, 'factory.json'),
+			JSON.stringify({
+				tracker: { type: 'github', repo: 'o/app' },
+				codeHost: { type: 'github', repo: 'o/app' },
+				check: 'npm test',
+				allowedCommands: ['npm test'],
+				review: { enabled: false }
+			})
+		);
+		expect(states(readFactory(root, { alive: live }).completed[0]?.stages)).toEqual([
+			'tickets failed',
+			'steps notNeeded',
+			'review notNeeded',
+			'reviewRounds notNeeded',
+			'pullChecks notNeeded',
+			'feedback notReached'
+		]);
+	});
+
 	it('has no split while nothing is building', () => {
 		ledger('1', 1);
 		expect(readFactory(root, { alive: live })).not.toHaveProperty('featureCost');
+		expect(readFactory(root, { alive: live })).not.toHaveProperty('featureStages');
 	});
 
 	it("counts from the Feature's start, not the step's", () => {

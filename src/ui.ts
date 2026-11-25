@@ -58,6 +58,7 @@ import {
 	two
 } from './view-text.js';
 import { STAGE_TEXT, type BuildCost } from './build-cost.js';
+import { STATE_TEXT, type BuildStage } from './build-stages.js';
 
 export const UI_PORT = 4545;
 const HOST = '127.0.0.1';
@@ -330,6 +331,8 @@ interface FeatureCard {
 	readonly earlier?: Earlier;
 	// its open pull request, whose branch holds Tickets the Tracker still shows open
 	readonly pull?: FeaturePull;
+	// how each stage of its own build went: the one in flight, or the run a Completed card shows
+	readonly stages?: readonly BuildStage[];
 }
 // how many finished runs a Feature had in status.json's recent events, and the latest of them
 interface Earlier {
@@ -453,6 +456,33 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 	return `<span class="eggs" role="img" aria-label="${progressText(p)}">${eggs}${more}</span><p class="meta progress">${progressText(p)}</p>`;
 }
 
+// What a Steps bar segment says, in its tooltip and to a screen reader: the stage, how it went, its Sessions and their cost
+function segmentText(s: BuildStage): string {
+	const spent = s.sessions === 0 ? 'no Session' : `${sessionsText(s.sessions)}, ${dollars(s.usd)}`;
+	return `${STAGE_TEXT[s.stage]}: ${STATE_TEXT[s.state]}, ${spent}`;
+}
+
+// The Steps bar: one segment per stage of the Feature's latest build, its own or, on a card that is active again, its last run's.
+// Nothing for a Feature with no build to show, or one whose build has no Session yet and nothing running.
+function stepsBar(card: FeatureCard): string {
+	const stages = card.stages ?? card.earlier?.done.stages;
+	if (stages?.some((s) => s.sessions > 0 || s.state === 'running') !== true) return '';
+	const of = card.stages === undefined ? 'its last run' : 'this build';
+	const segments = stages
+		.map((s) => {
+			const text = escape(segmentText(s));
+			return `<li class="seg ${s.state}" title="${text}"><span class="sr">${text}</span></li>`;
+		})
+		.join('');
+	return `<ol class="stepsbar" aria-label="Steps bar of ${of}">${segments}</ol>`;
+}
+
+const STEPS_LEGEND = `<p class="legend stepslegend"><span>Steps bar, one segment per stage:</span>${(
+	['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'] as const
+)
+	.map((s) => `<span><i class="seg ${s}"></i>${STATE_TEXT[s]}</span>`)
+	.join('')}</p>`;
+
 interface Features {
 	// each is undefined while the lists are not known or not read yet
 	readonly queue: readonly QueuedCard[] | undefined;
@@ -492,6 +522,7 @@ function features(view: FactoryView, lists: Lists): Features {
 									total: tickets.length,
 									counts: BUILT_NOW
 								},
+					...(view.featureStages === undefined ? {} : { stages: view.featureStages }),
 					doing
 				}
 			: null;
@@ -521,7 +552,8 @@ function features(view: FactoryView, lists: Lists): Features {
 			waitingTickets: [],
 			done,
 			runs,
-			progress
+			progress,
+			...(done.stages === undefined ? {} : { stages: done.stages })
 		};
 	};
 	// one card per Feature: its latest run, and how many runs it had
@@ -700,7 +732,7 @@ function nest(
 	meta: string,
 	beneath = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}${stepsBar(card)}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
 }
 
 function buildingCard(card: BuildingCard, links: Links): string {
@@ -965,7 +997,7 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 			: all.completed.map((c) => completedCard(c, links)).join('');
 	const side = all.building === null ? '' : detail(all.building, view, links);
 	return (
-		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
+		`<div class="board">${LEGEND}${STEPS_LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
 		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
 		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
@@ -1102,7 +1134,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td class="cost">${costCell(r)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td class="cost">${costCell(r)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}${stepsBar(r.card)}</td></tr>`
 		)
 		.join('');
 	let note = '';
@@ -1112,7 +1144,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			note += '<p class="empty">Waiting on you is not available from this Tracker</p>';
 		if (all.shelfCannotList) note += `<p class="empty">${SHELF_CANNOT}</p>`;
 	}
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
+	return `<div class="table">${STEPS_LEGEND}<div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
 }
 
 // The titles the page knows, by Feature: from the build in flight, the Queue, Waiting on you and the recent events.
@@ -1646,6 +1678,14 @@ td.cost summary { color: inherit; font-size: 0.85rem; padding-top: 0; text-decor
 .split dt { color: var(--ink2); overflow-wrap: anywhere; }
 .split dd { margin: 0; overflow-wrap: anywhere; }
 .split .empty { margin: 4px 0; }
+.stepsbar { display: flex; gap: 3px; list-style: none; margin: 8px 0 0; padding: 0; }
+.seg { display: inline-block; flex: none; height: 0.5rem; width: 1.25rem; }
+.seg.passed { background: var(--teal2); }
+.seg.retried { background: repeating-linear-gradient(135deg, var(--teal2) 0 2px, transparent 2px 4px); border: 1px solid var(--teal2); }
+.seg.failed { background: linear-gradient(90deg, var(--err) 0 40%, transparent 40% 60%, var(--err) 60%); }
+.seg.running { animation: incubate 2.4s ease-in-out infinite; background: linear-gradient(90deg, var(--teal) 0 50%, transparent 50%); border: 1px solid var(--teal); outline: 1px solid var(--teal); outline-offset: 2px; }
+.seg.notReached { border: 1px dashed var(--socket-dash); }
+.seg.notNeeded { background: linear-gradient(var(--muted), var(--muted)) center / 100% 2px no-repeat; }
 button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
 button.open:hover { color: var(--teal); text-decoration-style: solid; }
 #feature { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; scrollbar-color: var(--teal2) var(--void); width: 640px; }
@@ -1690,7 +1730,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 .criteria summary { color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 0; }
 .criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .criteria .md { color: var(--ink2); }
-@media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .egg.building, .seg.running, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
 	.cols.has-detail .head { display: none; }

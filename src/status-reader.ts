@@ -1,13 +1,16 @@
 // The one reader over .factory/ that the live views share: status.json, the session tail and what completed.
+// It reads factory.json too, for the stages the repo never runs.
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { logsPath } from './coding-agent.js';
-import type { BuildCost } from './build-cost.js';
+import { buildCost, type BuildCost, type Stage } from './build-cost.js';
+import { buildStages, neverRun, runningStage, type BuildStage } from './build-stages.js';
+import { loadConfig } from './config.js';
 import {
 	builtOn,
 	builtOnFeature,
-	costOnFeature,
 	ledgerPath,
+	linesOnFeature,
 	medianTicketMs,
 	spends
 } from './ledger.js';
@@ -24,6 +27,8 @@ export interface Completed {
 	readonly builtTickets?: number;
 	// the same sessions' cost by stage and by model; absent in a hand-made view
 	readonly cost?: BuildCost;
+	// how each stage of this build went, from the same sessions; absent in a hand-made view
+	readonly stages?: readonly BuildStage[];
 }
 
 export interface FactoryView {
@@ -38,6 +43,8 @@ export interface FactoryView {
 	readonly featureCostUsd: number;
 	// the same cost by stage and by model; absent when nothing is building, and in a hand-made view
 	readonly featureCost?: BuildCost;
+	// how each stage of the current build is going; absent as the split is
+	readonly featureStages?: readonly BuildStage[];
 	// Tickets built on the local day
 	readonly builtToday: number;
 	// the median duration of a recorded Ticket build; null with none recorded; absent in a hand-made view
@@ -102,15 +109,26 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 	const spent = spends(ledgerPath(root));
 	const doing = status?.doing;
 	const done = (status?.recent ?? []).filter(isDone);
+	const never = stagesNeverRun(root);
 	// a session recorded the moment the build starts is its own
-	const building =
+	const lines =
 		doing?.kind === 'building'
-			? costOnFeature(spent, doing.feature, Date.parse(featureStart(doing)) - 1, null)
+			? linesOnFeature(spent, doing.feature, Date.parse(featureStart(doing)) - 1, null)
 			: null;
+	const building = lines === null ? null : buildCost(lines);
 	return {
 		status,
 		featureCostUsd: building?.usd ?? 0,
 		...(building === null ? {} : { featureCost: building }),
+		...(lines === null || doing?.kind !== 'building'
+			? {}
+			: {
+					featureStages: buildStages(lines, {
+						end: 'building',
+						running: runningStage(doing),
+						neverRun: never
+					})
+				}),
 		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),
@@ -118,13 +136,24 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 		completed: done.map((event, i) => {
 			const before = done.slice(0, i).findLast((e) => e.feature === event.feature);
 			const after = before === undefined ? null : Date.parse(before.at);
-			const cost = costOnFeature(spent, event.feature, after, Date.parse(event.at));
+			const own = linesOnFeature(spent, event.feature, after, Date.parse(event.at));
+			const cost = buildCost(own);
 			return {
 				event,
 				costUsd: cost.usd,
 				builtTickets: builtOnFeature(spent, event.feature, after, Date.parse(event.at)),
-				cost
+				cost,
+				stages: buildStages(own, { end: event.kind, neverRun: never })
 			};
 		})
 	};
+}
+
+// The stages the repo's factory.json never runs; none when it is missing or does not read, so a stage the build has not got to is not reached.
+function stagesNeverRun(root: string): ReadonlySet<Stage> {
+	try {
+		return neverRun(loadConfig(root));
+	} catch {
+		return new Set();
+	}
 }

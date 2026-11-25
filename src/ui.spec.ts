@@ -14,7 +14,7 @@ import { StatusFile } from './status.js';
 import { readFactory } from './status-reader.js';
 import { logbookPage, renderPanels, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
-import { THEMES, type Theme } from './ui-theme.js';
+import { PAPER_STYLE, THEMES, type Theme } from './ui-theme.js';
 import {
 	detailFrom,
 	listsFrom,
@@ -2649,4 +2649,155 @@ describe('nightjar ui cost by stage and model', () => {
 		expect(other.open).toBe(false);
 		expect(summary.focus).toHaveBeenCalledOnce();
 	});
+});
+
+describe('nightjar ui Steps bar', () => {
+	const line = (
+		feature: string,
+		step: 'build' | 'fix' | 'review' | 'reviewRound',
+		session: string,
+		outcome: string,
+		failure?: 'passing' | 'lasting'
+	) =>
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature,
+			ticket: step === 'build' || step === 'fix' ? '2' : null,
+			branch: 'b',
+			step,
+			session,
+			costUsd: 1,
+			outcome,
+			...(failure === undefined ? {} : { failure })
+		});
+	const panels = () => renderPanels(root, readFactory(root, { alive: () => true, now: () => at }));
+	const boardOf = (page: string) => page.split('<div class="table">')[0] ?? '';
+	const tableOf = (page: string) => page.split('<div class="table">')[1] ?? '';
+	const cardOf = (page: string, id: string) =>
+		boardOf(page)
+			.split('<article')
+			.find((a) => a.includes(`#${id}`)) ?? '';
+	const rowOf = (page: string, id: string) =>
+		tableOf(page)
+			.split('<tr ')
+			.find((r) => r.includes(`data-id="${id}"`)) ?? '';
+	const segment = (state: string, text: string) =>
+		`<li class="seg ${state}" title="${text}"><span class="sr">${text}</span></li>`;
+	const pulled = (id: string) =>
+		status().happened({ kind: 'pull', feature: id, url: `https://x.test/${id}` });
+
+	it('shows a hard build on its card and its row: a segment per stage, in order, each named in words and a tooltip', () => {
+		line('7', 'build', 'a', 'failed: overloaded', 'passing');
+		line('7', 'build', 'b', 'built');
+		line('7', 'fix', 'b', 'round 1');
+		line('7', 'review', 'r1', 'changes');
+		line('7', 'reviewRound', 'rr', 'fixed');
+		line('7', 'review', 'r2', 'approve');
+		pulled('7');
+		const page = panels();
+		const bar = [
+			'<ol class="stepsbar" aria-label="Steps bar of this build">',
+			segment('retried', 'Tickets: passed after a retry or a round, 3 Sessions, $3.00'),
+			segment('notNeeded', 'Steps: not needed, no Session'),
+			segment('retried', 'Review: passed after a retry or a round, 2 Sessions, $2.00'),
+			segment('passed', 'Review rounds: passed, 1 Session, $1.00'),
+			segment('notNeeded', 'Pull checks: not needed, no Session'),
+			segment('notNeeded', 'Feedback: not needed, no Session'),
+			'</ol>'
+		].join('');
+		expect(cardOf(page, '7')).toContain(`<div class="eggcell">`);
+		expect(cardOf(page, '7')).toContain(bar);
+		expect(rowOf(page, '7')).toMatch(/<td class="progress">.*<ol class="stepsbar"/);
+		expect(rowOf(page, '7')).toContain(bar);
+	});
+
+	it('shows a clean build passed first time, and a failed one failed where it failed and not reached after', () => {
+		line('7', 'build', 'a', 'built');
+		line('7', 'review', 'r', 'approve');
+		pulled('7');
+		line('8', 'build', 'c', 'failed: the check stayed red', 'lasting');
+		status().happened({ kind: 'failed', feature: '8', why: 'check red' });
+		const page = panels();
+		expect(cardOf(page, '7')).toContain(segment('passed', 'Tickets: passed, 1 Session, $1.00'));
+		expect(cardOf(page, '7')).toContain(segment('passed', 'Review: passed, 1 Session, $1.00'));
+		expect(cardOf(page, '8')).toContain(segment('failed', 'Tickets: failed, 1 Session, $1.00'));
+		expect(cardOf(page, '8')).toContain(segment('notReached', 'Review: not reached, no Session'));
+	});
+
+	it('marks the stage running now on the build in flight, and moves it as the build goes on', () => {
+		const doing = (step: 'build' | 'review') =>
+			status().doing({
+				kind: 'building',
+				feature: '272',
+				title: 'Custom views',
+				ticket: step === 'build' ? '2' : null,
+				step,
+				round: null,
+				rounds: null,
+				session: null,
+				startedAt: at.toISOString()
+			});
+		doing('build');
+		let page = panels();
+		expect(cardOf(page, '272')).toContain(segment('running', 'Tickets: running, no Session'));
+		expect(rowOf(page, '272')).toContain(segment('running', 'Tickets: running, no Session'));
+
+		line('272', 'build', 'a', 'built');
+		doing('review');
+		page = panels();
+		expect(cardOf(page, '272')).toContain(segment('passed', 'Tickets: passed, 1 Session, $1.00'));
+		expect(cardOf(page, '272')).toContain(segment('running', 'Review: running, no Session'));
+		expect(cardOf(page, '272')).toContain(
+			segment('notReached', 'Review rounds: not reached, no Session')
+		);
+	});
+
+	it('shows no Steps bar for a Feature with no Session in its build', () => {
+		pulled('7');
+		const page = panels();
+		expect(cardOf(page, '7')).not.toContain('stepsbar');
+		expect(rowOf(page, '7')).not.toContain('stepsbar');
+	});
+
+	it('sets a legend of every state once above the Table, and once on the Board', () => {
+		line('7', 'build', 'a', 'built');
+		pulled('7');
+		const page = panels();
+		const legend =
+			'<p class="legend stepslegend"><span>Steps bar, one segment per stage:</span>' +
+			'<span><i class="seg passed"></i>passed</span>' +
+			'<span><i class="seg retried"></i>passed after a retry or a round</span>' +
+			'<span><i class="seg failed"></i>failed</span>' +
+			'<span><i class="seg running"></i>running</span>' +
+			'<span><i class="seg notReached"></i>not reached</span>' +
+			'<span><i class="seg notNeeded"></i>not needed</span></p>';
+		expect(tableOf(page).startsWith(`${legend}<div class="chips">`)).toBe(true);
+		expect(tableOf(page).split(legend)).toHaveLength(2);
+		expect(boardOf(page).split(legend)).toHaveLength(2);
+	});
+
+	it.each(THEMES)(
+		'draws each state from tokens, each with its own shape as well as its hue (%s)',
+		(theme) => {
+			const style =
+				theme === 'paper'
+					? PAPER_STYLE
+					: (logbookPage(readLogbook(root, '7'), readFactory(root, { alive: () => true }))
+							.split('<style>')[1]
+							?.split('</style>')[0] ?? '');
+			const rules = ['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'].map(
+				(s) => style.split('\n').find((l) => l.startsWith(`.seg.${s} {`)) ?? ''
+			);
+			for (const r of rules) {
+				expect(r).toMatch(/var\(--/);
+				expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|rgba\(/i);
+			}
+			// the form differs, not the colour alone: solid, hatched, broken, half-filled, dashed, a thin line
+			const forms = rules.map((r) => r.replace(/var\(--[a-z0-9-]+\)/g, 'C'));
+			expect(new Set(forms).size).toBe(rules.length);
+			expect(rules[1]).toContain('repeating-linear-gradient');
+			expect(rules[4]).toContain('dashed');
+		}
+	);
 });

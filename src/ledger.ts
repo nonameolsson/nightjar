@@ -2,7 +2,6 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { buildCost, type BuildCost } from './build-cost.js';
 import { localDay, spendOver, type Entry, type Spend } from './spend.js';
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
@@ -106,6 +105,9 @@ export interface Spent {
 	readonly session: string;
 	// the models the session ran on; absent in an older line
 	readonly models?: NonNullable<Entry['models']>;
+	// how the session ended, and why a failed one failed, which the stages of a build read
+	readonly outcome: string;
+	readonly failure?: Entry['failure'];
 }
 
 // The median time a built Ticket took, or null with none recorded: its build, fix and Step sessions,
@@ -154,24 +156,22 @@ export function spends(path: string): Spent[] {
 		...(e.durationMs === undefined ? {} : { durationMs: e.durationMs }),
 		step: e.step,
 		session: e.session,
-		...(e.models === undefined ? {} : { models: e.models })
+		...(e.models === undefined ? {} : { models: e.models }),
+		outcome: e.outcome,
+		...(e.failure === undefined ? {} : { failure: e.failure })
 	}));
 }
 
-// What a Feature's sessions after `after` (exclusive) and up to `until` (inclusive) cost, by stage and by model.
-export function costOnFeature(
+// A Feature's sessions after `after` (exclusive) and up to `until` (inclusive), either open: one build of it.
+export function linesOnFeature(
 	all: readonly Spent[],
 	feature: string,
 	after: number | null,
 	until: number | null
-): BuildCost {
-	return buildCost(
-		all.filter(
-			(s) =>
-				s.feature === feature &&
-				(after === null || s.at > after) &&
-				(until === null || s.at <= until)
-		)
+): Spent[] {
+	return all.filter(
+		(s) =>
+			s.feature === feature && (after === null || s.at > after) && (until === null || s.at <= until)
 	);
 }
 
