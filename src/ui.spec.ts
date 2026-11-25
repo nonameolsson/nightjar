@@ -104,7 +104,7 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('<export>');
 	});
 
-	it('shows a queued Feature with its Ticket count, 0 of N and its eggs', async () => {
+	it('shows a queued Feature with its Ticket count, its closed Tickets built, and its eggs', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		file.refreshed(
@@ -119,7 +119,7 @@ describe('nightjar ui page', () => {
 		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
 		const card = (title: string) => board.split('<article').find((a) => a.includes(title)) ?? '';
 		expect(card('Saved filters')).toContain('4 Tickets');
-		expect(card('Saved filters')).toContain('0 of 4 built');
+		expect(card('Saved filters')).toContain('1 of 4 built');
 		expect(card('Saved filters')).toContain('class="eggs"');
 		expect(card('Exports')).toContain('? Tickets');
 		expect(card('Exports')).not.toContain('class="eggs"');
@@ -598,7 +598,7 @@ describe('nightjar ui reads the Tracker', () => {
 		expect(html).toContain('<span class="state">off</span>');
 		expect(html).not.toContain('not known while nightjar is off');
 		expect(mat(html, 'queue')).toContain('Saved filters');
-		expect(mat(html, 'queue')).toContain('0 of 2 built');
+		expect(mat(html, 'queue')).toContain('1 of 2 built');
 		expect(mat(html, 'waiting')).toContain('Audit log');
 		expect(mat(html, 'waiting')).toContain('needs info');
 		expect(html).toMatch(/waiting on you<\/span> <b>1<\/b>/);

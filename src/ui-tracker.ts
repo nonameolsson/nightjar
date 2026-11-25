@@ -1,12 +1,14 @@
 // `nightjar ui`'s own read of the Tracker (docs/adr/0009): the Queue, Waiting on you and the Shelf, read-only, so all are known while Nightjar is off; and one Feature for its detail panel.
 import { makeAdapters, type Seams } from './adapters.js';
+import { featureOfBody } from './build.js';
+import type { CodeHost, OpenPull } from './code-host.js';
 import { loadConfig } from './config.js';
 import { checkTickets, type TicketChecks } from './feature-faults.js';
 import type { Env } from './git.js';
 import { loadPersonConfig } from './person-config.js';
 import { buildOrder, NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { why } from './say.js';
-import type { Queued, TicketCounts, WaitingItem } from './status-shape.js';
+import type { FeaturePull, Queued, TicketCounts, WaitingItem } from './status-shape.js';
 import {
 	SHELF_MAX,
 	type Feature,
@@ -16,6 +18,7 @@ import {
 	type Tracker,
 	type WaitingFeature
 } from './tracker.js';
+import { BRANCH_PREFIX, TICKET_TRAILER, trailersOf } from './worktree.js';
 
 // how often the page reads the Tracker again; a change under .factory/ never reads it
 export const TRACKER_EVERY_MS = 60_000;
@@ -29,10 +32,15 @@ export type ReadingTracker = Pick<
 // The reads the Feature detail panel makes of one Feature, when it opens.
 export type FeatureReader = Pick<Tracker, 'feature' | 'tickets' | 'reference'>;
 
+// The Code host as the page holds it: Nightjar's open pull requests, read to count the Tickets their branches built.
+export type PullReader = Pick<CodeHost, 'openPulls'>;
+
 export interface PageTracker<T = ReadingTracker> {
 	readonly tracker: T;
 	// whose Features the page shows: config.json's assignee, else the person signed in to the Tracker, as a run builds for
 	readonly person: string;
+	// left out, or without openPulls, a Feature's built count is the Tracker's closed Tickets alone
+	readonly codeHost?: PullReader;
 }
 
 // What one read of the Tracker gave.
@@ -76,10 +84,11 @@ const waitingItem = (f: WaitingFeature): WaitingItem => ({
 // One read of the lists. Ticket counts are a nicety: a fault there leaves each count unknown, never the lists unread.
 export async function readUpcoming(page: PageTracker, now: () => Date): Promise<Upcoming> {
 	const { tracker, person } = page;
-	const [features, waitingOn, shelf] = await Promise.all([
+	const [features, waitingOn, shelf, pulls] = await Promise.all([
 		tracker.assignedFeatures(person),
 		tracker.waitingOn?.(person),
-		tracker.shelf?.(person, SHELF_MAX)
+		tracker.shelf?.(person, SHELF_MAX),
+		pullsOf(page.codeHost)
 	]);
 	const waiting = (waitingOn ?? []).map(waitingItem);
 	const queue = features.map((f): Queued => ({ id: f.id, title: f.title }));
@@ -87,9 +96,13 @@ export async function readUpcoming(page: PageTracker, now: () => Date): Promise<
 	// left out when the Tracker cannot count, as the run writes it
 	const withCount = <T extends { readonly id: ItemId }>(item: T): T =>
 		counts === null ? item : { ...item, ticketCounts: counts.get(item.id) ?? null };
+	const withPull = <T extends { readonly id: ItemId }>(item: T): T => {
+		const pull = pulls.get(item.id);
+		return pull === undefined ? item : { ...item, pull };
+	};
 	return {
-		queue: queue.map(withCount),
-		waiting: waiting.map(withCount),
+		queue: queue.map(withCount).map(withPull),
+		waiting: waiting.map(withCount).map(withPull),
 		trackerCannotList: tracker.waitingOn === undefined,
 		shelf: shelf ?? null,
 		person,
@@ -109,6 +122,35 @@ async function countsOf(
 	} catch {
 		return new Map();
 	}
+}
+
+// The Tickets a pull request's branch built, from its commits' trailers, as a run reads them from the branch.
+export function builtOn(pull: OpenPull): string[] {
+	const ids = pull.commits.flatMap((c) => {
+		const m = /^#(\S+)$/.exec(trailersOf(c.message).get(TICKET_TRAILER) ?? '');
+		return m?.[1] === undefined ? [] : [m[1]];
+	});
+	return [...new Set(ids)];
+}
+
+// Each Feature's open pull request, by the Feature its body names. Like the counts, a nicety: none when the Code host cannot list them or the read fails.
+async function pullsOf(codeHost: PullReader | undefined): Promise<Map<ItemId, FeaturePull>> {
+	const found = new Map<ItemId, FeaturePull>();
+	const list = codeHost?.openPulls?.bind(codeHost);
+	if (list === undefined) return found;
+	let pulls: OpenPull[];
+	try {
+		pulls = await list(BRANCH_PREFIX);
+	} catch {
+		return found;
+	}
+	for (const p of pulls) {
+		const feature = featureOfBody(p.body);
+		// the oldest one, should a Feature have two
+		if (feature !== undefined && !found.has(feature))
+			found.set(feature, { id: p.pull.id, url: p.pull.url, built: builtOn(p) });
+	}
+	return found;
 }
 
 // Opens the Tracker on the first call and again after a call that could not open it, so the lists and the Feature detail panel share one.
@@ -177,9 +219,9 @@ export async function openPageTracker(
 	seams: Seams
 ): Promise<PageTracker<ReadingTracker & FeatureReader> & DetailTracker> {
 	const config = loadConfig(root);
-	const { tracker } = await makeAdapters(config, root, env, seams);
+	const { tracker, codeHost } = await makeAdapters(config, root, env, seams);
 	const person = loadPersonConfig(env).assignee ?? (await tracker.me());
-	return { tracker, person, workflows: Object.keys(config.workflows ?? {}) };
+	return { tracker, codeHost, person, workflows: Object.keys(config.workflows ?? {}) };
 }
 
 export interface WatchOptions {
