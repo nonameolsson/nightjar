@@ -350,11 +350,23 @@ async function revisit(
 const didWork = (got: PullFixOutcome | null): got is PullFixOutcome =>
 	got !== null && got.kind !== 'skipped';
 
-// The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
-const GOOD_ENDS: readonly PullFixOutcome['kind'][] = ['fixed', 'gaveUp', 'atLimit', 'diverged'];
+const PULL_FIX_GOOD_ENDS: readonly PullFixOutcome['kind'][] = [
+	'fixed',
+	'gaveUp',
+	'atLimit',
+	'diverged'
+];
 
+// The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
 export function pullFixExit(got: PullFixOutcome): number {
-	return GOOD_ENDS.includes(got.kind) ? 0 : 1;
+	return PULL_FIX_GOOD_ENDS.includes(got.kind) ? 0 : 1;
+}
+
+const FEATURE_GOOD_ENDS: readonly FeatureOutcome['kind'][] = ['pull', 'nothing', 'diverged'];
+
+// The exit code of `nightjar <id>` after a build: a pull request opened, nothing to build, or the Feature handed to a person is a good end.
+export function featureExit(got: FeatureOutcome | null): number {
+	return got !== null && FEATURE_GOOD_ENDS.includes(got.kind) ? 0 : 1;
 }
 
 // `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today.

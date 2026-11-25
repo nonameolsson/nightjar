@@ -16,6 +16,7 @@ import {
 	buildNamed,
 	cannotClaim,
 	dryRun,
+	featureExit,
 	fixNamed,
 	publishPass,
 	pullChecksPass,
@@ -929,6 +930,36 @@ describe('nightjar <id>', () => {
 			why: 'boom',
 			startedAt: new Date(2026, 9, 30, 9).toISOString()
 		});
+	});
+});
+
+describe('the exit code of nightjar <id>', () => {
+	const pull = { id: 7, url: 'https://code.example/pull/7' };
+
+	it('is 0 for a Feature handed to a person after a push a person beat', () => {
+		expect(featureExit({ kind: 'diverged', side: 'factory/4-x-attempt-push' })).toBe(0);
+		expect(
+			pullFixExit({ kind: 'diverged', pull, round: 1, side: 'factory/4-x-attempt-push', usd: 1 })
+		).toBe(0);
+	});
+
+	it('is 0 for a pull request opened or nothing to build, and 1 for a run that went no further', () => {
+		expect(featureExit({ kind: 'nothing', waiting: [] })).toBe(0);
+		expect(featureExit({ kind: 'paused', why: 'the daily limit was reached' })).toBe(1);
+		expect(featureExit({ kind: 'stopped' })).toBe(1);
+		expect(featureExit(null)).toBe(1);
+	});
+
+	it('is 1 for a Pull-check fix whose push faulted', () => {
+		const faulted: PullFixOutcome = {
+			kind: 'faulted',
+			pull,
+			round: 1,
+			fault: new Error('x'),
+			title: 'T',
+			usd: 1
+		};
+		expect(pullFixExit(faulted)).toBe(1);
 	});
 });
 
