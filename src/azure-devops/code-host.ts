@@ -16,7 +16,7 @@ import type {
 	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
-import { firstLine, type Env, type Run } from '../git.js';
+import { pushFault, type Env, type Run } from '../git.js';
 import { logTail } from '../log-tail.js';
 import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
@@ -453,7 +453,7 @@ export class AzureReposCodeHost implements CodeHost {
 		}
 		if (!got.ok) {
 			throw new AzureDevOpsFailure(
-				`git could not push ${branch} to Azure Repos: ${firstLine(got.err)}`
+				`git could not push ${branch} to Azure Repos: ${pushFault(got.err)}`
 			);
 		}
 	}

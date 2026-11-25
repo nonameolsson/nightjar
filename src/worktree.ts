@@ -434,16 +434,19 @@ export const openWorktree: OpenWorktree = async (root, worktrees, branch, baseBr
 	if (existsSync(folder)) {
 		await tree.git(['reset', '-q', '--hard']);
 		await tree.git(['clean', '-q', '-fd']);
-		return tree;
-	}
-	await must(['worktree', 'prune']);
-	if (await hasRef(root, `refs/heads/${branch}`, env)) {
-		await must(['worktree', 'add', '-q', folder, branch]);
-	} else if (await hasRef(root, `refs/remotes/origin/${branch}`, env)) {
-		await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, `origin/${branch}`]);
 	} else {
-		await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, base]);
+		await must(['worktree', 'prune']);
+		if (await hasRef(root, `refs/heads/${branch}`, env)) {
+			await must(['worktree', 'add', '-q', folder, branch]);
+		} else if (await hasRef(root, `refs/remotes/origin/${branch}`, env)) {
+			await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, `origin/${branch}`]);
+		} else {
+			await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, base]);
+		}
 	}
+	// what a person pushed to the branch since, such as a fix to its check, so the next push is not rejected;
+	// a branch with commits of its own on both sides stays as it is, and its push says so
+	await tree.toRemote();
 	return tree;
 };
 
