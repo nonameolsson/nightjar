@@ -54,6 +54,32 @@ const DecisionSchema = z.discriminatedUnion('kind', [
 	// the Feature's draft pull request: a new one, or the branch's open one with a new body
 	z.object({ kind: z.literal('pullOpened'), url: z.string(), created: z.boolean() }),
 	z.object({ kind: z.literal('paused'), why: z.string() }),
+	// a Feedback round of the Session in the entry: the Feedback ids it answered, and those it left with the reason for each
+	z.object({
+		kind: z.literal('feedbackRound'),
+		end: z.enum(['answered', 'thrownAway', 'paused', 'stopped']),
+		// the commit that answers, on an `answered` end
+		commit: z.string().optional(),
+		// why the round was thrown away, paused or stopped
+		why: z.string().optional(),
+		answered: z.array(z.string()),
+		left: z.array(z.object({ id: z.string(), why: z.string() }))
+	}),
+	// a Pull-check fix round `round` of `rounds` on the draft pull request, started by the Pull checks `failing`; `why` is what stopped it short of a push
+	z.object({
+		kind: z.literal('pullFix'),
+		round: z.number(),
+		rounds: z.number(),
+		failing: z.array(z.object({ check: z.string(), job: z.string(), step: z.string() })),
+		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped']),
+		why: z.string().optional()
+	}),
+	// the Feature was made by the Source `source` through `nightjar intake`; `key` is what the Source calls the event, when it has one
+	z.object({ kind: z.literal('madeBySource'), source: z.string(), key: z.string().optional() }),
+	// the Source's event came again while the Feature was open, and intake said so on it: the count of events since its last comment
+	z.object({ kind: z.literal('happenedAgain'), source: z.string(), times: z.number() }),
+	// the Source assigned the Feature to `owner` and gave it the Go
+	z.object({ kind: z.literal('standingGo'), source: z.string(), owner: z.string() }),
 	// the Feature, or the entry's Ticket, handed to a person with needs info or needs a person
 	z.object({ kind: z.literal('handed'), to: z.enum(['needsInfo', 'human']), why: z.string() })
 ]);

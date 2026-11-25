@@ -453,6 +453,7 @@ class FeatureRun {
 			allowance: (cap, spent) => deps.spend.allowance(cap, spent),
 			fix: (work) => this.fixFeedback(work),
 			log: (entry) => this.log(entry),
+			note: this.note,
 			building: (session) => this.building(null, 'feedback', session, NO_ROUND),
 			...(this.started === undefined ? {} : { asked: this.started.asked })
 		});
@@ -1184,6 +1185,9 @@ export type PullFixOutcome =
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' };
 
+// How a Pull-check fix round that ran ended: the outcomes that are not about a round that never began.
+type PullFixRound = Exclude<PullFixOutcome, { readonly kind: 'atLimit' | 'skipped' }>;
+
 // One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
 export async function fixPullChecks(
 	deps: Deps,
@@ -1196,6 +1200,8 @@ export async function fixPullChecks(
 	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
 	if (day !== null) return { kind: 'paused', why: day };
 	const feature = await tracker.feature(red.feature);
+	const note = noteFor(deps.logbook, feature.id, deps.now);
+	const signals = signalsOf(tracker, feature.id, note);
 	const tree = await deps.openWorktree(
 		setup.root,
 		setup.worktrees,
@@ -1219,7 +1225,7 @@ export async function fixPullChecks(
 	if (used >= rounds) {
 		const why = `it has had its ${String(rounds)} Pull-check fix round${rounds === 1 ? '' : 's'}`;
 		deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, and ${why}`);
-		await handOver(deps, setup, feature.id, draft, why, draft.body);
+		await handOver(deps, setup, { feature: feature.id, note, signals }, draft, why, draft.body);
 		return { kind: 'atLimit', pull, rounds };
 	}
 	const round = used + 1;
@@ -1234,10 +1240,19 @@ export async function fixPullChecks(
 			`${hash(feature.id)}: ${headSession === undefined ? 'the head commit names no Session' : `Session ${headSession} is not on this machine`}, starting a new one`
 		);
 	}
-	await tracker.addSignal(feature.id, 'working');
-	let got: PullFixOutcome;
+	await signals.on('working');
+	let got: PullFixRound;
 	try {
 		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round });
+		note({
+			kind: 'pullFix',
+			round,
+			rounds: setup.limits.pullFixRounds,
+			failing: draft.checks.failed.map((f) => ({ check: f.check, job: f.job, step: f.step })),
+			end: pullFixEnd(got),
+			...(got.kind === 'gaveUp' || got.kind === 'paused' ? { why: got.why } : {}),
+			session: session.id
+		});
 		// every round that ran says so in the body, the one that gave up too
 		const ran = (r: Pick<PullRound, 'outcome' | 'summary' | 'usd'>) =>
 			withPullRound(draft.body, { round, failed: draft.checks.failed, ...r });
@@ -1249,12 +1264,26 @@ export async function fixPullChecks(
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
-			await handOver(deps, setup, feature.id, draft, why, body);
+			await handOver(deps, setup, { feature: feature.id, note, signals }, draft, why, body);
 		}
 	} finally {
-		await tracker.removeSignal(feature.id, 'working');
+		await signals.off('working');
 	}
 	return got;
+}
+
+// How a Pull-check fix round that ran ended, as its Logbook entry says.
+function pullFixEnd(got: PullFixRound) {
+	switch (got.kind) {
+		case 'fixed':
+			return 'pushed';
+		case 'gaveUp':
+			return 'gaveUp';
+		case 'paused':
+			return 'paused';
+		case 'stopped':
+			return 'stopped';
+	}
 }
 
 const HANDED_OVER = '<!-- nightjar-pull-checks: handed to a person -->';
@@ -1273,14 +1302,16 @@ export function markHandedOver(body: string): string {
 async function handOver(
 	deps: Deps,
 	setup: Setup,
-	feature: ItemId,
+	of: { readonly feature: ItemId; readonly note: Note; readonly signals: FeatureSignals },
 	draft: NightjarDraft,
 	why: string,
 	// the pull request body as it is to stay, before the mark
 	body: string
 ): Promise<void> {
+	const { feature, note, signals } = of;
 	const { pull } = draft;
-	await deps.tracker.addSignal(feature, 'human');
+	note({ kind: 'handed', to: 'human', why });
+	await signals.on('human');
 	const failing = draft.checks.failed.map(failingLine);
 	const comment = `Nightjar could not make the Pull checks of ${pull.url} green: ${why}.\n\nFailing Pull checks:\n\n${failing.join('\n')}`;
 	await deps.tracker.comment(feature, withNext(comment, pullChecksStep(setup.signals)));
@@ -1301,7 +1332,7 @@ async function pullFixRound(
 		session: PullFixSession;
 		round: number;
 	}
-): Promise<PullFixOutcome> {
+): Promise<PullFixRound> {
 	const { feature, tree, draft, round } = o;
 	const session = o.session.id;
 	const { pull } = draft;
@@ -1335,14 +1366,14 @@ async function pullFixRound(
 	};
 	const name = `Pull-check fix ${String(round)}`;
 	const before = await tree.head();
-	const gaveUp = async (why: string, usd: number): Promise<PullFixOutcome> => {
+	const gaveUp = async (why: string, usd: number): Promise<PullFixRound> => {
 		const side = await tree.discard(before, `pull-fix-${String(round)}`);
 		deps.say(
 			`${hash(feature.id)}: ${name} gave up: ${why}${side ? `; the attempt is kept on ${side}` : ''}`
 		);
 		return { kind: 'gaveUp', pull, round, why, usd };
 	};
-	const halted = async (halt: Halt): Promise<PullFixOutcome> => {
+	const halted = async (halt: Halt): Promise<PullFixRound> => {
 		await tree.discard(before, `pull-fix-${String(round)}`);
 		return halt.kind === 'paused' ? { kind: 'paused', why: halt.why } : { kind: 'stopped' };
 	};

@@ -60,6 +60,44 @@ describe.each(adapters)('the %s Logbook', (_name, make) => {
 		expect(logbook.read('2')).toBeNull();
 	});
 
+	it('gives back the entries of the Feedback round, the Pull-check fix and intake as written', () => {
+		const logbook = make();
+		const note = noteFor(logbook, '1', () => new Date(2026, 9, 30, 9, 3));
+		note({
+			kind: 'madeBySource',
+			source: 'alerts',
+			key: 'k-1'
+		});
+		note({ kind: 'standingGo', source: 'alerts', owner: 'bob' });
+		note({ kind: 'happenedAgain', source: 'alerts', times: 2 });
+		note({
+			kind: 'feedbackRound',
+			end: 'answered',
+			commit: 'c0ffee3',
+			answered: ['comment:1'],
+			left: [{ id: 'review:2', why: 'A decision for a person.' }],
+			session: 'session-4'
+		});
+		note({
+			kind: 'pullFix',
+			round: 1,
+			rounds: 2,
+			failing: [{ check: 'CI / test', job: 'test', step: 'Run npm test' }],
+			end: 'gaveUp',
+			why: 'it reached its cap of $5.00',
+			session: 'session-2'
+		});
+		const entries = logbook.read('1');
+		expect(entries?.map((e) => e.kind)).toEqual([
+			'madeBySource',
+			'standingGo',
+			'happenedAgain',
+			'feedbackRound',
+			'pullFix'
+		]);
+		expect(entries?.[3]).toMatchObject({ left: [{ id: 'review:2' }], session: 'session-4' });
+	});
+
 	it('dates what a writer for one Feature notes, and files it under that Feature', () => {
 		const logbook = make();
 		const note = noteFor(logbook, '1', () => new Date(2026, 9, 30, 9, 3));
