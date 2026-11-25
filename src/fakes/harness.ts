@@ -1,9 +1,21 @@
 // The in-memory fakes as the contract suites' harnesses: each world becomes a fresh fake.
-import type { Pull } from '../code-host.js';
+import type { CodeHost, Pull } from '../code-host.js';
 import type { CodeHostHarness, CodeHostSubject, Given } from '../contract/code-host.js';
 import type { TrackerHarness } from '../contract/tracker.js';
 import { FakeCodeHost } from './code-host.js';
 import { FakeTracker } from './tracker.js';
+import type { Tracker } from '../tracker.js';
+
+// A harness's subject as the fake it is, checked rather than cast, for a spec that takes the fake apart.
+export function asFakeTracker(tracker: Tracker): FakeTracker {
+	if (!(tracker instanceof FakeTracker)) throw new Error('the harness gave no FakeTracker');
+	return tracker;
+}
+
+export function asFakeCodeHost(codeHost: CodeHost): FakeCodeHost {
+	if (!(codeHost instanceof FakeCodeHost)) throw new Error('the harness gave no FakeCodeHost');
+	return codeHost;
+}
 
 export const fakeCodeHostHarness: CodeHostHarness = () =>
 	Promise.resolve(fakeCodeHostSubject(new FakeCodeHost()));

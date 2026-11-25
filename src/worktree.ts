@@ -153,6 +153,10 @@ export interface Worktree {
 	discard(before: string, ticket: string): Promise<string | null>;
 	// Moves the branch on to the commit the remote holds, when that loses no commit of its own; false when the remote has no such branch or the branch holds commits the remote lacks.
 	toRemote(): Promise<boolean>;
+	// After a push that failed, the branch fetched again: the remote holds the commit, each side has commits the other lacks, or neither.
+	pushOutcome(): Promise<PushOutcome>;
+	// Keeps the branch's commits on its -attempt-push side branch, overwriting one kept before, and takes the remote's head; the side branch's name.
+	setAsidePush(): Promise<string>;
 	// The trailers of the head commit, by key; the last value of a key given twice.
 	headTrailers(): Promise<ReadonlyMap<string, string>>;
 	// How many Pull-check fixes the branch's own commits hold, from their trailers.
@@ -183,6 +187,12 @@ export function trailersOf(message: string): Map<string, string> {
 	}
 	return found;
 }
+
+// What a push that failed turns out to be: the remote holds the commit after all, a person pushed to the branch, or anything else.
+export type PushOutcome = 'pushed' | 'diverged' | 'fault';
+
+// The side branch a push the remote rejected keeps Nightjar's commits on.
+export const pushAttemptBranch = (branch: string) => attemptBranch(branch, 'push');
 
 // Opens the worktree of a Feature's branch, reusing what a run before left.
 export type OpenWorktree = (
@@ -351,6 +361,43 @@ export class GitWorktree implements Worktree {
 		return true;
 	}
 
+	// A branch with commits of its own and the remote's: the remote's merged in when the two do not clash, else the branch left as it was.
+	async mergeRemote(): Promise<boolean> {
+		const remote = `refs/remotes/origin/${this.at.branch}`;
+		const theirs = await run(
+			'git',
+			['rev-parse', '--verify', '--quiet', `${remote}^{commit}`],
+			this.at.folder,
+			this.env
+		);
+		if (!theirs.ok) return false;
+		const merged = await run('git', ['merge', '-q', '--no-edit', remote], this.at.folder, this.env);
+		if (merged.ok) return true;
+		await run('git', ['merge', '--abort'], this.at.folder, this.env);
+		return false;
+	}
+
+	// Sorted by git's view of the two heads, not by what the push said, so it reads alike on every Code host.
+	async pushOutcome(): Promise<PushOutcome> {
+		const remote = `refs/remotes/origin/${this.at.branch}`;
+		const refspec = `+refs/heads/${this.at.branch}:${remote}`;
+		const fetched = await run('git', ['fetch', '-q', 'origin', refspec], this.at.folder, this.env);
+		if (!fetched.ok) return 'fault';
+		const holds = (ancestor: string, of: string) =>
+			run('git', ['merge-base', '--is-ancestor', ancestor, of], this.at.folder, this.env);
+		if ((await holds('HEAD', remote)).ok) return 'pushed';
+		if ((await holds(remote, 'HEAD')).ok) return 'fault';
+		return 'diverged';
+	}
+
+	async setAsidePush(): Promise<string> {
+		const side = pushAttemptBranch(this.at.branch);
+		await this.git(['branch', '-f', side, 'HEAD']);
+		await this.git(['reset', '-q', '--hard', `refs/remotes/origin/${this.at.branch}`]);
+		await this.git(['clean', '-q', '-fd']);
+		return side;
+	}
+
 	async headTrailers(): Promise<ReadonlyMap<string, string>> {
 		const out = await this.git(['log', '-1', '--format=%(trailers:only,unfold)']);
 		const found = new Map<string, string>();
@@ -445,8 +492,8 @@ export const openWorktree: OpenWorktree = async (root, worktrees, branch, baseBr
 		}
 	}
 	// what a person pushed to the branch since, such as a fix to its check, so the next push is not rejected;
-	// a branch with commits of its own on both sides stays as it is, and its push says so
-	await tree.toRemote();
+	// a branch with commits on both sides takes the remote's in by a merge, and one that clashes stays as it is, and its push says so
+	if (!(await tree.toRemote())) await tree.mergeRemote();
 	return tree;
 };
 

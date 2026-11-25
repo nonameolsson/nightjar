@@ -10,6 +10,7 @@ import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
+import { THEMES, type Theme } from './ui-theme.js';
 import {
 	detailFrom,
 	listsFrom,
@@ -104,7 +105,7 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('<export>');
 	});
 
-	it('shows a queued Feature with its Ticket count, 0 of N and its eggs', async () => {
+	it('shows a queued Feature with its Ticket count, its closed Tickets built, and its eggs', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		file.refreshed(
@@ -119,7 +120,7 @@ describe('nightjar ui page', () => {
 		const board = (await get('/')).text.split('<div class="table">')[0] ?? '';
 		const card = (title: string) => board.split('<article').find((a) => a.includes(title)) ?? '';
 		expect(card('Saved filters')).toContain('4 Tickets');
-		expect(card('Saved filters')).toContain('0 of 4 built');
+		expect(card('Saved filters')).toContain('1 of 4 built');
 		expect(card('Saved filters')).toContain('class="eggs"');
 		expect(card('Exports')).toContain('? Tickets');
 		expect(card('Exports')).not.toContain('class="eggs"');
@@ -146,12 +147,12 @@ describe('nightjar ui page', () => {
 				outcome: step === 'build' ? 'built' : 'approve',
 				...(durationMs === undefined ? {} : { durationMs })
 			});
-		const queue = () => {
+		const queue = (closed = 0) => {
 			const file = status();
 			file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 			file.refreshed(
 				[
-					{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed: 0 } },
+					{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed } },
 					{ id: '281', title: 'Exports', ticketCounts: null },
 					{ id: '290', title: 'Reports' }
 				],
@@ -181,6 +182,16 @@ describe('nightjar ui page', () => {
 			const rows = (page.split('<tbody>')[1] ?? '').split('<tr');
 			expect(rows.find((r) => r.includes('Saved filters'))).toContain('est.');
 			expect(rows.find((r) => r.includes('Exports'))).not.toContain('est.');
+		});
+
+		it('counts only the Tickets not built yet, and gives none when all are', async () => {
+			built('11', 60_000, 1);
+			queue(2);
+			await open();
+			// 1m x the 2 Tickets left
+			expect(cardOf((await get('/')).text, 'Saved filters')).toMatch(/2m 00s<\/time> <small>est\./);
+			queue(4);
+			expect(cardOf((await get('/')).text, 'Saved filters')).not.toContain('est.');
 		});
 
 		it('shows no estimate while no duration is recorded', async () => {
@@ -598,7 +609,7 @@ describe('nightjar ui reads the Tracker', () => {
 		expect(html).toContain('<span class="state">off</span>');
 		expect(html).not.toContain('not known while nightjar is off');
 		expect(mat(html, 'queue')).toContain('Saved filters');
-		expect(mat(html, 'queue')).toContain('0 of 2 built');
+		expect(mat(html, 'queue')).toContain('1 of 2 built');
 		expect(mat(html, 'waiting')).toContain('Audit log');
 		expect(mat(html, 'waiting')).toContain('needs info');
 		expect(html).toMatch(/waiting on you<\/span> <b>1<\/b>/);
@@ -1551,19 +1562,24 @@ describe('nightjar ui page, more', () => {
 });
 
 describe('nightjar ui audit fixes', () => {
-	const css = async () => {
+	// a theme's own stylesheet; each theme is a whole sheet, so the rules every page needs are checked in each
+	const css = async (theme: Theme = 'nightjar') => {
 		await open();
 		const page = (await get('/')).text;
-		return { page, style: page.split('<style>')[1]?.split('</style>')[0] ?? '' };
+		const style =
+			page.split(new RegExp(`<style data-theme="${theme}"[^>]*>`))[1]?.split('</style>')[0] ?? '';
+		return { page, style };
 	};
 	const rule = (style: string, selector: string) =>
 		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
 
 	it('has a status region outside the panels that stays out of sight', async () => {
-		const { page, style } = await css();
-		expect(page).toContain('<p id="live" class="sr" role="status"></p>');
-		expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
-		expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
+		for (const theme of THEMES) {
+			const { page, style } = await css(theme);
+			expect(page).toContain('<p id="live" class="sr" role="status"></p>');
+			expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
+			expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
+		}
 	});
 
 	it('announces only when the waiting or failed count rises', async () => {
@@ -1626,14 +1642,24 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('1 failed');
 	});
 
-	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act'];
-	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
-		const { style } = await css();
-		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
-		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-		for (const s of BUTTONS) expect(coarse, s).toContain(s);
-		expect(coarse).toContain('min-height: 44px');
-	});
+	const BUTTONS = [
+		'th button',
+		'#views button',
+		'#themes button',
+		'.chips button',
+		'button.copy',
+		'a.act'
+	];
+	it.each(THEMES)(
+		'gives sort buttons, view and theme tabs, chips, copy buttons and links a 24px hit area, 44px on touch (%s)',
+		async (theme) => {
+			const { style } = await css(theme);
+			for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
+			const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
+			for (const s of BUTTONS) expect(coarse, s).toContain(s);
+			expect(coarse).toContain('min-height: 44px');
+		}
+	);
 
 	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
 		const { style } = await css();
@@ -1644,14 +1670,25 @@ describe('nightjar ui audit fixes', () => {
 		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
 	});
 
-	it('collapses entries beside the detail panel only between 1261px and 1400px', async () => {
-		const { style } = await css();
-		expect(style).not.toContain('@media (max-width: 1400px)');
-		const block =
-			style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
-		expect(block).toContain('.cols.has-detail .entry');
-		expect(block).toContain('.cols.has-detail .head');
+	it("keeps Paper's font sizes on its 11.5px to 16px ramp", async () => {
+		const { style } = await css('paper');
+		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)px/g)].map((m) => m[1]);
+		expect(sizes.length).toBeGreaterThan(0);
+		const ramp = ['11.5', '12', '12.5', '13', '13.5', '14', '16'];
+		expect(sizes.filter((s) => !ramp.includes(s ?? ''))).toEqual([]);
 	});
+
+	it.each(THEMES)(
+		'collapses entries beside the detail panel only between 1261px and 1400px (%s)',
+		async (theme) => {
+			const { style } = await css(theme);
+			expect(style).not.toContain('@media (max-width: 1400px)');
+			const block =
+				style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
+			expect(block).toContain('.cols.has-detail .entry');
+			expect(block).toContain('.cols.has-detail .head');
+		}
+	);
 
 	it('keeps the inner scroll of the log, detail panel and Table across a live swap', async () => {
 		await open();
@@ -1698,14 +1735,18 @@ describe('nightjar ui audit fixes', () => {
 		expect(rule(style, '.egg.need::before, .egg.need::after')).not.toContain('border-radius');
 	});
 
-	it('draws colours from tokens: no literals outside :root', async () => {
-		const { style } = await css();
+	it.each(THEMES)('draws colours from tokens: no literals outside :root (%s)', async (theme) => {
+		const { style } = await css(theme);
 		const rest = style
 			.split('\n')
 			.filter((l) => !l.startsWith(':root'))
 			.join('\n');
 		expect(rest).not.toMatch(/#[0-9a-f]{3,8}\b/i);
 		expect(rest).not.toContain('rgba(');
+	});
+
+	it('keeps the Nightjar tokens for its sockets, mats and shading', async () => {
+		const { style } = await css('nightjar');
 		for (const t of ['--socket-dash', '--socket-border', '--panel-overlay', '--shade-soft'])
 			expect(style).toContain(`${t}:`);
 	});
@@ -1725,13 +1766,16 @@ describe('nightjar ui audit fixes', () => {
 		expect(page).not.toContain('data-tip');
 	});
 
-	it('lets the whole page scroll on a short or narrow viewport', async () => {
-		const { style } = await css();
-		const block =
-			style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
-		expect(block).toContain('height: auto');
-		expect(block).toContain('overflow: visible');
-	});
+	it.each(THEMES)(
+		'lets the whole page scroll on a short or narrow viewport (%s)',
+		async (theme) => {
+			const { style } = await css(theme);
+			const block =
+				style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
+			expect(block).toContain('height: auto');
+			expect(block).toContain('overflow: visible');
+		}
+	);
 
 	it('puts focus back on a copy button or link after a live swap', async () => {
 		await open();

@@ -1,6 +1,11 @@
 // The runner behind `nightjar contract`: the contract suites over the harnesses a module exports.
 import { describe, expect, it } from 'vitest';
-import { fakeCodeHostHarness, fakeTrackerHarness } from '../fakes/harness.js';
+import {
+	asFakeCodeHost,
+	asFakeTracker,
+	fakeCodeHostHarness,
+	fakeTrackerHarness
+} from '../fakes/harness.js';
 import { assignContract } from './assign.js';
 import { codeHostContract, type CodeHostHarness } from './code-host.js';
 import { feedbackContract } from './feedback.js';
@@ -16,7 +21,6 @@ import { sourcesContract } from './sources.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
-import type { FakeCodeHost } from '../fakes/code-host.js';
 import type { FakeTracker } from '../fakes/tracker.js';
 
 // A Tracker that never knows who is signed in.
@@ -94,7 +98,7 @@ describe('runContract', () => {
 				publish: _d,
 				botPulls: _e,
 				...only
-			} = codeHost as FakeCodeHost;
+			} = asFakeCodeHost(codeHost);
 			return { ...rest, codeHost: only };
 		};
 		const report = await runContract({ codeHostHarness: reads });
@@ -105,7 +109,7 @@ describe('runContract', () => {
 	it('runs no nightjarDrafts suite over a Code host without the method, as a module written before it', async () => {
 		const lacks: CodeHostHarness = async () => {
 			const subject = await fakeCodeHostHarness();
-			const { nightjarDrafts: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			const { nightjarDrafts: _gone, ...without } = asFakeCodeHost(subject.codeHost);
 			return { ...subject, codeHost: without };
 		};
 		const report = await runContract({ codeHostHarness: lacks });
@@ -122,7 +126,7 @@ describe('runContract', () => {
 	it('runs no openPulls suite over a Code host without the method, as a module written before it', async () => {
 		const lacks: CodeHostHarness = async () => {
 			const subject = await fakeCodeHostHarness();
-			const { openPulls: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			const { openPulls: _gone, ...without } = asFakeCodeHost(subject.codeHost);
 			return { ...subject, codeHost: without };
 		};
 		const report = await runContract({ codeHostHarness: lacks });
@@ -139,7 +143,7 @@ describe('runContract', () => {
 	it('runs no publish suite over a Code host without the method, as a module written before it', async () => {
 		const lacks: CodeHostHarness = async () => {
 			const subject = await fakeCodeHostHarness();
-			const { publish: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			const { publish: _gone, ...without } = asFakeCodeHost(subject.codeHost);
 			return { ...subject, codeHost: without };
 		};
 		const report = await runContract({ codeHostHarness: lacks });
@@ -224,7 +228,7 @@ describe('runContract', () => {
 				ticketCounts: _h,
 				shelf: _i,
 				...only
-			} = tracker as FakeTracker;
+			} = asFakeTracker(tracker);
 			return { ...rest, tracker: only };
 		};
 		const report = await runContract({ trackerHarness: reads });
@@ -235,7 +239,7 @@ describe('runContract', () => {
 	it('runs no waitingOn suite over a Tracker without the method, and the creation suite still runs', async () => {
 		const lacks: TrackerHarness = async (world) => {
 			const { tracker, ...rest } = await fakeTrackerHarness(world);
-			const { waitingOn: _gone, ...without } = tracker as FakeTracker;
+			const { waitingOn: _gone, ...without } = asFakeTracker(tracker);
 			return { ...rest, tracker: without };
 		};
 		const report = await runContract({ trackerHarness: lacks });
@@ -253,7 +257,7 @@ describe('runContract', () => {
 	it('runs no shelf suite over a Tracker without the method, as a module written before it', async () => {
 		const lacks: TrackerHarness = async (world) => {
 			const { tracker, ...rest } = await fakeTrackerHarness(world);
-			const { shelf: _gone, ...without } = tracker as FakeTracker;
+			const { shelf: _gone, ...without } = asFakeTracker(tracker);
 			return { ...rest, tracker: without };
 		};
 		const report = await runContract({ trackerHarness: lacks });
@@ -274,7 +278,7 @@ describe('runContract', () => {
 			(wrong: (shelf: FakeTracker['shelf']) => FakeTracker['shelf']): TrackerHarness =>
 			async (world) => {
 				const subject = await fakeTrackerHarness(world);
-				const fake = subject.tracker as FakeTracker;
+				const fake = asFakeTracker(subject.tracker);
 				return { ...subject, tracker: Object.assign(fake, { shelf: wrong(fake.shelf) }) };
 			};
 		const failing = async (harness: TrackerHarness) => {
@@ -303,7 +307,7 @@ describe('runContract', () => {
 	it('runs no sources suite over a Tracker without featuresFrom', async () => {
 		const lacks: TrackerHarness = async (world) => {
 			const { tracker, ...rest } = await fakeTrackerHarness(world);
-			const { featuresFrom: _gone, ...without } = tracker as FakeTracker;
+			const { featuresFrom: _gone, ...without } = asFakeTracker(tracker);
 			return { ...rest, tracker: without };
 		};
 		const report = await runContract({ trackerHarness: lacks });
@@ -321,7 +325,7 @@ describe('runContract', () => {
 	it('runs no assign suite over a Tracker without assign', async () => {
 		const lacks: TrackerHarness = async (world) => {
 			const { tracker, ...rest } = await fakeTrackerHarness(world);
-			const { assign: _gone, ...without } = tracker as FakeTracker;
+			const { assign: _gone, ...without } = asFakeTracker(tracker);
 			return { ...rest, tracker: without };
 		};
 		const report = await runContract({ trackerHarness: lacks });
@@ -401,7 +405,7 @@ describe('runContract', () => {
 	it('runs no botPulls suite over a Code host without the method, as a module written before it', async () => {
 		const lacks: CodeHostHarness = async () => {
 			const subject = await fakeCodeHostHarness();
-			const { botPulls: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			const { botPulls: _gone, ...without } = asFakeCodeHost(subject.codeHost);
 			return { ...subject, codeHost: without };
 		};
 		const report = await runContract({ codeHostHarness: lacks });

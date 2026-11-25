@@ -44,6 +44,7 @@ import {
 	nextStepText,
 	noteStep,
 	pullChecksStep,
+	pushRejectedStep,
 	reviewStep,
 	stoppedStep,
 	ticketStep,
@@ -190,11 +191,15 @@ export type FeatureOutcome =
 			readonly pull: Pull;
 			readonly built: ItemId[];
 			readonly waiting: Waiting[];
+			// why the run paused after it opened the pull request, so the loop waits before it builds again
+			readonly paused?: string;
 	  }
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
-	| { readonly kind: 'stopped' };
+	| { readonly kind: 'stopped' }
+	// a person pushed to the branch first: the build's work waits on the local branch `side`, and the Feature is the person's
+	| { readonly kind: 'diverged'; readonly side: string };
 
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
@@ -885,7 +890,12 @@ class FeatureRun {
 				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
-		await codeHost.push(this.tree.at.folder, this.tree.at.branch);
+		const pushed = await pushBranch(this.deps, this.setup, this.tree, id);
+		if (pushed.kind === 'diverged') {
+			// a pause put the Go back, and the Feature is now with a person
+			await tracker.removeSignal(id, 'go');
+			return { kind: 'diverged', side: pushed.side };
+		}
 		const complete = left.length === 0 && red === null && paused === null;
 		const ids = done.map((t) => t.id);
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;
@@ -966,7 +976,13 @@ class FeatureRun {
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
 		}
-		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+		return {
+			kind: 'pull',
+			pull,
+			built: [...this.built],
+			waiting: left,
+			...(paused === null ? {} : { paused })
+		};
 	}
 
 	private async stopped(): Promise<FeatureOutcome> {
@@ -1304,6 +1320,14 @@ export type PullFixOutcome =
 	  }
 	// the pull request has had its `rounds` fix rounds: no Session, and the Feature is handed to a person
 	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
+	// a green fix whose push was rejected because a person pushed to the branch: it is kept on `side`, and the Feature is handed to a person
+	| {
+			readonly kind: 'diverged';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly side: string;
+			readonly usd: number;
+	  }
 	// the pull request is not Nightjar's to fix after all; nothing was done
 	| { readonly kind: 'skipped'; readonly why: string }
 	| { readonly kind: 'paused'; readonly why: string }
@@ -1558,9 +1582,46 @@ async function pullFixRound(
 	if (!(await tree.commitPullFix(round, summary, session))) {
 		return gaveUp('the Session changed no file', fixed.spent);
 	}
-	await deps.codeHost.push(tree.at.folder, tree.at.branch);
+	const pushed = await pushBranch(deps, setup, tree, feature.id);
+	if (pushed.kind === 'diverged') {
+		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
+	}
 	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
 	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
+}
+
+// How a push of a Feature's branch ended: on the Code host, or set aside on `side` because a person pushed to the branch first.
+export type PushEnd =
+	{ readonly kind: 'pushed' } | { readonly kind: 'diverged'; readonly side: string };
+
+// Every push of a Feature's branch. One that fails is sorted by git, never by what the push said (ADR 0010): a branch a person pushed to hands the Feature to them, and any other failure is thrown.
+async function pushBranch(
+	deps: Deps,
+	setup: Setup,
+	tree: Worktree,
+	feature: ItemId
+): Promise<PushEnd> {
+	const { branch } = tree.at;
+	try {
+		await deps.codeHost.push(tree.at.folder, branch);
+		return { kind: 'pushed' };
+	} catch (fault) {
+		const outcome = await tree.pushOutcome();
+		if (outcome === 'fault') throw fault;
+		if (outcome === 'pushed') {
+			deps.say(
+				`${hash(feature)}: the push of ${branch} failed, yet the Code host holds it: ${why(fault)}`
+			);
+			return { kind: 'pushed' };
+		}
+		const side = await tree.setAsidePush();
+		await deps.tracker.addSignal(feature, 'human');
+		await deps.tracker.comment(feature, branchMovedComment(setup.signals, branch, side));
+		deps.say(
+			`${hash(feature)}: handed to a person, ${branch} moved on the Code host; the work is kept on ${side}`
+		);
+		return { kind: 'diverged', side };
+	}
 }
 
 async function reviewFeature(
@@ -1783,6 +1844,14 @@ function reviewOpenComment(url: string, open: ReviewLeftOpen, review: Review): s
 			: `Nightjar ran ${String(open.rounds)} Review round${open.rounds === 1 ? '' : 's'}, and the last Review still says changes`;
 	const issues = issueLines(review.issues);
 	return `Nightjar opened ${url}, and this Feature still needs a person.\n\n${cause}: ${review.summary}${issues ? `\n\n${issues}` : ''}`;
+}
+
+// What a Feature is told when a push of its branch is rejected because a person pushed to it, whatever the push followed.
+export function branchMovedComment(n: SignalNames, branch: string, side: string): string {
+	return withNext(
+		`Nightjar could not push to \`${branch}\`: the branch moved on the Code host while Nightjar worked, so a person has pushed to it. Nightjar set its own work aside on the local branch \`${side}\`, put \`${branch}\` back at the Code host's head, and will not push to this draft pull request again on its own.`,
+		pushRejectedStep(n, side)
+	);
 }
 
 function reviewComment(review: Review): string {

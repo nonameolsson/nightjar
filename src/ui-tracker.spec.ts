@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { featureMarker } from './build.js';
+import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { SHELF_MAX } from './tracker.js';
 import { NO_LINKS, type Links } from './ui-links.js';
@@ -20,6 +22,7 @@ import {
 	type TrackerLists,
 	type Upcoming
 } from './ui-tracker.js';
+import { ticketCommitMessage } from './worktree.js';
 
 const at = new Date(Date.UTC(2026, 9, 30, 9, 0));
 
@@ -110,6 +113,57 @@ describe('readUpcoming', () => {
 		const got = await readUpcoming({ tracker, person: 'ann' }, () => at);
 		expect(got.queue).toEqual([{ id: '1', title: 'Saved filters', ticketCounts: null }]);
 		expect(got.waiting.map((w) => w.ticketCounts)).toEqual([null, null]);
+	});
+});
+
+// a Code host with an open pull request for each Feature, its branch holding a commit per Ticket built and a merge from main
+async function hostWith(built: Record<string, readonly string[]>): Promise<FakeCodeHost> {
+	const host = new FakeCodeHost();
+	for (const [feature, tickets] of Object.entries(built)) {
+		const branch = `factory/${feature}-x`;
+		host.commitsAt = () => [
+			...tickets.map((t) => ticketCommitMessage(t, `Ticket ${t}`, 'Built it.', 's1')),
+			"Merge branch 'main' into x"
+		];
+		await host.push(`/w/${feature}`, branch);
+		await host.createDraft({
+			title: `Feature ${feature}`,
+			head: branch,
+			base: 'main',
+			body: `Nightjar built part of #${feature}.\n\n${featureMarker(feature)}`
+		});
+	}
+	return host;
+}
+
+describe('readUpcoming with the Code host', () => {
+	it("gives a Feature its open pull request and the Tickets its branch built, by its commits' trailers", async () => {
+		const codeHost = await hostWith({ '1': ['3'], '4': ['4'] });
+		const got = await readUpcoming({ tracker: fakeTracker(), person: 'ann', codeHost }, () => at);
+		expect(got.queue[0]?.pull).toEqual({
+			id: 100,
+			url: 'https://code.example/pull/100',
+			built: ['3']
+		});
+		expect(got.waiting.find((w) => w.id === '4')?.pull?.built).toEqual(['4']);
+		expect(got.waiting.find((w) => w.id === '5')?.pull).toBeUndefined();
+	});
+
+	it('leaves out a pull request whose body names no Feature', async () => {
+		const codeHost = new FakeCodeHost();
+		codeHost.commitsAt = () => [ticketCommitMessage('3', 'View', 'Built it.', 's1')];
+		await codeHost.push('/w', 'factory/1-x');
+		await codeHost.createDraft({ title: 'x', head: 'factory/1-x', base: 'main', body: 'mine' });
+		const got = await readUpcoming({ tracker: fakeTracker(), person: 'ann', codeHost }, () => at);
+		expect(got.queue[0]?.pull).toBeUndefined();
+	});
+
+	it('still gives the lists when the Code host cannot list its pull requests', async () => {
+		const codeHost = { openPulls: () => Promise.reject(new Error('gh: HTTP 502')) };
+		const got = await readUpcoming({ tracker: fakeTracker(), person: 'ann', codeHost }, () => at);
+		expect(got.queue).toEqual([
+			{ id: '1', title: 'Saved filters', ticketCounts: { total: 2, closed: 1 } }
+		]);
 	});
 });
 
@@ -231,13 +285,32 @@ describe('the page over what it read of the Tracker', () => {
 		expect(html).toContain('<span class="state">off</span>');
 		expect(html).not.toContain('not known while nightjar is off');
 		expect(mat(html, 'queue')).toContain('Saved filters');
-		expect(mat(html, 'queue')).toContain('0 of 2 built');
+		expect(mat(html, 'queue')).toContain('1 of 2 built');
 		expect(mat(html, 'waiting')).toContain('Audit log');
 		expect(mat(html, 'waiting')).toContain('needs a person');
 		expect(html).toMatch(/waiting on you<\/span> <b>2<\/b>/);
 		expect(html).toContain(`Tracker read <time datetime="${at.toISOString()}">`);
 		expect(html.split('<div class="table">')[1]).toContain('data-title="Saved filters"');
 		expect(html.split('<div class="overview">')[1]).toContain('Audit log');
+	});
+
+	it("counts the Tickets built on a queued Feature's open pull request, and links it", async () => {
+		const codeHost = await hostWith({ '1': ['3'] });
+		const last = await readUpcoming({ tracker: fakeTracker(), person: 'ann', codeHost }, () => at);
+		const queue = mat(panels({ last, fault: null }), 'queue');
+		expect(queue).toContain('2 of 2 built');
+		expect(queue).toContain(
+			'1 Ticket built on <a class="ext" href="https://code.example/pull/100"'
+		);
+		expect(queue).toContain('pull request #100</a>');
+	});
+
+	it('counts them on a Feature that waits on the person too', async () => {
+		const codeHost = await hostWith({ '4': ['4'] });
+		const last = await readUpcoming({ tracker: fakeTracker(), person: 'ann', codeHost }, () => at);
+		const waiting = mat(panels({ last, fault: null }), 'waiting');
+		expect(waiting).toContain('1 of 1 built now');
+		expect(waiting).toContain('pull request #100</a>');
 	});
 
 	describe('the Shelf', () => {

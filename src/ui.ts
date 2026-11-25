@@ -12,6 +12,7 @@ import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js'
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
+	FeaturePull,
 	HandBack,
 	Queued,
 	TicketCounts,
@@ -22,6 +23,7 @@ import type {
 import { featureStart } from './status.js';
 import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
 import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
+import { PAPER_STYLE, THEME_SCRIPT, THEME_SWITCH, themeStyles } from './ui-theme.js';
 import {
 	watchTracker,
 	type FeatureDetail,
@@ -310,6 +312,8 @@ interface FeatureCard {
 	readonly opens?: true;
 	// the Feature's finished runs, on a card that is not on Completed because it is active again
 	readonly earlier?: Earlier;
+	// its open pull request, whose branch holds Tickets the Tracker still shows open
+	readonly pull?: FeaturePull;
 }
 // how many finished runs a Feature had in status.json's recent events, and the latest of them
 interface Earlier {
@@ -362,6 +366,25 @@ interface Progress {
 }
 // the Tickets built as things stand
 const BUILT_NOW = 'built now';
+
+// The Tickets built of a Feature: those the Tracker shows closed, and those its open pull request's branch built, which stay open until it merges.
+const builtOf = (counts: TicketCounts, pull: FeaturePull | undefined, label: string): Progress => ({
+	built: Math.min(counts.closed + (pull?.built.length ?? 0), counts.total),
+	total: counts.total,
+	counts: label
+});
+
+// A link to the Feature's open pull request, which holds what was built so far; nothing without one
+function pullHtml(card: FeatureCard): string {
+	const pull = card.pull;
+	if (pull === undefined) return '';
+	const text = `pull request #${String(pull.id)}`;
+	const link = safeUrl(pull.url)
+		? `<a class="ext" href="${escape(pull.url)}" ${EXTERNAL}>${text}</a>`
+		: escape(text);
+	const n = pull.built.length;
+	return `<p class="meta pull">${String(n)} ${n === 1 ? 'Ticket' : 'Tickets'} built on ${link}</p>`;
+}
 // the Tickets a failed run's own sessions built
 const BUILT_IN_RUN = 'built in this run';
 // the Tickets a pull request's branch held when its run ended, earlier runs' among them
@@ -509,9 +532,8 @@ function features(view: FactoryView, lists: Lists): Features {
 					why: i.why,
 					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: [],
-					progress: i.ticketCounts
-						? { built: i.ticketCounts.closed, total: i.ticketCounts.total, counts: BUILT_NOW }
-						: null,
+					progress: i.ticketCounts ? builtOf(i.ticketCounts, i.pull, BUILT_NOW) : null,
+					...(i.pull === undefined ? {} : { pull: i.pull }),
 					...opens
 				};
 			});
@@ -552,20 +574,22 @@ function features(view: FactoryView, lists: Lists): Features {
 				});
 		}
 	}
-	const queued = (q: Queued): QueuedCard => ({
-		state: 'queue',
-		id: q.id,
-		title: q.title,
-		waitingTickets: [],
-		ticketCounts: q.ticketCounts,
-		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total, counts: 'built' } : null,
-		// the median Ticket duration times the Feature's Tickets; none without history or a count
-		estimateMs:
-			view.medianTicketMs == null || !q.ticketCounts
-				? null
-				: view.medianTicketMs * q.ticketCounts.total,
-		...opens
-	});
+	const queued = (q: Queued): QueuedCard => {
+		const progress = q.ticketCounts ? builtOf(q.ticketCounts, q.pull, 'built') : null;
+		const left = progress === null ? 0 : progress.total - progress.built;
+		return {
+			state: 'queue',
+			id: q.id,
+			title: q.title,
+			waitingTickets: [],
+			ticketCounts: q.ticketCounts,
+			progress,
+			...(q.pull === undefined ? {} : { pull: q.pull }),
+			// the median Ticket duration times the Tickets not built yet; none without history, a count, or a Ticket left
+			estimateMs: view.medianTicketMs == null || left === 0 ? null : view.medianTicketMs * left,
+			...opens
+		};
+	};
 	const queue = listed?.map(queued);
 	const onShelf = (f: ShelfFeature): ShelfCard => ({
 		state: 'shelf',
@@ -644,7 +668,7 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why + earlierHtml(card),
+		whyHtml(card, u) + why + pullHtml(card) + earlierHtml(card),
 		actionLink(u, links),
 		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
 	);
@@ -693,7 +717,7 @@ function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 	);
 }
 
-// A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
+// A Feature in the Queue: its Ticket count, `k of N` built (closed, or on its open pull request) and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard, links: Links): string {
 	const counts = card.ticketCounts;
 	let count = '';
@@ -701,7 +725,14 @@ function queuedCard(card: QueuedCard, links: Links): string {
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
-	return nest('queue', card, links, count, `<p class="label">Queued</p>${earlierHtml(card)}`, est);
+	return nest(
+		'queue',
+		card,
+		links,
+		count,
+		`<p class="label">Queued</p>${pullHtml(card)}${earlierHtml(card)}`,
+		est
+	);
 }
 
 function completedCard(card: CompletedCard, links: Links): string {
@@ -1053,12 +1084,13 @@ const PAGE = (panels: string, links: Links) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nightjar</title>
-<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
+${themeStyles({ paper: PAPER_STYLE, nightjar: `${STYLE}.banner { background-image: url(${BANNER}); }` })}
+<script id="theme">${THEME_SCRIPT}</script>
 </head>
 <body>
 <a class="skip" href="#panels">Skip to Features</a>
 <p id="live" class="sr" role="status"></p>
-<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}</div>
+<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}${THEME_SWITCH}</div>
 <div id="top">${top}</div>
 <div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
 ${FEATURE_DIALOG}
@@ -1287,6 +1319,10 @@ time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre
 #views button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 5px 16px; }
 #views button:hover { color: var(--ink); }
 #views button[data-on="true"] { background: var(--teal-wash); border-color: var(--teal2); color: var(--teal); }
+#themes { border-left: 1px solid var(--line); display: flex; gap: 4px; margin-left: 12px; padding-left: 12px; }
+#themes button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: 0.75rem var(--mono); padding: 3px 10px; }
+#themes button:hover { color: var(--ink); }
+#themes button[data-on="true"] { border-color: var(--teal2); color: var(--teal); }
 #panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 16px 32px 56px; }
 h1, h2 { font-size: 1em; margin: 0; }
 header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 12px 0 2px; }
@@ -1492,7 +1528,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
