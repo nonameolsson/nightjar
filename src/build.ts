@@ -963,7 +963,8 @@ class FeatureRun {
 			}
 		}
 		const carries = this.answered === null ? 'build' : 'feedbackRound';
-		const pushed = await pushBranch(this.deps, this.setup, this.tree, id, carries);
+		const of = { feature: id, note: this.note, signals: this.signals };
+		const pushed = await pushBranch(this.deps, this.setup, this.tree, of, carries);
 		if (pushed.kind === 'diverged') {
 			// a pause put the Go back, and the Feature is now with a person
 			await tracker.removeSignal(id, 'go');
@@ -1478,7 +1479,7 @@ export async function fixPullChecks(
 	await signals.on('working');
 	let got: PullFixRound;
 	try {
-		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round });
+		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round, note, signals });
 		note({
 			kind: 'pullFix',
 			round,
@@ -1590,6 +1591,8 @@ async function pullFixRound(
 		draft: NightjarDraft;
 		session: PullFixSession;
 		round: number;
+		note: Note;
+		signals: FeatureSignals;
 	}
 ): Promise<PullFixRound> {
 	const { feature, tree, draft, round } = o;
@@ -1707,7 +1710,8 @@ async function pullFixRound(
 	if (!(await tree.commitPullFix(round, summary, session))) {
 		return gaveUp('the Session changed no file', fixed.spent);
 	}
-	const pushed = await pushBranch(deps, setup, tree, feature.id, 'pullFix');
+	const of = { feature: feature.id, note: o.note, signals: o.signals };
+	const pushed = await pushBranch(deps, setup, tree, of, 'pullFix');
 	if (pushed.kind === 'diverged') {
 		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
 	}
@@ -1739,9 +1743,10 @@ async function pushBranch(
 	deps: Deps,
 	setup: Setup,
 	tree: Worktree,
-	feature: ItemId,
+	of: { readonly feature: ItemId; readonly note: Note; readonly signals: FeatureSignals },
 	carries: Carries
 ): Promise<PushEnd> {
+	const { feature, note, signals } = of;
 	const { branch } = tree.at;
 	try {
 		await deps.codeHost.push(tree.at.folder, branch);
@@ -1755,12 +1760,15 @@ async function pushBranch(
 			return { kind: 'pushed' };
 		}
 		if (outcome === 'fault') {
-			return { kind: 'fault', fault: await setAsideOnFault(tree, carries, fault) };
+			return { kind: 'fault', fault: await setAsideOnFault(tree, note, carries, fault) };
 		}
 		const side = await tree.setAsidePush();
 		// a branch that diverged has a remote head, so none to go back to is a fault like any other
 		if (side === null) return { kind: 'fault', fault };
-		await deps.tracker.addSignal(feature, 'human');
+		const moved = `${branch} moved on the Code host`;
+		note({ kind: 'thrownAway', branch: side, why: moved });
+		note({ kind: 'handed', to: 'human', why: moved });
+		await signals.on('human');
 		await deps.tracker.comment(feature, branchMovedComment(setup.signals, branch, side));
 		deps.say(
 			`${hash(feature)}: handed to a person, ${branch} moved on the Code host; the work is kept on ${side}`
@@ -1770,11 +1778,18 @@ async function pushBranch(
 }
 
 // The fault a push ended on, naming the side branch when the work was set aside so that no unpushed commit counts as done or holds a pass back.
-async function setAsideOnFault(tree: Worktree, carries: Carries, fault: unknown): Promise<unknown> {
+async function setAsideOnFault(
+	tree: Worktree,
+	note: Note,
+	carries: Carries,
+	fault: unknown
+): Promise<unknown> {
 	const keeps =
 		carries === 'build' || (carries === 'feedbackRound' && (await tree.holdsUnpushedTicket()));
 	const side = keeps ? null : await tree.setAsidePush();
-	return side === null ? fault : new Error(`${why(fault)}; the work is kept on ${side}`);
+	if (side === null) return fault;
+	note({ kind: 'thrownAway', branch: side, why: `its push failed: ${why(fault)}` });
+	return new Error(`${why(fault)}; the work is kept on ${side}`);
 }
 
 async function reviewFeature(

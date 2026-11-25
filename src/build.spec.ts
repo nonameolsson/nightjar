@@ -3782,6 +3782,20 @@ describe('a push of the build that a person beat', () => {
 		expect(world.host.threads.map((t) => t.id)).toEqual([id]);
 	});
 
+	it('writes the set-aside and the hand-over in the Logbook', async () => {
+		const world = makeWorld();
+		beatenDuring(world, 'build', '3');
+
+		await buildFeature(deps(world), setup(world), '1');
+		const thrown = loggedOf(world, 'thrownAway').find((e) => e.branch === SIDE);
+		expect(thrown?.why).toBe(`${BRANCH} moved on the Code host`);
+		const handed = loggedOf(world, 'handed').find((e) => e.to === 'human');
+		expect(handed?.why).toBe(`${BRANCH} moved on the Code host`);
+		expect(loggedOf(world, 'signal')).toContainEqual(
+			expect.objectContaining({ signal: 'human', on: true })
+		);
+	});
+
 	describe('a build with Ticket commits', () => {
 		it('sets its work aside, hands the Feature to a person with the Go off, and opens no draft', async () => {
 			const world = makeWorld();
