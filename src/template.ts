@@ -37,8 +37,8 @@ const INVISIBLE = /[\p{Cc}\p{Cf}]/gu;
 // what decoding a cut inside a character leaves behind
 const REPLACEMENT = String.fromCodePoint(0xfffd);
 
-// the opening of a line the build reads: a setting of a Ticket, its blockers, its Workflow
-const LABEL = /^\W*(?:model|effort|blocked by|workflow|status)\s*:/i;
+// the opening of a line the build reads: a setting of a Ticket, its blockers, its Workflow, its base branch
+const LABEL = /^\W*(?:model|effort|blocked by|workflow|status|base)\s*:/i;
 
 function escaped(char: string): string {
 	const html = HTML[char];
@@ -137,6 +137,8 @@ export interface FillRequest {
 	readonly key?: string | undefined;
 	// a key given outright, over `key`, written as it is: a schedule has no payload, so its key is its name, which holds no space
 	readonly fixedKey?: string | undefined;
+	// lines the Source writes itself, as they are, above the Source line: they never come from the payload
+	readonly lines?: readonly string[];
 	readonly now?: Date;
 }
 
@@ -155,6 +157,7 @@ export function fillTemplate({
 	payload,
 	key,
 	fixedKey,
+	lines: own = [],
 	now = new Date()
 }: FillRequest): FilledTemplate {
 	// one pass, so a value is never read for placeholders of its own
@@ -168,7 +171,13 @@ export function fillTemplate({
 	const end = firstTicketLine(lines);
 	const head = lines.slice(0, end);
 	while (head.length > 0 && head.at(-1)?.trim() === '') head.pop();
-	const added = ['', `**Source:** ${source}`, sourceMarker(source, eventKeyText)];
+	const added = [
+		'',
+		...own,
+		...(own.length > 0 ? [''] : []),
+		`**Source:** ${source}`,
+		sourceMarker(source, eventKeyText)
+	];
 	if (payload !== undefined) {
 		const { text, cut } = payloadText(payload);
 		added.push(

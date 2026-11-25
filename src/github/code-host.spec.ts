@@ -47,6 +47,27 @@ describe('GitHubCodeHost', () => {
 		);
 	});
 
+	it('names why git rejected a push, not the line that names the remote', async () => {
+		const git: GitRunner = () =>
+			Promise.resolve(
+				failed(
+					[
+						'To github.com:o/r.git',
+						' ! [rejected]        HEAD -> factory/1-a (fetch first)',
+						"error: failed to push some refs to 'github.com:o/r.git'",
+						'hint: Updates were rejected because the remote contains work that you do not'
+					].join('\n')
+				)
+			);
+		await expect(
+			new GitHubCodeHost('o/r', fakeGh().gh, git).push('/w', 'factory/1-a')
+		).rejects.toThrow(
+			new GitHubFailure(
+				'git could not push factory/1-a: ! [rejected] HEAD -> factory/1-a (fetch first)'
+			)
+		);
+	});
+
 	it('finds the open pull request of a branch, or none', async () => {
 		const { gh, calls } = fakeGh(
 			on('GET', 'repos/o/r/pulls', (call) =>

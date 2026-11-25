@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { failedCheckBody } from '../check-output.js';
 import type {
+	BotPull,
 	ChangeRequest,
 	CodeHost,
 	ConflictState,
@@ -16,7 +17,7 @@ import type {
 	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
-import { firstLine, type Run } from '../git.js';
+import { pushFault, type Run } from '../git.js';
 import { logTail } from '../log-tail.js';
 import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
@@ -48,6 +49,7 @@ const READY_FOR_REVIEW =
 	'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }';
 
 const ListedPullSchema = PullSchema.extend({
+	title: z.string().nullish(),
 	draft: z.boolean().optional(),
 	created_at: z.string().nullish(),
 	head: z.looseObject({
@@ -232,7 +234,7 @@ export class GitHubCodeHost implements CodeHost {
 	async push(folder: string, branch: string): Promise<void> {
 		const got = await this.git(['push', '-q', '-u', 'origin', `HEAD:refs/heads/${branch}`], folder);
 		if (got.missing) throw new GitHubFailure('git is not on the PATH.');
-		if (!got.ok) throw new GitHubFailure(`git could not push ${branch}: ${firstLine(got.err)}`);
+		if (!got.ok) throw new GitHubFailure(`git could not push ${branch}: ${pushFault(got.err)}`);
 	}
 
 	async openPull(branch: string): Promise<Pull | null> {
@@ -396,6 +398,31 @@ export class GitHubCodeHost implements CodeHost {
 				body: p.body ?? '',
 				commits: await this.commits(pull),
 				changesRequested: await this.changesRequested(pull)
+			});
+		}
+		return found;
+	}
+
+	// Open pull requests from this repo's own branches under any of `prefixes`, oldest first, with the Pull checks on each head commit.
+	async botPulls(prefixes: readonly string[]): Promise<BotPull[]> {
+		const query = new URLSearchParams({ state: 'open', sort: 'created', direction: 'asc' });
+		const raw = await this.api.everyPage(
+			'list the open pull requests',
+			`repos/${this.repo}/pulls?${query.toString()}`,
+			z.array(ListedPullSchema),
+			(page) => page
+		);
+		const own = (full: string | undefined) => full?.toLowerCase() === this.repo.toLowerCase();
+		const found: BotPull[] = [];
+		for (const p of raw) {
+			if (!prefixes.some((prefix) => p.head.ref.startsWith(prefix))) continue;
+			if (!own(p.head.repo?.full_name)) continue;
+			found.push({
+				pull: toPull(p),
+				title: p.title ?? '',
+				branch: p.head.ref,
+				headCommit: p.head.sha,
+				checks: (await this.pullChecks(p.head.sha)).checks
 			});
 		}
 		return found;

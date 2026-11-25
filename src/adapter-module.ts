@@ -53,7 +53,7 @@ const TRACKER_METHODS: Record<
 const CODE_HOST_METHODS: Record<
 	Exclude<
 		keyof CodeHost,
-		'nightjarDrafts' | 'feedback' | 'reply' | 'openPulls' | 'publish' | 'conflicts'
+		'nightjarDrafts' | 'feedback' | 'reply' | 'openPulls' | 'publish' | 'conflicts' | 'botPulls'
 	>,
 	true
 > = {

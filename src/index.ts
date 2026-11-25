@@ -24,7 +24,9 @@ export { shelfContract } from './contract/shelf.js';
 export { nightjarDraftsContract } from './contract/nightjar-drafts.js';
 export { openPullsContract } from './contract/open-pulls.js';
 export { publishContract } from './contract/publish.js';
+export { botPullsContract } from './contract/bot-pulls.js';
 export type {
+	BotPull,
 	ChangeRequest,
 	CodeHost,
 	ConflictState,

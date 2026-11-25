@@ -9,6 +9,7 @@ import {
 	GitHubCodeHost,
 	GitHubTracker,
 	assignContract,
+	botPullsContract,
 	codeHostContract,
 	featureWriterContract,
 	nightjarDraftsContract,
@@ -20,14 +21,13 @@ import {
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
-	type DraftsWorld,
 	type Given,
 	type Pull,
-	type PullChecks,
 	type SignalNames,
 	type TrackerWorld
 } from '../index.js';
 import { FakeGitHub } from './fake-github.js';
+import { gitHubDrafts } from './fake-drafts.js';
 
 // Signal names and a trusted list as a repo's factory.json may set them.
 const CONFIGURED: SignalNames = {
@@ -87,50 +87,6 @@ function gitHubWorld(world: TrackerWorld, names: SignalNames) {
 
 // GitHub links a pull request to each issue named after one of its closing keywords.
 const CLOSING = /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(\S+)\s*$/gim;
-
-// each line stamped with its time, as GitHub writes an Actions log
-const stamp = (line: string) => `2026-11-04T06:53:39.1234567Z ${line}`;
-
-// Each Pull check as GitHub reports it: one with a job as an Actions job of its workflow (`CI / test` is workflow CI, job test), one without as a commit status.
-function setChecks(github: FakeGitHub, pull: Pull, checks: PullChecks): void {
-	const head = github.headOf(pull.id);
-	github.clearChecks(head);
-	if (checks.pending) github.checkRun(head, { name: 'lint', status: 'in_progress' });
-	for (const f of checks.failed) {
-		if (f.job === '') {
-			github.commitStatus(head, { context: f.check, state: 'failure', description: f.logTail });
-			continue;
-		}
-		const suffix = ` / ${f.job}`;
-		github.actionsJob(head, {
-			workflow: f.check.endsWith(suffix) ? f.check.slice(0, -suffix.length) : f.check,
-			name: f.job,
-			conclusion: 'failure',
-			steps: [
-				{ name: 'Set up job', conclusion: 'success' },
-				...(f.step === '' ? [] : [{ name: f.step, conclusion: 'failure' }])
-			],
-			log: f.logTail.split('\n').map(stamp).join('\n')
-		});
-	}
-}
-
-function gitHubDrafts(github: FakeGitHub): DraftsWorld {
-	const done = (act: () => void) => {
-		act();
-		return Promise.resolve();
-	};
-	return {
-		checks: (pull, checks) => done(() => setChecks(github, pull, checks)),
-		passed: (pull) =>
-			done(() => {
-				github.checkRun(github.headOf(pull.id), { name: 'lint', conclusion: 'success' });
-			}),
-		engage: (pull) => done(() => github.say(pull.id, 'bea', 'Why this change?')),
-		ready: (pull) => done(() => github.markReady(pull.id)),
-		closePull: (pull) => done(() => github.close(pull.id))
-	};
-}
 
 // Real git pushes to a bare origin in a temporary folder; the pull requests live in the fake GitHub.
 async function gitHubCodeHost() {
@@ -328,4 +284,8 @@ describe('GitHubCodeHost meets the openPulls contract', { timeout: 30_000 }, () 
 
 describe('GitHubCodeHost meets the publish contract', { timeout: 30_000 }, () => {
 	for (const c of publishContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the botPulls contract', { timeout: 30_000 }, () => {
+	for (const c of botPullsContract) it(c.name, () => c.run(gitHubCodeHost));
 });

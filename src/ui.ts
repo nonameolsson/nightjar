@@ -93,7 +93,7 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: bo
 	const last = tracker?.last ?? null;
 	if (last !== null) {
 		const doing = status?.doing;
-		// a Feature claimed since the read is Building, not queued
+		// a Feature claimed since the read is Building, not queued or waiting
 		const building = on && doing?.kind === 'building' ? doing.feature : null;
 		// the run knows which Tickets wait; the Tracker lists only Features
 		const tickets = on
@@ -103,7 +103,7 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: bo
 			known: true,
 			queue: last.queue.filter((q) => q.id !== building),
 			waitingOnYou: {
-				items: [...last.waiting, ...tickets],
+				items: [...last.waiting.filter((w) => w.id !== building), ...tickets],
 				trackerCannotList: last.trackerCannotList
 			},
 			shelf: last.shelf,
@@ -249,7 +249,7 @@ function waiting(view: FactoryView, lists: Lists, links: Links): string {
 function shelf(view: FactoryView, lists: Lists, links: Links): string {
 	const all = features(view, lists);
 	const li = (c: ShelfCard) =>
-		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}</li>`;
+		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}${earlierHtml(c)}</li>`;
 	const items = (all.shelf ?? []).map(li).join('');
 	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
 	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
@@ -435,7 +435,7 @@ function features(view: FactoryView, lists: Lists): Features {
 	const doing = status?.doing;
 	const on = running(view);
 	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
-	const building: BuildingCard | null =
+	let building: BuildingCard | null =
 		doing?.kind === 'building' && on
 			? {
 					state: 'building',
@@ -527,6 +527,11 @@ function features(view: FactoryView, lists: Lists): Features {
 			byFeature.set(id, [...(byFeature.get(id) ?? []), ticket]);
 		}
 		for (const [id, tickets] of byFeature) {
+			// the building Feature's own waiting Tickets go on its Building card
+			if (building !== null && id === building.id) {
+				building = { ...building, waitingTickets: tickets };
+				continue;
+			}
 			const at = waiting.findIndex((w) => w.id === id);
 			const own = at < 0 ? undefined : waiting[at];
 			const title = titleOf(id);
@@ -573,8 +578,11 @@ function features(view: FactoryView, lists: Lists): Features {
 		...opens
 	});
 	const shelved = lists.known ? lists.shelf : undefined;
-	// a Feature active again sits on its active Mat alone, with its finished runs on its card
-	const active = new Set([building, ...(waiting ?? []), ...(queue ?? [])].map((c) => c?.id));
+	const shelfCards = shelved?.features.map(onShelf);
+	// a Feature with finished runs that is active again, or back on the Shelf, sits there alone with its runs on its card
+	const active = new Set(
+		[building, ...(waiting ?? []), ...(queue ?? []), ...(shelfCards ?? [])].map((c) => c?.id)
+	);
 	const withEarlier = <C extends FeatureCard>(card: C): C => {
 		const done = completed.find((c) => c.id === card.id);
 		return done === undefined
@@ -587,7 +595,7 @@ function features(view: FactoryView, lists: Lists): Features {
 		waiting: waiting?.map(withEarlier),
 		trackerCannotList: found?.trackerCannotList ?? false,
 		// the Tracker's order, newest update first, which its contract suite holds it to
-		shelf: shelved?.features.map(onShelf),
+		shelf: shelfCards?.map(withEarlier),
 		shelfTotal: shelved?.total ?? 0,
 		shelfCannotList: shelved === null,
 		completed: completed.filter((c) => !active.has(c.id))
@@ -664,7 +672,8 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
 		`<p class="label">Building</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
-		`<time data-since="${escape(featureStart(doing))}"></time>`
+		`<time data-since="${escape(featureStart(doing))}"></time>`,
+		waitingTicketsHtml(card, links)
 	);
 }
 
@@ -728,7 +737,7 @@ function shelfCard(card: ShelfCard, links: Links): string {
 		card,
 		links,
 		note === '' ? '' : `<p class="meta count">${note}</p>`,
-		'<p class="label">On the Shelf</p>',
+		`<p class="label">On the Shelf</p>${earlierHtml(card)}`,
 		updatedHtml(card.updated)
 	);
 }
@@ -916,6 +925,10 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			progress: card.progress
 		});
 	if (all.building !== null) {
+		// its Tickets that wait on the person, as the Waiting rows say why
+		const waits = all.building.waitingTickets
+			.map((t) => `${idText(t.id)} ${t.title}: ${t.why}`)
+			.join('; ');
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
 			card: all.building,
@@ -923,8 +936,8 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: null,
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
-			outcome: '',
-			outcomeText: earlierHtml(all.building),
+			outcome: waits,
+			outcomeText: escape(waits) + earlierHtml(all.building),
 			progress: all.building.progress
 		});
 	}
@@ -949,7 +962,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			timeText: '',
 			cost: null,
 			outcome: shelfNote(card),
-			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>`,
+			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>${earlierHtml(card)}`,
 			progress: null
 		});
 	for (const card of all.completed) {

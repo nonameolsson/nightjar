@@ -208,15 +208,18 @@ const CRON = /^(?:@daily|@weekly|(?:[\d*][\d*/,-]*\s+){4}[\d*][\d*/,-]*)$/;
 // a Source is named in the marker on its Features, so its name holds no space
 const SOURCE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 
+// the Source types intake fires from a cron time
+const timed = (type: string) => type === 'schedule' || type === 'botPulls';
+
 const Source = z
 	.strictObject({
 		type: z
-			.enum(['schedule', 'webhook', 'sentry'], {
-				error: missingOr('name the type: schedule, webhook or sentry')
+			.enum(['schedule', 'webhook', 'sentry', 'botPulls'], {
+				error: missingOr('name the type: schedule, webhook, sentry or botPulls')
 			})
 			.meta({
 				description:
-					'schedule fires from a cron time, webhook takes a signed webhook of the Standard Webhooks scheme, sentry takes a Sentry alert'
+					'schedule fires from a cron time, webhook takes a signed webhook of the Standard Webhooks scheme, sentry takes a Sentry alert, botPulls reads the red pull requests of a dependency bot at a cron time'
 			}),
 		cron: z
 			.string()
@@ -224,7 +227,19 @@ const Source = z
 			.optional()
 			.meta({
 				description:
-					"When a schedule fires, in the machine's local time zone: five cron fields, @daily or @weekly. A schedule needs it; a webhook has none."
+					"When a schedule fires, or a botPulls Source reads the pull requests, in the machine's local time zone: five cron fields, @daily or @weekly. A schedule and a botPulls Source need it; a webhook has none."
+			}),
+		branchPrefixes: z
+			.array(
+				z
+					.string()
+					.regex(/^[^\s~^:?*[\\]+$/, 'a branch prefix is empty or holds what a branch name cannot')
+			)
+			.min(1, 'name a branch prefix at least')
+			.optional()
+			.meta({
+				description:
+					'For botPulls: the branches a dependency bot opens its pull requests from, such as ["dependabot/", "renovate/"]. A botPulls Source needs them.'
 			}),
 		template: named('name the template').meta({
 			description:
@@ -259,13 +274,21 @@ const Source = z
 				'The login a Feature with the Go is assigned to; the Tracker must trust them (on Azure DevOps, a sign-in name such as ann@contoso.com)'
 		})
 	})
-	.refine((s) => s.type !== 'schedule' || s.cron !== undefined, {
+	.refine((s) => !timed(s.type) || s.cron !== undefined, {
 		path: ['cron'],
-		error: 'missing: a schedule needs the cron time it fires at'
+		error: 'missing: a schedule or a botPulls Source needs the cron time it fires at'
 	})
-	.refine((s) => s.type === 'schedule' || s.cron === undefined, {
+	.refine((s) => timed(s.type) || s.cron === undefined, {
 		path: ['cron'],
-		error: 'only a schedule has a cron time'
+		error: 'only a schedule or a botPulls Source has a cron time'
+	})
+	.refine((s) => s.type !== 'botPulls' || s.branchPrefixes !== undefined, {
+		path: ['branchPrefixes'],
+		error: 'missing: a botPulls Source names the branch prefixes its bot opens pull requests from'
+	})
+	.refine((s) => s.type === 'botPulls' || s.branchPrefixes === undefined, {
+		path: ['branchPrefixes'],
+		error: 'only a botPulls Source has branch prefixes'
 	})
 	.superRefine((s, ctx) => {
 		// the pattern refuses the shape; what it lets through, such as minute 61, is read here

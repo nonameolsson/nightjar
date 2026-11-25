@@ -21,3 +21,18 @@ export function run(command: string, args: readonly string[], cwd: string, env: 
 }
 
 export const firstLine = (text: string): string => text.trim().split('\n')[0] ?? '';
+
+// Why a `git push` failed: the line that names a rejected ref, else the first line that is
+// neither the `To <remote>` header nor a hint; with no such line, the first line.
+export function pushFault(err: string): string {
+	const lines = err
+		.trim()
+		.split('\n')
+		.map((l) => l.trim().replace(/\s+/g, ' '));
+	return (
+		lines.find((l) => l.startsWith('! ')) ??
+		lines.find((l) => l !== '' && !l.startsWith('To ') && !l.startsWith('hint:')) ??
+		lines[0] ??
+		''
+	);
+}

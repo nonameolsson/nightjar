@@ -424,9 +424,10 @@ Some work starts outside a person's head: an alert, a message from a script or f
 
 | Field       | What it does |
 | ----------- | ------------ |
-| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme; `sentry` takes a Sentry alert (set up below); `schedule` fires from a `cron` time. |
-| `cron`      | A schedule's time, required for a `schedule` and refused on anything else: five fields (minute, hour, day of month, month, day of week; numbers, ranges `1-5`, lists `1,15`, steps `*/15`), or `@daily` (midnight) or `@weekly` (Sunday midnight). It is read in the machine's local time zone. As in cron, a day of the month and a day of the week that are both named make a time on either. A bad one is refused when `factory.json` loads, naming the Source. |
-| `template`  | A Feature file, in the shape of [Write a Feature](#write-a-feature), as a path from the repo's root, or the name of a template Nightjar ships (`sentry`, `weekly-deps`). Placeholders are plain paths into the payload, as `{{ data.alert.title }}`, plus `{{ date }}` and `{{ source }}`; there is no logic. |
+| `type`      | `webhook` takes a signed webhook of the [Standard Webhooks](https://www.standardwebhooks.com/) scheme; `sentry` takes a Sentry alert (set up below); `schedule` fires from a `cron` time; `botPulls` reads a dependency bot's red pull requests at a `cron` time (set up below). |
+| `cron`      | A schedule's time, required for a `schedule` and a `botPulls` Source and refused on anything else: five fields (minute, hour, day of month, month, day of week; numbers, ranges `1-5`, lists `1,15`, steps `*/15`), or `@daily` (midnight) or `@weekly` (Sunday midnight). It is read in the machine's local time zone. As in cron, a day of the month and a day of the week that are both named make a time on either. A bad one is refused when `factory.json` loads, naming the Source. |
+| `template`  | A Feature file, in the shape of [Write a Feature](#write-a-feature), as a path from the repo's root, or the name of a template Nightjar ships (`sentry`, `weekly-deps`, `bot-pull`). Placeholders are plain paths into the payload, as `{{ data.alert.title }}`, plus `{{ date }}` and `{{ source }}`; there is no logic. |
+| `branchPrefixes` | For `botPulls` only, and required there: the branches the bot opens its pull requests from, as `["dependabot/", "renovate/"]`. |
 | `key`       | A path into the payload that says when two events are the same. While a Feature with the same key is open, no new one is made. Left out, every event is a new one; a `sentry` Source's key is the Sentry issue id, `data.event.issue_id`. |
 | `secretEnv` | The environment variable that holds the webhook secret, as the sender gives it (`whsec_` and base64); for a `sentry` Source, the integration's client secret. The secret is never in `factory.json`. |
 | `maxPerDay` | The most Features the Source makes in a day; 3 when left out. |
@@ -475,6 +476,23 @@ Intake checks `Sentry-Hook-Signature`, the HMAC SHA-256 of the raw body with the
 ```
 
 **Schedules.** Intake fires each `schedule` Source at its due time, through the same path as a webhook, from the template with no payload. The Source's name is its key, so a schedule whose last Feature is still open makes nothing, and says nothing on it. `maxPerDay` holds as for a webhook. Times that pass while intake is down are not made up, and a machine that sleeps through several makes one Feature when it wakes, not one for each. Only `nightjar intake` fires schedules, never `--watch`. A schedule needs no secret, so intake with schedules only starts and serves nothing. `nightjar doctor` prints each schedule's next due time, and intake prints it as it starts.
+
+**Red dependency-bot pull requests.** A dependency bot (Dependabot, Renovate) finds new versions and opens a pull request for each; when its check goes red, a `botPulls` Source has Nightjar fix the code on top of it. The bot keeps the network; Nightjar only repairs what the bump broke.
+
+```json
+"deps": {
+	"type": "botPulls",
+	"branchPrefixes": ["dependabot/", "renovate/"],
+	"cron": "*/30 * * * *",
+	"template": "bot-pull"
+}
+```
+
+At each due time intake asks the Code host for the open pull requests of the repo's own branches under the prefixes. It makes one Feature, with one Ticket, for each whose Pull checks finished red and that has no open Feature of its own: the pull request's id is the key. A pull request under no prefix, from a fork, still running or green makes nothing, and so does one whose failed checks never started (no job, no step and no log, as when the runners were down). Polling again while its Feature is open makes nothing and says nothing. `maxPerDay`, `go` and `owner` hold as for any Source.
+
+The Feature carries a `**Base:**` line naming the bot's branch, and a hidden mark naming its pull request. The build cuts the Feature's branch from the bot's branch, not from `main`, so `setup` (as `npm ci`) installs the new versions before the Coding agent fixes the code offline. Nightjar opens its own draft pull request against `main`, holding the bot's commits and the fix, and never pushes to the bot's branch, so the bot's own rebases go on. When the draft opens, Nightjar comments on the bot's pull request with a link to it. A person merges Nightjar's draft and closes the bot's; Nightjar closes nothing. Its draft holds a commit with no `Factory-` trailer, the bot's, so it is never published by Nightjar.
+
+The shipped `bot-pull` template fills the Feature from the bot's title, its branch and its link, and the payload holds those and the failed checks with the end of their logs. The bot's description and release notes stay out: they are outside text. Its one Ticket says to make the check pass on the new versions, never to move a dependency back or pin it, and to say so in the pull request when the bump cannot pass with a small change. A `botPulls` Source needs no secret. Intake refuses to start it on a Code host without `botPulls` (both built-in ones have it; see [docs/custom-adapters.md](docs/custom-adapters.md)), and `nightjar doctor` lists its prefixes and its next read.
 
 The open Features and the day's count are read from the Tracker, so two intakes on two machines share them. Each delivery is logged to `.factory/intake.log` with the Source, the delivery id, the answer and the Feature, never with the payload.
 

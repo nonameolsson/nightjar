@@ -84,6 +84,8 @@ export interface DraftsWorld {
 	readonly ready: (pull: Pull) => Promise<void>;
 	// a person closes it
 	readonly closePull: (pull: Pull) => Promise<void>;
+	// the pull request's head branch moves to a fork of the repo, as one opened from a fork has it; the botPulls suite needs it
+	readonly fork?: (pull: Pull) => Promise<void>;
 }
 
 // Makes a Code host with an empty repo that has only its base branch.
