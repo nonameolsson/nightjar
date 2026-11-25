@@ -14,6 +14,7 @@ import {
 	medianTicketMs,
 	spends
 } from './ledger.js';
+import { lastWeek, type Week } from './last-week.js';
 import { renderSession } from './session-render.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
@@ -47,6 +48,8 @@ export interface FactoryView {
 	readonly featureStages?: readonly BuildStage[];
 	// Tickets built on the local day
 	readonly builtToday: number;
+	// the last seven local days; absent in a hand-made view
+	readonly week?: Week;
 	// the median duration of a recorded Ticket build; null with none recorded; absent in a hand-made view
 	readonly medianTicketMs?: number | null;
 }
@@ -105,6 +108,7 @@ const isDone = (event: Event): event is Done => event.kind === 'pull' || event.k
 // What a view shows, read from the repo root's .factory/ and nothing else.
 export function readFactory(root: string, options: ReadOptions = {}): FactoryView {
 	const status = readStatus(statusPath(root));
+	const now = (options.now ?? (() => new Date()))();
 	const alive = options.alive ?? pidAlive;
 	const spent = spends(ledgerPath(root));
 	const doing = status?.doing;
@@ -130,7 +134,8 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 					})
 				}),
 		medianTicketMs: medianTicketMs(spent),
-		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
+		builtToday: builtOn(ledgerPath(root), now),
+		week: lastWeek({ sessions: spent, outcomes: done, handedBack: status?.handedBack ?? [] }, now),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
 		completed: done.map((event, i) => {

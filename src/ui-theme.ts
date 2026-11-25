@@ -170,6 +170,15 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .chips button { background: none; border: 1px solid var(--line); border-radius: 9999px; color: var(--muted); cursor: pointer; font: inherit; font-size: 12.5px; min-height: 24px; padding: 2px 12px; }
 .chips button:hover { background: var(--surface-2); }
 .chips button[data-on="true"] { background: var(--surface-3); border-color: var(--surface-3); color: var(--ink); font-weight: 500; }
+.filters { align-items: center; display: flex; flex-wrap: wrap; gap: 0 20px; }
+.chips-label { align-self: center; color: var(--muted); font-size: 12.5px; }
+[data-shown] { font-size: 12.5px; margin: 0 0 8px; }
+[data-shown]:empty { display: none; }
+.week { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 4px 0; }
+.week li { padding: 0; }
+.week b { color: var(--ink); font-size: 16px; font-weight: 600; margin-right: 4px; }
+a.count { align-items: center; color: var(--ink); display: inline-flex; min-height: 24px; text-decoration: none; }
+a.count:hover { text-decoration: underline; }
 .scroll { overflow-x: auto; }
 .sr, .skip:not(:focus) { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
 .skip { background: var(--bg); color: var(--accent); left: 8px; padding: 8px 12px; top: 8px; z-index: 4; }
@@ -274,7 +283,7 @@ td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: 
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .cost summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .cost summary { min-height: 44px; }
 	#views button, #themes button, .chips button { padding-inline: 14px; }
 	.tab { height: 40px; }
 }

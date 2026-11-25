@@ -22,6 +22,7 @@ import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
 import { escapeHtml as escape } from './markdown.js';
 import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js';
+import { NO_WEEK } from './last-week.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
@@ -189,6 +190,29 @@ function cards(view: FactoryView, lists: Lists): string {
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
 	const waiting = lists.known ? lists.waitingOnYou?.items.length : undefined;
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
+}
+
+// What the Table can be filtered to, in the words of its buttons; the page script reads the keys from here
+const OUTCOMES = [
+	['any', 'Any'],
+	['completed', 'Completed'],
+	['failed', 'Failed'],
+	['waiting', 'Needs a person']
+] as const;
+
+// The last seven local days, which the Overview opens with. A count of Features is a link to the Table filtered to it; the dollars are not, as no Feature is one.
+function week(view: FactoryView): string {
+	const w = view.week ?? NO_WEEK;
+	const count = (n: number, pick: (typeof OUTCOMES)[number][0], what: string) =>
+		`<li><a class="count" href="#panels" data-goto="${pick}"><b>${String(n)}</b> ${n === 1 ? 'Feature' : 'Features'} ${what}<span class="sr">, show them in the Table</span></a></li>`;
+	return (
+		'<section id="week"><h2>Last seven days</h2><ul class="week">' +
+		count(w.completed, 'completed', 'completed') +
+		count(w.failed, 'failed', 'failed') +
+		count(w.handed, 'waiting', 'handed to a person') +
+		`<li><b>${dollars(w.spentUsd)}</b> spent</li></ul>` +
+		'<p class="meta">Features are counted from the recent events and hand-backs that status.json keeps, the dollars from the ledger, by local day.</p></section>'
+	);
 }
 
 function queue(lists: Lists, links: Links): string {
@@ -1127,6 +1151,9 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 	const chips = STATES.map(
 		([s, name]) => `<button type="button" data-chip="${s}">${name}</button>`
 	).join('');
+	const outcomes = OUTCOMES.map(
+		([k, name]) => `<button type="button" data-pick="${k}">${name}</button>`
+	).join('');
 	const head = COLUMNS.map(
 		([k, name]) => `<th><button type="button" data-sort="${k}">${name}</button></th>`
 	).join('');
@@ -1144,7 +1171,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			note += '<p class="empty">Waiting on you is not available from this Tracker</p>';
 		if (all.shelfCannotList) note += `<p class="empty">${SHELF_CANNOT}</p>`;
 	}
-	return `<div class="table">${STEPS_LEGEND}<div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
+	return `<div class="table">${STEPS_LEGEND}<div class="filters"><div class="chips">${chips}</div><div class="chips" role="group" aria-label="Outcome"><span class="chips-label">Outcome</span>${outcomes}</div></div><p class="meta" data-shown></p>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
 }
 
 // The titles the page knows, by Feature: from the build in flight, the Queue, Waiting on you and the recent events.
@@ -1206,6 +1233,7 @@ export function renderPanels(
 ): string {
 	const lists = listsOf(view, tracker, opens);
 	const overview = [
+		week(view),
 		current(view, links),
 		queue(lists, links),
 		shelf(view, lists, links),
@@ -1287,11 +1315,12 @@ const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
 const VIEWS = ['board', 'table', 'overview'];
-// the Table's sort and state filter, kept in local storage and applied again after each event
-let tableState = { sort: null, dir: 1, states: [] };
+const OUTCOMES = ${JSON.stringify(OUTCOMES.map(([k]) => k))};
+// the Table's sort, state filter and outcome filter, kept in local storage and applied again after each event
+let tableState = { sort: null, dir: 1, states: [], outcome: 'any' };
 try {
 	const kept = JSON.parse(localStorage.getItem('nightjar-table'));
-	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states };
+	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states, outcome: OUTCOMES.includes(kept.outcome) ? kept.outcome : 'any' };
 } catch {}
 function saveTable() {
 	try { localStorage.setItem('nightjar-table', JSON.stringify(tableState)); } catch {}
@@ -1322,14 +1351,30 @@ function compareRows(a, b, sort, dir, now) {
 }
 // the page's own markup carries these; a stand-in element without them is left alone
 const attr = (el, name, value) => el && el.setAttribute && el.setAttribute(name, value);
+// whether a row's Feature ended as the outcome says; a failed row is a Completed one, so the two are told apart
+function outcomeOf(row, outcome) {
+	const d = row.dataset;
+	if (outcome === 'completed') return d.state === 'completed' && !d.failed;
+	if (outcome === 'failed') return !!d.failed;
+	if (outcome === 'waiting') return d.state === 'waiting';
+	return true;
+}
 function applyTable() {
 	const now = Date.now();
 	const rows = Array.from(document.querySelectorAll('tr[data-state]'));
 	const parent = rows[0] && rows[0].parentNode;
 	rows.sort((a, b) => compareRows(a, b, tableState.sort, tableState.dir, now));
+	let shown = 0;
 	for (const row of rows) {
-		row.hidden = tableState.states.length > 0 && !tableState.states.includes(row.dataset.state);
+		row.hidden = (tableState.states.length > 0 && !tableState.states.includes(row.dataset.state)) || !outcomeOf(row, tableState.outcome);
+		if (!row.hidden) shown += 1;
 		if (parent) parent.appendChild(row);
+	}
+	const filtered = tableState.states.length > 0 || tableState.outcome !== 'any';
+	for (const n of document.querySelectorAll('[data-shown]')) n.textContent = filtered ? 'Showing ' + shown + ' of ' + rows.length + ' Features' : '';
+	for (const b of document.querySelectorAll('button[data-pick]')) {
+		b.dataset.on = String(b.dataset.pick === tableState.outcome);
+		attr(b, 'aria-pressed', b.dataset.on);
 	}
 	for (const b of document.querySelectorAll('button[data-sort]')) {
 		b.dataset.on = String(b.dataset.sort === tableState.sort);
@@ -1361,6 +1406,8 @@ panels.onclick = (e) => {
 	const t = e.target && e.target.closest ? e.target : null;
 	const sorter = t && t.closest('[data-sort]');
 	const chip = t && t.closest('[data-chip]');
+	const pick = t && t.closest('[data-pick]');
+	const go = t && t.closest('[data-goto]');
 	const help = t && t.closest('[data-help]');
 	const copy = t && t.closest('[data-copy]');
 	if (help) {
@@ -1373,9 +1420,22 @@ panels.onclick = (e) => {
 		try { navigator.clipboard.writeText(copy.dataset.copy).then(() => copied(copy)); } catch {}
 		return;
 	}
+	if (go) {
+		// a count on the Overview: the Table, filtered to it, with focus on the filter so a keyboard follows
+		if (e.preventDefault) e.preventDefault();
+		tableState = { ...tableState, outcome: go.dataset.goto };
+		saveTable();
+		showView('table');
+		applyTable();
+		const on = Array.from(document.querySelectorAll('button[data-pick]')).find((b) => b.dataset.pick === go.dataset.goto);
+		if (on && on.focus) on.focus();
+		return;
+	}
 	if (sorter) {
 		const key = sorter.dataset.sort;
 		tableState = { ...tableState, sort: key, dir: tableState.sort === key ? -tableState.dir : 1 };
+	} else if (pick) {
+		tableState = { ...tableState, outcome: pick.dataset.pick };
 	} else if (chip) {
 		const s = chip.dataset.chip;
 		tableState = { ...tableState, states: tableState.states.includes(s) ? tableState.states.filter((x) => x !== s) : [...tableState.states, s] };
@@ -1391,14 +1451,15 @@ function show(view) {
 		attr(b, 'aria-pressed', b.dataset.on);
 	}
 }
+function showView(view) {
+	show(view);
+	try { localStorage.setItem('nightjar-view', view); } catch {}
+}
 let saved = null;
 try { saved = localStorage.getItem('nightjar-view'); } catch {}
 show(VIEWS.includes(saved) ? saved : 'board');
 for (const b of document.querySelectorAll('button[data-view]')) {
-	b.onclick = () => {
-		show(b.dataset.view);
-		try { localStorage.setItem('nightjar-view', b.dataset.view); } catch {}
-	};
+	b.onclick = () => showView(b.dataset.view);
 }
 // the status region speaks only when the count of Features waiting on a person, or failed, rises
 // inner scrollers a swap would reset, matched by position
@@ -1426,7 +1487,7 @@ new EventSource('/events').onmessage = (e) => {
 	// a swap drops the focused sort header, chip, help, copy or Feature button, fold or link; put focus back on its twin
 	const was = document.activeElement;
 	const data = (was && was.dataset) || {};
-	const key = ['sort', 'chip', 'help', 'copy', 'feature', 'fold'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const key = ['sort', 'chip', 'pick', 'help', 'copy', 'feature', 'fold'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	// links can share an href, so remember which of them had focus
 	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
@@ -1594,6 +1655,15 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
 .chips button { background: none; min-height: 24px; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 3px 14px; }
 .chips button[data-on="true"] { background: var(--teal); border-color: var(--teal); color: var(--void); }
+.filters { align-items: center; display: flex; flex-wrap: wrap; gap: 0 24px; }
+.chips-label { align-self: center; color: var(--muted); font: 0.85rem var(--mono); }
+[data-shown] { font: 0.85rem var(--mono); margin: 0 0 8px; }
+[data-shown]:empty { display: none; }
+.week { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 8px 0; }
+.week li { padding: 0; }
+.week b { color: var(--ink); font: 700 1rem var(--mono); margin-right: 6px; }
+a.count { align-items: center; color: var(--ink2); display: inline-flex; min-height: 24px; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+a.count:hover { color: var(--teal); text-decoration-style: solid; }
 .scroll { overflow-x: auto; }
 .sr, .skip:not(:focus) { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
 .skip { background: var(--void); color: var(--teal); left: 8px; padding: 8px 12px; top: 8px; z-index: 4; }
@@ -1740,7 +1810,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .log summary, .book summary, .cost summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .log summary, .book summary, .cost summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {

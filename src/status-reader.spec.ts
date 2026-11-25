@@ -69,7 +69,51 @@ describe('readFactory', () => {
 			completed: [],
 			featureCostUsd: 0,
 			builtToday: 0,
+			week: { completed: 0, failed: 0, handed: 0, spentUsd: 0 },
 			medianTicketMs: null
+		});
+	});
+
+	it('reads the last seven days from the ledger, the finished runs and the hand-backs, and no more', () => {
+		const now = new Date(2026, 9, 30, 9, 0);
+		const ledgerFile = join(root, '.factory', 'runs.jsonl');
+		const lineAt = (when: Date, costUsd: number) =>
+			record(ledgerFile, {
+				at: when.toISOString(),
+				repo: 'o/r',
+				feature: '1',
+				ticket: null,
+				branch: 'b',
+				step: 'build',
+				session: 's',
+				costUsd,
+				outcome: 'built'
+			});
+		lineAt(new Date(2026, 9, 23, 23, 0), 50);
+		lineAt(new Date(2026, 9, 24, 0, 0), 1);
+		lineAt(new Date(2026, 9, 30, 8, 0), 2);
+		const statusAt = (when: Date) =>
+			new StatusFile({
+				path: join(root, '.factory', 'status.json'),
+				spend: fileSpend(ledgerFile),
+				now: () => when,
+				pid: 1,
+				dailyUsd: 8
+			});
+		statusAt(new Date(2026, 9, 22, 12)).happened({ kind: 'pull', feature: '7', url: 'u' });
+		statusAt(new Date(2026, 9, 26, 12)).happened({ kind: 'pull', feature: '8', url: 'u' });
+		statusAt(new Date(2026, 9, 27, 12)).happened({ kind: 'failed', feature: '9', why: 'red' });
+		statusAt(new Date(2026, 9, 28, 12)).happened({
+			kind: 'needs-info',
+			feature: '10',
+			ticket: '11',
+			why: 'needs info'
+		});
+		expect(readFactory(root, { alive: live, now: () => now }).week).toEqual({
+			completed: 1,
+			failed: 1,
+			handed: 1,
+			spentUsd: 3
 		});
 	});
 
