@@ -5,19 +5,23 @@ import { z } from 'zod';
 import { needsAPerson } from './plan.js';
 import type { Spend } from './spend.js';
 import type {
+	Building,
 	Doing,
 	Event,
 	HandBack,
 	Happened,
 	Named,
 	Queued,
+	RunState,
 	Status,
 	WaitingItem,
 	WaitingOnYou
 } from './status-shape.js';
 
 export type {
+	Building,
 	Doing,
+	RunState,
 	Event,
 	HandBack,
 	Happened,
@@ -44,14 +48,20 @@ export const waitingTickets = (
 	}));
 
 // When the Feature being built began; a file older than featureStartedAt has only the step's start.
-export const featureStart = (doing: Extract<Doing, { kind: 'building' }>) =>
-	doing.featureStartedAt ?? doing.startedAt;
+export const featureStart = (doing: Building) => doing.featureStartedAt ?? doing.startedAt;
+
+// The builds a status shows, oldest first: `builds` when the file has it, else the one build `doing` holds.
+export const buildsOf = (status: Pick<Status, 'doing' | 'builds'>): readonly Building[] =>
+	status.builds ?? (status.doing.kind === 'building' ? [status.doing] : []);
 
 export const statusPath = (root: string) => join(root, '.factory', 'status.json');
 
 // What the build loop tells the status file; a spec records it instead.
 export interface StatusReport {
+	// A building update changes only its Feature's entry. idle and off come with every Slot empty; paused holds the run while builds may still run.
 	readonly doing: (doing: Doing) => void;
+	// the Feature's work ended and its Slot is free, so its entry leaves `builds`
+	readonly finished: (feature: string) => void;
 	readonly happened: (event: Happened) => void;
 	// newer Nightjar code than the one running: its version or commit
 	readonly codeMoved: (newer: string) => void;
@@ -80,7 +90,12 @@ export function readStatus(path: string): Status | null {
 }
 
 export class StatusFile implements StatusReport {
-	private now: Doing = { kind: 'off' };
+	// each busy Slot's build by its Feature, oldest first: a Feature is never in two Slots, and an update changes only its own entry
+	private builds = new Map<string, Building>();
+	// what the run does with no build to show
+	private rest: Extract<Doing, { kind: 'idle' | 'off' }> = { kind: 'off' };
+	// the pause the run is under, which running builds do not end
+	private paused: { readonly why: string; readonly until: string | null } | null = null;
 	private moved: string | null = null;
 	private recent: Event[];
 	private handedBack: HandBack[];
@@ -104,21 +119,46 @@ export class StatusFile implements StatusReport {
 	}
 
 	readonly doing = (doing: Doing) => {
-		// a Feature that starts building again is no longer handed back; its waiting Tickets still are
-		const was = this.now;
-		if (doing.kind === 'building' && !(was.kind === 'building' && was.feature === doing.feature)) {
-			const own: Item = { feature: doing.feature, ticket: null };
-			this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
+		switch (doing.kind) {
+			case 'building': {
+				// a Feature that starts building again is no longer handed back; its waiting Tickets still are
+				if (!this.builds.has(doing.feature)) {
+					const own: Item = { feature: doing.feature, ticket: null };
+					this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
+					// no Slot takes work while the run is paused, so a Feature that starts means the pause is over
+					this.paused = null;
+				}
+				// a Ticket Nightjar builds again is no longer handed back; its reason would be stale
+				if (doing.ticket !== null) {
+					const own: Item = { feature: doing.feature, ticket: doing.ticket };
+					this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
+				}
+				this.builds.set(doing.feature, doing);
+				break;
+			}
+			case 'paused':
+				this.paused = { why: doing.why, until: doing.until };
+				break;
+			case 'idle':
+				// idle comes only with every Slot empty
+				this.builds.clear();
+				this.paused = null;
+				this.rest = doing;
+				break;
+			case 'off':
+				this.builds.clear();
+				this.paused = null;
+				this.rest = doing;
+				// with no run going there is no Queue
+				this.refresh = null;
+				break;
 		}
-		// a Ticket Nightjar builds again is no longer handed back; its reason would be stale
-		if (doing.kind === 'building' && doing.ticket !== null) {
-			const own: Item = { feature: doing.feature, ticket: doing.ticket };
-			this.handedBack = this.handedBack.filter((h) => !sameItem(h, own));
-		}
-		this.now = doing;
-		// with no run going there is no Queue
-		if (doing.kind === 'off') this.refresh = null;
 		this.write();
+	};
+
+	// A Slot's work ended: its entry goes, and no other Slot's changes.
+	readonly finished = (feature: string) => {
+		if (this.builds.delete(feature)) this.write();
 	};
 
 	readonly happened = (event: Happened) => {
@@ -151,19 +191,34 @@ export class StatusFile implements StatusReport {
 
 	// While a Feature builds, its own Tickets that need info or a person stand in place of the last Feature's
 	private waitingOnYou(found: WaitingOnYou): WaitingOnYou {
-		if (this.now.kind !== 'building') return found;
-		const tickets = waitingTickets(this.now.tickets ?? [], this.now.feature);
+		if (this.builds.size === 0) return found;
+		const tickets = [...this.builds.values()].flatMap((b) =>
+			waitingTickets(b.tickets ?? [], b.feature)
+		);
 		return { ...found, items: [...found.items.filter((i) => i.kind === 'feature'), ...tickets] };
 	}
 
 	private write() {
 		const now = this.o.now();
+		// a pause whose time has passed no longer holds the run, even if a build still runs
+		const until = this.paused?.until ?? null;
+		if (until !== null && Date.parse(until) <= now.getTime()) this.paused = null;
+		const builds = [...this.builds.values()];
+		const oldest = builds[0];
+		let run: RunState = this.rest.kind;
+		if (this.paused !== null) run = 'paused';
+		else if (oldest !== undefined) run = 'building';
+		const doing: Doing =
+			oldest ?? (this.paused === null ? this.rest : { kind: 'paused', ...this.paused });
 		const status: Status = {
 			at: now.toISOString(),
 			pid: this.o.pid,
 			spentTodayUsd: this.o.spend.today(now),
 			dailyUsd: this.o.dailyUsd,
-			doing: this.now,
+			doing,
+			run,
+			builds,
+			...(this.paused === null ? {} : { pause: this.paused }),
 			...(this.o.watching === true ? { watching: true } : {}),
 			recent: this.recent,
 			...(this.handedBack.length === 0 ? {} : { handedBack: this.handedBack }),

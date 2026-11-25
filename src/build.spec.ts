@@ -406,6 +406,7 @@ function deps(world: World): Deps {
 		say: () => undefined,
 		status: {
 			doing: (d) => world.doing.push(d),
+			finished: () => undefined,
 			happened: (h) => world.happened.push(h),
 			codeMoved: () => undefined,
 			refreshed: () => undefined

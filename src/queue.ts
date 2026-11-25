@@ -677,6 +677,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			.run(say, lease?.env)
 			.then((end) => {
 				running.delete(work.feature);
+				deps.status.finished(work.feature);
 				if (end.code === null) taken -= 1;
 				else code = Math.max(code, end.code);
 				if (end.paused !== undefined) {
@@ -691,6 +692,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 			})
 			.catch((error: unknown) => {
 				running.delete(work.feature);
+				deps.status.finished(work.feature);
 				run.fault ??= { error };
 			})
 			.finally(() => lease?.release());
@@ -801,6 +803,7 @@ export async function buildNamed(
 	await waiting.read(rest);
 	waiting.tell(rest);
 	const outcome = await buildOne(deps, { id, title }, (f) => deps.build(f, deps.say, portEnv));
+	deps.status.finished(id);
 	waiting.tell(rest, outcome, { id, title });
 	return outcome;
 }

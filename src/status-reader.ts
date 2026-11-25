@@ -11,7 +11,14 @@ import {
 	spends,
 	spentOnFeature
 } from './ledger.js';
-import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
+import {
+	buildsOf,
+	featureStart,
+	readStatus,
+	statusPath,
+	type Event,
+	type Status
+} from './status.js';
 
 export type Done = Extract<Event, { kind: 'pull' | 'failed' }>;
 
@@ -117,7 +124,8 @@ function readEnd(path: string): string | null {
 }
 
 function sessionTail(root: string, status: Status | null, keep: number): string[] {
-	const session = status?.doing.kind === 'building' ? status.doing.session : null;
+	// the oldest build's Session; each Slot's own tail is a view's to ask for
+	const session = status === null ? null : (buildsOf(status)[0]?.session ?? null);
 	if (session === null) return [];
 	const text = readEnd(join(logsPath(root), `${session}.jsonl`));
 	if (text === null) return [];
@@ -131,15 +139,16 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 	const status = readStatus(statusPath(root));
 	const alive = options.alive ?? pidAlive;
 	const spent = spends(ledgerPath(root));
-	const doing = status?.doing;
+	// the oldest build, which `featureCostUsd` follows; an older file's `doing` is its one build
+	const oldest = status === null ? undefined : buildsOf(status)[0];
 	const done = (status?.recent ?? []).filter(isDone);
 	return {
 		status,
 		featureCostUsd:
-			doing?.kind === 'building'
-				? // a session recorded the moment the build starts is its own
-					spentOnFeature(spent, doing.feature, Date.parse(featureStart(doing)) - 1, null)
-				: 0,
+			oldest === undefined
+				? 0
+				: // a session recorded the moment the build starts is its own
+					spentOnFeature(spent, oldest.feature, Date.parse(featureStart(oldest)) - 1, null),
 		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), (options.now ?? (() => new Date()))()),
 		stopped: status !== null && !alive(status.pid),

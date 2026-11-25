@@ -61,6 +61,7 @@ function world() {
 		status: {
 			codeMoved: (commit) => moved.push(commit),
 			doing: (d) => doing.push(d),
+			finished: () => undefined,
 			happened: (h) => happened.push(h),
 			refreshed: (queue, waitingOnYou) => {
 				refreshes.push({ queue, waitingOnYou });

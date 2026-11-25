@@ -139,6 +139,32 @@ describe('readFactory', () => {
 		expect(view.tail).toEqual([]);
 	});
 
+	it("reads an older file with only `doing` as one build, and follows the oldest build of a newer file's `builds`", () => {
+		const old = {
+			at: at.toISOString(),
+			pid: 42,
+			spentTodayUsd: 1,
+			dailyUsd: 8,
+			doing: building('s1'),
+			recent: []
+		};
+		ledger('1', 1.5);
+		ledger('7', 4);
+		log('s1', [assistant({ type: 'text', text: 'from doing' })]);
+		log('s7', [assistant({ type: 'text', text: 'from the newer build' })]);
+		const path = join(root, '.factory', 'status.json');
+		writeFileSync(path, JSON.stringify(old));
+		let view = readFactory(root, { alive: live, now: () => at });
+		expect(view.tail).toEqual(['from doing']);
+		expect(view.featureCostUsd).toBe(1.5);
+		// a newer file: `builds` is read, whatever `doing` says
+		const other = { ...building('s7'), feature: '7' };
+		writeFileSync(path, JSON.stringify({ ...old, doing: building(null), builds: [other] }));
+		view = readFactory(root, { alive: live, now: () => at });
+		expect(view.tail).toEqual(['from the newer build']);
+		expect(view.featureCostUsd).toBe(4);
+	});
+
 	it('tails the session: assistant text, and each tool call by its command or file, without results', () => {
 		status().doing(building('s1'));
 		log('s1', [
