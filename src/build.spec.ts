@@ -1454,6 +1454,37 @@ describe('a Session that cannot go on', () => {
 		}
 	);
 
+	it('hands the run the time the limit resets, with a build paused on it', async () => {
+		const world = makeWorld();
+		world.settle = (req) =>
+			req.kind === 'build' ? { ...paused(LIMIT_WHY), resetsAt: 1793390400 } : undefined;
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got).toEqual({ kind: 'paused', why: LIMIT_WHY, resetsAt: 1793390400 });
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+	});
+
+	it('hands the run the pause with the pull request, when the review ends on the limit', async () => {
+		const world = makeWorld();
+		world.settle = (req) =>
+			req.kind === 'review' ? { ...paused(LIMIT_WHY), resetsAt: 1793390400 } : undefined;
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got).toMatchObject({
+			kind: 'pull',
+			pause: { why: LIMIT_WHY, resetsAt: 1793390400 }
+		});
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+	});
+
+	it('hands the run no pause with a pull request that ended well', async () => {
+		const world = makeWorld();
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got.kind).toBe('pull');
+		expect(got).not.toHaveProperty('pause');
+	});
+
 	it('keeps the first reason when the review pauses a run that is paused already', async () => {
 		const world = makeWorld();
 		world.stepAgent = (req) => {

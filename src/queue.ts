@@ -3,6 +3,7 @@ import {
 	featureOfBody,
 	handedOver,
 	type FeatureOutcome,
+	type Pause,
 	type PullFixOutcome,
 	type RedDraft
 } from './build.js';
@@ -451,7 +452,7 @@ export function slotSay(id: ItemId, say: Say): Say {
 // How a Slot's work ended: the exit code it gives --once, or null when it did no work, so the Slot takes the next; the pause it asks of the run; and the Feature it built, for Waiting on you.
 interface Ended {
 	readonly code: number | null;
-	readonly paused?: string;
+	readonly paused?: Pause;
 	readonly built?: { readonly feature: Named; readonly outcome: FeatureOutcome | null };
 }
 
@@ -462,16 +463,30 @@ interface Work {
 	readonly untake?: () => void;
 }
 
+const pauseOf = ({ why, resetsAt }: Pause): Pause => ({
+	why,
+	...(resetsAt === undefined ? {} : { resetsAt })
+});
+
+// A Feature that ended on a pause asks it of the run, even when its pull request was opened first.
+const builtPause = (outcome: FeatureOutcome | null): { readonly paused?: Pause } => {
+	if (outcome?.kind === 'paused') return { paused: pauseOf(outcome) };
+	if (outcome?.kind === 'pull' && outcome.pause !== undefined) {
+		return { paused: pauseOf(outcome.pause) };
+	}
+	return {};
+};
+
 const builtEnd = (feature: Named, outcome: FeatureOutcome | null): Ended => ({
 	code: outcome === null || outcome.kind === 'paused' ? 1 : 0,
-	...(outcome?.kind === 'paused' ? { paused: outcome.why } : {}),
+	...builtPause(outcome),
 	built: { feature, outcome }
 });
 
 const fixEnd = (got: PullFixOutcome): Ended =>
 	got.kind === 'skipped'
 		? { code: null }
-		: { code: pullFixExit(got), ...(got.kind === 'paused' ? { paused: got.why } : {}) };
+		: { code: pullFixExit(got), ...(got.kind === 'paused' ? { paused: pauseOf(got) } : {}) };
 
 // Up to `slots` pieces of work at once, one per Slot and a Feature in one Slot at most. A free Slot takes, in order, the oldest red draft, the oldest Feature assigned to the person with the Go, then a Feedback round; it looks on each tick and whenever another Slot frees up. --once takes up to `slots` and returns when they end; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
@@ -498,10 +513,13 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(pollMs, stop);
 	};
-	const pause = async (reason: string) => {
-		const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();
-		deps.status.doing({ kind: 'paused', why: reason, until });
-		await deps.sleep(PAUSE_MS, stop);
+	// Every Slot waits out one pause together: until the plan's reset time when the limit gave one still ahead, else PAUSE_MS.
+	const pause = async ({ why: reason, resetsAt }: Pause) => {
+		const now = deps.now().getTime();
+		const reset = resetsAt === undefined ? 0 : resetsAt * 1000 - now;
+		const ms = reset > 0 ? reset : PAUSE_MS;
+		deps.status.doing({ kind: 'paused', why: reason, until: new Date(now + ms).toISOString() });
+		await deps.sleep(ms, stop);
 	};
 	// the drafts the revisit pass took this run, at their head commit then
 	const tried = new Set<string>();
@@ -574,9 +592,9 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	let code = 0;
 	let takesMore = true;
 
-	const pauseAll = (reason: string) => {
+	const pauseAll = (why: Pause) => {
 		if (run.pausing !== null) return;
-		run.pausing = pause(reason).then(() => {
+		run.pausing = pause(why).then(() => {
 			run.pausing = null;
 		});
 	};

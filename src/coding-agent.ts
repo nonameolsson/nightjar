@@ -166,9 +166,13 @@ export interface ReviewRequest extends Work {
 // How any Session can end besides its answer.
 export type Ended =
 	| { readonly kind: 'failed'; readonly why: string; readonly failure: Failure }
-	// a reason of the machine or the plan: the run goes on later
-	| { readonly kind: 'paused'; readonly why: string }
+	// a reason of the machine or the plan: the run goes on later, at `resetsAt` (epoch seconds) when the plan's usage limit gave one
+	| { readonly kind: 'paused'; readonly why: string; readonly resetsAt?: number }
 	| { readonly kind: 'aborted' };
+
+// The `resetsAt` of a pause, to carry it from one outcome to the next; nothing when the pause has none.
+export const resetOf = (pause: { readonly resetsAt?: number }): { readonly resetsAt?: number } =>
+	pause.resetsAt === undefined ? {} : { resetsAt: pause.resetsAt };
 
 type Outcome<T> = (T | Ended) & { readonly sessionId: string; readonly costUsd: number };
 
@@ -261,7 +265,11 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		};
 		if (setup.signal?.aborted === true) return { kind: 'aborted', ...ended };
 		if (result.kind === 'api-key' || result.kind === 'rate-limited') {
-			return { kind: 'paused', why: pauseWhy(result), ...ended };
+			const resets =
+				result.kind === 'rate-limited' && result.resetsAt !== null
+					? { resetsAt: result.resetsAt }
+					: {};
+			return { kind: 'paused', why: pauseWhy(result), ...resets, ...ended };
 		}
 		if (result.kind === 'stopped')
 			return { kind: 'failed', why: result.why, failure: result.failure, ...ended };

@@ -2,6 +2,7 @@
 import type { CheckResult, RunCheck } from './check.js';
 import {
 	envOf,
+	resetOf,
 	type CodingAgent,
 	type Ended,
 	type Fixing,
@@ -377,7 +378,7 @@ export class WorkflowRun {
 				case 'paused':
 					await tree.revert(before);
 					run.log({ ...entry, outcome: `${label}: paused: ${got.why}` });
-					return { kind: 'paused', why: got.why };
+					return { kind: 'paused', why: got.why, ...resetOf(got) };
 				case 'failed':
 					run.log({ ...entry, outcome: `${label}: failed: ${got.why}`, failure: got.failure });
 					return giveUp(got.why);

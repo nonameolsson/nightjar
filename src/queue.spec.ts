@@ -17,6 +17,7 @@ import {
 	cannotClaim,
 	dryRun,
 	fixNamed,
+	PAUSE_MS,
 	pullChecksPass,
 	pullFixExit,
 	queue,
@@ -710,6 +711,123 @@ describe('queue with several Slots', () => {
 		s.stop.abort();
 		await s.end('10');
 		await run;
+	});
+
+	describe("on the plan's usage limit", () => {
+		const LIMIT = "the plan's usage limit was reached";
+		// the world's clock reads 2026-10-30 09:00 local
+		const at = (minutes: number) => new Date(2026, 9, 30, 9, minutes);
+		const epoch = (minutes: number) => Math.floor(at(minutes).getTime() / 1000);
+		// four Features with the Go, so that two Slots have work after a pause
+		function four() {
+			const w = three();
+			w.tracker.add({
+				id: '12',
+				title: 'Fourth',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['13']
+			});
+			w.tracker.add({ id: '13', title: 'Ticket 13' });
+			return w;
+		}
+
+		it('resumes every Slot together at the time the limit gave, and both take work again', async () => {
+			const w = four();
+			const s = slotted(w, 2);
+			const run = queue(w.deps, false);
+			await settle();
+			await s.end('2', { kind: 'paused', why: LIMIT, resetsAt: epoch(45) });
+			// no claim in either Slot while the pause lasts, though one is free
+			await settle();
+			expect(s.running()).toEqual(['4']);
+			expect(s.naps.map((n) => n.ms)).toEqual([45 * 60_000]);
+			expect(w.doing.at(-1)).toEqual({
+				kind: 'paused',
+				why: LIMIT,
+				until: at(45).toISOString()
+			});
+			await s.end('4');
+			expect(s.running()).toEqual([]);
+			expect(w.built).toEqual(['2', '4']);
+			s.naps[0]?.wake();
+			await settle();
+			expect(s.running()).toEqual(['10', '12']);
+			s.stop.abort();
+			await s.end('10');
+			await s.end('12');
+			await run;
+		});
+
+		it('resumes after PAUSE_MS when the limit gave no reset time, or one already past', async () => {
+			for (const resetsAt of [undefined, epoch(-5)]) {
+				const w = four();
+				const s = slotted(w, 2);
+				const run = queue(w.deps, false);
+				await settle();
+				await s.end('2', {
+					kind: 'paused',
+					why: LIMIT,
+					...(resetsAt === undefined ? {} : { resetsAt })
+				});
+				expect(s.naps.map((n) => n.ms)).toEqual([PAUSE_MS]);
+				expect(w.doing.at(-1)).toMatchObject({ kind: 'paused', until: at(30).toISOString() });
+				await s.end('4');
+				s.naps[0]?.wake();
+				await settle();
+				expect(s.running()).toEqual(['10', '12']);
+				s.stop.abort();
+				await s.end('10');
+				await s.end('12');
+				await run;
+			}
+		});
+
+		it('pauses the run when a Session ends on the limit after its pull request was opened', async () => {
+			const w = three();
+			const s = slotted(w, 2);
+			const run = queue(w.deps, false);
+			await settle();
+			const pull = { id: 7, url: 'https://example.test/o/app/pull/7' };
+			await s.end('2', {
+				kind: 'pull',
+				pull,
+				built: ['3'],
+				waiting: [],
+				pause: { why: LIMIT, resetsAt: epoch(45) }
+			});
+			expect(s.running()).toEqual(['4']);
+			expect(s.naps.map((n) => n.ms)).toEqual([45 * 60_000]);
+			await settle();
+			expect(s.running()).toEqual(['4']);
+			s.stop.abort();
+			await s.end('4');
+			await run;
+		});
+
+		it('keeps the first pause when a second Session ends on the limit during it', async () => {
+			const w = three();
+			const s = slotted(w, 2);
+			const run = queue(w.deps, false);
+			await settle();
+			await s.end('2', { kind: 'paused', why: LIMIT, resetsAt: epoch(45) });
+			await s.end('4', { kind: 'paused', why: LIMIT, resetsAt: epoch(90) });
+			expect(s.naps.map((n) => n.ms)).toEqual([45 * 60_000]);
+			s.stop.abort();
+			await run;
+		});
+
+		it('--once ends on the pause and takes no more work', async () => {
+			const w = three();
+			const s = slotted(w, 2);
+			const run = queue(w.deps, true);
+			await settle();
+			await s.end('2', { kind: 'paused', why: LIMIT, resetsAt: epoch(45) });
+			await s.end('4');
+			expect(await run).toBe(1);
+			expect(w.built).toEqual(['2', '4']);
+			expect(s.naps).toEqual([]);
+		});
 	});
 
 	it('on abort takes no more work, and returns 130 once every running Slot has ended', async () => {

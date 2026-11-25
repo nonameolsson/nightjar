@@ -3,6 +3,7 @@ import type { RunCheck } from './check.js';
 import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
 import {
 	envOf,
+	resetOf,
 	type BuildOutcome,
 	type CodingAgent,
 	type FixOutcome,
@@ -173,11 +174,19 @@ export type FeatureOutcome =
 			readonly pull: Pull;
 			readonly built: ItemId[];
 			readonly waiting: Waiting[];
+			// a Session ended on a reason of the machine or the plan after the pull request was opened: the Feature has the Go back, and the run pauses
+			readonly pause?: Pause;
 	  }
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
-	| { readonly kind: 'paused'; readonly why: string }
+	| ({ readonly kind: 'paused' } & Pause)
 	| { readonly kind: 'stopped' };
+
+// Why the run pauses, and when it may go on: `resetsAt` (epoch seconds) is the plan's usage limit's reset time, when it gave one.
+export interface Pause {
+	readonly why: string;
+	readonly resetsAt?: number;
+}
 
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
@@ -651,7 +660,7 @@ class FeatureRun {
 			case 'paused':
 				await this.tree.discard(before, ticket.id);
 				this.log({ ...entry, outcome: `paused: ${got.why}` });
-				return { kind: 'paused', why: got.why };
+				return { kind: 'paused', why: got.why, ...resetOf(got) };
 			case 'failed':
 				this.log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
 				if (got.failure === 'lasting') this.lastFailure = got.why;
@@ -796,7 +805,7 @@ class FeatureRun {
 		const { tracker, codeHost } = this.deps;
 		const id = this.feature.id;
 		const left = waiting(this.tickets, this.built);
-		let paused = last.kind === 'paused' ? last.why : null;
+		let paused: Pause | null = last.kind === 'paused' ? { why: last.why, ...resetOf(last) } : null;
 		await tracker.removeSignal(id, 'working');
 		if (this.aborted || last.kind === 'aborted') {
 			await tracker.comment(
@@ -805,13 +814,13 @@ class FeatureRun {
 			);
 			return { kind: 'stopped' };
 		}
-		if (paused) await this.pause(paused);
+		if (paused) await this.pause(paused.why);
 		const repeated =
 			last.kind === 'repeated'
 				? `Nightjar stopped building this Feature: ${String(last.tickets.length)} Tickets in a row failed with the same reason, ${last.tickets.map(hash).join(', ')}.\n\nReason: ${last.why}.\n\n`
 				: '';
 		if ((await this.tree.ahead()) === 0) {
-			if (paused) return { kind: 'paused', why: paused };
+			if (paused) return { kind: 'paused', ...paused };
 			const next = featureAfterRunStep(this.setup.signals, {
 				waiting: left.length > 0,
 				red: false
@@ -853,7 +862,7 @@ class FeatureRun {
 				// the pull request's Paused section says why, so it gets no Review section
 				if (paused === null) {
 					paused = got.paused;
-					await this.pause(paused);
+					await this.pause(paused.why);
 				}
 			} else {
 				review = got;
@@ -877,7 +886,7 @@ class FeatureRun {
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
-			paused,
+			paused: paused?.why ?? null,
 			workflow,
 			feedback: rounds.rounds === 0 ? null : feedbackSection(rounds, this.unanswered),
 			note: this.workflow?.workflow.output === 'note' ? this.workflow.name : null,
@@ -936,7 +945,13 @@ class FeatureRun {
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
 		}
-		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+		return {
+			kind: 'pull',
+			pull,
+			built: [...this.built],
+			waiting: left,
+			...(paused === null ? {} : { pause: paused })
+		};
 	}
 
 	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
@@ -1054,7 +1069,7 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
 		if (got.kind === 'paused') {
 			ctx.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
-			return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
+			return { check, spent, summaries, halt: { kind: 'paused', why: got.why, ...resetOf(got) } };
 		}
 		// the ledger names a fix round that failed or was stopped as one that gave up
 		const gaveUp = got.kind !== 'fixed';
@@ -1111,7 +1126,7 @@ export type PullFixOutcome =
 	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
 	// the pull request is not Nightjar's to fix after all; nothing was done
 	| { readonly kind: 'skipped'; readonly why: string }
-	| { readonly kind: 'paused'; readonly why: string }
+	| ({ readonly kind: 'paused' } & Pause)
 	| { readonly kind: 'stopped' };
 
 // One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
@@ -1274,7 +1289,9 @@ async function pullFixRound(
 	};
 	const halted = async (halt: Halt): Promise<PullFixOutcome> => {
 		await tree.discard(before, `pull-fix-${String(round)}`);
-		return halt.kind === 'paused' ? { kind: 'paused', why: halt.why } : { kind: 'stopped' };
+		return halt.kind === 'paused'
+			? { kind: 'paused', why: halt.why, ...resetOf(halt) }
+			: { kind: 'stopped' };
 	};
 
 	building();
@@ -1362,7 +1379,7 @@ async function reviewFeature(
 	tickets: TicketProgress[],
 	show: ShowBuilding,
 	log: (entry: LogEntry) => void
-): Promise<Review | null | { readonly paused: string }> {
+): Promise<Review | null | { readonly paused: Pause }> {
 	const before = await tree.head();
 	const { outcome: got } = await retryPassing<ReviewOutcome>({
 		budgetUsd: setup.limits.reviewUsd,
@@ -1416,7 +1433,7 @@ async function reviewFeature(
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });
-			return { paused: got.why };
+			return { paused: { why: got.why, ...resetOf(got) } };
 		case 'reviewed':
 			log({ ...entry, outcome: got.review.verdict });
 			return got.review;
