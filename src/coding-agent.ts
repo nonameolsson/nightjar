@@ -291,6 +291,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 			costUsd: 'costUsd' in result ? result.costUsd : 0
 		};
 		if (setup.signal?.aborted === true) return { kind: 'aborted', ...ended };
+		if (result.kind === 'day-over') return { kind: 'paused', why: result.why, ...ended };
 		if (result.kind === 'api-key' || result.kind === 'rate-limited') {
 			const resets =
 				result.kind === 'rate-limited' && result.resetsAt !== null

@@ -242,7 +242,7 @@ describe('the Steps of a Workflow', () => {
 			log: (entry) => b.logged.push(entry),
 			building: (t, session, rounds) => b.shown.push({ ticket: t, session, ...rounds }),
 			dailyPause: () => b.dailyPause,
-			allowance: (cap, spent) => memorySpend().allowance(cap, spent, new Date(), 60),
+			allowance: (cap, spent) => memorySpend().allowance(cap, spent),
 			aborted: () => b.aborted
 		};
 		return openWorkflow({ name: 'w', workflow }, run);

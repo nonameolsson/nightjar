@@ -72,10 +72,10 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 
 	it('lets a piece of work spend what is left of its cap while that is $1 or more', () => {
 		const spend = make();
-		expect(spend.allowance(15, 3, morning, 60)).toEqual({ usd: 12, enough: true });
-		expect(spend.allowance(15, 14, morning, 60)).toEqual({ usd: 1, enough: true });
-		expect(spend.allowance(15, 14.5, morning, 60)).toEqual({ usd: 0.5, enough: false });
-		expect(spend.allowance(15, 16, morning, 60)).toEqual({ usd: -1, enough: false });
+		expect(spend.allowance(15, 3)).toEqual({ usd: 12, enough: true });
+		expect(spend.allowance(15, 14)).toEqual({ usd: 1, enough: true });
+		expect(spend.allowance(15, 14.5)).toEqual({ usd: 0.5, enough: false });
+		expect(spend.allowance(15, 16)).toEqual({ usd: -1, enough: false });
 	});
 
 	describe('with Sessions running in other Slots', () => {
@@ -86,10 +86,29 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 			expect(spend.dayOver(morning, 60, 10)).toBe(
 				"today's estimated spend, $50.00, plus $5.00 held for the Sessions running in other Slots and $10.00 for this Session would pass the daily limit of $60.00"
 			);
-			expect(spend.allowance(10, 0, morning, 60)).toEqual({ usd: 10, enough: false });
+			expect(spend.hold(10, morning, 60)).toBe(
+				"today's estimated spend, $50.00, plus $5.00 held for the Sessions running in other Slots and $10.00 for this Session would pass the daily limit of $60.00"
+			);
+			// the work's own cap is not cut by the other Slots: it pauses where its Session starts instead
+			expect(spend.allowance(10, 0)).toEqual({ usd: 10, enough: true });
 			// one that fits still starts
 			expect(spend.dayOver(morning, 60, 5)).toBeNull();
-			expect(spend.allowance(5, 0, morning, 60)).toEqual({ usd: 5, enough: true });
+			expect(typeof spend.hold(5, morning, 60)).toBe('object');
+		});
+
+		it('checks and holds in one step, so two Sessions cannot both start on the same dollars', () => {
+			const spend = make();
+			spend.record(entry(morning, 55));
+			// both Slots passed the check where their work started
+			expect(spend.dayOver(morning, 60, 10)).toBeNull();
+			const first = spend.hold(10, morning, 60);
+			expect(typeof first).toBe('object');
+			expect(spend.hold(10, morning, 60)).toBe(
+				"today's estimated spend, $55.00, plus $10.00 held for the Sessions running in other Slots, reached the daily limit of $60.00"
+			);
+			// once the first ends, the second may start
+			if (typeof first !== 'string') first.release();
+			expect(typeof spend.hold(10, morning, 60)).toBe('object');
 		});
 
 		it('says the day is over when the spend and the caps running reach the limit', () => {
@@ -119,11 +138,10 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 			running.release();
 			expect(spend.today(morning)).toBe(52);
 			expect(spend.dayOver(morning, 60, 10)).toBeNull();
-			expect(spend.allowance(8, 0, morning, 60)).toEqual({ usd: 8, enough: true });
+			expect(typeof spend.hold(8, morning, 60)).toBe('object');
 			// a second release gives nothing back twice
-			spend.reserve(3);
 			running.release();
-			expect(spend.dayOver(morning, 60, 6)).not.toBeNull();
+			expect(spend.dayOver(morning, 60, 1)).not.toBeNull();
 		});
 
 		it('leaves the day over once it is, while the Session running finishes', () => {
@@ -140,10 +158,11 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 		spend.record(entry(morning, 59));
 		// a Session whose cap passes the limit still starts: only the spend so far counts
 		expect(spend.dayOver(morning, 60, 15)).toBeNull();
-		expect(spend.allowance(15, 0, morning, 60)).toEqual({ usd: 15, enough: true });
 		const running = spend.reserve(5);
 		running.release();
 		expect(spend.dayOver(morning, 60, 15)).toBeNull();
-		expect(spend.allowance(15, 0, morning, 60)).toEqual({ usd: 15, enough: true });
+		// and once it started, its Session holds even past the limit: a Feature's fix rounds go on as with one Slot
+		spend.record(entry(morning, 2));
+		expect(typeof spend.hold(15, morning, 60)).toBe('object');
 	});
 });

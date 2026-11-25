@@ -1548,6 +1548,27 @@ describe('a Session that cannot go on', () => {
 		}
 	);
 
+	it('pauses rather than leave a Ticket red, when a Session in another Slot takes the room its fix round needs', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		const why = 'the day has no room for this Session beside the other Slots';
+		world.settle = (req) => {
+			// another Slot starts a Session while this Ticket builds, and holds its cap
+			if (req.kind === 'build') world.spend.reserve(LIMITS.ticketUsd);
+			// main.ts's heldSession turns the fix round's Session away
+			return req.kind === 'fix' ? paused(why) : undefined;
+		};
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: LIMITS.ticketUsd + 4 } });
+		const got = await buildFeature(deps(world), s, '1');
+
+		// the fix round is tried, not skipped because of the other Slot's cap
+		expect(world.asked.map((r) => r.kind)).toEqual(['build', 'fix']);
+		expect(got).toEqual({ kind: 'paused', why });
+		expect(subjects(world)).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+		expect(world.tracker.signalsOf('2')).toEqual(['ready']);
+	});
+
 	it.each(cases)('pauses the run when the review is %s', async (_name, why) => {
 		const world = makeWorld();
 		world.settle = (req) => (req.kind === 'review' ? paused(why) : undefined);

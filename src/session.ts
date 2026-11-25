@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Env } from './git.js';
+import type { Spend } from './spend.js';
 
 export interface SessionRequest {
 	readonly cwd: string;
@@ -42,11 +43,33 @@ export type Settled =
 			readonly failure: Failure;
 	  }
 	| { readonly kind: 'api-key' }
-	| { readonly kind: 'rate-limited'; readonly resetsAt: number | null };
+	| { readonly kind: 'rate-limited'; readonly resetsAt: number | null }
+	// it never started: its cap does not fit under the day's limit beside the Sessions running in other Slots
+	| { readonly kind: 'day-over'; readonly why: string };
 
 export type SessionResult = Settled & { readonly sessionId: string };
 
 export type Session = (req: SessionRequest) => Promise<SessionResult>;
+
+// A Session whose cap counts as spent against `dailyUsd` from its start until it ends, when its ledger line takes its place. The check and the hold are one step, so two Slots cannot both start a Session on the same dollars; one that does not fit never starts and settles as `day-over`.
+export function heldSession(
+	run: Session,
+	spend: Pick<Spend, 'hold'>,
+	now: () => Date,
+	dailyUsd: number
+): Session {
+	return async (req) => {
+		const hold = spend.hold(req.budgetUsd, now(), dailyUsd);
+		if (typeof hold === 'string') {
+			return { kind: 'day-over', why: hold, sessionId: req.resume ?? req.sessionId };
+		}
+		try {
+			return await run(req);
+		} finally {
+			hold.release();
+		}
+	};
+}
 
 export function sessionArgs(req: SessionRequest): string[] {
 	const args = [

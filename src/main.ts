@@ -46,7 +46,7 @@ import {
 	type QueueDeps,
 	type Say
 } from './queue.js';
-import { runSession, sessionExists, type Session } from './session.js';
+import { heldSession, runSession, sessionExists, type Session } from './session.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -252,15 +252,13 @@ export async function runNightjar(
 		},
 		signal: stop.signal
 	};
-	// A Session's cap counts as spent against dailyUsd from its start until it ends, when its ledger line takes its place; so the Sessions in the other Slots cannot together pass the day's limit.
-	const session: Session = async (req) => {
-		const hold = spend.reserve(req.budgetUsd);
-		try {
-			return await runSession(req);
-		} finally {
-			hold.release();
-		}
-	};
+	// A Session's cap counts as spent against dailyUsd from its start until it ends, so the Sessions in the other Slots cannot together pass the day's limit; one that does not fit beside them pauses its work.
+	const session: Session = heldSession(
+		(req) => runSession(req),
+		spend,
+		() => new Date(),
+		setup.limits.dailyUsd
+	);
 	const deps: Deps = {
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,

@@ -207,11 +207,11 @@ export interface Pause {
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
-// What a piece of work with a `cap` that has spent `spent` may still spend, with the day's limit and the caps of the Sessions running in the other Slots counted.
+// What a piece of work with a `cap` that has spent `spent` may still spend. The day's limit with the other Slots' caps is checked where each Session starts (`Spend.hold`), which pauses the work rather than leave it red.
 const allowanceOf =
-	(deps: Pick<Deps, 'spend' | 'now'>, setup: Pick<Setup, 'limits'>) =>
+	(deps: Pick<Deps, 'spend'>) =>
 	(cap: number, spent: number): Allowance =>
-		deps.spend.allowance(cap, spent, deps.now(), setup.limits.dailyUsd);
+		deps.spend.allowance(cap, spent);
 const hash = (id: ItemId) => `#${id}`;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
@@ -433,7 +433,7 @@ class FeatureRun {
 			feature: this.feature,
 			tree: this.tree,
 			dailyPause: (cap) => this.dailyPause(cap),
-			allowance: allowanceOf(deps, this.setup),
+			allowance: allowanceOf(deps),
 			fix: (work) => this.fixFeedback(work),
 			log: (entry) => this.log(entry),
 			building: (session) => this.building(null, 'feedback', session, NO_ROUND),
@@ -509,7 +509,7 @@ class FeatureRun {
 			building: (ticket, session, rounds, attempt) =>
 				this.building(ticket, 'step', session, rounds, attempt),
 			dailyPause: (cap) => this.dailyPause(cap),
-			allowance: allowanceOf(this.deps, this.setup),
+			allowance: allowanceOf(this.deps),
 			aborted: () => this.aborted
 		});
 	}
@@ -620,7 +620,7 @@ class FeatureRun {
 		};
 		const { outcome: got, earlierUsd } = await retryPassing<BuildOutcome>({
 			budgetUsd: this.setup.limits.ticketUsd,
-			enough: (usd) => allowanceOf(this.deps, this.setup)(usd, 0).enough,
+			enough: (usd) => allowanceOf(this.deps)(usd, 0).enough,
 			reset: () => this.tree.revert(before),
 			sleep: this.deps.sleep,
 			signal: this.setup.signal,
@@ -1030,7 +1030,7 @@ class FeatureRun {
 				declined,
 				...this.output,
 				dailyPause: (cap) => this.dailyPause(cap),
-				allowance: allowanceOf(deps, this.setup),
+				allowance: allowanceOf(deps),
 				fix: (work) => this.fixReviewRound(work, { round, rounds }),
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
@@ -1191,7 +1191,7 @@ interface FixContext {
 async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 	const { deps, setup, tree } = ctx;
 	const { limits, check: command } = setup;
-	const allowance = allowanceOf(deps, setup);
+	const allowance = allowanceOf(deps);
 	const summaries: string[] = [];
 	const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
 	let { check, spent } = o;
@@ -1489,7 +1489,7 @@ async function pullFixRound(
 	const deadline = deps.now().getTime() + minutes * 60_000;
 	// why the round stopped short of a green check: one of its own caps, else the fix rounds ran out
 	const stillRed = (spent: number) => {
-		if (!allowanceOf(deps, setup)(cap, spent).enough) {
+		if (!allowanceOf(deps)(cap, spent).enough) {
 			return `it reached its cap of ${dollars(cap)}`;
 		}
 		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
@@ -1574,7 +1574,7 @@ async function reviewFeature(
 	const before = await tree.head();
 	const { outcome: got } = await retryPassing<ReviewOutcome>({
 		budgetUsd: setup.limits.reviewUsd,
-		enough: (usd) => allowanceOf(deps, setup)(usd, 0).enough,
+		enough: (usd) => allowanceOf(deps)(usd, 0).enough,
 		reset: () => tree.revert(before),
 		sleep: deps.sleep,
 		signal: setup.signal,

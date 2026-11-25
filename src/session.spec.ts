@@ -2,7 +2,16 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runSession, sessionArgs, sessionExists, settle, type SessionRequest } from './session.js';
+import { memorySpend } from './fakes/spend.js';
+import {
+	heldSession,
+	runSession,
+	sessionArgs,
+	sessionExists,
+	settle,
+	type SessionRequest,
+	type SessionResult
+} from './session.js';
 
 const init = (apiKeySource = 'none') => ({ type: 'system', subtype: 'init', apiKeySource });
 const result = (over: Record<string, unknown> = {}) => ({
@@ -224,5 +233,48 @@ describe('sessionExists', () => {
 		writeFileSync(join(home, '.claude', 'secret.jsonl'), '{}\n');
 		expect(sessionExists('../../secret', {}, home)).toBe(false);
 		expect(sessionExists('', {}, home)).toBe(false);
+	});
+});
+
+describe('heldSession', () => {
+	const morning = new Date(2026, 9, 30, 8);
+	const req = { budgetUsd: 10, sessionId: 's-2' } as SessionRequest;
+
+	it('holds its cap while it runs, and starts no Session the day has no room for beside another Slot', async () => {
+		const spend = memorySpend();
+		spend.record({
+			at: morning.toISOString(),
+			repo: 'o/r',
+			feature: '1',
+			ticket: null,
+			branch: 'factory/1-a',
+			step: 'build',
+			session: 's-0',
+			costUsd: 45,
+			outcome: 'built'
+		});
+		let release = (): void => undefined;
+		let ran = 0;
+		const run = (r: SessionRequest): Promise<SessionResult> => {
+			ran += 1;
+			return new Promise((resolve) => {
+				release = () => {
+					resolve({ kind: 'done', costUsd: 1, output: {}, sessionId: r.sessionId });
+				};
+			});
+		};
+		const session = heldSession(run, spend, () => morning, 60);
+		// two Slots start a $10 Session at once, at $45 of $60: the first fits, the second would pass the limit
+		const first = session({ ...req, sessionId: 's-1' });
+		const second = await session(req);
+		expect(second).toMatchObject({ kind: 'day-over', sessionId: 's-2' });
+		expect(ran).toBe(1);
+		release();
+		await first;
+		// the first ended and gave its cap back, so the next one starts
+		const third = session(req);
+		expect(ran).toBe(2);
+		release();
+		expect(await third).toMatchObject({ kind: 'done' });
 	});
 });
