@@ -610,6 +610,27 @@ describe('nightjar ui reads the Tracker', () => {
 		expect([...tracker.items.values()]).toEqual(before);
 	});
 
+	it('takes a Feature off Waiting on you once it builds, before the next read says so', async () => {
+		const tracker = fakeTracker();
+		await openOn(readsOf(tracker));
+		await read();
+		status(true).doing({
+			kind: 'building',
+			feature: '4',
+			title: 'Audit log',
+			ticket: null,
+			step: 'setup',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		await vi.waitFor(async () => expect(mat(await page(), 'building')).toContain('Audit log'));
+		const html = await page();
+		expect(mat(html, 'waiting')).not.toContain('Audit log');
+		expect(html).toMatch(/waiting on you<\/span> <b>0<\/b>/);
+	});
+
 	it('reads on open and then once a minute, never on a change under .factory/', async () => {
 		const tracker = fakeTracker();
 		await openOn(readsOf(tracker));
@@ -711,7 +732,9 @@ describe('nightjar ui reads the Tracker', () => {
 		expect(mat(html, 'queue')).not.toContain('Saved filters');
 		expect(mat(html, 'building')).toContain('Saved filters');
 		expect(mat(html, 'waiting')).toContain('Audit log');
-		expect(mat(html, 'waiting')).toContain('Facets');
+		// the building Feature's waiting Ticket sits on its Building card
+		expect(mat(html, 'building')).toContain('Facets');
+		expect(mat(html, 'waiting')).not.toContain('Facets');
 	});
 
 	it('answers GET and HEAD only, as before', async () => {
@@ -857,6 +880,43 @@ describe('nightjar ui board', () => {
 			'<i class="slot"><i class="egg built"></i></i><i class="slot"><i class="egg building"></i></i><i class="slot"><i class="egg need"></i></i>'
 		);
 		expect(card).toContain('1 of 3 built now');
+	});
+
+	it("lists a building Feature's waiting Tickets on its Building card, not on a Waiting card of its own", async () => {
+		const file = status(true);
+		file.refreshed([], { items: [], trackerCannotList: false });
+		file.doing({
+			kind: 'building',
+			feature: '5',
+			title: 'Search',
+			ticket: '7',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '7', title: 'Query', state: 'building' },
+				{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+			]
+		});
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const table = rest.split('<div class="overview">')[0] ?? '';
+		const cards = board
+			.split('<article')
+			.slice(1)
+			.map((a) => a.split('</article>')[0] ?? '');
+		expect(cards.filter((a) => a.includes('Search'))).toHaveLength(1);
+		const card = cards.find((a) => a.includes('entry building')) ?? '';
+		expect(card).toContain('Facets <small>needs info</small>');
+		expect(page).toContain('<h2>Waiting on you</h2><i class="tally">0</i>');
+		// the header still counts the Ticket: it waits on the person
+		expect(page).toMatch(/waiting on you<\/span> <b>1<\/b>/);
+		const rows = table.split('<tr ').filter((r) => r.includes('Search'));
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain('needs info');
 	});
 
 	it('shows one Completed card per Feature: its latest run and how many runs it had', async () => {
