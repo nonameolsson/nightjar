@@ -24,7 +24,7 @@ Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `g
 - Hosted/team-wide oversight of many people's Queues is not a goal confirmed here.
 
 ## Brand Commitments
-- The page follows `DESIGN.md` (night-shift teal and amber on near-black). `docs/design/color-scheme.md` is the brand palette for the icon and other assets, not the page.
+- The page follows `DESIGN.md`: Paper, a light list on warm paper greys that follows the light or dark scheme, by default, and the night-shift teal and amber on near-black as the Nightjar theme. `docs/design/color-scheme.md` is the brand palette for the icon and other assets, not the page.
 - Brand assets: `docs/design/assets/` (banner, icon, wordmark).
 
 ## Evidence on Hand
