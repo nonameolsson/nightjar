@@ -12,6 +12,7 @@ with more than one line goes in through a heredoc into `-F body=@-`.
 - **Create an issue**: `gh api -X POST repos/{owner}/{repo}/issues -f title='…' -F body=@- -f 'labels[]=…'`.
   The answer's `number` is the `#number`; its `id` is the **database id**, which
   the sub-issue and blocking calls take.
+- **A Ticket's body** holds what `docs/ticket-contract.md` asks: an `Acceptance criteria` checklist, its blocking links set natively (below), optional `**Model:**` and `**Effort:**` lines, and the `ready-for-agent` label. A Feature gets no Signal: the person gives it the Go.
 - **Read an issue**: `gh api repos/{owner}/{repo}/issues/<n>`, and its comments with
   `gh api repos/{owner}/{repo}/issues/<n>/comments`.
 - **List issues**: `gh api 'repos/{owner}/{repo}/issues?state=open&labels=<label>' --jq '[.[] | select(.pull_request | not) | {number, title, labels: [.labels[].name]}]'`.

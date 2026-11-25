@@ -7,6 +7,7 @@ import {
 	feedbackIds,
 	folderFor,
 	pullFixCommitMessage,
+	reviewCommitMessage,
 	stepCommitMessage,
 	ticketCommitMessage,
 	trailersOf,
@@ -200,6 +201,10 @@ class MemoryWorktree implements Worktree {
 		const message = feedbackCommitMessage(answered, summary, session, asked);
 		const made = this.commit({ message });
 		return Promise.resolve(made ? `c0ffee${String(this.folder.commits.length)}` : null);
+	}
+
+	commitReview(round: number, summary: string, session: string) {
+		return Promise.resolve(this.commit({ message: reviewCommitMessage(round, summary, session) }));
 	}
 
 	discard(before: string, ticket: string) {

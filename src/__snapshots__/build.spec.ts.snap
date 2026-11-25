@@ -10,7 +10,13 @@ exports[`buildFeature > names its Feature in the pull request body, once even af
 
 ## Review
 
-Approve: Reads well.
+### Review 1: Approve
+
+Reads well.
+
+### Still open
+
+- \`a.ts:2\`: nit
 
 ## Cost
 
@@ -21,6 +27,8 @@ Estimated cost of this run: $6.50.
 - Review: $0.50
 
 <!-- nightjar-feature: 1 -->
+
+<!-- nightjar-publish: complete=yes approved=yes -->
 
 ---
 _Built by Nightjar._"
@@ -36,7 +44,13 @@ exports[`what a person sees of a Pull-check fix round > the pull request body > 
 
 ## Review
 
-Approve: Reads well.
+### Review 1: Approve
+
+Reads well.
+
+### Still open
+
+- \`a.ts:2\`: nit
 
 <!-- nightjar-pull-checks-section -->
 ## Pull checks
@@ -60,6 +74,8 @@ Estimated cost of this run: $6.50.
 - Review: $0.50
 
 <!-- nightjar-feature: 1 -->
+
+<!-- nightjar-publish: complete=yes approved=yes -->
 
 ---
 _Built by Nightjar._"

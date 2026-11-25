@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, configJsonSchema, loadConfig, loadRules } from './config.js';
+import { ConfigError, configJsonSchemaText, loadConfig, loadRules } from './config.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 
 let root: string;
@@ -90,11 +90,34 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/off/);
 	});
 
+	it('loads how many Review rounds a build gets, from 0 to 5, and refuses any other', () => {
+		write({ ...VALID, review: { fixRounds: 0 } });
+		expect(loadConfig(root)).toMatchObject({ review: { fixRounds: 0 } });
+		write({ ...VALID, review: { fixRounds: 5 } });
+		expect(loadConfig(root)).toMatchObject({ review: { fixRounds: 5 } });
+		for (const fixRounds of [-1, 6, 1.5, '2']) {
+			write({ ...VALID, review: { fixRounds } });
+			expect(refusal()).toMatch(/^factory\.json: review\.fixRounds: /m);
+		}
+	});
+
 	it('loads the Pull-check pass, and leaves it out, so off, when not set', () => {
 		write({ ...VALID, pullChecks: { enabled: true } });
 		expect(loadConfig(root)).toMatchObject({ pullChecks: { enabled: true } });
 		write(VALID);
 		expect(loadConfig(root)).not.toHaveProperty('pullChecks');
+	});
+
+	it('loads publish, and leaves it out, so off, when not set', () => {
+		write({ ...VALID, publish: true });
+		expect(loadConfig(root)).toMatchObject({ publish: true });
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('publish');
+	});
+
+	it('refuses a publish that is not true or false', () => {
+		write({ ...VALID, publish: 'yes' });
+		expect(refusal()).toMatch(/^factory\.json: publish: /m);
 	});
 
 	it("loads the Pull-check pass's round, dollar and minute limits", () => {
@@ -530,10 +553,11 @@ describe('sources', () => {
 
 describe('the published JSON Schema', () => {
 	it('is the schema factory.json is validated with (run npm run schema when this fails)', () => {
-		const committed: unknown = JSON.parse(
-			readFileSync(new URL('../schema/factory.schema.json', import.meta.url), 'utf8')
+		const committed = readFileSync(
+			new URL('../schema/factory.schema.json', import.meta.url),
+			'utf8'
 		);
-		expect(committed).toEqual(configJsonSchema());
+		expect(committed).toBe(configJsonSchemaText());
 	});
 });
 

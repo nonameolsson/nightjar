@@ -12,6 +12,7 @@ import { AUTOMATIC_ROUNDS, feedbackHistory, newRequest } from './feedback-round.
 import { FOOTER } from './footer.js';
 import { featureStopStep, feedbackLimitStep, nextStepText } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
+import { markPublished, readyToPublish } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
 import { BRANCH_PREFIX, branchFor } from './worktree.js';
 import {
@@ -62,6 +63,31 @@ export interface QueueDeps {
 	readonly pullChecks?: PullChecksPass;
 	// Feedback rounds a trusted request for changes starts, when the Code host can list Nightjar's open pull requests and answer their feedback
 	readonly feedback?: FeedbackPass;
+	// Publish (docs/adr/0006), when factory.json sets `publish` and the Code host can publish and list Nightjar's drafts; --watch only
+	readonly publish?: PublishPass;
+}
+
+export interface PublishPass {
+	// the Code host's open drafts on Nightjar's branches
+	readonly drafts: () => Promise<NightjarDraft[]>;
+	// takes one draft out of draft, and marks its body so the Pull-check pass keeps to it
+	readonly publish: (draft: NightjarDraft) => Promise<void>;
+}
+
+// The pass, or null when factory.json leaves `publish` off or the Code host cannot publish or list Nightjar's drafts.
+export function publishPass(publish: boolean | undefined, codeHost: CodeHost): PublishPass | null {
+	const list = codeHost.nightjarDrafts?.bind(codeHost);
+	const take = codeHost.publish?.bind(codeHost);
+	if (publish !== true || list === undefined || take === undefined) return null;
+	return {
+		// only Publish reads the commits, to see that no person pushed
+		drafts: () => list({ commits: true }),
+		publish: async (draft) => {
+			await take(draft.pull);
+			// its own Publish is no person engaging: the mark is what tells the Pull-check pass it may still fix this pull request
+			await codeHost.editBody(draft.pull, markPublished(draft.body));
+		}
+	};
 }
 
 export interface FeedbackPass {
@@ -110,6 +136,36 @@ export function pullChecksPass(
 	const list = codeHost.nightjarDrafts?.bind(codeHost);
 	if (pullChecks?.enabled !== true || list === undefined) return null;
 	return { drafts: list, fix };
+}
+
+// The drafts that meet the four conditions of Publish, oldest first.
+const readyDrafts = (drafts: readonly NightjarDraft[], now: Date) =>
+	drafts.filter((d) => readyToPublish(d, now)).sort((a, b) => a.pull.id - b.pull.id);
+
+// One draft Publish takes out of draft, the oldest that meets its four conditions, or null when none does. A pull request whose publishing failed is not tried again in this run.
+async function publishNext(
+	deps: QueueDeps,
+	pass: PublishPass,
+	failed: Set<number>
+): Promise<NightjarDraft | null> {
+	let drafts: NightjarDraft[];
+	try {
+		drafts = await pass.drafts();
+	} catch (fault) {
+		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
+		return null;
+	}
+	const next = readyDrafts(drafts, deps.now()).find((d) => !failed.has(d.pull.id));
+	if (next === undefined) return null;
+	try {
+		await pass.publish(next);
+		deps.say(`published ${next.pull.url}`);
+		return next;
+	} catch (fault) {
+		failed.add(next.pull.id);
+		deps.say(`could not publish ${next.pull.url}: ${why(fault)}`);
+		return null;
+	}
 }
 
 // Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
@@ -525,6 +581,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const tried = new Set<string>();
 	// the pull requests a request for changes started a round on this run, by that request
 	const asked = new Set<string>();
+	// the pull requests Publish failed on this run
+	const unpublished = new Set<number>();
 	// the Features in a Slot, each with a promise that settles once its work ended and was told
 	const running = new Map<ItemId, Promise<void>>();
 	// the Queue last read, less the Features in a Slot
@@ -545,6 +603,12 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 						return fixEnd(got);
 					}
 				};
+			}
+		}
+		// --watch only: a draft that is ready is published before the next Feature is taken, and on each idle tick
+		if (!once && deps.publish !== undefined) {
+			while ((await publishNext(deps, deps.publish, unpublished)) !== null) {
+				// each ready draft, oldest first
 			}
 		}
 		const features = (await deps.tracker.assignedFeatures(deps.person)).filter(
@@ -743,12 +807,20 @@ export async function buildNamed(
 
 // doctor and init: the Features with the Go it would build, then those it would answer feedback on with no Go, when the Code host can list Nightjar's open pull requests.
 export async function dryRun(
-	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'> & { readonly codeHost?: CodeHost }
+	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'> & {
+		readonly codeHost?: CodeHost;
+		// when factory.json sets `publish`: the drafts it would publish are listed too
+		readonly publish?: PublishPass;
+		readonly now?: () => Date;
+	}
 ): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
 	const pulls = deps.codeHost === undefined ? null : openPullsOf(deps.codeHost);
 	const asked = pulls === null ? [] : await askedFeatures(deps, await pulls());
-	if (features.length === 0 && asked.length === 0) deps.say(none(deps));
+	const publishing = deps.publish === undefined ? [] : await publishable(deps, deps.publish);
+	if (features.length === 0 && asked.length === 0 && publishing.length === 0) {
+		deps.say(none(deps));
+	}
 	for (const f of features) {
 		deps.say(`would build #${f.id} ${f.title}${f.lone === true ? ' (a lone issue)' : ''}`);
 	}
@@ -760,4 +832,25 @@ export async function dryRun(
 			deps.say(`would hand #${id} ${title} to a person: ${limitWhy}`);
 		}
 	}
+	for (const { draft, feature, title } of publishing) {
+		deps.say(`would publish #${feature}${title === '' ? '' : ` ${title}`}, on ${draft.pull.url}`);
+	}
+}
+
+// The drafts a Publish pass would take out of draft, oldest first, each with the Feature its body names and that Feature's title when the Tracker gives it.
+async function publishable(
+	deps: Pick<QueueDeps, 'tracker'> & { readonly now?: () => Date },
+	pass: PublishPass
+) {
+	const found: { draft: NightjarDraft; feature: ItemId; title: string }[] = [];
+	for (const draft of readyDrafts(await pass.drafts(), deps.now?.() ?? new Date())) {
+		const feature = featureOfBody(draft.body);
+		if (feature === undefined) continue;
+		const title = await deps.tracker.feature(feature).then(
+			(f) => f.title,
+			() => ''
+		);
+		found.push({ draft, feature, title });
+	}
+	return found;
 }

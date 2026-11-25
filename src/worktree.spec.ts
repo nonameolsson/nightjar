@@ -329,6 +329,34 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(await again.built()).toEqual(new Set(['2']));
 	});
 
+	it('commits a Review round as its own commit, naming its round and its Session, and says when it changed no file', async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		expect(await tree.commitReview(1, 'Fixed the off-by-one.', 's4')).toBe(false);
+
+		world.write(tree, 'b.txt');
+		expect(await tree.commitReview(1, 'Fixed the off-by-one.', 's4')).toBe(true);
+		expect(world.subjects(tree)).toEqual(['Answer the Review, round 1', 'Share it (#2)']);
+		expect(Object.fromEntries(await tree.headTrailers())).toEqual({
+			'Factory-Review': '1',
+			'Factory-Session': 's4'
+		});
+		expect(await tree.built()).toEqual(new Set(['2']));
+	});
+
+	it('keeps a thrown-away Review round on the -attempt-review side branch', async () => {
+		const { world, branch, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		const before = await tree.head();
+		world.write(tree, 'b.txt');
+
+		expect(await tree.discard(before, 'review')).toBe(`${branch}-attempt-review`);
+		expect(world.kept(tree, `${branch}-attempt-review`)).toEqual(['b.txt']);
+		expect(await tree.built()).toEqual(new Set(['2']));
+	});
+
 	it("reads the head commit's trailers, and none from a person's own commit", async () => {
 		const { world, tree } = await fresh();
 		world.write(tree, 'a.txt');

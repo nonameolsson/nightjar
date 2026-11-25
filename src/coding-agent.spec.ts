@@ -7,6 +7,7 @@ import {
 	type FeedbackRequest,
 	type FixRequest,
 	type ReviewRequest,
+	type ReviewRoundRequest,
 	type StepRequest
 } from './coding-agent.js';
 import {
@@ -498,6 +499,7 @@ const reviewRequest = (): ReviewRequest => ({
 	sessionId: 's-9',
 	feature,
 	tickets: [ticket, plain],
+	declined: [],
 	budgetUsd: 3
 });
 
@@ -524,6 +526,29 @@ describe('the review', () => {
 		expect(req?.schema).toHaveProperty('properties.verdict');
 		expect([req?.budgetUsd, req?.minutes]).toEqual([3, 10]);
 		expect(req?.log).toBe('/repo/.factory/logs/s-9.jsonl');
+	});
+
+	it('tells the Review which issues were declined before, with their reasons, so it does not raise them blindly', async () => {
+		const { sent, session } = fakeSession(done(verdict));
+		await codingAgent(SETUP, session).review({
+			...reviewRequest(),
+			declined: [
+				{
+					file: 'README.md',
+					problem: 'The flag is not described.',
+					reason: 'The flag is internal.'
+				}
+			]
+		});
+		expect(sent[0]?.prompt).toContain('# Issues declined earlier');
+		expect(sent[0]?.prompt).toContain('- `README.md`: The flag is not described.');
+		expect(sent[0]?.prompt).toContain('Reason: The flag is internal.');
+	});
+
+	it('names no declined issues when there are none', async () => {
+		const { sent, session } = fakeSession(done(verdict));
+		await codingAgent(SETUP, session).review(reviewRequest());
+		expect(sent[0]?.prompt).not.toContain('Issues declined earlier');
 	});
 
 	it('reads the review', async () => {
@@ -672,6 +697,167 @@ describe('a Feedback round', () => {
 	});
 });
 
+const reviewRoundRequest = (over: Partial<ReviewRoundRequest> = {}): ReviewRoundRequest => ({
+	kind: 'reviewRound',
+	at,
+	sessionId: 's-11',
+	feature,
+	issues: [
+		{ file: 'src/marks.ts', line: 3, problem: 'It escapes twice.' },
+		{ file: 'README.md', problem: 'The new flag is not described.' }
+	],
+	declined: [],
+	diff: { text: '+++ b/src/marks.ts', truncated: true },
+	budgetUsd: 15,
+	...over
+});
+
+const fixedIt = { outcome: 'fixed', summary: 'Escaped once.', blocker: '' };
+const answering = (issues: unknown[]) => ({ ...fixedIt, issues });
+
+describe('a Review round', () => {
+	it("starts a new Session given each of the Review's issues with its place, and the branch's diff", async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).reviewRound(reviewRoundRequest());
+		const req = sent[0];
+		expect(req?.cwd).toBe('/w/1-one-escape');
+		expect(req?.sessionId).toBe('s-11');
+		expect(req?.resume).toBeUndefined();
+		expect(req?.prompt).toContain('1. `src/marks.ts:3`: It escapes twice.');
+		expect(req?.prompt).toContain('2. `README.md`: The new flag is not described.');
+		expect(req?.prompt).toContain('# The Feature: #1 One escape\n\nEscape once.');
+		expect(req?.prompt).toContain("# The branch's diff against origin/main");
+		expect(req?.prompt).toContain('It is cut here; the rest is in git.');
+		expect(req?.prompt).toContain('# Rules of this repo\n\nTabs.');
+		expect(req?.prompt).toContain('`make test`');
+		expect(req?.tools).toEqual(BUILD_TOOLS);
+		expect(req?.settings).toEqual(buildSettings(SETUP.allowedCommands));
+		expect(req?.schema).toHaveProperty('properties.outcome');
+		expect([req?.budgetUsd, req?.minutes]).toEqual([15, 60]);
+	});
+
+	it('gives the round the issues earlier rounds declined, with their reasons', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(
+			reviewRoundRequest({
+				declined: [
+					{ file: 'src/flag.ts', problem: 'The flag is unused.', reason: 'Tests read it.' }
+				]
+			})
+		);
+		expect(sent[0]?.prompt).toContain('- `src/flag.ts`: The flag is unused.');
+		expect(sent[0]?.prompt).toContain('Reason: Tests read it.');
+	});
+
+	it('names no declined issues when there are none', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(reviewRoundRequest());
+		expect(sent[0]?.prompt).not.toContain('Reason:');
+	});
+
+	it("runs a note's round on the note settings, given no repo command", async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(reviewRoundRequest({ output: 'note' }));
+		expect(sent[0]?.settings).toEqual(noteSettings());
+		expect(sent[0]?.prompt).toContain('`docs/research/`');
+		expect(sent[0]?.prompt).not.toContain('`make test`');
+	});
+
+	it('reads what it fixed', async () => {
+		const { session } = fakeSession(done(fixedIt));
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toEqual({
+			kind: 'fixed',
+			summary: 'Escaped once.',
+			declined: [],
+			sessionId: 's-11',
+			costUsd: 2.5
+		});
+	});
+
+	it('asks, for each issue by its number, whether it fixed or declined it, and why a declined one is wrong', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		await codingAgent(SETUP, session).reviewRound(reviewRoundRequest());
+		expect(sent[0]?.prompt).toContain('decline');
+		expect(sent[0]?.schema).toHaveProperty('properties.issues');
+	});
+
+	it('reads the issues it declined, each with its place and the reason it gave', async () => {
+		const { session } = fakeSession(
+			done(
+				answering([
+					{ issue: 1, outcome: 'fixed', reason: '' },
+					{ issue: 2, outcome: 'declined', reason: 'The flag is internal.' }
+				])
+			)
+		);
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'fixed',
+			declined: [
+				{
+					file: 'README.md',
+					problem: 'The new flag is not described.',
+					reason: 'The flag is internal.'
+				}
+			]
+		});
+	});
+
+	it('counts an issue it does not name as fixed, and ignores a number that is no issue', async () => {
+		const { session } = fakeSession(
+			done(answering([{ issue: 9, outcome: 'declined', reason: 'No such issue.' }]))
+		);
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'fixed',
+			declined: []
+		});
+	});
+
+	it('fails on a declined issue that gives no reason', async () => {
+		const { session } = fakeSession(
+			done(answering([{ issue: 1, outcome: 'declined', reason: '  ' }]))
+		);
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
+		});
+	});
+
+	it('reads a round that reported itself blocked', async () => {
+		const blocked = { outcome: 'blocked', summary: '', blocker: 'The Review is wrong.' };
+		const { session } = fakeSession(done(blocked));
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'blocked',
+			blocker: 'The Review is wrong.'
+		});
+	});
+
+	it('fails on an answer in a shape not known', async () => {
+		const { session } = fakeSession(done({ outcome: 'built', summary: 'x', questions: [] }));
+		expect(await codingAgent(SETUP, session).reviewRound(reviewRoundRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
+		});
+	});
+
+	it('resumes its Session for a fix round, keeping its answer shape and, for a note, the note settings', async () => {
+		const { sent, session } = fakeSession(done(fixedIt));
+		const got = await codingAgent(SETUP, session).fix({
+			kind: 'fix',
+			at,
+			of: { kind: 'reviewRound', output: 'note' },
+			resume: 's-11',
+			round: 1,
+			tail: 'lint: 1 problem',
+			budgetUsd: 12
+		});
+		expect(got).toMatchObject({ kind: 'fixed', summary: 'Escaped once.' });
+		expect(sent[0]?.resume).toBe('s-11');
+		expect(sent[0]?.prompt).toContain('This is fix round 1 of 3.');
+		expect(sent[0]?.schema).toHaveProperty('properties.blocker');
+		expect(sent[0]?.settings).toEqual(noteSettings());
+	});
+});
+
 type Call = (agent: CodingAgent) => Promise<{ readonly kind: string; readonly sessionId: string }>;
 
 // Each kind of work, with the Session its request starts or resumes.
@@ -686,7 +872,9 @@ const kinds: [string, Call, string][] = [
 	['a Step round', (agent) => agent.step(stepRequest()), 's-1'],
 	['a Feedback round', (agent) => agent.feedback(feedbackRequest()), 's-7'],
 	["a Feedback round's fix round", (agent) => agent.fix(fixRequest({ kind: 'feedback' })), 's-1'],
-	['the review', (agent) => agent.review(reviewRequest()), 's-9']
+	['the review', (agent) => agent.review(reviewRequest()), 's-9'],
+	['a Review round', (agent) => agent.reviewRound(reviewRoundRequest()), 's-11'],
+	["a Review round's fix round", (agent) => agent.fix(fixRequest({ kind: 'reviewRound' })), 's-1']
 ];
 
 const pullChecksFix = (fresh: boolean): FixRequest => ({
@@ -849,6 +1037,20 @@ const owners: [
 	[
 		"the review, by factory.json's review settings",
 		(own) => ({ setup: { review: own }, call: (agent) => agent.review(reviewRequest()) })
+	],
+	[
+		"a Review round, by factory.json's review settings",
+		(own) => ({
+			setup: { review: own },
+			call: (agent) => agent.reviewRound(reviewRoundRequest())
+		})
+	],
+	[
+		"a Review round's fix round, by factory.json's review settings",
+		(own) => ({
+			setup: { review: own },
+			call: (agent) => agent.fix(fixRequest({ kind: 'reviewRound' }))
+		})
 	]
 ];
 

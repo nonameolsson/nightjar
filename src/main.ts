@@ -38,6 +38,7 @@ import {
 	feedbackPass,
 	fixNamed,
 	handBack,
+	publishPass,
 	pullChecksPass,
 	pullFixExit,
 	queue,
@@ -293,6 +294,7 @@ export async function runNightjar(
 		const work = workOf(say, portEnv);
 		return fixPullChecks(work.deps, work.setup, red);
 	});
+	const publish = publishPass(config.publish, adapters.codeHost);
 	// the build of one Feature, with the request for changes that started it when it has no Go
 	const build = async (feature: Named, say: Say, portEnv?: PortEnv, started?: Asked) => {
 		building.add(feature);
@@ -319,6 +321,7 @@ export async function runNightjar(
 		signal: stop.signal,
 		signals: config.signals,
 		...(pullChecks === null ? {} : { pullChecks }),
+		...(publish === null ? {} : { publish }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		slots: args.parallel ?? ready.person.parallel,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})

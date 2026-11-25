@@ -7,8 +7,8 @@ export interface Entry {
 	readonly feature: string;
 	readonly ticket: string | null;
 	readonly branch: string;
-	// 'pullChecks' is a Pull-check fix round and 'feedback' a Feedback round, each with its check's own fix rounds
-	readonly step: 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback';
+	// 'pullChecks' is a Pull-check fix round, 'feedback' a Feedback round and 'reviewRound' a Review round, each with its check's own fix rounds
+	readonly step: 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;
@@ -17,6 +17,9 @@ export interface Entry {
 	// how long the session ran, in milliseconds; older lines lack it
 	readonly durationMs?: number;
 }
+
+// A ledger line as a piece of work gives it: the run adds where and when.
+export type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
 // What a piece of work with a cap may still spend.
 export interface Allowance {

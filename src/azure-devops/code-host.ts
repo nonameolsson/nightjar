@@ -4,7 +4,9 @@ import { failedCheckBody } from '../check-output.js';
 import type {
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
+	DraftsListing,
 	FailedCheck,
 	Feedback,
 	NightjarDraft,
@@ -16,6 +18,7 @@ import type {
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import { firstLine, type Env, type Run } from '../git.js';
 import { logTail } from '../log-tail.js';
+import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
 import { BRANCH_PREFIX } from '../worktree.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi, type Sending } from './api.js';
@@ -52,6 +55,8 @@ const PullSchema = z.looseObject({
 	pullRequestId: z.int(),
 	description: z.string().nullish(),
 	artifactId: z.string().nullish(),
+	// notSet, queued, conflicts, succeeded, rejectedByPolicy or failure
+	mergeStatus: z.string().nullish(),
 	repository: z.looseObject({
 		id: z.string(),
 		project: z.looseObject({ id: z.string() }).nullish()
@@ -77,6 +82,7 @@ const ListedSchema = z.looseObject({
 const ReviewerSchema = z.looseObject({ id: z.string(), vote: z.number().nullish() });
 
 const DraftSchema = PullSchema.extend({
+	creationDate: z.string().nullish(),
 	repository: z.looseObject({ id: z.string(), project: z.looseObject({ id: z.string() }) }),
 	lastMergeSourceCommit: z.looseObject({ commitId: z.string() }).nullish(),
 	reviewers: z.array(ReviewerSchema).nullish()
@@ -506,6 +512,13 @@ export class AzureReposCodeHost implements CodeHost {
 		await this.setBody(pull, join(body.trimEnd(), lines));
 	}
 
+	// Only `conflicts` and `succeeded` say anything: the other statuses mean Azure Repos has not decided or could not merge for another reason.
+	async conflicts(pull: Pull): Promise<ConflictState> {
+		const { mergeStatus } = await this.read(pull);
+		if (mergeStatus === 'conflicts') return 'yes';
+		return mergeStatus === 'succeeded' ? 'no' : 'unknown';
+	}
+
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {
 		if (this.settings.referencesAs === 'work items') {
 			await this.linkWorkItems(pull, references);
@@ -556,6 +569,15 @@ export class AzureReposCodeHost implements CodeHost {
 		});
 	}
 
+	// Azure Repos publishes a draft by setting it out of draft.
+	async publish(pull: Pull): Promise<void> {
+		await this.api.call(`publish pull request ${String(pull.id)}`, {
+			method: 'PATCH',
+			url: this.at(`pullrequests/${String(pull.id)}?${API}`),
+			body: { isDraft: false }
+		});
+	}
+
 	// The active pull requests from this repo's own branches, draft or not, oldest first: Azure Repos numbers pull requests as they are made.
 	private async activePulls(
 		what: string
@@ -582,12 +604,18 @@ export class AzureReposCodeHost implements CodeHost {
 		return found.sort((a, b) => a.id - b.id);
 	}
 
-	// Open draft pull requests from this repo's own Nightjar branches, oldest first.
-	async nightjarDrafts(): Promise<NightjarDraft[]> {
+	// Open draft pull requests from this repo's own Nightjar branches, oldest first, and those Nightjar published itself.
+	async nightjarDrafts(listing: DraftsListing = {}): Promise<NightjarDraft[]> {
 		const listed = await this.activePulls("list Nightjar's draft pull requests");
 		const drafts: NightjarDraft[] = [];
 		for (const { id, branch, draft } of listed) {
-			if (draft && branch.startsWith(BRANCH_PREFIX)) drafts.push(await this.draft(id, branch));
+			if (!branch.startsWith(BRANCH_PREFIX)) continue;
+			// one out of draft is Nightjar's only when its own body says it published it; the list cuts a description short
+			if (!draft) {
+				const read = await this.read({ id, url: this.pullUrl(id) });
+				if (!publishedByNightjar(read.description ?? '')) continue;
+			}
+			drafts.push(await this.draft(id, branch, listing));
 		}
 		return drafts;
 	}
@@ -667,7 +695,7 @@ export class AzureReposCodeHost implements CodeHost {
 	}
 
 	// The list cuts a description short, so each draft is read whole.
-	private async draft(id: number, branch: string): Promise<NightjarDraft> {
+	private async draft(id: number, branch: string, listing: DraftsListing): Promise<NightjarDraft> {
 		const n = String(id);
 		const raw = await this.api.parse(
 			`read pull request ${n}`,
@@ -677,16 +705,20 @@ export class AzureReposCodeHost implements CodeHost {
 		const head = await this.headPush(id);
 		const statuses = await this.statusChecks(id, head?.id);
 		const policies = await this.policyChecks(raw);
+		const pull = this.toPull(raw);
 		return {
-			pull: this.toPull(raw),
+			pull,
 			branch,
 			headCommit: head?.sourceRefCommit?.commitId ?? raw.lastMergeSourceCommit?.commitId ?? '',
 			body: raw.description ?? '',
 			checks: {
-				pending: statuses.pending || policies.pending,
-				failed: [...policies.failed, ...statuses.failed]
+				pending: statuses.checks.pending || policies.checks.pending,
+				failed: [...policies.checks.failed, ...statuses.checks.failed]
 			},
-			personEngaged: await this.personEngaged(raw)
+			personEngaged: await this.personEngaged(raw),
+			...(raw.creationDate == null ? {} : { openedAt: raw.creationDate }),
+			checkCount: statuses.count + policies.count,
+			...(listing.commits === true ? { commits: await this.commits(pull) } : {})
 		};
 	}
 
@@ -706,17 +738,23 @@ export class AzureReposCodeHost implements CodeHost {
 		return [...latest.values()];
 	}
 
-	private async statusChecks(id: number, head: number | undefined): Promise<PullChecks> {
+	private async statusChecks(
+		id: number,
+		head: number | undefined
+	): Promise<{ checks: PullChecks; count: number }> {
 		const current = await this.latestStatuses(id, head);
 		const red = current.filter((s) => s.state === 'failed' || s.state === 'error');
 		return {
-			pending: current.some((s) => s.state === 'pending'),
-			failed: red.map((s) => alone(statusName(s), s.description ?? ''))
+			checks: {
+				pending: current.some((s) => s.state === 'pending'),
+				failed: red.map((s) => alone(statusName(s), s.description ?? ''))
+			},
+			count: current.length
 		};
 	}
 
 	// The build validation policies; a reviewer or work item policy is no Pull check.
-	private async policyChecks(raw: Draft): Promise<PullChecks> {
+	private async policyChecks(raw: Draft): Promise<{ checks: PullChecks; count: number }> {
 		const artifact = `vstfs:///CodeReview/CodeReviewId/${raw.repository.project.id}/${String(raw.pullRequestId)}`;
 		const got = await this.api.parse(
 			`read the policies of pull request ${String(raw.pullRequestId)}`,
@@ -729,10 +767,12 @@ export class AzureReposCodeHost implements CodeHost {
 			EvaluationsSchema
 		);
 		let pending = false;
+		let count = 0;
 		const failed: FailedCheck[] = [];
 		for (const e of got.value) {
 			if (e.configuration.type.id.toLowerCase() !== BUILD_POLICY) continue;
 			const status = e.status ?? '';
+			if (status !== 'notApplicable') count += 1;
 			// a build of an earlier push says nothing of the head
 			const stale = status !== 'notApplicable' && e.context?.isExpired === true;
 			if (status === 'queued' || status === 'running' || stale) {
@@ -745,7 +785,7 @@ export class AzureReposCodeHost implements CodeHost {
 				failed.push(await this.failedBuild(check, e.context ?? {}));
 			}
 		}
-		return { pending, failed };
+		return { checks: { pending, failed }, count };
 	}
 
 	// A build names its failed job, failed step and log; one that cannot be read, what the policy says of it.
