@@ -14,7 +14,8 @@ import {
 	ledgerPath,
 	linesOnFeature,
 	medianTicketMs,
-	spends
+	spends,
+	type Spent
 } from './ledger.js';
 import { lastWeek, type Week } from './last-week.js';
 import { renderSession } from './session-render.js';
@@ -107,6 +108,13 @@ function sessionTail(root: string, status: Status | null, keep: number): string[
 
 const isDone = (event: Event): event is Done => event.kind === 'pull' || event.kind === 'failed';
 
+// The draft pull request a Pull-check fix round's line belongs to: the Feature's latest `pull` event at or before it. A fix round runs after the run that opened the pull request has written its `pull` event, and writes no event of its own, so its line falls after that build's end; with no such event in `recent`, its build is not shown.
+function pullOf(done: readonly Done[], line: Spent): Done | undefined {
+	return done.findLast(
+		(e) => e.kind === 'pull' && e.feature === line.feature && Date.parse(e.at) <= line.at
+	);
+}
+
 // What a view shows, read from the repo root's .factory/ and nothing else.
 export function readFactory(root: string, options: ReadOptions = {}): FactoryView {
 	const status = readStatus(statusPath(root));
@@ -143,7 +151,12 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 		completed: done.map((event, i) => {
 			const before = done.slice(0, i).findLast((e) => e.feature === event.feature);
 			const after = before === undefined ? null : Date.parse(before.at);
-			const own = linesOnFeature(spent, event.feature, after, Date.parse(event.at));
+			const own = [
+				...linesOnFeature(spent, event.feature, after, Date.parse(event.at)).filter(
+					(s) => s.step !== 'pullChecks'
+				),
+				...spent.filter((s) => s.step === 'pullChecks' && pullOf(done, s) === event)
+			].sort((a, b) => a.at - b.at);
 			const cost = buildCost(own);
 			return {
 				event,

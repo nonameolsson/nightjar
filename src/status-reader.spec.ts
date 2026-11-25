@@ -340,6 +340,58 @@ describe('the cost of each build', () => {
 		expect(view.featureCost?.usd).toBe(view.featureCostUsd);
 	});
 
+	it('counts the Pull-check fix rounds after a draft pull request with the build that opened it', () => {
+		const runs = join(root, '.factory', 'runs.jsonl');
+		const line = (step: 'build' | 'review' | 'pullChecks', outcome: string, when: Date) =>
+			record(runs, {
+				at: when.toISOString(),
+				repo: 'o/r',
+				feature: '1',
+				ticket: step === 'build' ? '2' : null,
+				branch: 'b',
+				step,
+				session: `s-${String(when.getTime())}`,
+				costUsd: step === 'pullChecks' ? 0.75 : 1,
+				outcome,
+				...(outcome.endsWith('gave up') ? { failure: 'lasting' as const } : {})
+			});
+		let now = time(0);
+		const file = new StatusFile({
+			path: join(root, '.factory', 'status.json'),
+			spend: fileSpend(runs),
+			now: () => now,
+			pid: 42,
+			dailyUsd: 60
+		});
+		line('build', 'built', time(5));
+		line('review', 'approve', time(6));
+		now = time(10);
+		file.happened({ kind: 'pull', feature: '1', url: 'https://pr/1' });
+		// the Pull-check fix rounds run later, from the watch, and write no event of their own
+		line('pullChecks', 'pull checks 1', time(15));
+		line('pullChecks', 'pull checks 2 gave up', time(20));
+		// the next build, on a request for changes, fails before it opens a pull request
+		line('build', 'failed: red', time(30));
+		now = time(35);
+		file.happened({ kind: 'failed', feature: '1', why: 'check red' });
+
+		const [pulled, failed] = readFactory(root, { alive: live }).completed;
+		expect(pulled?.costUsd).toBe(3.5);
+		expect(pulled?.cost?.stages.find((s) => s.stage === 'pullChecks')).toEqual({
+			stage: 'pullChecks',
+			usd: 1.5,
+			sessions: 2
+		});
+		expect(pulled?.stages?.find((s) => s.stage === 'pullChecks')).toMatchObject({
+			state: 'failed',
+			sessions: 2,
+			usd: 1.5
+		});
+		// and not with the build after it
+		expect(failed?.costUsd).toBe(1);
+		expect(failed?.cost?.stages.map((s) => s.stage)).toEqual(['tickets']);
+	});
+
 	it('gives each build its stages over the same Sessions, the one in flight its running stage', () => {
 		const runs = join(root, '.factory', 'runs.jsonl');
 		const line = (
