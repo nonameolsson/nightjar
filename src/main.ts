@@ -45,6 +45,7 @@ import {
 	type QueueDeps
 } from './queue.js';
 import { runSession, sessionExists } from './session.js';
+import { runLogbookCommand } from './logbook-command.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -149,6 +150,7 @@ export async function runNightjar(
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
 	if (argv[0] === 'intake') return runIntakeCommand(argv.slice(1), host);
+	if (argv[0] === 'logbook') return runLogbookCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);

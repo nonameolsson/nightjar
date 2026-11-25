@@ -19,6 +19,8 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor [FEAT
        nightjar init [--yes] [--check CMD] ...   ask for the Tracker and Code host, write factory.json, create the Signal labels, check the logins; --yes asks nothing
        nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
        nightjar ui [--port PORT]  serve a read-only page about this repo's builds on http://127.0.0.1:4545 (127.0.0.1 only), read from .factory/
+       nightjar logbook FEATURE   print that Feature's Logbook (its Sessions and Nightjar's decisions, in order, with each transcript's path), read from .factory/
+       nightjar logbook --session ID [--full]  print one Session: the Coding agent's text and a line per tool call; --full adds each tool result
        nightjar intake [--port PORT] [--host HOST]  take the webhooks of factory.json's Sources on http://127.0.0.1:4546/sources/NAME and make each Feature on the Tracker; it builds nothing
        nightjar contract MODULE   check a module's own Tracker or Code host against the contract suites`;
 

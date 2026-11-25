@@ -546,7 +546,7 @@ nightjar doctor
 | `--model <model>`      | The model of every session, over a Ticket's own line and `factory.json`.                               |
 | `--effort <level>`     | The effort of every session, over a Ticket's own line and `factory.json`.                              |
 
-Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them; `--poll` only with `--watch`. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone. `nightjar intake [--port PORT] [--host HOST]` runs the Sources ([Make Features from Sources](#make-features-from-sources)).
+Pick exactly one of `doctor`, `--once`, `--watch` or a Feature id. `--use-api-key`, `--profile`, `--model` and `--effort` combine with any of them; `--poll` only with `--watch`. `nightjar create [--dry-run] FILE` makes a Feature from a file ([Write a Feature](#write-a-feature)), and `nightjar contract MODULE` checks an Adapter module. `nightjar ui [--port PORT]` serves a read-only page about the repo's builds on 127.0.0.1 (default port 4545), read from `.factory/` alone. `nightjar logbook FEATURE` prints a Feature's Logbook on the terminal, and `nightjar logbook --session ID [--full]` one Session ([The Logbook](#the-logbook)). `nightjar intake [--port PORT] [--host HOST]` runs the Sources ([Make Features from Sources](#make-features-from-sources)).
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 
@@ -561,6 +561,21 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 - **`.factory/status.json`**: what Nightjar is doing now and what it did last, rewritten at every change.
 - **`.factory/runs.jsonl`**: one line per session, with its outcome and cost. Each session's log is in `.factory/logs/`.
 - **Worktrees** under `~/.nightjar/worktrees/`, outside your checkout, which is never touched. Add `.factory/` to the repo's `.gitignore`.
+- **`.factory/logbook/<id>.jsonl`**: each Feature's Logbook, the decisions Nightjar made between its sessions (see below).
+
+## The Logbook
+
+A Feature's **Logbook** is every session Nightjar spent on it and each decision it made between them, in order: each red check with the gate report its fix round was handed, work thrown away and why, each Step's verdict, the Review's issues, each Feedback round, the Signals it put on or took off, the draft pull request, a pause or a hand-over to a person. It stays on your machine: nothing of it is posted to the pull request or the Tracker. `nightjar ui` shows it at `/features/<id>`, from each Feature's card on the Board and from the list of all Logbooks.
+
+On a terminal, from anywhere inside the repo, with no login (it reads `.factory/` and calls neither the Tracker nor the Code host):
+
+```bash
+nightjar logbook 42                         # the Logbook of Feature 42, with each session's transcript path
+nightjar logbook --session SESSION_ID       # one session: the agent's text and a line per tool call
+nightjar logbook --session SESSION_ID --full  # the same, with each tool call's result
+```
+
+`nightjar logbook` for a Feature or a session it has nothing about prints a message and exits 1; a wrong argument exits 2. A Feature built before the Logbook existed shows its sessions from `.factory/runs.jsonl`, with a note that its decisions were not recorded.
 
 ## Limits
 
