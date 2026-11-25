@@ -20,7 +20,21 @@ const EntrySchema = z.looseObject({
 	// only a failed session has it
 	failure: z.enum(['passing', 'budget', 'lasting']).optional(),
 	// older lines lack it
-	durationMs: z.number().optional()
+	durationMs: z.number().optional(),
+	// older lines lack it; one that is not in this shape is read as absent, so the line still counts
+	models: z
+		.array(
+			z.object({
+				model: z.string(),
+				inputTokens: z.number(),
+				outputTokens: z.number(),
+				cacheReadTokens: z.number(),
+				cacheWriteTokens: z.number(),
+				costUsd: z.number()
+			})
+		)
+		.optional()
+		.catch(undefined)
 });
 
 export function record(path: string, entry: Entry): void {

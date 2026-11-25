@@ -4,7 +4,7 @@ import type { ChangeRequest, CodeHost, Feedback, OpenPull, Pull, PullCommit } fr
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
 import type { Note } from './logbook.js';
-import type { Allowance, Entry, LogEntry } from './spend.js';
+import { modelsOf, type Allowance, type Entry, type LogEntry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
 import { FEEDBACK_ASKED_TRAILER, FEEDBACK_TRAILER, trailersOf, type Worktree } from './worktree.js';
@@ -110,7 +110,7 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 	});
 	const entry = { ticket: null, step: 'feedback' as const, session: got.sessionId };
 	const log = (outcome: string, extra: Partial<LogEntry> = {}) =>
-		ctx.log({ ...entry, costUsd: got.costUsd, outcome, ...extra });
+		ctx.log({ ...entry, costUsd: got.costUsd, ...modelsOf(got), outcome, ...extra });
 
 	// what the Session said of each piece; a piece it left out is not answered
 	const said = new Map(got.kind === 'answered' ? got.items.map((i) => [i.id, i]) : []);

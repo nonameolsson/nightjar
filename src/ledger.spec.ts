@@ -76,6 +76,37 @@ describe('fileSpend', () => {
 		expect(fileSpend(path).today(morning)).toBe(2.5);
 	});
 
+	it('reads back a line with its models, and one without', () => {
+		const path = join(dir, 'runs.jsonl');
+		const morning = new Date(2026, 9, 30, 8, 0);
+		const models = [
+			{
+				model: 'model-a',
+				inputTokens: 120,
+				outputTokens: 40,
+				cacheReadTokens: 900,
+				cacheWriteTokens: 300,
+				costUsd: 0.4
+			}
+		];
+		const withModels: Entry = { ...entry(morning, 2.5), models };
+		const older = entry(morning, 1);
+		fileSpend(path).record(withModels);
+		fileSpend(path).record(older);
+		expect(fileSpend(path).entries()).toEqual([withModels, older]);
+		expect(fileSpend(path).entries()[1]?.models).toBeUndefined();
+		expect(fileSpend(path).today(morning)).toBe(3.5);
+	});
+
+	it('still counts a line whose models are not in the shape', () => {
+		const path = join(dir, 'runs.jsonl');
+		const morning = new Date(2026, 9, 30, 8, 0);
+		appendFileSync(path, `${JSON.stringify({ ...entry(morning, 2), models: 'many' })}\n`);
+		const [read] = fileSpend(path).entries();
+		expect(read?.costUsd).toBe(2);
+		expect(read?.models).toBeUndefined();
+	});
+
 	it('counts a line written when ids were numbers', () => {
 		const path = join(dir, 'runs.jsonl');
 		const now = new Date(2026, 9, 30, 8, 0);

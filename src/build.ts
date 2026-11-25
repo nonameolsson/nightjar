@@ -58,7 +58,7 @@ import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
 import { reviewSection, type ReviewSession } from './review-section.js';
-import type { Entry, LogEntry, Spend } from './spend.js';
+import { modelsOf, type Entry, type LogEntry, type Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -725,6 +725,7 @@ class FeatureRun {
 					step: 'build',
 					session: failed.sessionId,
 					costUsd: failed.costUsd,
+					...modelsOf(failed),
 					outcome: `failed: ${failed.why}`,
 					failure: 'passing'
 				}),
@@ -738,7 +739,8 @@ class FeatureRun {
 			ticket: ticket.id,
 			step: 'build' as const,
 			session: sessionId,
-			costUsd: got.costUsd
+			costUsd: got.costUsd,
+			...modelsOf(got)
 		};
 
 		switch (got.kind) {
@@ -1326,6 +1328,7 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 						step: 'fix',
 						session: o.sessionId,
 						costUsd: failed.costUsd,
+						...modelsOf(failed),
 						outcome: `failed: ${failed.why}`,
 						failure: 'passing'
 					},
@@ -1337,9 +1340,15 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 				)
 		});
 		spent += got.costUsd + earlierUsd;
-		const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
+		const entry = {
+			ticket: o.ticket,
+			step: 'fix' as const,
+			session: o.sessionId,
+			costUsd: got.costUsd,
+			...modelsOf(got)
+		};
 		if (got.kind === 'paused') {
-			ctx.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
+			ctx.log({ ...entry, outcome: `paused: ${got.why}` }, work);
 			return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
 		}
 		// the ledger names a fix round that failed or was stopped as one that gave up
@@ -1347,7 +1356,6 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		ctx.log(
 			{
 				...entry,
-				costUsd: got.costUsd,
 				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`,
 				...(got.kind === 'failed' ? { failure: got.failure } : {})
 			},
@@ -1645,7 +1653,13 @@ async function pullFixRound(
 		budgetUsd: cap,
 		minutes
 	});
-	const entry = { ticket: null, step: 'pullChecks' as const, session, costUsd: got.costUsd };
+	const entry = {
+		ticket: null,
+		step: 'pullChecks' as const,
+		session,
+		costUsd: got.costUsd,
+		...modelsOf(got)
+	};
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });
@@ -1784,6 +1798,7 @@ async function reviewFeature(
 				step: 'review',
 				session: failed.sessionId,
 				costUsd: failed.costUsd,
+				...modelsOf(failed),
 				outcome: `failed: ${failed.why}`,
 				failure: 'passing'
 			}),
@@ -1796,7 +1811,8 @@ async function reviewFeature(
 		ticket: null,
 		step: 'review' as const,
 		session: got.sessionId,
-		costUsd: got.costUsd
+		costUsd: got.costUsd,
+		...modelsOf(got)
 	};
 	const unfinished = () =>
 		note({

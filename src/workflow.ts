@@ -10,7 +10,7 @@ import {
 import { DEFAULT_ROUNDS, type Config } from './config.js';
 import type { Env } from './git.js';
 import { retryPassing, TRIES } from './retry.js';
-import type { Allowance, Entry } from './spend.js';
+import { modelsOf, type Allowance, type Entry } from './spend.js';
 import type { Serve, Served } from './serve.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
 import type { Worktree } from './worktree.js';
@@ -358,6 +358,7 @@ export class WorkflowRun {
 						step: 'step',
 						session: failed.sessionId,
 						costUsd: failed.costUsd,
+						...modelsOf(failed),
 						outcome: `${label}: failed: ${failed.why}`,
 						failure: 'passing'
 					}),
@@ -373,7 +374,8 @@ export class WorkflowRun {
 				ticket: after,
 				step: 'step' as const,
 				session: sessionId,
-				costUsd: got.costUsd
+				costUsd: got.costUsd,
+				...modelsOf(got)
 			};
 			switch (got.kind) {
 				case 'aborted':

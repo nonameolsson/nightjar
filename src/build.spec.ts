@@ -49,7 +49,7 @@ import { memoryWorktrees, type MemoryWorktrees } from './fakes/worktree.js';
 import { featureAfterRunStep, nextStepText, noteStep, ticketStep } from './next-step.js';
 import { QUESTIONS_MARK, type Review } from './prompt.js';
 import { markPublished, publishMarkOf, publishedByNightjar } from './publish.js';
-import type { Spend } from './spend.js';
+import type { ModelUsage, Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
@@ -123,6 +123,8 @@ interface World {
 	tests: Record<string, string>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
+	// what every Session reports of the models it ran on, when set
+	models: readonly ModelUsage[] | undefined;
 	checkOk: boolean;
 	setupOk: boolean;
 	// the Sessions this machine has not got, as a Session made on another machine is
@@ -293,6 +295,7 @@ function worldOf(o: {
 		tries: {},
 		tests: {},
 		settle: () => undefined,
+		models: undefined,
 		checkOk: true,
 		setupOk: true,
 		goneSessions: new Set(),
@@ -308,7 +311,10 @@ function deps(world: World): Deps {
 	let id = 0;
 	const answer = <T>(req: Work, got: () => T): Promise<T | Ending> => {
 		world.asked.push(req);
-		return Promise.resolve(world.settle(req) ?? got());
+		const outcome = world.settle(req) ?? got();
+		return Promise.resolve(
+			world.models === undefined ? outcome : { ...outcome, models: world.models }
+		);
 	};
 	return {
 		tracker: world.tracker,
@@ -585,6 +591,53 @@ describe('reserved ports', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.checkEnvs.length).toBeGreaterThan(0);
 		for (const e of world.checkEnvs) expect(e).toEqual(world.env);
+	});
+});
+
+describe('the ledger and the models', () => {
+	const models: readonly ModelUsage[] = [
+		{
+			model: 'model-a',
+			inputTokens: 120,
+			outputTokens: 40,
+			cacheReadTokens: 900,
+			cacheWriteTokens: 300,
+			costUsd: 0.4
+		}
+	];
+
+	it('gives every line the models its Session ran on: build, fix and Review', async () => {
+		const world = makeWorld();
+		world.models = models;
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+		const lines = ledger(world);
+		expect(new Set(lines.map((e) => e.step))).toEqual(new Set(['build', 'fix', 'review']));
+		for (const line of lines) expect(line.models).toEqual(models);
+	});
+
+	it('gives every line the models its Session ran on: Step and Review round', async () => {
+		const world = makeWorld();
+		world.models = models;
+		world.reviewAgent = (req) => reviewed(req, 'changes');
+		const feature = world.tracker.items.get('1');
+		if (feature) world.tracker.items.set('1', { ...feature, body: '**Workflow:** w' });
+		const flow: WorkflowConfig = {
+			steps: [{ name: 'critique', prompt: '/critique', point: 'afterAllTickets' }]
+		};
+		await buildFeature(deps(world), setup(world, { workflows: { w: flow } }), '1');
+		const lines = ledger(world);
+		expect(new Set(lines.map((e) => e.step))).toEqual(
+			new Set(['build', 'step', 'review', 'reviewRound'])
+		);
+		for (const line of lines) expect(line.models).toEqual(models);
+	});
+
+	it('writes no models for a Session that reported none', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(ledger(world).length).toBeGreaterThan(0);
+		for (const line of ledger(world)) expect(line).not.toHaveProperty('models');
 	});
 });
 
