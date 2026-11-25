@@ -1,6 +1,6 @@
 // The creation suite is no rubber stamp: a Tracker that makes things wrong fails the case for it.
 import { describe, expect, it } from 'vitest';
-import { fakeTrackerHarness } from '../fakes/harness.js';
+import { asFakeTracker, fakeTrackerHarness } from '../fakes/harness.js';
 import type { FakeTracker } from '../fakes/tracker.js';
 import type { Tracker } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
@@ -9,7 +9,7 @@ import type { TrackerHarness } from './tracker.js';
 function broken(over: (tracker: FakeTracker) => Partial<FakeTracker>): TrackerHarness {
 	return async (world) => {
 		const subject = await fakeTrackerHarness(world);
-		const tracker = subject.tracker as FakeTracker;
+		const tracker = asFakeTracker(subject.tracker);
 		Object.assign(tracker, over(tracker));
 		return subject;
 	};
@@ -25,7 +25,7 @@ describe('the creation contract', () => {
 	it('fails a Tracker that cannot create', async () => {
 		const harness: TrackerHarness = async (world) => {
 			const { tracker, ...rest } = await fakeTrackerHarness(world);
-			const { createFeature: _gone, ...without } = tracker as FakeTracker;
+			const { createFeature: _gone, ...without } = asFakeTracker(tracker);
 			return { ...rest, tracker: without as unknown as Tracker };
 		};
 		await expect(caseNamed('makes a Feature').run(harness)).rejects.toThrow(/createFeature/);
