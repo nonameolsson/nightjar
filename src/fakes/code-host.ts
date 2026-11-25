@@ -66,8 +66,21 @@ export class FakeCodeHost implements CodeHost {
 		this.pulls = this.pulls.map((p) => (p.id === id ? { ...p, ...over(p) } : p));
 	}
 
+	// a push that fails as a network or auth fault would, with `why`; `lands` is one whose commits reached the branch first
+	failPushes: { readonly why: string; readonly lands: boolean } | null = null;
+
 	// a new head commit has its Pull checks queued, as a real Code host starts them on a push
 	push = (folder: string, branch: string): Promise<void> => {
+		const fault = this.failPushes;
+		if (fault !== null && !fault.lands) return Promise.reject(new Error(fault.why));
+		// never forced: a branch holding a commit the push lacks rejects it, as git does
+		const had = this.branchCommits.get(branch) ?? [];
+		const pushing = this.commitsAt(folder);
+		if (had.some((c, i) => pushing[i] !== c.message)) {
+			return Promise.reject(
+				new Error(`git push failed: ! [rejected] ${branch} -> ${branch} (fetch first)`)
+			);
+		}
 		this.pushes.push({ folder, branch });
 		this.heads.set(branch, this.commitAt(folder, this.pushes.length));
 		this.branchCommits.set(branch, this.dated(branch, this.commitsAt(folder)));
@@ -77,8 +90,12 @@ export class FakeCodeHost implements CodeHost {
 			checkCount: 1
 		});
 		this.pulls = this.pulls.map((p) => (p.open && p.head === branch ? queued(p) : p));
-		return Promise.resolve();
+		return fault === null ? Promise.resolve() : Promise.reject(new Error(fault.why));
 	};
+
+	// the messages of the commits the branch holds, oldest first; null for a branch never pushed
+	branchMessages = (branch: string): readonly string[] | null =>
+		this.branchCommits.get(branch)?.map((c) => c.message) ?? null;
 
 	openPull = (branch: string): Promise<Pull | null> => {
 		const found = this.pulls.find((p) => p.open && p.head === branch);
@@ -215,12 +232,12 @@ export class FakeCodeHost implements CodeHost {
 	}
 
 	// a person pushes a commit of their own to the pull request's branch
-	pushedByPerson(pull: Pull): void {
+	pushedByPerson(pull: Pull, message = 'Fix a typo'): void {
 		const found = this.pulls.find((p) => p.id === pull.id);
 		if (found === undefined)
 			throw new Error(`the fake Code host has no pull request ${String(pull.id)}`);
 		const had = this.branchCommits.get(found.head) ?? [];
-		this.branchCommits.set(found.head, [...had, { message: 'Fix a typo', at: this.tick() }]);
+		this.branchCommits.set(found.head, [...had, { message, at: this.tick() }]);
 	}
 
 	// what the host says of a conflict between the pull request and its base

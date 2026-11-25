@@ -347,8 +347,10 @@ const didWork = (got: PullFixOutcome | null): got is PullFixOutcome =>
 	got !== null && got.kind !== 'skipped';
 
 // The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
+const GOOD_ENDS: readonly PullFixOutcome['kind'][] = ['fixed', 'gaveUp', 'atLimit', 'diverged'];
+
 export function pullFixExit(got: PullFixOutcome): number {
-	return got.kind === 'fixed' || got.kind === 'gaveUp' || got.kind === 'atLimit' ? 0 : 1;
+	return GOOD_ENDS.includes(got.kind) ? 0 : 1;
 }
 
 // `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today.

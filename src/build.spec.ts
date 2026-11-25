@@ -249,8 +249,9 @@ function worldOf(o: {
 	});
 	tracker.add({ id: '2', title: 'Share the function', signals: ['ready'] });
 	tracker.add({ id: '3', title: 'Use it in marks', signals: ['ready'], blockedBy: ['2'] });
-	const trees = memoryWorktrees();
 	const host = new FakeCodeHost();
+	// the branch here fetches what the Code host holds
+	const trees = memoryWorktrees((branch) => host.branchMessages(branch));
 	// a push brings the branch's commits to the Code host, oldest first
 	host.commitsAt = (folder) => [...trees.messages(folder)].reverse();
 	return {
@@ -2378,8 +2379,8 @@ describe('the Pull-check pass in --watch', () => {
 
 		it('starts a fresh Session also when the head commit names no Session', async () => {
 			const world = makeWorld();
-			await redDraft(world);
-			world.trees.commitAsPerson(tree(), 'Tidy\n\nFactory-Ticket: #9', 'tidy.txt');
+			const pull = await redDraft(world);
+			world.host.pushedByPerson(pull, 'Tidy\n\nFactory-Ticket: #9');
 			await queue(watch(world, { deps: fresh() }), false);
 			expect(askedOf(world, 'fix')[0]).toMatchObject({
 				of: { kind: 'pullChecks', fresh: {} },
@@ -2474,10 +2475,74 @@ describe('the Pull-check pass in --watch', () => {
 		expect(world.tracker.signalsOf('1')).toEqual(['human']);
 	});
 
+	describe('a fix whose push is rejected because a person pushed to the draft', () => {
+		const SIDE = 'factory/1-one-escape-attempt-push';
+
+		// the person pushes to the draft while the fix Session runs
+		async function beaten(world: World) {
+			const pull = await redDraft(world);
+			const fix = world.fixAgent;
+			world.fixAgent = (req) => {
+				if (req.of.kind === 'pullChecks') world.host.pushedByPerson(pull);
+				return fix(req);
+			};
+			return pull;
+		}
+
+		it('hands the Feature to a person with one comment naming the side branch that keeps the fix', async () => {
+			const world = makeWorld();
+			await beaten(world);
+			const said = world.tracker.said('1').length;
+			expect(await queue(watch(world), false)).toBe(130);
+
+			expect(world.tracker.signalsOf('1')).toEqual(['human']);
+			const comments = world.tracker.said('1').slice(said);
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toContain('factory/1-one-escape');
+			expect(comments[0]).toContain(`\`${SIDE}\``);
+			expect(comments[0]).toContain('will not push to this draft pull request again');
+			expect(comments[0]).toContain('**Next step**');
+			expect(comments[0]?.endsWith(FOOTER)).toBe(true);
+			// the fix is kept aside, and the branch here is the person's
+			expect(world.trees.sides.get(SIDE)).toEqual(['ci.txt']);
+			expect(world.trees.subjects(tree())[0]).toBe('Fix a typo');
+			expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
+			// the Queue still goes on
+			expect(askedOf(world, 'build').map((b) => b.ticket.id)).toEqual(['11']);
+		});
+
+		it("then leaves the draft alone because its head commit is not Nightjar's, not for commits the Code host lacks", async () => {
+			const world = makeWorld();
+			await beaten(world);
+			await queue(watch(world), false);
+			await world.tracker.removeSignal('1', 'human');
+			world.asked.length = 0;
+			const said: string[] = [];
+			await queue(watch(world, { deps: { say: (line) => said.push(line) } }), false);
+
+			expect(askedOf(world, 'fix')).toEqual([]);
+			expect(said).toContain(
+				"https://code.example/pull/100: left alone, its head commit is not Nightjar's"
+			);
+		});
+
+		it('counts a push that failed as done when the Code host holds the fix', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.host.failPushes = { why: 'the connection was reset', lands: true };
+			await queue(watch(world), false);
+
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+			expect(world.trees.subjects(tree())[0]).toBe('Fix the Pull checks, round 1');
+			expect(world.trees.sides.has(SIDE)).toBe(false);
+			expect(world.host.pulls[0]?.body).toContain('Set TZ in the test job.');
+		});
+	});
+
 	it("leaves alone a draft whose head commit is not Nightjar's", async () => {
 		const world = makeWorld();
-		await redDraft(world);
-		world.trees.commitAsPerson(tree(), 'Fix a typo', 'typo.txt');
+		const pull = await redDraft(world);
+		world.host.pushedByPerson(pull);
 		await queue(watch(world), false);
 		expect(askedOf(world, 'fix')).toEqual([]);
 		expect(world.host.pushes.filter((p) => p.branch === 'factory/1-one-escape')).toHaveLength(1);
