@@ -218,6 +218,9 @@ Filter chips are pill outlines in Deep Teal with teal text; on state they fill S
 ### Session Log
 Black 45% fill, Line border, 0.75rem mono at 1.7 line-height in Soft Ink, wrapped, capped at 14rem height and scrolling.
 
+### Session Page
+`/sessions/<id>` shares the bar (with a way back to the Board), the banner and the scrolling region. One bordered `.run` block per ledger line holds its Feature, Ticket, kind, outcome, cost and duration as a wrapping grid of mono labels over values. The transcript below is a list: the Coding agent's text in sans, each tool call in mono behind a Deep Teal rule, and each tool result a native `<details>` folded under a 0.75rem mono summary, opened with the keyboard or a tap (44px on `pointer: coarse`). The open result is the Session Log's `pre`, taller (24rem).
+
 ## Do's and Don'ts
 
 ### Do:

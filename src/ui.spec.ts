@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileSpend, record } from './ledger.js';
+import { readSession } from './logbook-reader.js';
 import { featureAfterRunStep, ticketStep } from './next-step.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
-import { startUi, type Ui } from './ui.js';
+import { sessionPage, startUi, type Ui } from './ui.js';
+import { NO_LINKS } from './ui-links.js';
 
 let root: string;
 let ui: Ui | null;
@@ -473,7 +475,7 @@ describe('nightjar ui page', () => {
 		expect(page).not.toContain('href="javascript');
 	});
 
-	it('changes nothing: only GET and HEAD are answered, and only / and /events', async () => {
+	it('changes nothing: only GET and HEAD are answered, and only /, /events and /sessions/ID', async () => {
 		await open();
 		for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
 			expect((await get('/', method)).status).toBe(405);
@@ -1231,7 +1233,15 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('1 failed');
 	});
 
-	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act'];
+	const BUTTONS = [
+		'th button',
+		'#views button',
+		'.chips button',
+		'button.copy',
+		'a.act',
+		'a.open',
+		'.log summary'
+	];
 	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
 		const { style } = await css();
 		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
@@ -1502,5 +1512,190 @@ describe('nightjar ui guidance and links', () => {
 	it('says how to start Nightjar when it is off', async () => {
 		await open();
 		expect((await get('/')).text).toContain('data-copy="nightjar --watch"');
+	});
+});
+
+describe('nightjar ui Session page', () => {
+	const logs = () => join(root, '.factory', 'logs');
+	const transcript = (id: string, lines: unknown[]) => {
+		mkdirSync(logs(), { recursive: true });
+		writeFileSync(join(logs(), `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n'));
+	};
+	const assistant = (...content: unknown[]) => ({ type: 'assistant', message: { content } });
+	const result = (content: unknown) => ({
+		type: 'user',
+		message: { content: [{ type: 'tool_result', tool_use_id: 't', content }] }
+	});
+	const logged = (over: Partial<Parameters<typeof record>[1]> = {}) =>
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/app',
+			feature: '261',
+			ticket: '266',
+			branch: 'factory/261-logbook',
+			step: 'fix',
+			session: 'sess-1',
+			costUsd: 1.5,
+			outcome: 'round 2',
+			durationMs: 125_000,
+			...over
+		});
+	const panelOf = (page: string) =>
+		(page.split('<aside class="detail"')[1] ?? '').split('</aside>')[0] ?? '';
+
+	// the page as drawn for the Session, without a server
+	const rendered = (id: string) => {
+		const found = readSession(root, id);
+		if (found === null) throw new Error(`no transcript for ${id}`);
+		return sessionPage(found);
+	};
+
+	it('shows the whole transcript: the text, a line per tool call and each result folded', () => {
+		transcript('sess-1', [
+			assistant({ type: 'text', text: 'Reading <the> spec' }),
+			assistant({ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }),
+			result('3 passed\n1 failed'),
+			assistant({ type: 'tool_use', name: 'Edit', input: { file_path: 'src/x.ts' } })
+		]);
+		const page = rendered('sess-1');
+		expect(page).toContain('<li class="text"><p>Reading &#60;the&#62; spec</p></li>');
+		expect(page).toContain('<li class="tool">Bash: npm test</li>');
+		expect(page).toContain('<li class="tool">Edit: src/x.ts</li>');
+		// the result is a closed <details> the keyboard opens: nothing says `open`
+		expect(page).toContain(
+			'<details><summary>Result <small>2 lines</small></summary><pre>3 passed\n1 failed</pre></details>'
+		);
+		const where = (s: string) => page.indexOf(s);
+		expect(where('Reading')).toBeLessThan(where('Bash: npm test'));
+		expect(where('Bash: npm test')).toBeLessThan(where('3 passed'));
+		expect(where('3 passed')).toBeLessThan(where('Edit: src/x.ts'));
+	});
+
+	it('says what the ledger has of the Session: Feature, Ticket, kind, outcome, cost and duration', () => {
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		logged();
+		logged({ ticket: null, step: 'review', outcome: 'approve', costUsd: 0.25 });
+		// another Session's line is not this one's
+		logged({ session: 'other', outcome: 'outcome of another Session' });
+		const page = rendered('sess-1');
+		expect(page).toContain('<dt>Feature</dt><dd>#261</dd>');
+		expect(page).toContain('<dt>Ticket</dt><dd>#266</dd>');
+		expect(page).toContain('<dt>Kind</dt><dd>fix round</dd>');
+		expect(page).toContain('<dt>Outcome</dt><dd>round 2</dd>');
+		expect(page).toContain('<dt>Cost</dt><dd>$1.50</dd>');
+		expect(page).toContain('<dt>Duration</dt><dd>2m 05s</dd>');
+		// a Session that resumed another has a line each; one over the whole Feature has no Ticket
+		expect(page).toContain('<dt>Ticket</dt><dd>the whole Feature</dd>');
+		expect(page).toContain('<dt>Kind</dt><dd>Review</dd>');
+		expect(page).not.toContain('outcome of another Session');
+	});
+
+	it('leaves out the Duration of a ledger line written before durations were', () => {
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/app',
+			feature: '261',
+			ticket: '266',
+			branch: 'factory/261-logbook',
+			step: 'build',
+			session: 'sess-1',
+			costUsd: 1,
+			outcome: 'built'
+		});
+		const page = rendered('sess-1');
+		expect(page).toContain('<dt>Outcome</dt><dd>built</dd>');
+		expect(page).not.toContain('<dt>Duration</dt>');
+	});
+
+	it('shows the transcript with a note when the ledger has no line for the Session', () => {
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		const page = rendered('sess-1');
+		expect(page).toContain('The ledger has no line for this Session.');
+		expect(page).toContain('hello');
+	});
+
+	it('says plainly when a transcript has nothing to show', () => {
+		transcript('sess-1', [{ type: 'system' }]);
+		expect(rendered('sess-1')).toContain('The transcript has nothing to show yet.');
+	});
+
+	it('links a Feature and a Ticket to the Tracker when the page knows it', () => {
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		logged();
+		const found = readSession(root, 'sess-1');
+		const page = sessionPage(found as NonNullable<typeof found>, {
+			...NO_LINKS,
+			tracker: 'GitHub',
+			issue: (id) => `https://github.com/o/app/issues/${id}`
+		});
+		expect(page).toContain('href="https://github.com/o/app/issues/261"');
+		expect(page).toContain('href="https://github.com/o/app/issues/266"');
+	});
+
+	it('gives an id with no transcript a plain not-found page, even when the ledger knows it', async () => {
+		logged();
+		await open();
+		const got = await get('/sessions/sess-1');
+		expect(got.status).toBe(404);
+		expect(got.text).toContain('Session not found');
+		expect(got.text).toContain('There is no transcript for this Session on this machine.');
+		expect(got.text).toContain('href="/"');
+	});
+
+	it('refuses an id that is not a Session id, and reads nothing outside the logs', async () => {
+		mkdirSync(join(root, '.factory'), { recursive: true });
+		writeFileSync(join(root, '.factory', 'secret.jsonl'), 'x');
+		await open();
+		for (const id of ['', 'a.b', 'a%2Fb', '..%2Fsecret', 'a%2e', 'a b', 'a'.repeat(129)]) {
+			const got = await get(`/sessions/${id}`);
+			expect(got.status, id).toBe(400);
+			expect(got.text, id).not.toContain('<html');
+		}
+	});
+
+	it('takes only GET and HEAD, as every page does', async () => {
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		await open();
+		expect((await get('/sessions/sess-1', 'POST')).status).toBe(405);
+		expect((await get('/sessions/sess-1', 'HEAD')).status).toBe(200);
+	});
+
+	it('works by keyboard and at phone width: a skip link, a way back, a scroll region and a wrapping grid', async () => {
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		await open();
+		const page = (await get('/sessions/sess-1')).text;
+		expect(page).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
+		expect(page).toContain('<a class="skip" href="#panels">');
+		expect(page).toContain('<a class="open" href="/">Back to the Board</a>');
+		expect(page).toContain('id="scroll" role="region" aria-label="Session" tabindex="0"');
+		expect(page).toContain('<main id="panels" tabindex="-1">');
+		expect(page).toContain('grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr))');
+	});
+
+	it('links the Building now tail to the Session being built, and to none when it has no Session yet', async () => {
+		const building = (session: string | null) =>
+			status().doing({
+				kind: 'building',
+				feature: '261',
+				title: 'Logbook',
+				ticket: '266',
+				step: 'build',
+				round: null,
+				rounds: null,
+				session,
+				startedAt: at.toISOString(),
+				tickets: [{ id: '266', title: 'Session page', state: 'building' }]
+			});
+		transcript('sess-1', [assistant({ type: 'text', text: 'hello' })]);
+		building('sess-1');
+		await open();
+		expect(panelOf((await get('/')).text)).toContain(
+			'<a class="open" href="/sessions/sess-1">Open this Session</a>'
+		);
+		building(null);
+		const panel = panelOf((await get('/')).text);
+		expect(panel).toContain('Building now');
+		expect(panel).not.toContain('/sessions/');
 	});
 });

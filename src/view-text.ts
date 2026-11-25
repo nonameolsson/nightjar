@@ -20,6 +20,16 @@ export const elapsed = (ms: number) => {
 export const stepText = (step: string) =>
 	step === 'pullChecks' ? 'Pull-check fix' : step === 'feedback' ? 'Feedback round' : step;
 
+// How a view names the kind of work a ledger line records.
+export const KIND_TEXT: Readonly<Record<string, string>> = {
+	build: 'build',
+	fix: 'fix round',
+	step: 'Step round',
+	review: 'Review',
+	pullChecks: 'Pull-check fix',
+	feedback: 'Feedback round'
+};
+
 // The words for a Session tried again after a passing fault.
 export const retryText = (retry: { readonly attempt: number; readonly of: number }) =>
 	`retrying after a passing fault, try ${String(retry.attempt)} of ${String(retry.of)}`;

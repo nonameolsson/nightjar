@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
+import { isSessionId, readSession, type SessionView } from './logbook-reader.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
 import { linksFor, NO_LINKS, type Links } from './ui-links.js';
@@ -23,6 +24,7 @@ import {
 	dollars,
 	elapsed,
 	idText,
+	KIND_TEXT,
 	pollAfter,
 	running,
 	retryText,
@@ -515,8 +517,15 @@ function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
+		sessionLink(doing.session) +
 		'</aside>'
 	);
+}
+
+// A link to a Session's own page; nothing for a build that has no Session yet
+function sessionLink(session: string | null): string {
+	if (session === null || !isSessionId(session)) return '';
+	return `<p class="more"><a class="open" href="/sessions/${session}">Open this Session</a></p>`;
 }
 
 // A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
@@ -1177,6 +1186,21 @@ code { background: color-mix(in srgb, var(--teal) 10%, transparent); color: var(
 .hint { color: var(--ink2); display: block; font-size: 0.85rem; margin-top: 2px; }
 button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; min-height: 24px; padding: 1px 8px; }
 button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+a.open { align-items: center; display: inline-flex; font-size: 0.85rem; min-height: 24px; }
+.detail .more { margin: 12px 0 0; }
+.part { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; margin: 24px 0 4px; text-transform: uppercase; }
+.run { background: var(--panel-overlay); border: 1px solid var(--line); margin: 12px 0; padding: 12px 16px; }
+.run dl { display: grid; gap: 8px 20px; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin: 0; }
+.run dt { color: var(--muted); font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
+.run dd { font: 0.85rem var(--mono); margin: 0; overflow-wrap: anywhere; }
+.log { margin: 8px 0 0; }
+.log li { overflow-wrap: anywhere; padding: 6px 0; }
+.log p { margin: 0; }
+.log .tool { border-left: 2px solid var(--teal2); color: var(--ink2); font: 0.85rem var(--mono); padding-left: 12px; }
+.log .result { padding-left: 14px; }
+.log summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; }
+.log summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.log pre { max-height: 24rem; }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -1187,7 +1211,7 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }
+	th button, #views button, .chips button, button.copy, a.act, a.open, .log summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1213,6 +1237,85 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	.scroll table { min-width: 36rem; }
 }
 `;
+
+// A Session's own page chrome: the bar with a way back, the banner, and what the page shows, still and without events.
+function sessionShell(title: string, main: string, links: Links): string {
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(title)}</title>
+<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
+</head>
+<body>
+<a class="skip" href="#panels">Skip to the Session</a>
+<div class="bar"><p class="mark">nightjar</p><nav aria-label="Pages"><a class="open" href="/">Back to the Board</a></nav>${elsewhere(links)}</div>
+<div id="scroll" role="region" aria-label="Session" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" tabindex="-1">${main}</main></div>
+<script>
+const scroller = document.getElementById('scroll');
+const flow = matchMedia('(max-height: 480px), (max-width: 400px)');
+const place = () => { scroller.tabIndex = flow.matches ? -1 : 0; };
+place();
+flow.addEventListener('change', place);
+</script>
+<script>${PARALLAX}</script>
+</body>
+</html>
+`;
+}
+
+// One ledger line of a Session: its Feature and Ticket, the kind of work, how it ended, what it cost and how long it ran.
+function sessionRun(run: SessionView['runs'][number], links: Links): string {
+	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	return (
+		'<section class="run"><dl>' +
+		field('Feature', idHtml(run.feature, links)) +
+		field('Ticket', run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links)) +
+		field('Kind', escape(KIND_TEXT[run.kind] ?? run.kind)) +
+		field('Outcome', escape(run.outcome)) +
+		field('Cost', dollars(run.costUsd)) +
+		(run.durationMs === undefined ? '' : field('Duration', elapsed(run.durationMs))) +
+		'</dl></section>'
+	);
+}
+
+// The transcript in the shared rendering: the Coding agent's text, a line per tool call, and each tool result folded until opened.
+function transcriptHtml(lines: SessionView['lines']): string {
+	if (lines.length === 0) return '<p class="empty">The transcript has nothing to show yet.</p>';
+	const items = lines
+		.map((line) => {
+			const text = escape(line.text);
+			if (line.kind === 'text') return `<li class="text"><p>${text}</p></li>`;
+			if (line.kind === 'tool') return `<li class="tool">${text}</li>`;
+			const count = line.text.split('\n').length;
+			return `<li class="result"><details><summary>Result <small>${String(count)} ${count === 1 ? 'line' : 'lines'}</small></summary><pre>${text}</pre></details></li>`;
+		})
+		.join('');
+	return `<ol class="log" aria-label="Transcript">${items}</ol>`;
+}
+
+// `/sessions/<id>`: the whole transcript and what the ledger says of the Session.
+export function sessionPage(session: SessionView, links: Links = NO_LINKS): string {
+	const runs =
+		session.runs.length === 0
+			? '<p class="empty">The ledger has no line for this Session.</p>'
+			: session.runs.map((r) => sessionRun(r, links)).join('');
+	return sessionShell(
+		`nightjar: Session ${session.id}`,
+		`<header><h1>Session</h1> <span>${escape(session.id)}</span></header>${runs}<h2 class="part">Transcript</h2>${transcriptHtml(session.lines)}`,
+		links
+	);
+}
+
+// A Session id with no transcript on this machine
+export function noSessionPage(id: string, links: Links = NO_LINKS): string {
+	return sessionShell(
+		'nightjar: no such Session',
+		`<header><h1>Session not found</h1> <span>${escape(id)}</span></header><p class="empty">There is no transcript for this Session on this machine.</p>`,
+		links
+	);
+}
 
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.
 const hostOk = (host: string | undefined, port: number) =>
@@ -1277,6 +1380,24 @@ export function startUi(o: UiOptions): Promise<Ui> {
 					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 			});
 			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow(), linksFor(o.root, origin)));
+		} else if (req.url?.startsWith('/sessions/')) {
+			// the id is taken as it is, never decoded: only letters, digits, `-` and `_` name a transcript
+			const id = req.url.slice('/sessions/'.length).split(/[?#]/)[0] ?? '';
+			if (!isSessionId(id)) {
+				res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+				res.end('Not a Session id\n');
+				return;
+			}
+			const session = readSession(o.root, id);
+			const links = linksFor(o.root, origin);
+			res.writeHead(session === null ? 404 : 200, {
+				'content-type': 'text/html; charset=utf-8',
+				'cache-control': 'no-store',
+				'content-security-policy':
+					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:"
+			});
+			const page = session === null ? noSessionPage(id, links) : sessionPage(session, links);
+			res.end(req.method === 'HEAD' ? undefined : page);
 		} else {
 			res.writeHead(404).end();
 		}

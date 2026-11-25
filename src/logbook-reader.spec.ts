@@ -1,10 +1,10 @@
 // The Logbook reader over mock .factory/ files: the Feature's decisions joined with its Sessions from the ledger.
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ledgerPath, record } from './ledger.js';
-import { readLogbook, type LogbookItem } from './logbook-reader.js';
+import { isSessionId, readLogbook, readSession, type LogbookItem } from './logbook-reader.js';
 import {
 	fileLogbook,
 	logbookPath,
@@ -161,5 +161,52 @@ describe('readLogbook', () => {
 		appendFileSync(logbookPath(root, '1'), 'not json\n');
 		book.write(decision(1, { kind: 'signal', signal: 'go', on: true }));
 		expect(readLogbook(root, '1').items.map(line)).toEqual(['paused', 'signal']);
+	});
+});
+
+describe('readSession', () => {
+	const transcript = (id: string, lines: unknown[]) => {
+		mkdirSync(join(root, '.factory', 'logs'), { recursive: true });
+		writeFileSync(
+			join(root, '.factory', 'logs', `${id}.jsonl`),
+			lines.map((l) => JSON.stringify(l)).join('\n')
+		);
+	};
+	const assistant = (...content: unknown[]) => ({ type: 'assistant', message: { content } });
+
+	it('reads the transcript in full, tool results included, with the ledger lines of the Session', () => {
+		transcript('session-1', [
+			assistant({ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }),
+			{
+				type: 'user',
+				message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] }
+			}
+		]);
+		record(ledgerPath(root), session(4, {}));
+		record(ledgerPath(root), session(6, { step: 'fix', outcome: 'round 1' }));
+		record(ledgerPath(root), session(8, { session: 'session-2' }));
+		const read = readSession(root, 'session-1');
+		expect(read?.lines).toEqual([
+			{ kind: 'tool', text: 'Bash: npm test' },
+			{ kind: 'result', text: 'ok' }
+		]);
+		expect(read?.runs.map((r) => [r.feature, r.kind, r.outcome])).toEqual([
+			['1', 'build', 'built'],
+			['1', 'fix', 'round 1']
+		]);
+	});
+
+	it('has no runs for a Session the ledger does not know, and none at all without a transcript', () => {
+		transcript('session-1', [assistant({ type: 'text', text: 'hi' })]);
+		expect(readSession(root, 'session-1')?.runs).toEqual([]);
+		record(ledgerPath(root), session(4, { session: 'session-3' }));
+		expect(readSession(root, 'session-3')).toBeNull();
+	});
+
+	it('opens only a file named by a Session id', () => {
+		expect(['a', 'A-1_b', 'a'.repeat(128)].map(isSessionId)).toEqual([true, true, true]);
+		for (const id of ['', '..', 'a/b', 'a.b', '../logs/x', 'a b', 'a\n', 'a'.repeat(129)])
+			expect([id, isSessionId(id)]).toEqual([id, false]);
+		expect(readSession(root, '../runs')).toBeNull();
 	});
 });
