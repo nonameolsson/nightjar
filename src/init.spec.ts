@@ -495,12 +495,14 @@ describe('nightjar init ends with the next step', () => {
 		expect(out).toContain('nightjar: would build #1 One escape');
 	});
 
-	it('names the optional settings once, in one line, with the README link', async () => {
+	it('names the optional settings once, in one line, with the README link and the review.model recommendation', async () => {
 		expect(await init(answers)).toBe(0);
 		const lines = out.filter((l) => l.includes('optional settings'));
 		expect(lines).toEqual([
-			'nightjar: optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see https://github.com/nonameolsson/nightjar#configure-factoryjson'
+			"nightjar: optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see https://github.com/nonameolsson/nightjar#configure-factoryjson. Set review.model to a stronger model than the builders': https://github.com/nonameolsson/nightjar#review-model"
 		]);
+		// the recommendation is only named: init writes no review block
+		expect(JSON.parse(readFileSync(written(), 'utf8'))).not.toHaveProperty('review');
 	});
 
 	it('names no optional settings when it keeps a factory.json', async () => {
