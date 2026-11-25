@@ -21,6 +21,7 @@ import {
 	pullFixExit,
 	queue,
 	slotSay,
+	type PortEnv,
 	type QueueDeps
 } from './queue.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
@@ -748,6 +749,151 @@ describe('queue with several Slots', () => {
 		s.stop.abort();
 		await s.end('2');
 		await run;
+	});
+});
+
+describe('queue with reserved ports', () => {
+	// A pool of `blocks` blocks of ports on the slotted world's deps: each claim takes one, each release gives it back, and each build's portEnv is kept.
+	function pooled(w: ReturnType<typeof world>, blocks: number) {
+		const free = Array.from({ length: blocks }, (_, i) => 4500 + 2 * i);
+		const seen = new Map<string, PortEnv | undefined>();
+		const inner = w.deps.build;
+		w.deps = {
+			...w.deps,
+			claimPorts: () => {
+				const first = free.shift();
+				return Promise.resolve(
+					first === undefined
+						? null
+						: {
+								env: { WEB_PORT: String(first), DB_PORT: String(first + 1) },
+								ports: `${String(first)} to ${String(first + 1)}`,
+								release: () => void free.push(first)
+							}
+				);
+			},
+			build: (feature, say, portEnv) => {
+				seen.set(feature.id, portEnv);
+				return inner(feature, say, portEnv);
+			}
+		};
+		return { seen, free };
+	}
+
+	function three() {
+		const w = world();
+		w.tracker.add({
+			id: '10',
+			title: 'Third',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['11']
+		});
+		w.tracker.add({ id: '11', title: 'Ticket 11' });
+		return w;
+	}
+
+	it('gives two Slots building at once two blocks that do not overlap', async () => {
+		const w = world();
+		const s = slotted(w, 2);
+		const p = pooled(w, 2);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(s.running()).toEqual(['2', '4']);
+		expect(p.seen.get('2')).toEqual({ WEB_PORT: '4500', DB_PORT: '4501' });
+		expect(p.seen.get('4')).toEqual({ WEB_PORT: '4502', DB_PORT: '4503' });
+		expect(w.lines).toContain('#2: ports 4500 to 4501');
+		expect(w.lines).toContain('#4: ports 4502 to 4503');
+		s.stop.abort();
+		await s.end('2');
+		await s.end('4');
+		await run;
+	});
+
+	it("gives a block back when its Slot's work ends, and the next work claims it", async () => {
+		const w = three();
+		const s = slotted(w, 2);
+		const p = pooled(w, 2);
+		const run = queue(w.deps, false);
+		await settle();
+		await s.end('4');
+		expect(s.running()).toEqual(['2', '10']);
+		expect(p.seen.get('10')).toEqual({ WEB_PORT: '4502', DB_PORT: '4503' });
+		s.stop.abort();
+		await s.end('2');
+		await s.end('10');
+		await run;
+		expect(p.free.sort()).toEqual([4500, 4502]);
+	});
+
+	it('gives a block back when the work ends on a fault', async () => {
+		const w = world();
+		const p = pooled(w, 1);
+		w.failWith(new Error('the network went away'));
+		await queue(w.deps, true);
+		expect(p.free).toEqual([4500]);
+	});
+
+	it('takes no work for a Slot with no block free, says why once, and goes on', async () => {
+		const w = world();
+		const s = slotted(w, 2);
+		const p = pooled(w, 1);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(s.running()).toEqual(['2']);
+		expect(w.built).toEqual(['2']);
+		const waits = () => w.lines.filter((l) => l.startsWith('#4 waits: no block of reserved ports'));
+		expect(waits()).toHaveLength(1);
+		// the next tick looks again and says nothing more
+		await s.tick();
+		expect(s.running()).toEqual(['2']);
+		expect(waits()).toHaveLength(1);
+		// the other Slot's block comes back, and the Slot takes the work at once
+		await s.end('2');
+		expect(s.running()).toEqual(['4']);
+		expect(p.seen.get('4')).toEqual({ WEB_PORT: '4500', DB_PORT: '4501' });
+		s.stop.abort();
+		await s.end('4');
+		await run;
+	});
+
+	it('puts a Feedback round back when no block is free, so a later tick starts it', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const s = slotted(w, 1);
+		const f = asking(w, s);
+		const p = pooled(w, 0);
+		const run = queue(w.deps, false);
+		await settle();
+		expect(f.answered).toEqual([]);
+		p.free.push(4500);
+		await s.tick();
+		expect(f.answered).toEqual(['30']);
+		s.stop.abort();
+		await s.end('30');
+		await run;
+	});
+
+	it('--once exits 2 when no block is free for the one Feature it would take', async () => {
+		const w = world();
+		pooled(w, 0);
+		expect(await queue(w.deps, true)).toBe(2);
+		expect(w.built).toEqual([]);
+		expect(w.lines.some((l) => l.startsWith('#2 waits: no block of reserved ports'))).toBe(true);
+	});
+
+	it('claims none when the repo reserves no ports, as before', async () => {
+		const w = world();
+		const seen: (PortEnv | undefined)[] = [];
+		const inner = w.deps.build;
+		w.deps = {
+			...w.deps,
+			build: (feature, say, portEnv) => (seen.push(portEnv), inner(feature, say, portEnv))
+		};
+		await queue(w.deps, true);
+		expect(seen).toEqual([undefined]);
+		expect(w.lines.some((l) => l.includes('ports'))).toBe(false);
 	});
 });
 
