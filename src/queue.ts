@@ -333,6 +333,10 @@ async function revisit(
 		const got = await pass.fix(red);
 		// the day's limit holds it back, so it is taken once the day is over
 		if (got.kind !== 'paused') tried.add(triedKey(red.draft));
+		// a fix whose push failed on a fault is handed back as a build is, so the Feature carries a Signal and a comment
+		if (got.kind === 'faulted') {
+			await handBack(deps, { id: red.feature, title: got.title }, got.fault);
+		}
 		return got;
 	} catch (fault) {
 		tried.add(triedKey(red.draft));

@@ -369,6 +369,8 @@ class FeatureRun {
 	private answered: Extract<FeedbackRoundEnd, { kind: 'answered' }> | null = null;
 	// the feedback the run's Feedback round left unanswered, which the pull request lists
 	private unanswered: readonly Unanswered[] = [];
+	// how many Tickets this run built, as against those the branch already held
+	private ticketsBuilt = 0;
 	// the Feature's Workflow, which runs its own Steps
 	private steps: WorkflowRun | null = null;
 	// what the status file shows now, so a Ticket built can change its Tickets alone
@@ -771,6 +773,7 @@ class FeatureRun {
 			return NEXT;
 		}
 		this.built.add(ticket.id);
+		this.ticketsBuilt += 1;
 		if (test !== undefined) this.tests.set(ticket.id, test);
 		if (this.shown?.kind === 'building') {
 			// no round of its own any more, so it is not counted as another fix round
@@ -890,12 +893,16 @@ class FeatureRun {
 				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
-		const pushed = await pushBranch(this.deps, this.setup, this.tree, id);
+		// a push of only a Feedback round's commit leaves nothing on the branch when it fails; one with a Ticket's commit keeps it for the next Go
+		const feedbackOnly = this.answered !== null && this.ticketsBuilt === 0;
+		const pushed = await pushBranch(this.deps, this.setup, this.tree, id, !feedbackOnly);
 		if (pushed.kind === 'diverged') {
 			// a pause put the Go back, and the Feature is now with a person
 			await tracker.removeSignal(id, 'go');
 			return { kind: 'diverged', side: pushed.side };
 		}
+		// handed back as any fault of a build is, with its Feedback unanswered
+		if (pushed.kind === 'fault') throw pushed.fault;
 		const complete = left.length === 0 && red === null && paused === null;
 		const ids = done.map((t) => t.id);
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;
@@ -1328,6 +1335,15 @@ export type PullFixOutcome =
 			readonly side: string;
 			readonly usd: number;
 	  }
+	// a green fix whose push failed on a fault: it is kept on a side branch, the branch is the Code host's again, and the queue hands the Feature back with needs info
+	| {
+			readonly kind: 'faulted';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly fault: unknown;
+			readonly title: string;
+			readonly usd: number;
+	  }
 	// the pull request is not Nightjar's to fix after all; nothing was done
 	| { readonly kind: 'skipped'; readonly why: string }
 	| { readonly kind: 'paused'; readonly why: string }
@@ -1582,24 +1598,37 @@ async function pullFixRound(
 	if (!(await tree.commitPullFix(round, summary, session))) {
 		return gaveUp('the Session changed no file', fixed.spent);
 	}
-	const pushed = await pushBranch(deps, setup, tree, feature.id);
+	const pushed = await pushBranch(deps, setup, tree, feature.id, false);
 	if (pushed.kind === 'diverged') {
 		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
+	}
+	if (pushed.kind === 'fault') {
+		return {
+			kind: 'faulted',
+			pull,
+			round,
+			fault: pushed.fault,
+			title: feature.title,
+			usd: fixed.spent
+		};
 	}
 	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
 	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
 }
 
-// How a push of a Feature's branch ended: on the Code host, or set aside on `side` because a person pushed to the branch first.
+// How a push of a Feature's branch ended: on the Code host; set aside on `side` because a person pushed to the branch first; or failed on a fault, with the work set aside on `side` so the branch holds no unpushed commit.
 export type PushEnd =
-	{ readonly kind: 'pushed' } | { readonly kind: 'diverged'; readonly side: string };
+	| { readonly kind: 'pushed' }
+	| { readonly kind: 'diverged'; readonly side: string }
+	| { readonly kind: 'fault'; readonly fault: unknown; readonly side: string };
 
-// Every push of a Feature's branch. One that fails is sorted by git, never by what the push said (ADR 0010): a branch a person pushed to hands the Feature to them, and any other failure is thrown.
+// Every push of a Feature's branch. One that fails is sorted by git, never by what the push said (ADR 0010): a branch a person pushed to hands the Feature to them. Any other failure is thrown with the branch left ahead when `keeps` (it holds Ticket commits, which the next Go pushes); otherwise the work is set aside, so a Feedback round's commit never counts as answered and a Pull-check fix never blocks the next pass, and the fault is handed back.
 async function pushBranch(
 	deps: Deps,
 	setup: Setup,
 	tree: Worktree,
-	feature: ItemId
+	feature: ItemId,
+	keeps: boolean
 ): Promise<PushEnd> {
 	const { branch } = tree.at;
 	try {
@@ -1607,7 +1636,14 @@ async function pushBranch(
 		return { kind: 'pushed' };
 	} catch (fault) {
 		const outcome = await tree.pushOutcome();
-		if (outcome === 'fault') throw fault;
+		if (outcome === 'fault') {
+			if (keeps) throw fault;
+			const side = await tree.setAsidePush();
+			deps.say(
+				`${hash(feature)}: the push of ${branch} failed: ${why(fault)}; the work is kept on ${side}`
+			);
+			return { kind: 'fault', fault, side };
+		}
 		if (outcome === 'pushed') {
 			deps.say(
 				`${hash(feature)}: the push of ${branch} failed, yet the Code host holds it: ${why(fault)}`

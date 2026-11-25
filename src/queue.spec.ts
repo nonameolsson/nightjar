@@ -394,6 +394,29 @@ describe('queue --watch with the Pull-check pass', () => {
 		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4']);
 	});
 
+	it('hands the Feature back with needs info when a round ends on a push that failed, and goes on to the Queue', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(() =>
+			Promise.resolve({
+				kind: 'faulted',
+				pull,
+				round: 1,
+				fault: new Error('the connection was reset'),
+				title: 'Done',
+				usd: 1
+			})
+		);
+		await queue(w.deps, false);
+		expect(w.tracker.signalsOf('20')).toEqual(['needsInfo']);
+		expect(w.tracker.said('20').at(-1)).toMatch(
+			/^Nightjar stopped on a fault: the connection was reset/
+		);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
 	it('goes on to the Queue when a round stops on a fault, saying so', async () => {
 		const w = world();
 		const d = withDrafts(w);
