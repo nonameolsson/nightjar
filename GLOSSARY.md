@@ -114,6 +114,10 @@ _Avoid_: review round, PR fix, follow-up
 The Session, after the last Ticket and the Steps, that reads the Feature's whole diff against its spec and the repo's rules and says approve or changes, with the issues it found. It is on unless the repo switches it off. Its findings are never Feedback.
 _Avoid_: self-review, AI review, code review (when Nightjar's own is meant)
 
+**Review thread**:
+A thread on a line of the draft pull request that Nightjar starts for one issue of a Review. A person's reply in it is Feedback. A later build's Review resolves the earlier Review's threads, except one a person has replied in, which stays open until a person resolves it.
+_Avoid_: review comment (that word is GitHub's), inline finding, annotation
+
 **Review round**:
 A Session that answers the Review's issues on a complete Feature before the draft pull request opens, after which the Review runs again. It may decline an issue with a reason, which the next Review sees. A build gets a set number of them; what the last Review still asks for is shown on the pull request, and the Feature gets needs a person.
 _Avoid_: review fix, self-fix, second pass
