@@ -41,8 +41,8 @@ export function markPublished(body: string): string {
 // How long after a pull request opened a head commit with no Pull checks counts as green (docs/adr/0006): a Code host registers its checks a little after the push.
 export const NO_CHECKS_WAIT_MS = 10 * 60_000;
 
-// The commit message carries a trailer of Nightjar's, as every commit it makes does.
-const hasTrailer = (message: string) =>
+// The commit message carries a trailer of Nightjar's, as every commit it makes does; it is how Publish and the Measures tell its commits from a person's.
+export const hasTrailer = (message: string) =>
 	[...trailersOf(message).keys()].some((k) => k.startsWith(TRAILER_PREFIX));
 
 // Whether a draft meets the four conditions of Publish: the Feature was complete and the last Review approved (the body's mark), the Pull checks on the head commit finished green, and no person has engaged by reviewing, commenting or pushing. One Nightjar published already is no draft to publish.

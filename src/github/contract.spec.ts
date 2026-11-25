@@ -15,6 +15,7 @@ import {
 	nightjarDraftsContract,
 	openPullsContract,
 	publishContract,
+	pullStateContract,
 	sourcesContract,
 	feedbackContract,
 	shelfContract,
@@ -288,4 +289,8 @@ describe('GitHubCodeHost meets the publish contract', { timeout: 30_000 }, () =>
 
 describe('GitHubCodeHost meets the botPulls contract', { timeout: 30_000 }, () => {
 	for (const c of botPullsContract) it(c.name, () => c.run(gitHubCodeHost));
+});
+
+describe('GitHubCodeHost meets the pullState contract', { timeout: 30_000 }, () => {
+	for (const c of pullStateContract) it(c.name, () => c.run(gitHubCodeHost));
 });

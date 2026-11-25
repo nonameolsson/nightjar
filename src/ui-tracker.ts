@@ -32,8 +32,8 @@ export type ReadingTracker = Pick<
 // The reads the Feature detail panel makes of one Feature, when it opens.
 export type FeatureReader = Pick<Tracker, 'feature' | 'tickets' | 'reference'>;
 
-// The Code host as the page holds it: Nightjar's open pull requests, read to count the Tickets their branches built.
-export type PullReader = Pick<CodeHost, 'openPulls'>;
+// The Code host as the page holds it: Nightjar's open pull requests, read to count the Tickets their branches built, and whether a pull request merged, for the Measures.
+export type PullReader = Pick<CodeHost, 'openPulls' | 'pullState'>;
 
 export interface PageTracker<T = ReadingTracker> {
 	readonly tracker: T;

@@ -179,6 +179,8 @@ export class FakeGitHub {
 	private readonly mergeable = new Map<number, boolean | null>();
 	// the pull requests whose head branch is on a fork, which GitHub names by the fork's repo
 	private readonly forked = new Set<number>();
+	// the pull requests a person merged
+	private readonly merged = new Set<number>();
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -383,6 +385,12 @@ export class FakeGitHub {
 	// A person closes issue or pull request `number`.
 	close(number: number): void {
 		this.change(number, () => ({ state: 'closed' }));
+	}
+
+	// A person merges pull request `number`, which closes it.
+	merge(number: number): void {
+		this.change(number, () => ({ state: 'closed' }));
+		this.merged.add(number);
 	}
 
 	// A label the repo has, as one a team made itself.
@@ -603,6 +611,7 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			draft: issue.pull?.draft ?? false,
+			merged: this.merged.has(issue.number),
 			created_at: this.createdAt(issue.number),
 			head: {
 				ref: head,

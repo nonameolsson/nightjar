@@ -12,7 +12,8 @@ import type {
 	OpenPull,
 	Pull,
 	PullChecks,
-	PullCommit
+	PullCommit,
+	PullState
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import { publishedByNightjar } from '../publish.js';
@@ -39,6 +40,8 @@ export interface FakePull extends Pull, DraftRequest {
 	readonly conflict: ConflictState;
 	// whether its head branch is on a fork of the repo; a spec sets it
 	readonly fromFork?: boolean;
+	// whether a person merged it; a spec sets it
+	readonly merged?: boolean;
 }
 
 const NO_CHECKS: PullChecks = { pending: false, failed: [] };
@@ -151,6 +154,21 @@ export class FakeCodeHost implements CodeHost {
 		return Promise.resolve(found?.conflict ?? 'unknown');
 	};
 
+	// how many times each pull request's state was asked
+	readonly stateReads = new Map<number, number>();
+
+	pullState = (pull: Pull): Promise<PullState> => {
+		this.stateReads.set(pull.id, (this.stateReads.get(pull.id) ?? 0) + 1);
+		const found = this.pulls.find((p) => p.id === pull.id);
+		if (found === undefined) {
+			return Promise.reject(new Error(`the fake Code host has no pull request ${String(pull.id)}`));
+		}
+		return Promise.resolve({
+			merged: found.merged === true,
+			commits: this.branchCommits.get(found.head) ?? []
+		});
+	};
+
 	// in the order they were opened, which is the order of their ids
 	nightjarDrafts = (listing: DraftsListing = {}): Promise<NightjarDraft[]> => {
 		const mine = (p: FakePull) =>
@@ -261,6 +279,11 @@ export class FakeCodeHost implements CodeHost {
 
 	close(pull: Pull): void {
 		this.change(pull.id, () => ({ open: false }));
+	}
+
+	// a person merges it, which closes it
+	merge(pull: Pull): void {
+		this.change(pull.id, () => ({ open: false, merged: true }));
 	}
 
 	// its head branch moves to a fork, as a pull request opened from a fork has it
