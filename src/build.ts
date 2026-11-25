@@ -190,6 +190,8 @@ export type FeatureOutcome =
 			readonly pull: Pull;
 			readonly built: ItemId[];
 			readonly waiting: Waiting[];
+			// why the run paused after it opened the pull request, so the loop waits before it builds again
+			readonly paused?: string;
 	  }
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
@@ -966,7 +968,13 @@ class FeatureRun {
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
 		}
-		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+		return {
+			kind: 'pull',
+			pull,
+			built: [...this.built],
+			waiting: left,
+			...(paused === null ? {} : { paused })
+		};
 	}
 
 	private async stopped(): Promise<FeatureOutcome> {
