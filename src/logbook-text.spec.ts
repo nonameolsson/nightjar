@@ -98,6 +98,18 @@ describe('decisionText', () => {
 				'1 failing Pull check: ci / test / npm test'
 			],
 			[
+				{
+					kind: 'pullFix',
+					round: 1,
+					rounds: 2,
+					failing: [{ check: 'ci', job: 'test', step: 'npm test' }],
+					end: 'diverged',
+					why: 'a person pushed to the branch first; the fix is kept on nightjar/1-push-1'
+				},
+				'Pull-check fix round 1 of 2 set its fix aside: a person pushed to the branch first; the fix is kept on nightjar/1-push-1',
+				'1 failing Pull check: ci / test / npm test'
+			],
+			[
 				{ kind: 'madeBySource', source: 'sentry', key: 'ISSUE-1' },
 				'Made by the Source sentry for ISSUE-1'
 			],

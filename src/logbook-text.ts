@@ -28,7 +28,8 @@ const PULL_FIX_END = {
 	pushed: 'pushed a fix',
 	gaveUp: 'gave up',
 	paused: 'paused',
-	stopped: 'stopped'
+	stopped: 'stopped',
+	diverged: 'set its fix aside'
 } as const;
 
 const why = (text: string | undefined) => (text === undefined || text === '' ? '' : `: ${text}`);

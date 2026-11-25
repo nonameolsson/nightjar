@@ -343,7 +343,9 @@ export async function runNightjar(
 				console.error(`nightjar: ${why(fault)}`);
 				return 2;
 			}
-			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
+			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' || outcome?.kind === 'diverged'
+				? 0
+				: 1;
 		}
 		return await queue(queueDeps, args.mode === 'once');
 	} finally {

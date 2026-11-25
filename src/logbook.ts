@@ -65,13 +65,13 @@ const DecisionSchema = z.discriminatedUnion('kind', [
 		answered: z.array(z.string()),
 		left: z.array(z.object({ id: z.string(), why: z.string() }))
 	}),
-	// a Pull-check fix round `round` of `rounds` on the draft pull request, started by the Pull checks `failing`; `why` is what stopped it short of a push
+	// a Pull-check fix round `round` of `rounds` on the draft pull request, started by the Pull checks `failing`; `why` is what stopped it short of a push, or for `diverged` where its fix was set aside because a person pushed first
 	z.object({
 		kind: z.literal('pullFix'),
 		round: z.number(),
 		rounds: z.number(),
 		failing: z.array(z.object({ check: z.string(), job: z.string(), step: z.string() })),
-		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped']),
+		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped', 'diverged']),
 		why: z.string().optional()
 	}),
 	// the Feature was made by the Source `source` through `nightjar intake`; `key` is what the Source calls the event, when it has one

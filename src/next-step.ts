@@ -97,6 +97,12 @@ export const feedbackLimitStep = (n: SignalNames): NextStep => [
 	`To have Nightjar answer them, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Only a Go starts another Feedback round on this pull request.`
 ];
 
+// A push the Code host rejected because a person pushed to the branch: the draft is theirs, and Nightjar's work waits on a local side branch.
+export const pushRejectedStep = (n: SignalNames, side: string): NextStep => [
+	`Look at ${tag(side)}, a local branch in the checkout Nightjar runs in, and cherry-pick from it what you want.`,
+	`To have Nightjar build on top of your commits, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Or carry on by hand.`
+];
+
 export const stoppedStep = (n: SignalNames): NextStep => [
 	`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
 ];
