@@ -1548,25 +1548,19 @@ describe('a Session that cannot go on', () => {
 		}
 	);
 
-	it('pauses rather than leave a Ticket red, when a Session in another Slot takes the room its fix round needs', async () => {
+	it('neither pauses nor skips a fix round when a Session in another Slot holds the room it needs', async () => {
 		const world = makeWorld();
 		world.checkOk = false;
-		const why = 'the day has no room for this Session beside the other Slots';
 		world.settle = (req) => {
-			// another Slot starts a Session while this Ticket builds, and holds its cap
+			// another Slot starts a Session while this Ticket builds, and holds its cap; main.ts's heldSession makes this Slot's next Session wait for it
 			if (req.kind === 'build') world.spend.reserve(LIMITS.ticketUsd);
-			// main.ts's heldSession turns the fix round's Session away
-			return req.kind === 'fix' ? paused(why) : undefined;
+			return undefined;
 		};
 		const s = setup(world, { limits: { ...LIMITS, dailyUsd: LIMITS.ticketUsd + 4 } });
 		const got = await buildFeature(deps(world), s, '1');
 
-		// the fix round is tried, not skipped because of the other Slot's cap
-		expect(world.asked.map((r) => r.kind)).toEqual(['build', 'fix']);
-		expect(got).toEqual({ kind: 'paused', why });
-		expect(subjects(world)).toEqual([]);
-		expect(world.tracker.signalsOf('1')).toEqual(['go']);
-		expect(world.tracker.signalsOf('2')).toEqual(['ready']);
+		expect(world.asked.map((r) => r.kind).slice(0, 2)).toEqual(['build', 'fix']);
+		expect(got.kind).not.toBe('paused');
 	});
 
 	it.each(cases)('pauses the run when the review is %s', async (_name, why) => {
@@ -2539,7 +2533,7 @@ describe('the Pull-check pass in --watch', () => {
 		expect(world.tracker.signalsOf('1')).toEqual([]);
 	});
 
-	it('takes no draft while the caps of the Sessions in other Slots leave no room for its own, and takes it once they end', async () => {
+	it('does not pause for the caps of the Sessions in other Slots: its Session waits for room where it starts instead', async () => {
 		const world = makeWorld();
 		const pull = await redDraft(world);
 		// room for the day's spend and one fix Session, but not with another Slot's $5 Session running
@@ -2556,11 +2550,9 @@ describe('the Pull-check pass in --watch', () => {
 				personEngaged: false
 			}
 		};
-		const other = world.spend.reserve(5);
-		expect(await fixPullChecks(deps(world), s, red)).toMatchObject({ kind: 'paused' });
-		expect(world.asked).toEqual([]);
-		other.release();
+		world.spend.reserve(5);
 		expect(await fixPullChecks(deps(world), s, red)).not.toMatchObject({ kind: 'paused' });
+		expect(world.asked).not.toEqual([]);
 	});
 });
 

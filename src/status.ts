@@ -136,9 +136,13 @@ export class StatusFile implements StatusReport {
 				this.builds.set(doing.feature, doing);
 				break;
 			}
-			case 'paused':
-				this.paused = { why: doing.why, until: doing.until };
+			case 'paused': {
+				// A Feature's own pause names no time; the run's, which the queue sets, says when every Slot goes on. A Feature that pauses inside the run's pause keeps that time, so the pause still ends.
+				const until = this.paused?.until ?? null;
+				const held = until !== null && Date.parse(until) > this.o.now().getTime();
+				if (doing.until !== null || !held) this.paused = { why: doing.why, until: doing.until };
 				break;
+			}
 			case 'idle':
 				// idle comes only with every Slot empty
 				this.builds.clear();

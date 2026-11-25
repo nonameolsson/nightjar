@@ -176,8 +176,8 @@ export interface StepsRun {
 		rounds: { readonly round: number; readonly rounds: number },
 		attempt?: number
 	) => void;
-	// why the run pauses before a Session with this `cap`, else null
-	readonly dailyPause: (cap: number) => string | null;
+	// why the run pauses before another Session, else null
+	readonly dailyPause: () => string | null;
 	// what a piece of work that has spent `spent` of its `cap` may still spend
 	readonly allowance: (cap: number, spent: number) => Allowance;
 	readonly aborted: () => boolean;
@@ -223,7 +223,7 @@ export class WorkflowRun {
 		try {
 			for (const step of todo) {
 				if (run.aborted()) return { kind: 'aborted' };
-				const paused = run.dailyPause(step.budgetUsd ?? run.setup.limits.ticketUsd);
+				const paused = run.dailyPause();
 				if (paused !== null) return { kind: 'paused', why: paused };
 				const end: StepEnd = served.ok
 					? await this.runStep(step, ticket)

@@ -46,9 +46,11 @@ export interface Spend {
 	reserve(usd: number): Reservation;
 	// holds `usd`, the cap of a Session about to start, as `reserve` does, when it fits under `dailyUsd` beside today's spend and the caps of the Sessions running; else why it does not, and holds nothing. With no other Session running it always holds, as with one Slot. The check and the hold are one step, so two Slots cannot both pass it on the same dollars.
 	hold(usd: number, now: Date, dailyUsd: number): Reservation | string;
-	// why a Session with a `cap` may not start, once today's spend plus the caps of the Sessions running reached `dailyUsd`; else null. With another Session running, the Session's own `cap` must fit under `dailyUsd` as well; with none, only the spend so far counts, as with one Slot.
-	dayOver(now: Date, dailyUsd: number, cap?: number): string | null;
-	// what a piece of work that has spent `spent` of its `cap` may still spend; the day's limit is not its business: `hold` pauses a Session that the other Slots leave no room for
+	// resolves once a held cap is given back, at once when none is held, or when `signal` aborts: a Session that `hold` turned away waits on it to try again
+	freed(signal?: AbortSignal): Promise<void>;
+	// why the day is over, once today's spend has reached `dailyUsd`; else null. The caps held do not count: a Session they leave no room for waits for one to be given back, and does not pause the run.
+	dayOver(now: Date, dailyUsd: number): string | null;
+	// what a piece of work that has spent `spent` of its `cap` may still spend; the day's limit is not its business: a Session the other Slots leave no room for waits where it starts
 	allowance(cap: number, spent: number): Allowance;
 }
 
@@ -82,27 +84,40 @@ export function spendOver(store: SpendStore): Spend {
 		for (const hold of holds) sum += hold.usd;
 		return sum;
 	};
+	// the Sessions waiting for a cap to be given back
+	const waiting = new Set<() => void>();
 	const reserve = (usd: number): Reservation => {
 		const hold = { usd };
 		holds.add(hold);
 		return {
 			release: () => {
-				holds.delete(hold);
+				if (!holds.delete(hold)) return;
+				const woken = [...waiting];
+				waiting.clear();
+				for (const wake of woken) wake();
 			}
 		};
 	};
-	// why a Session with a `cap` may not start beside the ones running, or null; with none running only the spend so far counts
+	const freed = (signal?: AbortSignal): Promise<void> => {
+		if (holds.size === 0 || signal?.aborted === true) return Promise.resolve();
+		return new Promise((resolve) => {
+			const wake = () => {
+				waiting.delete(wake);
+				signal?.removeEventListener('abort', wake);
+				resolve();
+			};
+			waiting.add(wake);
+			signal?.addEventListener('abort', wake, { once: true });
+		});
+	};
+	// why a Session with a `cap` may not start beside the ones running, or null
 	const crowded = (now: Date, dailyUsd: number, cap: number): string | null => {
 		const others = reserved();
 		const spent = today(now);
 		const committed = spent + others;
-		const reached = committed >= dailyUsd;
-		if (!reached && !(others > 0 && committed + cap > dailyUsd)) return null;
-		if (others === 0) {
-			return `today's estimated spend, ${dollars(spent)}, reached the daily limit of ${dollars(dailyUsd)}`;
-		}
+		if (committed + cap <= dailyUsd) return null;
 		const counted = `today's estimated spend, ${dollars(spent)}, plus ${dollars(others)} held for the Sessions running in other Slots`;
-		return reached
+		return committed >= dailyUsd
 			? `${counted}, reached the daily limit of ${dollars(dailyUsd)}`
 			: `${counted} and ${dollars(cap)} for this Session would pass the daily limit of ${dollars(dailyUsd)}`;
 	};
@@ -118,7 +133,13 @@ export function spendOver(store: SpendStore): Spend {
 			if (reserved() === 0) return reserve(usd);
 			return crowded(now, dailyUsd, usd) ?? reserve(usd);
 		},
-		dayOver: (now, dailyUsd, cap = 0) => crowded(now, dailyUsd, cap),
+		freed,
+		dayOver: (now, dailyUsd) => {
+			const spent = today(now);
+			return spent >= dailyUsd
+				? `today's estimated spend, ${dollars(spent)}, reached the daily limit of ${dollars(dailyUsd)}`
+				: null;
+		},
 		allowance: (cap, spent) => {
 			const usd = cap - spent;
 			return { usd, enough: usd >= MIN_USD };

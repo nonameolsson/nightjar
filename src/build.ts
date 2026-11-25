@@ -207,7 +207,7 @@ export interface Pause {
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
-// What a piece of work with a `cap` that has spent `spent` may still spend. The day's limit with the other Slots' caps is checked where each Session starts (`Spend.hold`), which pauses the work rather than leave it red.
+// What a piece of work with a `cap` that has spent `spent` may still spend. The day's limit with the other Slots' caps is checked where each Session starts (`heldSession`), which makes the Session wait for room rather than leave the work red.
 const allowanceOf =
 	(deps: Pick<Deps, 'spend'>) =>
 	(cap: number, spent: number): Allowance =>
@@ -401,7 +401,7 @@ class FeatureRun {
 		if (this.workflow !== null) this.steps = await this.openSteps(this.workflow);
 		let last: Step = NEXT;
 		while (last.kind === 'next' && !this.aborted) {
-			const paused = this.dailyPause(this.setup.limits.ticketUsd);
+			const paused = this.dailyPause();
 			if (paused !== null) {
 				last = { kind: 'paused', why: paused };
 				break;
@@ -432,7 +432,7 @@ class FeatureRun {
 			setup: this.setup,
 			feature: this.feature,
 			tree: this.tree,
-			dailyPause: (cap) => this.dailyPause(cap),
+			dailyPause: () => this.dailyPause(),
 			allowance: allowanceOf(deps),
 			fix: (work) => this.fixFeedback(work),
 			log: (entry) => this.log(entry),
@@ -508,15 +508,15 @@ class FeatureRun {
 			log: (entry) => this.log(entry),
 			building: (ticket, session, rounds, attempt) =>
 				this.building(ticket, 'step', session, rounds, attempt),
-			dailyPause: (cap) => this.dailyPause(cap),
+			dailyPause: () => this.dailyPause(),
 			allowance: allowanceOf(this.deps),
 			aborted: () => this.aborted
 		});
 	}
 
-	// Why a Session with a `cap` may not start now, once the day's spend and the caps of the Sessions running in other Slots leave no room for it.
-	private dailyPause(cap: number): string | null {
-		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd, cap);
+	// Why the day is over, once its spend reached the limit; the caps of the Sessions running in other Slots only make a Session wait where it starts.
+	private dailyPause(): string | null {
+		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd);
 	}
 
 	private async trusted(id: ItemId): Promise<Comment[]> {
@@ -1029,7 +1029,7 @@ class FeatureRun {
 				issues: review.issues,
 				declined,
 				...this.output,
-				dailyPause: (cap) => this.dailyPause(cap),
+				dailyPause: () => this.dailyPause(),
 				allowance: allowanceOf(deps),
 				fix: (work) => this.fixReviewRound(work, { round, rounds }),
 				log: (entry) => this.log(entry),
@@ -1312,7 +1312,7 @@ export async function fixPullChecks(
 	const { tracker } = deps;
 	const { draft } = red;
 	const { pull } = draft;
-	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd, setup.limits.pullFixUsd);
+	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
 	if (day !== null) return { kind: 'paused', why: day };
 	const feature = await tracker.feature(red.feature);
 	const tree = await deps.openWorktree(

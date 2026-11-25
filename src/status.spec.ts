@@ -361,6 +361,31 @@ describe('StatusFile', () => {
 			expect(readStatus(path)?.pause).toBeUndefined();
 		});
 
+		it("keeps the run's pause and its end when another Slot's Feature pauses inside it, so the pause still ends", () => {
+			const path = join(dir, 'status.json');
+			let now = at;
+			const status = file(path, () => now);
+			status.doing(build('12'));
+			status.doing(build('15'));
+			const until = new Date(at.getTime() + 60_000).toISOString();
+			// the queue pauses the run on #15's usage limit, while #12 still finishes
+			status.doing({ kind: 'paused', why: 'usage limit', until });
+			// #12's Session reaches the limit too, and its Feature writes a pause with no time
+			status.doing({ kind: 'paused', why: 'usage limit again', until: null });
+			expect(readStatus(path)?.pause).toEqual({ why: 'usage limit', until });
+			// once the time passes the pause ends, though #12 still runs
+			now = new Date(at.getTime() + 61_000);
+			status.doing(build('12', { step: 'build' }));
+			expect(readStatus(path)?.run).toBe('building');
+			expect(readStatus(path)?.pause).toBeUndefined();
+			// a Feature's pause with no run's pause held stands, until the queue gives it a time
+			status.doing({ kind: 'paused', why: 'day over', until: null });
+			expect(readStatus(path)?.pause).toEqual({ why: 'day over', until: null });
+			const later = new Date(now.getTime() + 60_000).toISOString();
+			status.doing({ kind: 'paused', why: 'day over', until: later });
+			expect(readStatus(path)?.pause).toEqual({ why: 'day over', until: later });
+		});
+
 		it('writes the run as idle or off with no builds', () => {
 			const path = join(dir, 'status.json');
 			const status = file(path);

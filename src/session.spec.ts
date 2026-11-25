@@ -240,8 +240,7 @@ describe('heldSession', () => {
 	const morning = new Date(2026, 9, 30, 8);
 	const req = { budgetUsd: 10, sessionId: 's-2' } as SessionRequest;
 
-	it('holds its cap while it runs, and starts no Session the day has no room for beside another Slot', async () => {
-		const spend = memorySpend();
+	const spent = (spend: ReturnType<typeof memorySpend>, costUsd: number) =>
 		spend.record({
 			at: morning.toISOString(),
 			repo: 'o/r',
@@ -250,31 +249,67 @@ describe('heldSession', () => {
 			branch: 'factory/1-a',
 			step: 'build',
 			session: 's-0',
-			costUsd: 45,
+			costUsd,
 			outcome: 'built'
 		});
-		let release = (): void => undefined;
-		let ran = 0;
-		const run = (r: SessionRequest): Promise<SessionResult> => {
-			ran += 1;
-			return new Promise((resolve) => {
-				release = () => {
-					resolve({ kind: 'done', costUsd: 1, output: {}, sessionId: r.sessionId });
-				};
+	// a stand-in Session that runs until `end` is called, having spent `costUsd`
+	const slow = (spend: ReturnType<typeof memorySpend>) => {
+		const ends: ((costUsd: number) => void)[] = [];
+		const run = (r: SessionRequest): Promise<SessionResult> =>
+			new Promise((resolve) => {
+				ends.push((costUsd) => {
+					spent(spend, costUsd);
+					resolve({ kind: 'done', costUsd, output: {}, sessionId: r.sessionId });
+				});
 			});
-		};
+		return { run, ends };
+	};
+	const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+	it('holds its cap while it runs, and starts a Session the day has no room for beside another Slot only once that one ends', async () => {
+		const spend = memorySpend();
+		spent(spend, 45);
+		const { run, ends } = slow(spend);
 		const session = heldSession(run, spend, () => morning, 60);
-		// two Slots start a $10 Session at once, at $45 of $60: the first fits, the second would pass the limit
+		// two Slots start a $10 Session at once, at $45 of $60: the first fits, the second waits rather than pause the run
 		const first = session({ ...req, sessionId: 's-1' });
-		const second = await session(req);
-		expect(second).toMatchObject({ kind: 'day-over', sessionId: 's-2' });
-		expect(ran).toBe(1);
-		release();
+		const second = session(req);
+		await settled();
+		expect(ends).toHaveLength(1);
+		// the first ends having spent $2, gives its cap back, and the second starts
+		ends[0]?.(2);
+		expect(await first).toMatchObject({ kind: 'done' });
+		await settled();
+		expect(ends).toHaveLength(2);
+		ends[1]?.(1);
+		expect(await second).toMatchObject({ kind: 'done', sessionId: 's-2' });
+	});
+
+	it('starts no Session once the day it waited on is spent, nor once the run stops', async () => {
+		const spend = memorySpend();
+		spent(spend, 45);
+		const { run, ends } = slow(spend);
+		const session = heldSession(run, spend, () => morning, 60);
+		const first = session({ ...req, sessionId: 's-1' });
+		const second = session(req);
+		await settled();
+		// the first spends the rest of the day
+		ends[0]?.(15);
 		await first;
-		// the first ended and gave its cap back, so the next one starts
-		const third = session(req);
-		expect(ran).toBe(2);
-		release();
-		expect(await third).toMatchObject({ kind: 'done' });
+		expect(await second).toMatchObject({ kind: 'day-over', sessionId: 's-2' });
+		expect(ends).toHaveLength(1);
+
+		const fresh = memorySpend();
+		spent(fresh, 45);
+		const other = slow(fresh);
+		const held = heldSession(other.run, fresh, () => morning, 60);
+		void held({ ...req, sessionId: 's-1' });
+		const stop = new AbortController();
+		const waiting = held({ ...req, signal: stop.signal });
+		await settled();
+		stop.abort();
+		expect(await waiting).toMatchObject({ kind: 'day-over' });
+		expect(other.ends).toHaveLength(1);
+		other.ends[0]?.(1);
 	});
 });

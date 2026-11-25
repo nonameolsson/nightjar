@@ -252,7 +252,7 @@ export async function runNightjar(
 		},
 		signal: stop.signal
 	};
-	// A Session's cap counts as spent against dailyUsd from its start until it ends, so the Sessions in the other Slots cannot together pass the day's limit; one that does not fit beside them pauses its work.
+	// A Session's cap counts as spent against dailyUsd from its start until it ends, so the Sessions in the other Slots cannot together pass the day's limit; one that does not fit beside them waits until one of them ends.
 	const session: Session = heldSession(
 		(req) => runSession(req),
 		spend,

@@ -39,7 +39,7 @@ export interface ReviewRoundContext {
 	// "note": the Feature's Workflow writes a note, so the round may revise only the note
 	readonly output?: 'note';
 	// why the day is over, once it is
-	readonly dailyPause: (cap: number) => string | null;
+	readonly dailyPause: () => string | null;
 	readonly allowance: (cap: number, spent: number) => Allowance;
 	// the check's fix rounds, in the round's Session
 	readonly fix: (work: FixWork) => Promise<FixEnd>;
@@ -49,7 +49,7 @@ export interface ReviewRoundContext {
 
 export async function reviewRound(ctx: ReviewRoundContext): Promise<ReviewRoundEnd> {
 	const { tree, feature, setup } = ctx;
-	const day = ctx.dailyPause(setup.limits.ticketUsd);
+	const day = ctx.dailyPause();
 	if (day !== null) return { kind: 'paused', why: day };
 
 	const cap = setup.limits.ticketUsd;
