@@ -70,6 +70,27 @@ describe('buildStages', () => {
 		]);
 	});
 
+	it('marks a Ticket paused or stopped, then built again, as passed after a retry, and failed when nothing came after', () => {
+		const paused = [
+			line('build', 'built', { ticket: '1', session: 'a' }),
+			line('build', 'paused: the daily budget is spent', { ticket: '2', session: 'b' }),
+			line('build', 'built', { ticket: '2', session: 'c' }),
+			line('review', 'approve', { session: 'r' })
+		];
+		expect(states(paused, { end: 'pull' }).slice(0, 3)).toEqual([
+			['tickets', 'retried'],
+			['steps', 'notNeeded'],
+			['review', 'passed']
+		]);
+		const stopped = [
+			line('build', 'stopped by a person', { session: 'b' }),
+			line('build', 'built', { session: 'c' })
+		];
+		expect(buildStages(stopped, { end: 'pull' })[0]?.state).toBe('retried');
+		const last = [line('build', 'paused: the daily budget is spent')];
+		expect(buildStages(last, { end: 'failed' })[0]?.state).toBe('failed');
+	});
+
 	it('fails a stage whose last try failed for a passing reason, with nothing after it', () => {
 		const lines = [line('build', 'failed: overloaded', { failure: 'passing' })];
 		expect(buildStages(lines, { end: 'failed' })[0]?.state).toBe('failed');
@@ -214,6 +235,16 @@ describe('neverRun', () => {
 		expect([...neverRun({ workflows: { bug: steps(0) } })]).toContain('steps');
 		const both = { workflows: { bug: steps(0), ui: steps(1) }, pullChecks: { enabled: true } };
 		expect([...neverRun(both)]).toEqual([]);
+	});
+
+	it("names Steps by the build's own Workflow when it is known", () => {
+		const config = { workflows: { bug: steps(0), ui: steps(1) }, pullChecks: { enabled: true } };
+		expect([...neverRun(config, 'bug')]).toEqual(['steps']);
+		expect([...neverRun(config, 'ui')]).toEqual([]);
+		// a build with no Workflow, or one factory.json no longer names, runs no Steps
+		expect([...neverRun(config, null)]).toEqual(['steps']);
+		expect([...neverRun(config, 'gone')]).toEqual(['steps']);
+		expect([...neverRun(config, undefined)]).toEqual([]);
 	});
 
 	it('names the Review and its rounds when the Review is off, and its rounds when it has none', () => {

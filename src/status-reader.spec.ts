@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fileSpend, record } from './ledger.js';
+import { fileLogbook } from './logbook.js';
 import { readFactory } from './status-reader.js';
 import { StatusFile } from './status.js';
 
@@ -426,6 +427,34 @@ describe('the cost of each build', () => {
 			'pullChecks notNeeded',
 			'feedback notReached'
 		]);
+
+		// another Workflow has a Step: not reached, until the Logbook says the build ran on one with none
+		writeFileSync(
+			join(root, 'factory.json'),
+			JSON.stringify({
+				tracker: { type: 'github', repo: 'o/app' },
+				codeHost: { type: 'github', repo: 'o/app' },
+				check: 'npm test',
+				allowedCommands: ['npm test'],
+				workflows: {
+					bug: { prompt: 'find the cause first' },
+					ui: { steps: [{ name: 'polish', prompt: 'polish it', point: 'afterAllTickets' }] }
+				}
+			})
+		);
+		const steps = () =>
+			readFactory(root, { alive: live }).completed[0]?.stages?.find((s) => s.stage === 'steps')
+				?.state;
+		expect(steps()).toBe('notReached');
+		fileLogbook(root).write({
+			kind: 'buildStarted',
+			by: 'go',
+			branch: 'b',
+			workflow: 'bug',
+			at: time(1).toISOString(),
+			feature: '1'
+		});
+		expect(steps()).toBe('notNeeded');
 	});
 
 	it('has no split while nothing is building', () => {

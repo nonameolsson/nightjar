@@ -1663,8 +1663,15 @@ describe('nightjar ui last seven days', () => {
 		for (const pick of ['completed', 'failed', 'waiting'])
 			expect(week).toMatch(new RegExp(`<a class="count" href="#panels" data-goto="${pick}">`));
 		expect(week.match(/<a /g)).toHaveLength(3);
-		// each link says where it goes, to a screen reader
-		expect(week).toContain('<span class="sr">, show them in the Table</span>');
+		// each link says what the Table will show, which is not the week's alone
+		expect(week).toContain('<span class="sr">, show every completed Feature in the Table</span>');
+		expect(week).toContain('<span class="sr">, show every failed Feature in the Table</span>');
+		expect(week).toContain(
+			'<span class="sr">, show the Features that need a person now in the Table</span>'
+		);
+		expect(week).toContain(
+			'which shows every Feature the Table holds with that outcome, of any day'
+		);
 		// words carry the meaning, not a colour
 		expect(week).toContain('Features completed');
 		expect(week).toContain('Features failed');

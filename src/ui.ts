@@ -200,18 +200,19 @@ const OUTCOMES = [
 	['waiting', 'Needs a person']
 ] as const;
 
-// The last seven local days, which the Overview opens with. A count of Features is a link to the Table filtered to it; the dollars are not, as no Feature is one.
+// The last seven local days, which the Overview opens with. A count of Features is a link to the Table's outcome filter; the dollars are not, as no Feature is one.
+// The filter shows the Table's rows with that outcome, of any date (and those that need a person now), not the week's, so each link says so rather than promise the same number.
 function week(view: FactoryView): string {
 	const w = view.week ?? NO_WEEK;
-	const count = (n: number, pick: (typeof OUTCOMES)[number][0], what: string) =>
-		`<li><a class="count" href="#panels" data-goto="${pick}"><b>${String(n)}</b> ${n === 1 ? 'Feature' : 'Features'} ${what}<span class="sr">, show them in the Table</span></a></li>`;
+	const count = (n: number, pick: (typeof OUTCOMES)[number][0], what: string, shows: string) =>
+		`<li><a class="count" href="#panels" data-goto="${pick}"><b>${String(n)}</b> ${n === 1 ? 'Feature' : 'Features'} ${what}<span class="sr">, show ${shows} in the Table</span></a></li>`;
 	return (
 		'<section id="week"><h2>Last seven days</h2><ul class="week">' +
-		count(w.completed, 'completed', 'completed') +
-		count(w.failed, 'failed', 'failed') +
-		count(w.handed, 'waiting', 'handed to a person') +
+		count(w.completed, 'completed', 'completed', 'every completed Feature') +
+		count(w.failed, 'failed', 'failed', 'every failed Feature') +
+		count(w.handed, 'waiting', 'handed to a person', 'the Features that need a person now') +
 		`<li><b>${dollars(w.spentUsd)}</b> spent</li></ul>` +
-		'<p class="meta">Features are counted from the recent events and hand-backs that status.json keeps, the dollars from the ledger, by local day.</p></section>'
+		'<p class="meta">Features are counted from the recent events and hand-backs that status.json keeps, the dollars from the ledger, by local day. A count opens the Table filtered by its outcome, which shows every Feature the Table holds with that outcome, of any day; Needs a person shows those that wait on a person now.</p></section>'
 	);
 }
 

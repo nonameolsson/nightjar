@@ -1,11 +1,13 @@
 // The one reader over .factory/ that the live views share: status.json, the session tail and what completed.
-// It reads factory.json too, for the stages the repo never runs.
+// It reads factory.json too, and each building or Completed Feature's Logbook for its Workflow, for the stages a build never runs.
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { logsPath } from './coding-agent.js';
 import { buildCost, type BuildCost, type Stage } from './build-cost.js';
 import { buildStages, neverRun, runningStage, type BuildStage } from './build-stages.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
+import { fileLogbook, type LogbookEntry } from './logbook.js';
+import type { ItemId } from './tracker.js';
 import {
 	builtOn,
 	builtOnFeature,
@@ -130,7 +132,7 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 					featureStages: buildStages(lines, {
 						end: 'building',
 						running: runningStage(doing),
-						neverRun: never
+						neverRun: never(doing.feature, null)
 					})
 				}),
 		medianTicketMs: medianTicketMs(spent),
@@ -148,17 +150,33 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 				costUsd: cost.usd,
 				builtTickets: builtOnFeature(spent, event.feature, after, Date.parse(event.at)),
 				cost,
-				stages: buildStages(own, { end: event.kind, neverRun: never })
+				stages: buildStages(own, {
+					end: event.kind,
+					neverRun: never(event.feature, Date.parse(event.at))
+				})
 			};
 		})
 	};
 }
 
-// The stages the repo's factory.json never runs; none when it is missing or does not read, so a stage the build has not got to is not reached.
-function stagesNeverRun(root: string): ReadonlySet<Stage> {
+// The stages the repo's factory.json never runs on a Feature's build that ended by `upTo` (null: the build in flight); none when factory.json is missing or does not read, so a stage the build has not got to is not reached.
+// The build's Workflow is the one its Logbook's last build started names; with no such entry, the Steps are never run only when no Workflow has one.
+function stagesNeverRun(
+	root: string
+): (feature: ItemId, upTo: number | null) => ReadonlySet<Stage> {
+	let config: Config;
 	try {
-		return neverRun(loadConfig(root));
+		config = loadConfig(root);
 	} catch {
-		return new Set();
+		return () => new Set();
 	}
+	const logbook = fileLogbook(root);
+	const read = new Map<ItemId, readonly LogbookEntry[] | null>();
+	return (feature, upTo) => {
+		if (!read.has(feature)) read.set(feature, logbook.read(feature));
+		const started = (read.get(feature) ?? []).findLast(
+			(e) => e.kind === 'buildStarted' && (upTo === null || Date.parse(e.at) <= upTo)
+		);
+		return neverRun(config, started?.kind === 'buildStarted' ? started.workflow : undefined);
+	};
 }
