@@ -285,6 +285,53 @@ describe('heldSession', () => {
 		expect(await second).toMatchObject({ kind: 'done', sessionId: 's-2' });
 	});
 
+	// the build writes a Session's ledger line after the Session returns, so the cap must stay counted until the line is there
+	it('keeps counting what a Session spent until its ledger line is written, so a waiting Session does not start on dollars already spent', async () => {
+		const spend = memorySpend();
+		spent(spend, 35);
+		const ends: ((costUsd: number) => void)[] = [];
+		const run = (r: SessionRequest): Promise<SessionResult> =>
+			new Promise((resolve) => {
+				// no ledger line here: the caller writes it later
+				ends.push((costUsd) =>
+					resolve({ kind: 'done', costUsd, output: {}, sessionId: r.sessionId })
+				);
+			});
+		const session = heldSession(run, spend, () => morning, 60);
+		// $35 of $60: two $10 Sessions fit, the third waits
+		const a = session({ ...req, sessionId: 's-a' });
+		const b = session({ ...req, sessionId: 's-b' });
+		const c = session({ ...req, sessionId: 's-c' });
+		await settled();
+		expect(ends).toHaveLength(2);
+		// the first ends having spent $9, its line not yet in the ledger: $35 + $9 + the second's $10 leaves no room for $10
+		ends[0]?.(9);
+		await a;
+		await settled();
+		expect(ends).toHaveLength(2);
+		// its line lands, and the count is the same: the third still waits
+		spend.record({
+			at: morning.toISOString(),
+			repo: 'o/r',
+			feature: '1',
+			ticket: null,
+			branch: 'factory/1-a',
+			step: 'build',
+			session: 's-a',
+			costUsd: 9,
+			outcome: 'built'
+		});
+		await settled();
+		expect(ends).toHaveLength(2);
+		ends[1]?.(1);
+		await b;
+		await settled();
+		// the second gave back its cap with its line still to come, and nothing runs beside the third now
+		expect(ends).toHaveLength(3);
+		ends[2]?.(1);
+		expect(await c).toMatchObject({ kind: 'done', sessionId: 's-c' });
+	});
+
 	it('starts no Session once the day it waited on is spent, nor once the run stops', async () => {
 		const spend = memorySpend();
 		spent(spend, 45);

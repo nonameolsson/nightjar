@@ -139,6 +139,31 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 			if (typeof next !== 'string') next.release();
 		});
 
+		it('holds what a Session spent in place of its cap until its ledger line is recorded', () => {
+			const spend = make();
+			spend.record(entry(morning, 40));
+			const other = spend.reserve(10);
+			const ended = spend.reserve(10);
+			// $40 + $10 + $10 = $60: nothing more fits
+			expect(typeof spend.hold(1, morning, 60)).toBe('string');
+			ended.settle('s-ended', 3);
+			// $40 + $10 + the $3 spent leaves $7
+			const fits = spend.hold(7, morning, 60);
+			expect(typeof fits).toBe('object');
+			if (typeof fits !== 'string') fits.release();
+			expect(typeof spend.hold(8, morning, 60)).toBe('string');
+			// its line lands: the $3 is counted once, in the ledger
+			spend.record(entry(morning, 3, { session: 's-ended' }));
+			const after = spend.hold(7, morning, 60);
+			expect(typeof after).toBe('object');
+			if (typeof after !== 'string') after.release();
+			// a second settle or release gives nothing back twice
+			ended.settle('s-ended', 3);
+			ended.release();
+			expect(typeof spend.hold(8, morning, 60)).toBe('string');
+			other.release();
+		});
+
 		it('wakes a Session waiting for room once a cap is given back, or when the run stops', async () => {
 			const spend = make();
 			// with nothing held there is nothing to wait for

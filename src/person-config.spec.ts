@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError } from './config.js';
-import { loadPersonConfig, personConfigPath } from './person-config.js';
+import { loadPersonConfig, personConfigPath, slotsFor } from './person-config.js';
 
 let dir: string;
 beforeEach(() => {
@@ -100,5 +100,14 @@ describe('loadPersonConfig', () => {
 		mkdirSync(join(dir, '.config', 'nightjar'), { recursive: true });
 		writeFileSync(join(dir, '.config', 'nightjar', 'config.json'), '{ dailyUsd: 5');
 		expect(() => loadPersonConfig({ HOME: dir })).toThrow(/config\.json is not JSON/);
+	});
+});
+
+describe('slotsFor', () => {
+	it("takes --parallel over config.json's parallel, and the config's when the flag is left out", () => {
+		write(join(dir, '.config'), { parallel: 2 });
+		const person = loadPersonConfig({ HOME: dir });
+		expect(slotsFor(3, person)).toBe(3);
+		expect(slotsFor(undefined, person)).toBe(2);
 	});
 });

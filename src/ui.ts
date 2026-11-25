@@ -1,23 +1,48 @@
-// `nightjar ui`: a read-only page about the repo, drawn from .factory/ alone, pushed to the browser as server-sent events.
+// `nightjar ui`: a read-only page about the repo, drawn from .factory/ and a read of the Tracker, pushed to the browser as server-sent events.
 import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { lastRepo, ledgerPath } from './ledger.js';
+import {
+	isSessionId,
+	listLogbooks,
+	readLogbook,
+	readSession,
+	sessionSummary,
+	type LoggedSession,
+	type LogbookListing,
+	type LogbookView,
+	type SessionView
+} from './logbook-reader.js';
+import type { LogbookEntry } from './logbook.js';
+import { decisionText } from './logbook-text.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
-import { linksFor, NO_LINKS, type Links } from './ui-links.js';
+import { escapeHtml as escape } from './markdown.js';
+import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js';
 import { readFactory, type BuildView, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
+	FeaturePull,
 	HandBack,
 	Queued,
 	TicketCounts,
 	TicketProgress,
-	WaitingItem
+	WaitingItem,
+	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
+import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
+import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
+import { PAPER_STYLE, THEME_SCRIPT, THEME_SWITCH, themeStyles } from './ui-theme.js';
+import {
+	watchTracker,
+	type FeatureDetail,
+	type TrackerLists,
+	type Upcoming
+} from './ui-tracker.js';
 import {
 	buildViews,
 	countdown,
@@ -25,6 +50,7 @@ import {
 	elapsed,
 	idText,
 	pauseOf,
+	KIND_TEXT,
 	pollAfter,
 	running,
 	retryText,
@@ -43,30 +69,103 @@ export interface Ui {
 }
 
 export interface UiOptions {
-	// the repo root; the page reads its .factory/ and nothing else
+	// the repo root, whose .factory/ the page reads
 	readonly root: string;
 	readonly port: number;
 	readonly now?: () => Date;
 	// whether a pid is alive; the machine's own answer unless a spec passes one
 	readonly alive?: (pid: number) => boolean;
+	// reads the Queue and Waiting on you from the Tracker; left out, the page knows them only from a run's status.json
+	readonly tracker?: () => Promise<Upcoming>;
+	// reads one Feature for its detail panel, when the panel opens; left out, no Feature opens one
+	readonly feature?: (id: ItemId) => Promise<FeatureDetail>;
+	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
+	readonly every?: (ms: number, read: () => void) => () => void;
 }
 
-const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
-
-const EXTERNAL = 'target="_blank" rel="noreferrer noopener"';
-
-// An id, as a link to its page on the Tracker when the page knows one
-const idHtml = (id: string, links: Links = NO_LINKS) => {
-	const text = escape(idText(id));
-	const href = links.issue(id);
-	return href === null
-		? text
-		: `<a class="ext" href="${escape(href)}" ${EXTERNAL} title="Open ${text} on ${links.tracker ?? 'the Tracker'}">${text}</a>`;
-};
 const clock = (iso: string) =>
 	new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function header(repo: string, view: FactoryView): string {
+// The Queue, Waiting on you and the Shelf as the page shows them: the Tracker's last read when there is one, else what a running Nightjar wrote to status.json (which has no Shelf).
+type Lists =
+	| {
+			readonly known: true;
+			// each undefined while status.json has not got it yet
+			readonly queue: readonly Queued[] | undefined;
+			readonly waitingOnYou: WaitingOnYou | undefined;
+			// undefined until the Tracker is read; null when the Tracker cannot list a Shelf
+			readonly shelf: Shelf | null | undefined;
+			// whose Shelf it is, once read
+			readonly person: string | undefined;
+			// when they were read
+			readonly at: string | undefined;
+			// whether a Feature listed opens its detail panel, read from the Tracker
+			readonly opens: boolean;
+	  }
+	// what the page says in their place
+	| { readonly known: false; readonly empty: string };
+
+function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: boolean): Lists {
+	const on = running(view);
+	const status = view.status;
+	const last = tracker?.last ?? null;
+	if (last !== null) {
+		// a Feature claimed since the read is Building, not queued or waiting
+		const building = new Set(on ? buildViews(view).map((b) => b.build.feature) : []);
+		// the run knows which Tickets wait; the Tracker lists only Features
+		const tickets = on
+			? (status?.waitingOnYou?.items ?? []).filter((i) => i.kind === 'ticket')
+			: [];
+		return {
+			known: true,
+			queue: last.queue.filter((q) => !building.has(q.id)),
+			waitingOnYou: {
+				items: [...last.waiting.filter((w) => !building.has(w.id)), ...tickets],
+				trackerCannotList: last.trackerCannotList
+			},
+			shelf: last.shelf,
+			person: last.person,
+			at: last.at,
+			opens
+		};
+	}
+	if (on) {
+		return {
+			known: true,
+			queue: status?.queue,
+			waitingOnYou: status?.waitingOnYou,
+			shelf: undefined,
+			person: undefined,
+			at: status?.refreshedAt,
+			opens
+		};
+	}
+	if (tracker === undefined) return { known: false, empty: OFF };
+	return {
+		known: false,
+		empty:
+			tracker.fault === null
+				? '<p class="empty">reading the Tracker</p>'
+				: `<p class="empty">could not read the Tracker: ${escape(tracker.fault.why)}</p>`
+	};
+}
+
+// When the page last read the Tracker; after a failed read, the lists it kept are marked with their age.
+function trackerRead(tracker: TrackerLists | undefined): string {
+	if (tracker === undefined) return '';
+	const { last, fault } = tracker;
+	if (last === null) {
+		return fault === null
+			? ' <span class="read">reading the Tracker</span>'
+			: ` <span class="read stale">could not read the Tracker: ${escape(fault.why)}</span>`;
+	}
+	const read = `Tracker read <time datetime="${escape(last.at)}">${clock(last.at)}</time>`;
+	return fault === null
+		? ` <span class="read">${read}</span>`
+		: ` <span class="read stale">${read}, <time data-since="${escape(last.at)}"></time> ago; could not read it at <time datetime="${escape(fault.at)}">${clock(fault.at)}</time>: ${escape(fault.why)}</span>`;
+}
+
+function header(repo: string, view: FactoryView, tracker: TrackerLists | undefined): string {
 	const doing = view.status?.doing;
 	const after = pollAfter(view);
 	const pause = pauseOf(view);
@@ -78,31 +177,28 @@ function header(repo: string, view: FactoryView): string {
 				: pause !== null && running(view)
 					? ` <span>${escape(pause.why)}${pause.until === null ? '' : ` until <time datetime="${escape(pause.until)}">${clock(pause.until)}</time>`}</span>`
 					: '';
-	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}</header>`;
+	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}${trackerRead(tracker)}</header>`;
 }
 
-function cards(view: FactoryView): string {
+function cards(view: FactoryView, lists: Lists): string {
 	const status = view.status;
 	const spent =
 		status === null
 			? 'no spend recorded'
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
-	const waiting = status?.waitingOnYou?.items.length;
+	const waiting = lists.known ? lists.waitingOnYou?.items.length : undefined;
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
-function queue(view: FactoryView, links: Links): string {
-	const status = view.status;
+function queue(lists: Lists, links: Links): string {
 	let body: string;
-	if (!running(view)) body = OFF;
-	else if (status?.queue === undefined) body = '<p class="empty">not read yet</p>';
-	else if (status.queue.length === 0) body = emptyQueue(links);
+	if (!lists.known) body = lists.empty;
+	else if (lists.queue === undefined) body = '<p class="empty">not read yet</p>';
+	else if (lists.queue.length === 0) body = emptyQueue(links);
 	else
-		body = `<ul>${status.queue.map((q) => `<li>${idHtml(q.id, links)} ${escape(q.title)}</li>`).join('')}</ul>`;
+		body = `<ul>${lists.queue.map((q) => `<li>${idHtml(q.id, links)} ${titleHtml(q.id, q.title, lists.opens)}</li>`).join('')}</ul>`;
 	const refreshed =
-		running(view) && status?.refreshedAt !== undefined
-			? ` <small>refreshed ${clock(status.refreshedAt)}</small>`
-			: '';
+		lists.known && lists.at !== undefined ? ` <small>refreshed ${clock(lists.at)}</small>` : '';
 	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
 }
 
@@ -151,10 +247,10 @@ function current(view: FactoryView, links: Links): string {
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
-function waiting(view: FactoryView, links: Links): string {
-	const found = view.status?.waitingOnYou;
+function waiting(view: FactoryView, lists: Lists, links: Links): string {
+	const found = lists.known ? lists.waitingOnYou : undefined;
 	let body: string;
-	if (!running(view)) body = OFF;
+	if (!lists.known) body = lists.empty;
 	else if (found === undefined) body = '<p class="empty">not read yet</p>';
 	else {
 		const note = found.trackerCannotList
@@ -165,7 +261,8 @@ function waiting(view: FactoryView, links: Links): string {
 		const items = found.items
 			.map((i) => {
 				const back = lastHandBack(view, i.feature ?? i.id, i.kind === 'ticket' ? i.id : null);
-				return `<li>${idHtml(i.id, links)} ${escape(i.title)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
+				const opens = lists.opens && i.kind === 'feature';
+				return `<li>${idHtml(i.id, links)} ${titleHtml(i.id, i.title, opens)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
 			})
 			.join('');
 		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
@@ -173,13 +270,22 @@ function waiting(view: FactoryView, links: Links): string {
 	return `<section id="waiting"><h2>Waiting on you</h2>${body}</section>`;
 }
 
+function shelf(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
+	const li = (c: ShelfCard) =>
+		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}${earlierHtml(c)}</li>`;
+	const items = (all.shelf ?? []).map(li).join('');
+	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
+	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
+}
+
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
-function completed(view: FactoryView, links: Links): string {
+function completed(view: FactoryView, lists: Lists, links: Links): string {
 	const li = ({ done: { event, costUsd }, runs }: CompletedCard) =>
 		`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
-	const rows = features(view).completed.map(li).join('');
+	const rows = features(view, lists).completed.map(li).join('');
 	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
 }
 
@@ -224,6 +330,32 @@ interface FeatureCard {
 	readonly waitingTickets: readonly WaitingTicket[];
 	// Tickets built of the Feature's Tickets; null when there is no count to show
 	readonly progress: Progress | null;
+	// its title opens the Feature detail panel: a Feature on Waiting on you, the Queue or the Shelf, when the page reads the Tracker
+	readonly opens?: true;
+	// the Feature's finished runs, on a card that is not on Completed because it is active again
+	readonly earlier?: Earlier;
+	// its open pull request, whose branch holds Tickets the Tracker still shows open
+	readonly pull?: FeaturePull;
+}
+// how many finished runs a Feature had in status.json's recent events, and the latest of them
+interface Earlier {
+	readonly runs: number;
+	readonly done: Completed;
+	// what the latest run built, when the Feature's Ticket count is known
+	readonly progress: Progress | null;
+}
+
+// The earlier runs of a Feature on its active card, linking the latest one's pull request
+function earlierHtml(card: FeatureCard): string {
+	const e = card.earlier;
+	if (e === undefined) return '';
+	const count = `${String(e.runs)} earlier ${e.runs === 1 ? 'run' : 'runs'}`;
+	const { event } = e.done;
+	const latest =
+		event.kind === 'pull'
+			? `, the latest: ${outcomeHtml(event)}`
+			: `, the latest failed${e.progress === null ? '' : ` (${progressText(e.progress)})`}`;
+	return `<p class="meta runs" title="counted from the recent events only">${count}${latest}</p>`;
 }
 interface QueuedCard extends FeatureCard {
 	readonly state: 'queue';
@@ -231,6 +363,15 @@ interface QueuedCard extends FeatureCard {
 	readonly ticketCounts: TicketCounts | null | undefined;
 	// null when there is nothing to estimate from
 	readonly estimateMs: number | null;
+}
+
+// An open Feature of the person's with no Signal: work they could give the Go
+interface ShelfCard extends FeatureCard {
+	readonly state: 'shelf';
+	// a lone issue is built as itself; `none` is a Feature with no Tickets that the Tracker would not build alone
+	readonly tickets: 'lone' | 'none' | 'some';
+	// when it was last updated, as an ISO date
+	readonly updated: string;
 }
 
 const estimateHtml = (ms: number | null) =>
@@ -252,6 +393,25 @@ interface Progress {
 }
 // the Tickets built as things stand
 const BUILT_NOW = 'built now';
+
+// The Tickets built of a Feature: those the Tracker shows closed, and those its open pull request's branch built, which stay open until it merges.
+const builtOf = (counts: TicketCounts, pull: FeaturePull | undefined, label: string): Progress => ({
+	built: Math.min(counts.closed + (pull?.built.length ?? 0), counts.total),
+	total: counts.total,
+	counts: label
+});
+
+// A link to the Feature's open pull request, which holds what was built so far; nothing without one
+function pullHtml(card: FeatureCard): string {
+	const pull = card.pull;
+	if (pull === undefined) return '';
+	const text = `pull request #${String(pull.id)}`;
+	const link = safeUrl(pull.url)
+		? `<a class="ext" href="${escape(pull.url)}" ${EXTERNAL}>${text}</a>`
+		: escape(text);
+	const n = pull.built.length;
+	return `<p class="meta pull">${String(n)} ${n === 1 ? 'Ticket' : 'Tickets'} built on ${link}</p>`;
+}
 // the Tickets a failed run's own sessions built
 const BUILT_IN_RUN = 'built in this run';
 // the Tickets a pull request's branch held when its run ended, earlier runs' among them
@@ -305,22 +465,26 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 }
 
 interface Features {
-	// each is undefined while Nightjar is off or has not read it yet
+	// each is undefined while the lists are not known or not read yet
 	readonly queue: readonly QueuedCard[] | undefined;
 	// one per busy Slot, oldest first
 	readonly building: readonly BuildingCard[];
 	readonly waiting: readonly WaitingCard[] | undefined;
 	readonly trackerCannotList: boolean;
+	// newest update first; undefined while the Tracker has not been read
+	readonly shelf: readonly ShelfCard[] | undefined;
+	// how many Features the Shelf holds in all, those listed and those left out
+	readonly shelfTotal: number;
+	readonly shelfCannotList: boolean;
 	// newest first
 	readonly completed: readonly CompletedCard[];
 }
 
-// The one list of Features, built from what the reader gives.
-function features(view: FactoryView): Features {
-	const status = view.status;
+// The one list of Features, built from what the reader and the Tracker give.
+function features(view: FactoryView, lists: Lists): Features {
 	const on = running(view);
 	const finishing = pauseOf(view) !== null;
-	const building = (on ? buildViews(view) : []).map(({ build: doing, tail, costUsd }) => {
+	let building = (on ? buildViews(view) : []).map(({ build: doing, tail, costUsd }) => {
 		const tickets = doing.tickets ?? [];
 		const card: BuildingCard = {
 			state: 'building',
@@ -345,14 +509,14 @@ function features(view: FactoryView): Features {
 		};
 		return card;
 	});
-	const found = on ? status?.waitingOnYou : undefined;
+	const found = lists.known ? lists.waitingOnYou : undefined;
+	const listed = lists.known ? lists.queue : undefined;
+	const opens = lists.known && lists.opens ? { opens: true as const } : {};
 	// a failure's total is known only while the Queue or Waiting on you counts that Feature again
 	const totals = new Map<string, number>();
-	if (on) {
-		for (const q of status?.queue ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
-		for (const i of found?.items ?? [])
-			if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
-	}
+	for (const q of listed ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
+	for (const i of found?.items ?? [])
+		if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
 	const completedCard = (done: Completed, runs: number): CompletedCard => {
 		const { event } = done;
 		const built = done.builtTickets ?? 0;
@@ -398,9 +562,9 @@ function features(view: FactoryView): Features {
 					why: i.why,
 					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: [],
-					progress: i.ticketCounts
-						? { built: i.ticketCounts.closed, total: i.ticketCounts.total, counts: BUILT_NOW }
-						: null
+					progress: i.ticketCounts ? builtOf(i.ticketCounts, i.pull, BUILT_NOW) : null,
+					...(i.pull === undefined ? {} : { pull: i.pull }),
+					...opens
 				};
 			});
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
@@ -415,6 +579,11 @@ function features(view: FactoryView): Features {
 			byFeature.set(id, [...(byFeature.get(id) ?? []), ticket]);
 		}
 		for (const [id, tickets] of byFeature) {
+			// the building Feature's own waiting Tickets go on its Building card
+			if (building.some((b) => b.id === id)) {
+				building = building.map((b) => (b.id === id ? { ...b, waitingTickets: tickets } : b));
+				continue;
+			}
 			const at = waiting.findIndex((w) => w.id === id);
 			const own = at < 0 ? undefined : waiting[at];
 			const title = titleOf(id);
@@ -429,35 +598,75 @@ function features(view: FactoryView): Features {
 					why: 'needs info',
 					...(handBack === undefined ? {} : { handBack }),
 					waitingTickets: tickets,
-					progress: null
+					progress: null,
+					// an older file may name no Feature, so there is none to open
+					...(id === '' ? {} : opens)
 				});
 		}
 	}
-	const queued = (q: Queued): QueuedCard => ({
-		state: 'queue',
-		id: q.id,
-		title: q.title,
+	const queued = (q: Queued): QueuedCard => {
+		const progress = q.ticketCounts ? builtOf(q.ticketCounts, q.pull, 'built') : null;
+		const left = progress === null ? 0 : progress.total - progress.built;
+		return {
+			state: 'queue',
+			id: q.id,
+			title: q.title,
+			waitingTickets: [],
+			ticketCounts: q.ticketCounts,
+			progress,
+			...(q.pull === undefined ? {} : { pull: q.pull }),
+			// the median Ticket duration times the Tickets not built yet; none without history, a count, or a Ticket left
+			estimateMs: view.medianTicketMs == null || left === 0 ? null : view.medianTicketMs * left,
+			...opens
+		};
+	};
+	const queue = listed?.map(queued);
+	const onShelf = (f: ShelfFeature): ShelfCard => ({
+		state: 'shelf',
+		id: f.id,
+		title: f.title,
 		waitingTickets: [],
-		ticketCounts: q.ticketCounts,
-		progress: q.ticketCounts ? { built: 0, total: q.ticketCounts.total, counts: 'built' } : null,
-		// the median Ticket duration times the Feature's Tickets; none without history or a count
-		estimateMs:
-			view.medianTicketMs == null || !q.ticketCounts
-				? null
-				: view.medianTicketMs * q.ticketCounts.total
+		progress: null,
+		tickets: f.hasTickets ? 'some' : f.lone === true ? 'lone' : 'none',
+		updated: f.updated,
+		...opens
 	});
-	const queue = on ? status?.queue?.map(queued) : undefined;
+	const shelved = lists.known ? lists.shelf : undefined;
+	const shelfCards = shelved?.features.map(onShelf);
+	// a Feature with finished runs that is active again, or back on the Shelf, sits there alone with its runs on its card
+	const active = new Set(
+		[...building, ...(waiting ?? []), ...(queue ?? []), ...(shelfCards ?? [])].map((c) => c.id)
+	);
+	const withEarlier = <C extends FeatureCard>(card: C): C => {
+		const done = completed.find((c) => c.id === card.id);
+		return done === undefined
+			? card
+			: { ...card, earlier: { runs: done.runs, done: done.done, progress: done.progress } };
+	};
 	return {
-		queue,
-		building,
-		waiting,
+		queue: queue?.map(withEarlier),
+		building: building.map(withEarlier),
+		waiting: waiting?.map(withEarlier),
 		trackerCannotList: found?.trackerCannotList ?? false,
-		completed
+		// the Tracker's order, newest update first, which its contract suite holds it to
+		shelf: shelfCards?.map(withEarlier),
+		shelfTotal: shelved?.total ?? 0,
+		shelfCannotList: shelved === null,
+		completed: completed.filter((c) => !active.has(c.id))
 	};
 }
 
+// A Feature's title; one that opens the Feature detail panel is a button, so a mouse and a keyboard both reach it
+function titleHtml(id: string, title: string | undefined, opens: boolean): string {
+	if (!opens) return title === undefined ? '' : escape(title);
+	const text = escape(title ?? idText(id));
+	return `<button type="button" class="open" data-feature="${escape(id)}" aria-haspopup="dialog" aria-controls="feature" title="Show ${escape(idText(id))}: its spec and Tickets">${text}</button>`;
+}
+
+const cardTitle = (card: FeatureCard) => titleHtml(card.id, card.title, card.opens === true);
+
 const feature = (card: FeatureCard, links: Links) =>
-	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${card.title === undefined ? '' : escape(card.title)}`;
+	`<b>${card.id === '' ? '' : idHtml(card.id, links)}</b> ${cardTitle(card)}`;
 
 // A Next step as the Tracker comment numbers it, a Signal's `name` set as code
 function nextStepHtml(back: HandBack | undefined): string {
@@ -489,7 +698,7 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why,
+		whyHtml(card, u) + why + pullHtml(card) + earlierHtml(card),
 		actionLink(u, links),
 		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
 	);
@@ -505,7 +714,7 @@ function nest(
 	meta: string,
 	beneath = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
 }
 
 function buildingCard(card: BuildingCard, links: Links): string {
@@ -516,8 +725,9 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		card,
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
-		`<p class="label">${card.finishing ? 'Finishing' : 'Building'}</p><p>${stepLine(doing)}</p>`,
-		`<time data-since="${escape(featureStart(doing))}"></time>`
+		`<p class="label">${card.finishing ? 'Finishing' : 'Building'}</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
+		`<time data-since="${escape(featureStart(doing))}"></time>`,
+		waitingTicketsHtml(card, links)
 	);
 }
 
@@ -533,11 +743,27 @@ function detail(card: BuildingCard, links: Links): string {
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(card.costUsd)}</b></div></div>` +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
+		`<p class="more">${sessionLink(doing.session)}<a class="open" href="${featureHref(doing.feature)}">Open its Logbook</a></p>` +
 		'</aside>'
 	);
 }
 
-// A Feature not yet started: its Ticket count, `0 of N` and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
+// A link to a Session's own page; nothing for a build that has no Session yet
+function sessionLink(session: string | null, text = 'Open this Session'): string {
+	if (session === null || !isSessionId(session)) return '';
+	return `<a class="open" href="/sessions/${session}">${text}</a>`;
+}
+
+// A Feature's Logbook page, its id made safe as one part of the path
+const featureHref = (id: string) => escape(`/features/${encodeURIComponent(id)}`);
+
+// The link to a Feature's Logbook on its card and its row; none for a card that names no Feature
+const logbookLink = (id: string) =>
+	id === ''
+		? ''
+		: ` <a class="open book-link" href="${featureHref(id)}" aria-label="Logbook of ${escape(idText(id))}">Logbook</a>`;
+
+// A Feature in the Queue: its Ticket count, `k of N` built (closed, or on its open pull request) and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard, links: Links): string {
 	const counts = card.ticketCounts;
 	let count = '';
@@ -545,7 +771,14 @@ function queuedCard(card: QueuedCard, links: Links): string {
 	else if (counts !== undefined)
 		count = `<p class="meta count">${String(counts.total)} ${counts.total === 1 ? 'Ticket' : 'Tickets'}</p>${progressHtml(card.progress)}`;
 	const est = card.estimateMs === null ? '' : estimateHtml(card.estimateMs);
-	return nest('queue', card, links, count, '<p class="label">Queued</p>', est);
+	return nest(
+		'queue',
+		card,
+		links,
+		count,
+		`<p class="label">Queued</p>${pullHtml(card)}${earlierHtml(card)}`,
+		est
+	);
 }
 
 function completedCard(card: CompletedCard, links: Links): string {
@@ -560,6 +793,49 @@ function completedCard(card: CompletedCard, links: Links): string {
 		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
 		`${duration}${dollars(costUsd)}`
 	);
+}
+
+const SHELF_CANNOT = 'Shelf is not available from this Tracker';
+
+// What a Shelf item says of its Tickets: a lone issue is built as itself
+const shelfNote = (card: ShelfCard) =>
+	card.tickets === 'lone' ? 'Lone issue' : card.tickets === 'none' ? 'no Tickets yet' : '';
+
+// The day a Feature was last updated; nothing when the Tracker gave none
+const updatedHtml = (iso: string) =>
+	Number.isNaN(Date.parse(iso))
+		? ''
+		: `updated <time datetime="${escape(iso)}">${new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' })}</time>`;
+
+function shelfCard(card: ShelfCard, links: Links): string {
+	const note = shelfNote(card);
+	return nest(
+		'shelf',
+		card,
+		links,
+		note === '' ? '' : `<p class="meta count">${note}</p>`,
+		`<p class="label">On the Shelf</p>${earlierHtml(card)}`,
+		updatedHtml(card.updated)
+	);
+}
+
+// The Shelf lists at most SHELF_MAX Features; the rest are one link to the person's open issues on the Tracker.
+function shelfMore(all: Features, lists: Lists, links: Links): string {
+	const more = all.shelfTotal - (all.shelf?.length ?? 0);
+	if (more <= 0) return '';
+	const text = `and ${String(more)} more in the Tracker`;
+	const href = lists.known && lists.person !== undefined ? links.assigned(lists.person) : null;
+	return `<p class="more">${href === null ? text : `<a class="ext" href="${escape(href)}" ${EXTERNAL}>${text}</a>`}</p>`;
+}
+
+// What the Shelf says in place of Features: why it is not there, or that it is empty; null when it lists some
+function shelfEmpty(all: Features, lists: Lists): string | null {
+	if (!lists.known) return lists.empty;
+	if (all.shelfCannotList) return `<p class="empty">${SHELF_CANNOT}</p>`;
+	if (all.shelf === undefined) return '<p class="empty">not read yet</p>';
+	if (all.shelf.length === 0)
+		return `<p class="empty">empty${hint('Features assigned to you that carry no Signal show here.')}</p>`;
+	return null;
 }
 
 function group(state: string, name: string, count: number | null, body: string): string {
@@ -641,12 +917,13 @@ function helpHtml(card: WaitingCard, u: Unblock | null, links: Links): string {
 const LEGEND =
 	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
 
-function board(view: FactoryView, links: Links): string {
-	const all = features(view);
+function board(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
 	const on = running(view);
+	const { known } = lists;
 	const none = (text: string) => `<p class="empty">${text}</p>`;
-	const queued = !on
-		? OFF
+	const queued = !lists.known
+		? lists.empty
 		: all.queue === undefined
 			? none('not read yet')
 			: all.queue.length === 0
@@ -657,13 +934,15 @@ function board(view: FactoryView, links: Links): string {
 			? none('nothing is being built')
 			: all.building.map((b) => buildingCard(b, links)).join('');
 	let waiting: string;
-	if (!on) waiting = OFF;
+	if (!lists.known) waiting = lists.empty;
 	else if (all.waiting === undefined) waiting = none('not read yet');
 	else {
 		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
 		const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
 		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
 	}
+	const shelfCards = (all.shelf ?? []).map((c) => shelfCard(c, links)).join('');
+	const shelf = shelfEmpty(all, lists) ?? shelfCards + shelfMore(all, lists, links);
 	const completed =
 		all.completed.length === 0
 			? none('nothing has finished yet')
@@ -676,9 +955,10 @@ function board(view: FactoryView, links: Links): string {
 	return (
 		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
-		group('waiting', 'Waiting on you', on ? (all.waiting?.length ?? null) : null, waiting) +
+		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
 		group('building', 'Building', on ? all.building.length : null, building) +
-		group('queue', 'Queue', on ? (all.queue?.length ?? null) : null, queued) +
+		group('queue', 'Queue', known ? (all.queue?.length ?? null) : null, queued) +
+		group('shelf', 'Shelf', known && all.shelf !== undefined ? all.shelfTotal : null, shelf) +
 		group('completed', 'Completed', all.completed.length, completed) +
 		`</div>${side}</div></div>`
 	);
@@ -688,6 +968,7 @@ const STATES = [
 	['queue', 'Queue'],
 	['building', 'Building'],
 	['waiting', 'Waiting on you'],
+	['shelf', 'Shelf'],
 	['completed', 'Completed']
 ] as const;
 
@@ -702,8 +983,8 @@ const COLUMNS = [
 ] as const;
 
 // One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
-function table(view: FactoryView, links: Links): string {
-	const all = features(view);
+function table(view: FactoryView, lists: Lists, links: Links): string {
+	const all = features(view, lists);
 	interface Row {
 		readonly card: FeatureCard;
 		readonly state: (typeof STATES)[number][0];
@@ -723,10 +1004,12 @@ function table(view: FactoryView, links: Links): string {
 			timeText: estimateHtml(card.estimateMs),
 			cost: null,
 			outcome: '',
-			outcomeText: '',
+			outcomeText: earlierHtml(card),
 			progress: card.progress
 		});
 	for (const card of all.building) {
+		// its Tickets that wait on the person, as the Waiting rows say why
+		const waits = card.waitingTickets.map((t) => `${idText(t.id)} ${t.title}: ${t.why}`).join('; ');
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
 			card,
@@ -734,8 +1017,8 @@ function table(view: FactoryView, links: Links): string {
 			time: null,
 			timeText: `<time data-since="${escape(featureStart(card.doing))}"></time>`,
 			cost: card.costUsd,
-			outcome: '',
-			outcomeText: '',
+			outcome: waits,
+			outcomeText: escape(waits) + earlierHtml(card),
 			progress: card.progress
 		});
 	}
@@ -748,10 +1031,21 @@ function table(view: FactoryView, links: Links): string {
 			timeText: '',
 			cost: null,
 			outcome,
-			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}`,
+			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}${earlierHtml(card)}`,
 			progress: card.progress
 		});
 	}
+	for (const card of all.shelf ?? [])
+		rows.push({
+			card,
+			state: 'shelf',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: shelfNote(card),
+			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>${earlierHtml(card)}`,
+			progress: null
+		});
 	for (const card of all.completed) {
 		const { event, costUsd } = card.done;
 		const took = tookMs(event);
@@ -777,29 +1071,92 @@ function table(view: FactoryView, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${escape(r.card.title ?? '')}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
-	const note = !running(view)
-		? OFF
-		: all.trackerCannotList
-			? '<p class="empty">Waiting on you is not available from this Tracker</p>'
-			: '';
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}</div>`;
+	let note = '';
+	if (!lists.known) note = lists.empty;
+	else {
+		if (all.trackerCannotList)
+			note += '<p class="empty">Waiting on you is not available from this Tracker</p>';
+		if (all.shelfCannotList) note += `<p class="empty">${SHELF_CANNOT}</p>`;
+	}
+	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
 }
+
+// The titles the page knows, by Feature: from the build in flight, the Queue, Waiting on you and the recent events.
+function titlesOf(view: FactoryView): ReadonlyMap<string, string> {
+	const titles = new Map<string, string>();
+	const put = (id: string, title: string | undefined) => {
+		if (title !== undefined && title !== '') titles.set(id, title);
+	};
+	for (const done of view.completed) put(done.event.feature, done.event.title);
+	for (const item of view.status?.waitingOnYou?.items ?? [])
+		if (item.kind === 'feature') put(item.id, item.title);
+	for (const q of view.status?.queue ?? []) put(q.id, q.title);
+	const doing = view.status?.doing;
+	if (doing?.kind === 'building') put(doing.feature, doing.title);
+	return titles;
+}
+
+const sessionsText = (n: number) => (n === 1 ? '1 Session' : `${String(n)} Sessions`);
+
+// Every Feature with a Logbook or ledger lines, the one touched last first, so a Feature off the Board stays reachable.
+function allLogbooks(
+	found: readonly LogbookListing[],
+	titles: ReadonlyMap<string, string>
+): string {
+	const items = found
+		.map((f) => {
+			const title = titles.get(f.feature);
+			return `<li class="book-item"><a class="open" href="${featureHref(f.feature)}">${escape(idText(f.feature))}${title === undefined ? '' : ` ${escape(title)}`}</a> <small>${sessionsText(f.sessions)}, ${dollars(f.costUsd)}, last ${stampHtml(f.lastAt)}</small></li>`;
+		})
+		.join('');
+	return `<section id="logbooks"><h2>All Logbooks</h2>${items === '' ? '<p class="empty">no Logbook yet</p>' : `<ul>${items}</ul>`}</section>`;
+}
+
+const STAMP: Intl.DateTimeFormatOptions = {
+	month: 'short',
+	day: 'numeric',
+	hour: '2-digit',
+	minute: '2-digit'
+};
+
+// A moment in a Logbook, with its day, as Logbooks reach back past today
+const stampHtml = (iso: string) => {
+	const when = new Date(iso);
+	const text = Number.isNaN(when.getTime()) ? iso : when.toLocaleString([], STAMP);
+	return `<time datetime="${escape(iso)}">${escape(text)}</time>`;
+};
 
 // Splits what stays in view (the run's state and numbers) from the content that scrolls beneath it.
 const MAIN = '<!--main-->';
 
 // The panels, which the page replaces whole each time an event brings new ones.
-export function renderPanels(root: string, view: FactoryView, links: Links = NO_LINKS): string {
+// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel.
+export function renderPanels(
+	root: string,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	tracker?: TrackerLists,
+	opens = false
+): string {
+	const lists = listsOf(view, tracker, opens);
+	const overview = [
+		current(view, links),
+		queue(lists, links),
+		shelf(view, lists, links),
+		waiting(view, lists, links),
+		completed(view, lists, links),
+		allLogbooks(listLogbooks(root), titlesOf(view))
+	].join('\n');
 	return [
-		header(lastRepo(ledgerPath(root)) ?? basename(root), view),
-		cards(view),
+		header(lastRepo(ledgerPath(root)) ?? basename(root), view, tracker),
+		cards(view, lists),
 		MAIN,
-		board(view, links),
-		table(view, links),
-		`<div class="overview">${[current(view, links), queue(view, links), waiting(view, links), completed(view, links)].join('\n')}</div>`
+		board(view, lists, links),
+		table(view, lists, links),
+		`<div class="overview">${overview}</div>`
 	].join('\n');
 }
 
@@ -823,16 +1180,19 @@ const PAGE = (panels: string, links: Links) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nightjar</title>
-<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
+${themeStyles({ paper: PAPER_STYLE, nightjar: `${STYLE}.banner { background-image: url(${BANNER}); }` })}
+<script id="theme">${THEME_SCRIPT}</script>
 </head>
 <body>
 <a class="skip" href="#panels">Skip to Features</a>
 <p id="live" class="sr" role="status"></p>
-<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}</div>
+<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}${THEME_SWITCH}</div>
 <div id="top">${top}</div>
 <div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
+${FEATURE_DIALOG}
 <script>${SCRIPT}</script>
 <script>${PARALLAX}</script>
+<script>${FEATURE_SCRIPT}</script>
 </body>
 </html>
 `;
@@ -1000,10 +1360,10 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header, chip, help or copy button or link; put focus back on its twin
+	// a swap drops the focused sort header, chip, help, copy or Feature button or link; put focus back on its twin
 	const was = document.activeElement;
 	const data = (was && was.dataset) || {};
-	const key = ['sort', 'chip', 'help', 'copy'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const key = ['sort', 'chip', 'help', 'copy', 'feature'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	// links can share an href, so remember which of them had focus
 	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
@@ -1055,12 +1415,17 @@ time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre
 #views button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 5px 16px; }
 #views button:hover { color: var(--ink); }
 #views button[data-on="true"] { background: var(--teal-wash); border-color: var(--teal2); color: var(--teal); }
+#themes { border-left: 1px solid var(--line); display: flex; gap: 4px; margin-left: 12px; padding-left: 12px; }
+#themes button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: 0.75rem var(--mono); padding: 3px 10px; }
+#themes button:hover { color: var(--ink); }
+#themes button[data-on="true"] { border-color: var(--teal2); color: var(--teal); }
 #panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 16px 32px 56px; }
 h1, h2 { font-size: 1em; margin: 0; }
 header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 12px 0 2px; }
 h1 { font: 700 1.6rem var(--mono); }
 header span { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; }
 header .state { color: var(--teal); font-weight: 600; }
+header .stale { color: var(--amber); }
 #cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
 .stat b { color: var(--ink); }
 .empty, small, .meta { color: var(--muted); }
@@ -1099,6 +1464,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .mat::after { border-left: 0; border-top: 0; bottom: -1px; }
 .mat[data-state="waiting"] { --h: var(--amber); }
 .mat[data-state="queue"] { --h: var(--slate); }
+.mat[data-state="shelf"] { --h: var(--muted); }
 .mat[data-state="completed"] { --h: var(--ok); }
 .tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
@@ -1107,6 +1473,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
+.more { border-top: 1px dashed var(--line); font: 0.85rem var(--mono); margin: 0; padding: 12px 0 8px; }
+.table .more { border: 0; padding: 12px 12px 0; }
 .entry p { margin: 0; }
 .who { font-size: 1.05rem; font-weight: 600; }
 .who b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 10px; }
@@ -1169,6 +1537,7 @@ td.progress p { display: inline; margin: 0 0 0 14px; }
 tr[data-state] td:first-child { border-left: 3px solid var(--teal); }
 tr[data-state="waiting"] td:first-child { border-left-color: var(--amber); }
 tr[data-state="queue"] td:first-child { border-left-color: var(--slate); }
+tr[data-state="shelf"] td:first-child { border-left-color: var(--muted); }
 tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
 tr[data-failed] td:first-child { border-left-color: var(--err); }
 table { border-collapse: collapse; width: 100%; }
@@ -1202,6 +1571,80 @@ code { background: color-mix(in srgb, var(--teal) 10%, transparent); color: var(
 .hint { color: var(--ink2); display: block; font-size: 0.85rem; margin-top: 2px; }
 button.copy { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); margin-left: 4px; min-height: 24px; padding: 1px 8px; }
 button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+a.open { align-items: center; display: inline-flex; font-size: 0.85rem; min-height: 24px; }
+.detail .more { margin: 12px 0 0; }
+.part { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; margin: 24px 0 4px; text-transform: uppercase; }
+.run { background: var(--panel-overlay); border: 1px solid var(--line); margin: 12px 0; padding: 12px 16px; }
+.run dl { display: grid; gap: 8px 20px; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin: 0; }
+.run dt { color: var(--muted); font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
+.run dd { font: 0.85rem var(--mono); margin: 0; overflow-wrap: anywhere; }
+.log { margin: 8px 0 0; }
+.log li { overflow-wrap: anywhere; padding: 6px 0; }
+.log p { margin: 0; }
+.log .tool { border-left: 2px solid var(--teal2); color: var(--ink2); font: 0.85rem var(--mono); padding-left: 12px; }
+.log .result { padding-left: 14px; }
+.log summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; }
+.log summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.log pre { max-height: 24rem; }
+a.book-link { font: 400 0.75rem var(--mono); margin-left: 10px; vertical-align: middle; }
+.detail .more { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.book { margin: 16px 0 0; }
+.book > li { border-left: 2px solid var(--line); overflow-wrap: anywhere; padding: 6px 0 6px 16px; }
+.book > li > p { color: var(--ink2); font-size: 0.85rem; margin: 0; }
+.book > li.session { border-left-color: var(--teal2); }
+.book > li.handed { border-left-color: var(--amber); }
+.book > li.live { border-left-color: var(--teal); }
+.book time { color: var(--muted); font: 0.75rem var(--mono); margin-right: 8px; }
+.book .run { margin: 4px 0; }
+.book .when { margin: 0 0 8px; }
+.book .label { color: var(--teal); font: 700 0.75rem var(--mono); letter-spacing: 0.08em; margin-right: 8px; text-transform: uppercase; }
+.book summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding-top: 4px; }
+.book summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.book pre { max-height: 24rem; }
+button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+button.open:hover { color: var(--teal); text-decoration-style: solid; }
+#feature { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; scrollbar-color: var(--teal2) var(--void); width: 640px; }
+#feature::backdrop { background: var(--shade-deep); }
+.fp { min-height: 100%; padding: 18px 22px 32px; position: relative; }
+.fp::before, .fp::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
+.fp::before { border-bottom: 0; border-right: 0; left: 0; top: 0; }
+.fp::after { border-left: 0; border-top: 0; bottom: 0; right: 0; }
+.fp-bar { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.fp-bar .dk { font-family: var(--mono); }
+button.close { background: none; border: 1px solid var(--teal2); color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 10px; }
+button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+#feature h2 { font: 700 1.2rem system-ui, sans-serif; margin: 8px 0 6px; overflow-wrap: anywhere; }
+#feature h2 b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 8px; }
+#feature .sub { font-family: var(--mono); margin: 0 0 6px; }
+#feature section { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 10px; }
+#feature h3 { color: var(--teal2); font: 600 0.75rem var(--mono); letter-spacing: 0.2em; margin: 0 0 8px; text-transform: uppercase; }
+#feature .fault { color: var(--err); }
+.md { overflow-wrap: anywhere; }
+.md p { margin: 6px 0; }
+#feature .md :is(h3, h4, h5, h6) { color: var(--ink); font: 600 1rem system-ui, sans-serif; letter-spacing: 0; margin: 14px 0 4px; text-transform: none; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.6em; }
+.md li { padding: 1px 0; }
+.md li.task { list-style: none; margin-left: -1.2em; }
+.md input[type="checkbox"] { accent-color: var(--teal2); margin: 0 6px 0 0; vertical-align: middle; }
+.md blockquote { border-left: 2px solid var(--line); color: var(--ink2); margin: 8px 0; padding-left: 12px; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+#feature .steps { margin: 4px 0 0; }
+#feature .steps li { color: var(--ink); }
+#feature .steps li p { margin: 2px 0; }
+#feature .steps li.closed { color: var(--muted); }
+#feature .steps li.closed::before { background: var(--teal2); border-color: var(--teal2); }
+.tk b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 6px; }
+.st, .blockers small { font-family: var(--mono); }
+.blockers { color: var(--ink2); }
+#feature .contract { font-family: var(--mono); font-size: 0.75rem; margin: 6px 0; }
+#feature .contract.ok, #feature .verdict.ok { color: var(--teal); }
+#feature .contract.bad, #feature .verdict.bad { color: var(--err); }
+#feature .verdict { font: 0.75rem var(--mono); }
+#feature ul.faults { color: var(--err); font-size: 0.85rem; list-style: disc; margin: 2px 0 4px; padding-left: 1.4em; }
+.criteria summary { color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 0; }
+.criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.criteria .md { color: var(--ink2); }
 @media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -1212,7 +1655,7 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 	.details { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .log summary, .book summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1239,9 +1682,246 @@ button.copy:hover { background: color-mix(in srgb, var(--teal) 12%, transparent)
 }
 `;
 
+// The Logbook page's own script: each event brings the page's content again, and the folds the person opened and the link they were on stay as they were.
+const LOGBOOK_SCRIPT = `
+const panels = document.getElementById('panels');
+new EventSource(panels.dataset.events).onmessage = (e) => {
+	const opened = Array.from(panels.querySelectorAll('details[open]')).map((d) => d.dataset.key);
+	const was = document.activeElement;
+	const href = was && was.tagName === 'A' ? was.getAttribute('href') : null;
+	const fold = was && was.tagName === 'SUMMARY' && was.parentNode ? was.parentNode.dataset.key : null;
+	panels.innerHTML = JSON.parse(e.data);
+	for (const d of panels.querySelectorAll('details[data-key]')) if (opened.includes(d.dataset.key)) d.open = true;
+	const back = href ? Array.from(panels.querySelectorAll('a[href]')).find((a) => a.getAttribute('href') === href)
+		: fold ? Array.from(panels.querySelectorAll('details[data-key]')).find((d) => d.dataset.key === fold)?.querySelector('summary')
+		: null;
+	if (back) back.focus();
+};
+`;
+
+// A page of its own: the bar with a way back, the banner, and what the page shows. `events` is where a live page gets its content again.
+function shell(
+	title: string,
+	region: string,
+	main: string,
+	links: Links,
+	events: string | null = null
+): string {
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(title)}</title>
+<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
+</head>
+<body>
+<a class="skip" href="#panels">Skip to the ${region}</a>
+<div class="bar"><p class="mark">nightjar</p><nav aria-label="Pages"><a class="open" href="/">Back to the Board</a></nav>${elsewhere(links)}</div>
+<div id="scroll" role="region" aria-label="${region}" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" tabindex="-1"${events === null ? '' : ` data-events="${events}"`}>${main}</main></div>
+<script>
+const scroller = document.getElementById('scroll');
+const flow = matchMedia('(max-height: 480px), (max-width: 400px)');
+const place = () => { scroller.tabIndex = flow.matches ? -1 : 0; };
+place();
+flow.addEventListener('change', place);
+</script>
+${events === null ? '' : `<script>${LOGBOOK_SCRIPT}</script>\n`}<script>${PARALLAX}</script>
+</body>
+</html>
+`;
+}
+
+const sessionShell = (title: string, main: string, links: Links) =>
+	shell(title, 'Session', main, links);
+
+// One ledger line of a Session: its Feature and Ticket, the kind of work, how it ended, what it cost and how long it ran.
+function sessionRun(run: SessionView['runs'][number], links: Links): string {
+	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	return (
+		'<section class="run"><dl>' +
+		field('Feature', idHtml(run.feature, links)) +
+		field('Ticket', run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links)) +
+		field('Kind', escape(KIND_TEXT[run.kind] ?? run.kind)) +
+		field('Outcome', escape(run.outcome)) +
+		field('Cost', dollars(run.costUsd)) +
+		(run.durationMs === undefined ? '' : field('Duration', elapsed(run.durationMs))) +
+		'</dl>' +
+		`<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>` +
+		'</section>'
+	);
+}
+
+// The transcript in the shared rendering: the Coding agent's text, a line per tool call, and each tool result folded until opened.
+function transcriptHtml(lines: SessionView['lines']): string {
+	if (lines.length === 0) return '<p class="empty">The transcript has nothing to show yet.</p>';
+	const items = lines
+		.map((line) => {
+			const text = escape(line.text);
+			if (line.kind === 'text') return `<li class="text"><p>${text}</p></li>`;
+			if (line.kind === 'tool') return `<li class="tool">${text}</li>`;
+			const count = line.text.split('\n').length;
+			return `<li class="result"><details><summary>Result <small>${String(count)} ${count === 1 ? 'line' : 'lines'}</small></summary><pre>${text}</pre></details></li>`;
+		})
+		.join('');
+	return `<ol class="log" aria-label="Transcript">${items}</ol>`;
+}
+
+// `/sessions/<id>`: the whole transcript and what the ledger says of the Session.
+export function sessionPage(session: SessionView, links: Links = NO_LINKS): string {
+	const runs =
+		session.runs.length === 0
+			? '<p class="empty">The ledger has no line for this Session.</p>'
+			: session.runs.map((r) => sessionRun(r, links)).join('');
+	return sessionShell(
+		`nightjar: Session ${session.id}`,
+		`<header><h1>Session</h1> <span>${escape(session.id)}</span></header>${runs}<h2 class="part">Transcript</h2>${transcriptHtml(session.lines)}`,
+		links
+	);
+}
+
+// A Session id with no transcript on this machine
+export function noSessionPage(id: string, links: Links = NO_LINKS): string {
+	return sessionShell(
+		'nightjar: no such Session',
+		`<header><h1>Session not found</h1> <span>${escape(id)}</span></header><p class="empty">There is no transcript for this Session on this machine.</p>`,
+		links
+	);
+}
+
+// A fold of a Logbook item: closed until opened, keyed so a live swap keeps it open
+const fold = (key: string, label: string, body: string) =>
+	`<details data-key="${key}"><summary>${label}</summary>${body}</details>`;
+
+const linesText = (n: number) => (n === 1 ? '1 line' : `${String(n)} lines`);
+
+// One Session in a Logbook: its kind, Ticket, outcome, cost and duration, a link to its page, and its summary folded.
+function logbookSession(
+	session: LoggedSession,
+	key: string,
+	links: Links,
+	summary: SessionView['lines']
+): string {
+	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	const kind = escape(KIND_TEXT[session.kind] ?? session.kind);
+	const open = sessionLink(session.id, `Open the ${kind} Session`);
+	const label = `Summary <small>${linesText(summary.length)}</small>`;
+	const shown =
+		summary.length === 0
+			? '<p class="empty">No transcript of this Session on this machine.</p>'
+			: fold(key, label, transcriptHtml(summary));
+	return (
+		`<li class="session"><section class="run" aria-label="${kind} Session">` +
+		`<p class="when">${stampHtml(session.at)} ${open}</p><dl>` +
+		field('Kind', kind) +
+		field('Ticket', session.ticket === null ? 'the whole Feature' : idHtml(session.ticket, links)) +
+		field('Outcome', escape(session.outcome)) +
+		field('Cost', dollars(session.costUsd)) +
+		(session.durationMs === undefined ? '' : field('Duration', elapsed(session.durationMs))) +
+		`</dl>${shown}</section></li>`
+	);
+}
+
+// One decision in a Logbook, in a line, with what it holds folded beneath it.
+function logbookDecision(entry: LogbookEntry, key: string, links: Links): string {
+	const said = decisionText(entry, links.signals);
+	let line = escape(said.line).replace(/`([^`]*)`/g, '<code>$1</code>');
+	if (entry.kind === 'pullOpened' && safeUrl(entry.url)) {
+		const url = escape(entry.url);
+		line = line.replace(url, `<a class="ext" href="${url}" ${EXTERNAL}>${url}</a>`);
+	}
+	const ticket = entry.ticket === undefined ? '' : `Ticket ${idHtml(entry.ticket, links)}: `;
+	let more = '';
+	if (said.more !== undefined) {
+		const lines = linesText(said.more.text.split('\n').length);
+		more = fold(
+			key,
+			`${escape(said.more.label)} <small>${lines}</small>`,
+			`<pre>${escape(said.more.text)}</pre>`
+		);
+	}
+	return `<li class="decision ${entry.kind}"><p>${stampHtml(entry.at)} ${ticket}${line}</p>${more}</li>`;
+}
+
+// The build of the Feature in flight, at the end of its Logbook, as the ledger has no line for its Session yet
+function buildingNow(view: FactoryView, feature: string): string {
+	const doing = view.status?.doing;
+	if (doing?.kind !== 'building' || doing.feature !== feature || !running(view)) return '';
+	return `<li class="live"><p><span class="label">Building now</span> ${stepLine(doing)} ${sessionLink(doing.session)}</p></li>`;
+}
+
+// What the Logbook page shows, which each event brings again while the Feature builds.
+export function logbookMain(
+	book: LogbookView,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	summaryOf: (session: LoggedSession) => SessionView['lines'] = sessionSummary
+): string {
+	const title = titlesOf(view).get(book.feature);
+	const sessions = book.items.flatMap((i) => (i.kind === 'session' ? [i.session] : []));
+	const cost = sessions.reduce((sum, s) => sum + s.costUsd, 0);
+	const itemHtml = (item: LogbookView['items'][number], i: number) =>
+		item.kind === 'session'
+			? logbookSession(item.session, `i${String(i)}`, links, summaryOf(item.session))
+			: logbookDecision(item.entry, `i${String(i)}`, links);
+	const items = book.items.map(itemHtml).join('');
+	const live = buildingNow(view, book.feature);
+	let note = '';
+	if (book.items.length === 0 && live === '') {
+		note = '<p class="empty">Nightjar has recorded nothing for this Feature yet.</p>';
+	} else if (book.items.length > 0 && !book.recorded) {
+		note = `<p class="empty note">Builds before the Logbook did not record Nightjar's decisions, so this shows the Feature's Sessions only.</p>`;
+	}
+	const list = items + live;
+	return (
+		`<header><h1>Logbook</h1> <span>${idHtml(book.feature, links)}${title === undefined ? '' : ` ${escape(title)}`}</span></header>` +
+		`<p class="meta">${sessionsText(sessions.length)}, ${dollars(cost)}</p>${note}` +
+		(list === '' ? '' : `<ol class="book" aria-label="Logbook">${list}</ol>`)
+	);
+}
+
+// `/features/<id>`: the Feature's Logbook, which follows the build live
+export function logbookPage(
+	book: LogbookView,
+	view: FactoryView,
+	links: Links = NO_LINKS,
+	summaryOf?: (session: LoggedSession) => SessionView['lines']
+): string {
+	return shell(
+		`nightjar: Logbook of ${idText(book.feature)}`,
+		'Logbook',
+		logbookMain(book, view, links, summaryOf),
+		links,
+		`${featureHref(book.feature)}/events`
+	);
+}
+
+// A Feature id from a path: decoded, one to 128 characters, none of them a control character; null otherwise
+function featureId(raw: string): string | null {
+	let id: string;
+	try {
+		id = decodeURIComponent(raw);
+	} catch {
+		return null;
+	}
+	// eslint-disable-next-line no-control-regex
+	return /^[^\u0000-\u001f\u007f]{1,128}$/.test(id) ? id : null;
+}
+
 // The Host header must name this machine, or a DNS name rebound to 127.0.0.1 could read the page from another site.
 const hostOk = (host: string | undefined, port: number) =>
 	host === `127.0.0.1:${String(port)}` || host === `localhost:${String(port)}`;
+
+// A request's path and query, read against this machine as the Host check has made sure it is; a target that does not read is no path the page serves.
+const urlOf = (url: string | undefined) => {
+	try {
+		return new URL(url ?? '/', `http://${HOST}`);
+	} catch {
+		return new URL('http://invalid/-');
+	}
+};
+const pathOf = (url: string | undefined) => urlOf(url).pathname;
+const searchOf = (url: string | undefined) => urlOf(url).searchParams;
 
 // The origin remote's url, which names the GitHub repo when factory.json does not; null with no remote
 function originOf(root: string): string | null {
@@ -1258,27 +1938,69 @@ function originOf(root: string): string | null {
 
 export function startUi(o: UiOptions): Promise<Ui> {
 	const origin = originOf(o.root);
-	const clients = new Set<ServerResponse>();
+	const factoryNow = () =>
+		readFactory(o.root, {
+			...(o.alive === undefined ? {} : { alive: o.alive }),
+			...(o.now === undefined ? {} : { now: o.now })
+		});
+	// The Tracker is read on open and once a minute, never on a file change; each read pushes the panels when they changed.
+	const read = o.tracker;
+	const tracker =
+		read === undefined
+			? null
+			: watchTracker({
+					read,
+					changed: () => refresh(),
+					...(o.every === undefined ? {} : { every: o.every }),
+					...(o.now === undefined ? {} : { now: o.now })
+				});
 	const panelsNow = () =>
 		renderPanels(
 			o.root,
-			readFactory(o.root, {
-				...(o.alive === undefined ? {} : { alive: o.alive }),
-				...(o.now === undefined ? {} : { now: o.now })
-			}),
-			linksFor(o.root, origin)
+			factoryNow(),
+			linksFor(o.root, origin),
+			tracker?.lists(),
+			o.feature !== undefined
 		);
+	const logbookNow = (feature: string) =>
+		logbookMain(readLogbook(o.root, feature), factoryNow(), linksFor(o.root, origin));
 	const send = (res: ServerResponse, panels: string) =>
 		res.write(`data: ${JSON.stringify(panels)}\n\n`);
 
-	let last = panelsNow();
-	// pushes only when what the page shows has changed
-	const refresh = () => {
-		const panels = panelsNow();
-		if (panels === last) return;
-		last = panels;
-		for (const res of clients) send(res, panels);
+	// each page that listens: what it shows (`key`, drawn once per refresh for all its listeners) and what it was sent last
+	interface Client {
+		readonly key: string;
+		readonly render: () => string;
+		last: string;
+	}
+	const clients = new Map<ServerResponse, Client>();
+	const listen = (res: ServerResponse, key: string, render: () => string) => {
+		res.writeHead(200, {
+			'content-type': 'text/event-stream',
+			'cache-control': 'no-store'
+		});
+		const first = render();
+		send(res, first);
+		clients.set(res, { key, render, last: first });
+		res.on('close', () => clients.delete(res));
 	};
+	// pushes to a page only when what it shows has changed
+	const refresh = () => {
+		const drawn = new Map<string, string>();
+		for (const [res, client] of clients) {
+			const now = drawn.get(client.key) ?? client.render();
+			drawn.set(client.key, now);
+			if (now === client.last) continue;
+			client.last = now;
+			send(res, now);
+		}
+	};
+	const html = (res: ServerResponse, status: number, live: boolean) =>
+		res.writeHead(status, {
+			'content-type': 'text/html; charset=utf-8',
+			'cache-control': 'no-store',
+			'content-security-policy': `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';${live ? " connect-src 'self';" : ''} img-src data:`
+		});
 
 	const server = createServer((req, res) => {
 		const { port } = server.address() as AddressInfo;
@@ -1287,21 +2009,54 @@ export function startUi(o: UiOptions): Promise<Ui> {
 		} else if (req.method !== 'GET' && req.method !== 'HEAD') {
 			res.writeHead(405, { allow: 'GET, HEAD' }).end();
 		} else if (req.url === '/events') {
-			res.writeHead(200, {
-				'content-type': 'text/event-stream',
-				'cache-control': 'no-store'
+			listen(res, '/', panelsNow);
+		} else if (o.feature !== undefined && pathOf(req.url) === FEATURE_PATH) {
+			// read from the Tracker as the panel opens; the read gives no Signal and writes nothing
+			const answered = featureAnswer(searchOf(req.url), o.feature, linksFor(o.root, origin));
+			void answered.then(({ status, body }) => {
+				res.writeHead(status, {
+					'content-type': 'text/html; charset=utf-8',
+					'cache-control': 'no-store',
+					'x-content-type-options': 'nosniff',
+					// opened as a page of its own, the panel's markup may run and load nothing
+					'content-security-policy': "default-src 'none'"
+				});
+				res.end(req.method === 'HEAD' ? undefined : body);
 			});
-			send(res, panelsNow());
-			clients.add(res);
-			res.on('close', () => clients.delete(res));
 		} else if (req.url === '/') {
-			res.writeHead(200, {
-				'content-type': 'text/html; charset=utf-8',
-				'cache-control': 'no-store',
-				'content-security-policy':
-					"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
-			});
+			html(res, 200, true);
 			res.end(req.method === 'HEAD' ? undefined : PAGE(panelsNow(), linksFor(o.root, origin)));
+		} else if (req.url?.startsWith('/features/')) {
+			// `<id>` or `<id>/events`; the id is decoded, and reaches a file only through logbookPath, which encodes it again
+			const path = req.url.slice('/features/'.length).split(/[?#]/)[0] ?? '';
+			const [raw = '', events, ...more] = path.split('/');
+			const id = featureId(raw);
+			if (more.length > 0 || (events !== undefined && events !== 'events')) {
+				res.writeHead(404).end();
+			} else if (id === null) {
+				res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+				res.end('Not a Feature id\n');
+			} else if (events !== undefined) {
+				listen(res, `/features/${id}`, () => logbookNow(id));
+			} else {
+				html(res, 200, true);
+				const links = linksFor(o.root, origin);
+				const page = logbookPage(readLogbook(o.root, id), factoryNow(), links);
+				res.end(req.method === 'HEAD' ? undefined : page);
+			}
+		} else if (req.url?.startsWith('/sessions/')) {
+			// the id is taken as it is, never decoded: only letters, digits, `-` and `_` name a transcript
+			const id = req.url.slice('/sessions/'.length).split(/[?#]/)[0] ?? '';
+			if (!isSessionId(id)) {
+				res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+				res.end('Not a Session id\n');
+				return;
+			}
+			const session = readSession(o.root, id);
+			const links = linksFor(o.root, origin);
+			html(res, session === null ? 404 : 200, false);
+			const page = session === null ? noSessionPage(id, links) : sessionPage(session, links);
+			res.end(req.method === 'HEAD' ? undefined : page);
 		} else {
 			res.writeHead(404).end();
 		}
@@ -1327,19 +2082,27 @@ export function startUi(o: UiOptions): Promise<Ui> {
 	}, 2000);
 
 	return new Promise((done, fail) => {
-		server.once('error', fail);
+		// a port that is taken leaves nothing running behind it
+		server.once('error', (fault) => {
+			tracker?.stop();
+			clearInterval(slow);
+			clearTimeout(timer);
+			watcher?.close();
+			fail(fault);
+		});
 		server.listen(o.port, HOST, () => {
 			const { address, port } = server.address() as AddressInfo;
 			done({
 				address,
 				port,
 				close: () =>
-					new Promise<void>((closed) => {
+					new Promise<void>((ended) => {
+						tracker?.stop();
 						clearInterval(slow);
 						clearTimeout(timer);
 						watcher?.close();
 						server.closeAllConnections();
-						server.close(() => closed());
+						server.close(() => ended());
 					})
 			});
 		});

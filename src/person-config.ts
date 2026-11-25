@@ -49,6 +49,10 @@ export function personConfigPath(env: Env): string {
 	return join(base, 'nightjar', 'config.json');
 }
 
+// How many Slots a run holds: `--parallel` wins over the person's `parallel`.
+export const slotsFor = (flag: number | undefined, person: PersonConfig): number =>
+	flag ?? person.parallel;
+
 // The person's settings, the defaults where the file is missing or silent, or a ConfigError naming each wrong field.
 export function loadPersonConfig(env: Env): PersonConfig {
 	const path = personConfigPath(env);

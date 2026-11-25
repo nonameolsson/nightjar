@@ -107,6 +107,21 @@ To let a Source with `"go": true` give its Features the Go ([ADR 0003](adr/0003-
 		trusts: todo('trusts'),
 ```
 
+To let `nightjar ui` show a person's Shelf, the open Features assigned to them that carry no Signal ([ADR 0009](adr/0009-the-page-reads-the-tracker.md)), give the Tracker one more optional method. A Tracker without it builds as before, and the page says the Tracker cannot list the Shelf.
+
+```js
+		// the open Features assigned to `person` that carry no Signal at all (read the names from
+		// `signals`), most recently updated first, at most `max` of them (the page asks for 50), as
+		// { features: [{ id, title, body, hasTickets, updated }], total }: `hasTickets` says whether
+		// the Feature has Tickets, open or closed; `updated` is when it last changed, as an ISO time;
+		// `total` counts every Feature on the Shelf, those past `max` too. A Ticket of a Feature is
+		// no Feature here, even when it is assigned to the person. With `loneIssues`, give `lone: true`
+		// as `assignedFeatures` does.
+		shelf: todo('shelf'),
+```
+
+Its suite tells which Feature changed last by adding a Signal and taking it off again, one Feature after another, so `updated` must move on with every change to an item, its Signals included.
+
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
 To let Nightjar fix the failed Pull checks of its own draft pull requests (`pullChecks.enabled` in `factory.json`), give the Code host one more optional method. A Code host without it builds as before, and gets no Pull-check pass.
@@ -201,6 +216,18 @@ Nightjar decides when to publish; `publish` only does it. It reads whether the F
 
 Ids are strings, spelled as your Tracker spells them (`42`, `PROJ-123`); Nightjar reads no meaning into them. It names a branch after the Feature id, with any character a git branch name cannot hold turned into a dash.
 
+To serve a `botPulls` Source (red dependency-bot pull requests; see the README), give the Code host one more optional method. Without it, `nightjar intake` refuses to start that Source and `nightjar doctor` says why.
+
+```js
+		// The open pull requests, draft or not, of this repo's own branches that start with any of
+		// `prefixes`, oldest first: [{ pull: { id, url }, title, branch, headCommit, checks }], with
+		// `checks` the Pull checks on the head commit in the shape nightjarDrafts gives them. Leave out
+		// a pull request from a fork, so only someone with push access can start a build.
+		botPulls: todo('botPulls'),
+```
+
+Intake decides what is red; `botPulls` only lists. Give a failed check that ran its `job`, `step` or `logTail`: a failed check with none of them counts as one that never started, and makes nothing.
+
 ## Test the module
 
 The contract suite is the list of behaviours every Adapter must keep, built in or yours. To run it, a test module hands Nightjar a harness for each Adapter: a function that makes the Adapter over an empty, throwaway instance of your system.
@@ -231,7 +258,7 @@ export async function trackerHarness(world) {
 }
 ```
 
-`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `passed(pull)` finishes one Pull check green on it, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, and a check has a `conclusion`. A Code host with `openPulls` gives both `drafts` and `bench`; its review `given` may say `changes: true`, a review that requests changes, and its `commit(message)` takes the message of the commit to make, each commit made on the ones before it. A Code host with `publish` needs nothing more: its suite reads `draft` from `pull(pull)`, so that must say what your host shows. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
+`codeHostHarness` is the same idea for a Code host: it takes no world and returns `{ codeHost, base, commit, branch, pull, close }`. A Code host with `nightjarDrafts` also returns `drafts`, what happens to a pull request outside Nightjar for the case to read back: `checks(pull, { pending, failed })` sets the Pull checks on its head commit, `passed(pull)` finishes one Pull check green on it, `engage(pull)` has another account comment on it, `ready(pull)` marks it ready for review and `closePull(pull)` closes it. A Code host with `botPulls` also gives `drafts.fork(pull)`, which moves the pull request's head branch to a fork. A Code host with `feedback` and `reply` adds a `bench`, `{ give, thread }`: `give(pull, given)` puts feedback on a pull request the way a person or a check on your host would, and resolves to the id `feedback` reads it back by; `thread(pull, id)` resolves to the bodies of the replies in the thread of line comment `id`. A `given` says its `kind`, who said it (`author`, or the `name` of a check), its `body` (a check's `output`), and whether your host would trust it (`trusted`); a line comment has `on: { path, line }`, with a `line` of `null` for a line the head commit lost, and a check has a `conclusion`. A Code host with `openPulls` gives both `drafts` and `bench`; its review `given` may say `changes: true`, a review that requests changes, and its `commit(message)` takes the message of the commit to make, each commit made on the ones before it. A Code host with `publish` needs nothing more: its suite reads `draft` from `pull(pull)`, so that must say what your host shows. The types are `TrackerHarness` and `CodeHostHarness`, with the `World*`, `DraftsWorld`, `PullView`, `FeedbackBench` and `Given` types they use, exported from `@nonameolsson/nightjar`. `src/fakes/harness.ts` in this repo holds a complete pair for the in-memory fakes.
 
 Then run, from the repo:
 
@@ -239,7 +266,7 @@ Then run, from the repo:
 nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`, the `assign` suite (`assignContract`, which checks `trusts` too when it is there) when it has `assign`, the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`, the `nightjarDrafts` suite (`nightjarDraftsContract`) when the harness's Code host has `nightjarDrafts`, the feedback suite (`feedbackContract`) when it has `feedback` and `reply`, the `openPulls` suite (`openPullsContract`) when it has `openPulls`, and the `publish` suite (`publishContract`) when it has `publish`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`, the `assign` suite (`assignContract`, which checks `trusts` too when it is there) when it has `assign`, the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`, the `shelf` suite (`shelfContract`) when it has `shelf`, the `nightjarDrafts` suite (`nightjarDraftsContract`) when the harness's Code host has `nightjarDrafts`, the feedback suite (`feedbackContract`) when it has `feedback` and `reply`, the `openPulls` suite (`openPullsContract`) when it has `openPulls`, the `publish` suite (`publishContract`) when it has `publish`, and the `botPulls` suite (`botPullsContract`) when it has `botPulls`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -252,6 +279,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract`, `assignContract`, `ticketCountsContract`, `codeHostContract`, `nightjarDraftsContract`, `feedbackContract`, `openPullsContract` and `publishContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract`, `assignContract`, `ticketCountsContract`, `shelfContract`, `codeHostContract`, `nightjarDraftsContract`, `feedbackContract`, `openPullsContract`, `publishContract` and `botPullsContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

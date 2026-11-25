@@ -20,6 +20,7 @@ import {
 	SENTRY_ISSUE_ID,
 	sentryHeaders
 } from './fakes/sentry.js';
+import { memoryLogbook, type MemoryLogbook } from './fakes/logbook.js';
 import { FakeTracker } from './fakes/tracker.js';
 import {
 	AGAIN_MARKER,
@@ -27,6 +28,7 @@ import {
 	FAILED_SIGNATURES,
 	SENTRY_KEY,
 	startIntake,
+	type BotPullsSource,
 	type IntakeServer,
 	type ScheduledSource,
 	type ServedSource
@@ -34,6 +36,18 @@ import {
 import { parseCron } from './cron.js';
 import { runNightjar } from './main.js';
 import type { SourcedFeature } from './tracker.js';
+import { AzureDevOpsApi } from './azure-devops/api.js';
+import { AzureReposCodeHost } from './azure-devops/code-host.js';
+import { azureReposDrafts } from './azure-devops/fake-drafts.js';
+import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';
+import { baseOf, botPullOf } from './base-line.js';
+import type { CodeHost, Pull } from './code-host.js';
+import type { DraftsWorld } from './contract/code-host.js';
+import { FakeCodeHost } from './fakes/code-host.js';
+import { fakeCodeHostSubject } from './fakes/harness.js';
+import { GitHubCodeHost } from './github/code-host.js';
+import { gitHubDrafts } from './github/fake-drafts.js';
+import { FakeGitHub } from './github/fake-github.js';
 
 const SECRET = `whsec_${Buffer.from('the secret of this spec').toString('base64')}`;
 
@@ -55,8 +69,10 @@ let clock: Date;
 let tracker: FakeTracker;
 let server: IntakeServer | null;
 let said: string[];
+let logbook: MemoryLogbook;
 
 beforeEach(() => {
+	logbook = memoryLogbook();
 	dir = realpathSync(mkdtempSync(join(tmpdir(), 'nightjar-intake-')));
 	// local noon, so a day later is another day on any clock
 	clock = new Date(2026, 10, 3, 12, 0);
@@ -85,6 +101,7 @@ async function start(over: Partial<ServedSource> = {}, keyless = false): Promise
 		host: '127.0.0.1',
 		port: 0,
 		log: logPath(),
+		logbook,
 		now: () => clock,
 		say: (line) => said.push(line)
 	});
@@ -189,7 +206,8 @@ describe('intake', () => {
 				]),
 				host: '127.0.0.1',
 				port: 0,
-				log: logPath()
+				log: logPath(),
+				logbook
 			})
 		).rejects.toThrow("Source alerts: go: true needs the Tracker's assign");
 	});
@@ -220,6 +238,82 @@ describe('intake', () => {
 		tracker.close(id);
 		expect((await post(event('k-1'), signed(event('k-1'), { id: 'msg_6' }))).status).toBe(201);
 		expect(features()).toHaveLength(3);
+	});
+
+	it("writes the Logbook of a Feature a Source made: the Source and its key, then the standing Go's owner", async () => {
+		await start({ owner: 'bob' });
+		await post(event('k-1'));
+		const [made] = features();
+		expect(logbook.read(made?.id ?? '')).toEqual([
+			{
+				at: clock.toISOString(),
+				feature: made?.id,
+				kind: 'madeBySource',
+				source: 'alerts',
+				key: 'k-1'
+			},
+			{
+				at: clock.toISOString(),
+				feature: made?.id,
+				kind: 'standingGo',
+				source: 'alerts',
+				owner: 'bob'
+			}
+		]);
+	});
+
+	it('writes no standing Go for a Feature a Source made with no owner', async () => {
+		await start();
+		await post(event('k-1'));
+		const [made] = features();
+		expect(logbook.read(made?.id ?? '')?.map((e) => e.kind)).toEqual(['madeBySource']);
+	});
+
+	it('writes no standing Go when the owner could not be assigned', async () => {
+		tracker.assign = () => Promise.reject(new Error('the Tracker refused'));
+		await start({ owner: 'bob' });
+		await post(event('k-1'));
+		const [made] = features();
+		expect(logbook.read(made?.id ?? '')?.map((e) => e.kind)).toEqual(['madeBySource']);
+	});
+
+	it('writes "happened again" to the Logbook only when it commented, with the count it said', async () => {
+		await start();
+		await post(event('k-1'));
+		const id = features()[0]?.id ?? '';
+		later(1);
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_2' }));
+		later(1);
+		// the second the same day says nothing, and writes nothing
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_3' }));
+		later(24 * 60);
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_4' }));
+		expect(logbook.read(id)?.filter((e) => e.kind === 'happenedAgain')).toMatchObject([
+			{ source: 'alerts', times: 1 },
+			{ source: 'alerts', times: 2 }
+		]);
+	});
+
+	it('makes the Feature and answers 201 when the Logbook cannot be written', async () => {
+		server = await startIntake({
+			tracker,
+			sources: new Map([['alerts', { template: TEMPLATE, secret: SECRET, maxPerDay: 3 }]]),
+			host: '127.0.0.1',
+			port: 0,
+			log: logPath(),
+			logbook: {
+				read: () => null,
+				write: () => {
+					throw new Error('disk full');
+				}
+			},
+			now: () => clock,
+			say: (line) => said.push(line)
+		});
+		expect((await post(event('k-1'))).status).toBe(201);
+		expect(features()).toHaveLength(1);
+		expect(said.join('\n')).toContain('could not write the Logbook');
+		expect(said.join('\n')).toContain('disk full');
 	});
 
 	it('takes every delivery as new for a Source with no key', async () => {
@@ -427,6 +521,7 @@ describe('intake over a schedule', () => {
 			host: '127.0.0.1',
 			port: 0,
 			log: logPath(),
+			logbook,
 			now: () => clock,
 			say: (line) => said.push(line),
 			tickMs
@@ -476,6 +571,10 @@ describe('intake over a schedule', () => {
 		expect(made?.assignees).toEqual(['bob']);
 		expect(made?.signals).toEqual(['go']);
 		expect(logLines().at(-1)).toMatchObject({ answer: 201, outcome: 'made', feature: made?.id });
+		expect(logbook.read(made?.id ?? '')).toMatchObject([
+			{ kind: 'madeBySource', source: 'weekly', key: 'weekly' },
+			{ kind: 'standingGo', source: 'weekly', owner: 'bob' }
+		]);
 	});
 
 	it('makes one Feature at one due time, however often the clock is read', async () => {
@@ -578,6 +677,7 @@ describe('intake over a schedule', () => {
 			host: '127.0.0.1',
 			port: 0,
 			log: logPath(),
+			logbook,
 			now: () => clock,
 			say: (line) => said.push(line),
 			tickMs: 0
@@ -614,6 +714,7 @@ describe('intake over a Sentry Source', () => {
 			host: '127.0.0.1',
 			port: 0,
 			log: logPath(),
+			logbook,
 			now: () => clock,
 			say: (line) => said.push(line)
 		});
@@ -872,6 +973,38 @@ describe('nightjar intake', () => {
 		expect(await done).toBe(0);
 	});
 
+	const BOTS = {
+		deps: {
+			type: 'botPulls',
+			branchPrefixes: ['dependabot/'],
+			cron: '*/30 * * * *',
+			template: 'bot-pull'
+		}
+	};
+
+	it('refuses to start a botPulls Source on a Code host without botPulls, naming the method', async () => {
+		repo(`${WRITES} ${FINDS}`, BOTS);
+		const bare = { ...host(), env: { PATH: process.env.PATH } };
+		expect(await runNightjar(['intake', '--port', '0'], bare)).toBe(2);
+		expect(err.join('\n')).toContain('Source deps: ');
+		expect(err.join('\n')).toContain('botPulls');
+	});
+
+	it('runs a botPulls Source with no webhook and no secret, and says when it next reads the pull requests', async () => {
+		repo(`${WRITES} ${FINDS}`, BOTS);
+		writeFileSync(
+			join(dir, 'host.mjs'),
+			`export const createCodeHost = () => ({ push: async () => {}, openPull: async () => null, createDraft: async () => ({ id: 1, url: 'u' }), editBody: async () => {}, placeReferences: async () => {}, comment: async () => {}, botPulls: async () => [] });`
+		);
+		const stop = new AbortController();
+		const bare = { ...host(stop.signal), env: { PATH: process.env.PATH } };
+		const done = runNightjar(['intake', '--port', '0'], bare);
+		await vi.waitFor(() => expect(out.join('\n')).toContain('Source deps: next due '));
+		expect(out.join('\n')).not.toContain('POST');
+		stop.abort();
+		expect(await done).toBe(0);
+	});
+
 	it('refuses to start while a schedule Source has a template that does not read', async () => {
 		repo(`${WRITES} ${FINDS}`, {
 			weekly: { type: 'schedule', cron: '@weekly', template: '.nightjar/gone.md' }
@@ -984,5 +1117,250 @@ describe('nightjar intake', () => {
 		repo(`${WRITES} ${FINDS}`, {});
 		expect(await runNightjar(['intake', '--port', '0'], host())).toBe(2);
 		expect(err.join('\n')).toContain('no sources');
+	});
+});
+
+// A Code host that has botPulls, and what a bot and its checks do to a pull request there.
+interface BotWorld {
+	readonly codeHost: CodeHost;
+	readonly drafts: DraftsWorld;
+	// the bot opens a pull request from `branch`, ready for review
+	readonly open: (branch: string, title: string) => Promise<Pull>;
+}
+
+const noGit = () => Promise.reject(new Error('this spec runs no git'));
+
+const BOT_WORLDS: readonly (readonly [string, () => BotWorld])[] = [
+	[
+		'the in-memory Code host',
+		() => {
+			const codeHost = new FakeCodeHost();
+			const { drafts } = fakeCodeHostSubject(codeHost);
+			if (drafts === undefined) throw new Error('the fake gives a drafts world');
+			return {
+				codeHost,
+				drafts,
+				open: async (branch, title) => {
+					await codeHost.push(`/work/${branch}`, branch);
+					const pull = await codeHost.createDraft({ title, head: branch, base: 'main', body: '' });
+					codeHost.markReady(pull);
+					return pull;
+				}
+			};
+		}
+	],
+	[
+		'GitHub',
+		() => {
+			const github = new FakeGitHub('o/app', 'ann');
+			const codeHost = new GitHubCodeHost('o/app', github.gh, noGit);
+			let pushed = 0;
+			return {
+				codeHost,
+				drafts: gitHubDrafts(github),
+				open: async (branch, title) => {
+					pushed += 1;
+					github.pushed(branch, String(pushed).padStart(40, 'a'));
+					const pull = await codeHost.createDraft({ title, head: branch, base: 'main', body: '' });
+					github.markReady(pull.id);
+					return pull;
+				}
+			};
+		}
+	],
+	[
+		'Azure DevOps',
+		() => {
+			const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+			ado.repository('app');
+			const api = new AzureDevOpsApi('contoso', ado.signIn(), ado.request);
+			const codeHost = new AzureReposCodeHost(
+				api,
+				{ project: 'Fabrikam', repo: 'app', referencesAs: 'text' },
+				noGit,
+				'/nowhere'
+			);
+			let pushed = 0;
+			return {
+				codeHost,
+				drafts: azureReposDrafts(ado),
+				open: async (branch, title) => {
+					const pull = await codeHost.createDraft({ title, head: branch, base: 'main', body: '' });
+					pushed += 1;
+					ado.pushed(branch, String(pushed).padStart(40, '0'));
+					ado.markReady(pull.id);
+					return pull;
+				}
+			};
+		}
+	]
+];
+
+const BOT_TEMPLATE = `# Fix the update: {{ pull.title }}
+
+The bot's pull request is red.
+
+## Ticket 1: Make the check pass
+
+Fix the code for the new versions.
+
+### Acceptance criteria
+
+- [ ] the check passes
+`;
+
+const TEST_FAILED = {
+	check: 'CI / test',
+	job: 'test',
+	step: 'Run tests',
+	logTail: 'TypeError: pad is not a function'
+};
+
+const LEFT_PAD = 'dependabot/npm_and_yarn/left-pad-1.1.0';
+
+describe.each(BOT_WORLDS)('intake over a botPulls Source on %s', (_name, makeWorld) => {
+	let world: BotWorld;
+	beforeEach(() => {
+		world = makeWorld();
+	});
+
+	async function startBots(over: Partial<BotPullsSource> = {}): Promise<IntakeServer> {
+		server = await startIntake({
+			tracker,
+			logbook,
+			codeHost: world.codeHost,
+			sources: new Map(),
+			botPulls: new Map([
+				[
+					'deps',
+					{
+						template: BOT_TEMPLATE,
+						cron: parseCron('*/30 * * * *'),
+						branchPrefixes: ['dependabot/', 'renovate/'],
+						maxPerDay: 3,
+						...over
+					}
+				]
+			]),
+			host: '127.0.0.1',
+			port: 0,
+			log: logPath(),
+			now: () => clock,
+			say: (line) => said.push(line),
+			tickMs: 0
+		});
+		return server;
+	}
+
+	// the clock reaches the Source's next due time, and intake reads the pull requests
+	const poll = async () => {
+		later(30);
+		await server?.tick();
+	};
+
+	const red = async (branch = LEFT_PAD, title = 'Bump left-pad from 1.0.0 to 1.1.0') => {
+		const pull = await world.open(branch, title);
+		await world.drafts.checks(pull, { pending: false, failed: [TEST_FAILED] });
+		return pull;
+	};
+
+	it('makes one Feature and one Ticket for a red pull request, marked by its id, with a Base line', async () => {
+		const pull = await red();
+		await startBots();
+		await poll();
+		const [made, ...more] = features();
+		expect(more).toEqual([]);
+		expect(made?.title).toBe('Fix the update: Bump left-pad from 1.0.0 to 1.1.0');
+		expect(made?.children).toHaveLength(1);
+		const body = made?.body ?? '';
+		expect(body).toContain(`<!-- nightjar:source=deps key=${String(pull.id)} -->`);
+		expect(baseOf(body)).toEqual({ branch: LEFT_PAD });
+		expect(botPullOf(body)).toEqual(pull);
+		expect(body).toContain('TypeError: pad is not a function');
+		expect(logLines().at(-1)).toMatchObject({
+			source: 'deps',
+			delivery: `pull-${String(pull.id)}`,
+			answer: 201,
+			outcome: 'made',
+			feature: made?.id
+		});
+	});
+
+	it('makes nothing when it polls again while that Feature is open', async () => {
+		await red();
+		await startBots();
+		await poll();
+		await poll();
+		expect(features()).toHaveLength(1);
+		expect(tracker.said(features()[0]?.id ?? '')).toEqual([]);
+	});
+
+	it('makes nothing for a pull request under no prefix, green, still running, or from a fork', async () => {
+		await red('person/bump-left-pad');
+		const green = await world.open('renovate/right-pad-2.x', 'Update right-pad to v2');
+		await world.drafts.passed(green);
+		const running = await world.open('renovate/up-pad-3.x', 'Update up-pad to v3');
+		await world.drafts.checks(running, { pending: true, failed: [TEST_FAILED] });
+		const forked = await red('dependabot/npm_and_yarn/down-pad-4.0.0');
+		await world.drafts.fork?.(forked);
+		await startBots();
+		await poll();
+		expect(features()).toEqual([]);
+	});
+
+	it('makes nothing for a pull request whose checks never started', async () => {
+		const pull = await world.open(LEFT_PAD, 'Bump left-pad from 1.0.0 to 1.1.0');
+		const never = { check: 'CI / test', job: '', step: '', logTail: '' };
+		await world.drafts.checks(pull, { pending: false, failed: [never] });
+		await startBots();
+		await poll();
+		expect(features()).toEqual([]);
+	});
+
+	it('assigns a go: true Feature to its owner and gives it the Go', async () => {
+		await red();
+		await startBots({ owner: 'bob' });
+		await poll();
+		const [made] = features();
+		expect(made?.assignees).toEqual(['bob']);
+		expect(made?.signals).toEqual(['go']);
+	});
+
+	it('makes no more Features in a day than maxPerDay', async () => {
+		await red();
+		await red('dependabot/npm_and_yarn/right-pad-2.0.0', 'Bump right-pad from 1.0.0 to 2.0.0');
+		await startBots({ maxPerDay: 1 });
+		await poll();
+		expect(features()).toHaveLength(1);
+		expect(logLines().at(-1)).toMatchObject({ outcome: 'day limit' });
+	});
+});
+
+describe('intake over a botPulls Source on a Code host without botPulls', () => {
+	it('refuses to start', async () => {
+		await expect(
+			startIntake({
+				tracker,
+				logbook,
+				// a Code host module written before botPulls
+				codeHost: {},
+				sources: new Map(),
+				botPulls: new Map([
+					[
+						'deps',
+						{
+							template: BOT_TEMPLATE,
+							cron: parseCron('@daily'),
+							branchPrefixes: ['dependabot/'],
+							maxPerDay: 3
+						}
+					]
+				]),
+				host: '127.0.0.1',
+				port: 0,
+				log: logPath(),
+				tickMs: 0
+			})
+		).rejects.toThrow(/Source deps: .*botPulls/);
 	});
 });

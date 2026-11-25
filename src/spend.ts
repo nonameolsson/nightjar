@@ -31,8 +31,10 @@ export interface Allowance {
 
 // The cap of a Session that is running, held as spent until the Session ends.
 export interface Reservation {
-	// gives the cap back; what the Session actually spent is in the ledger by then. Safe to call twice.
+	// gives the cap back, for a Session that spent nothing the ledger will show. Safe to call twice.
 	release(): void;
+	// gives the cap back and holds what the Session `session` actually spent in its place, until its ledger line is recorded: the line is written after the Session returns, and a Session waiting for room must not start on dollars spent but not yet in the ledger. Safe to call twice.
+	settle(session: string, usd: number): void;
 }
 
 export interface Spend {
@@ -79,22 +81,32 @@ export function spendOver(store: SpendStore): Spend {
 	};
 	// the caps of the Sessions running, each held until its Session ends
 	const holds = new Set<{ readonly usd: number }>();
+	// what Sessions that ended spent, until their ledger lines are recorded
+	const unrecorded: { readonly session: string; readonly usd: number }[] = [];
 	const reserved = () => {
 		let sum = 0;
 		for (const hold of holds) sum += hold.usd;
+		for (const spent of unrecorded) sum += spent.usd;
 		return sum;
 	};
 	// the Sessions waiting for a cap to be given back
 	const waiting = new Set<() => void>();
+	const wakeAll = () => {
+		const woken = [...waiting];
+		waiting.clear();
+		for (const wake of woken) wake();
+	};
 	const reserve = (usd: number): Reservation => {
 		const hold = { usd };
 		holds.add(hold);
 		return {
 			release: () => {
+				if (holds.delete(hold)) wakeAll();
+			},
+			settle: (session, spent) => {
 				if (!holds.delete(hold)) return;
-				const woken = [...waiting];
-				waiting.clear();
-				for (const wake of woken) wake();
+				unrecorded.push({ session, usd: spent });
+				wakeAll();
 			}
 		};
 	};
@@ -124,13 +136,15 @@ export function spendOver(store: SpendStore): Spend {
 	return {
 		record: (entry) => {
 			store.append(entry);
+			const at = unrecorded.findIndex((u) => u.session === entry.session);
+			if (at >= 0) unrecorded.splice(at, 1);
 		},
 		entries: () => store.read(),
 		today,
 		reserve,
 		hold: (usd, now, dailyUsd) => {
 			// with no other Session running the day is checked only where work starts, so the pause comes as it does with one Slot
-			if (reserved() === 0) return reserve(usd);
+			if (holds.size === 0) return reserve(usd);
 			return crowded(now, dailyUsd, usd) ?? reserve(usd);
 		},
 		freed,

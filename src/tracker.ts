@@ -122,6 +122,26 @@ export interface Tracker {
 	trusts?(person: string): Promise<boolean>;
 	// optional, so a Tracker module written before it still loads: how many Tickets each Feature has and how many are closed; every id asked about is answered, null for one whose count cannot be read
 	ticketCounts?(featureIds: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>>;
+	// optional, so a Tracker module written before it still loads: `person`'s Shelf, the open Features assigned to them that carry no Signal, most recently updated first, at most `max` of them, with how many there are in all (docs/adr/0009)
+	shelf?(person: string, max: number): Promise<Shelf>;
+}
+
+// The most Features the page asks a Shelf for; the rest are a link to the Tracker.
+export const SHELF_MAX = 50;
+
+// A Feature on a person's Shelf.
+export interface ShelfFeature extends Feature {
+	// whether it has Tickets, open or closed; one with none is a lone issue on a Tracker with `loneIssues`
+	readonly hasTickets: boolean;
+	// when it was last updated, as an ISO date
+	readonly updated: string;
+}
+
+// A person's Shelf: the Features listed, most recently updated first, and how many there are in all.
+export interface Shelf {
+	readonly features: readonly ShelfFeature[];
+	// the listed ones and those left out past the most asked for
+	readonly total: number;
 }
 
 // How many Tickets a Feature has, and how many of them are closed.

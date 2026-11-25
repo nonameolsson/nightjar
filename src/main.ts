@@ -31,6 +31,7 @@ import { runIntakeCommand } from './intake.js';
 import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
+import { fileLogbook } from './logbook.js';
 import { leasePorts, type PortLease } from './ports.js';
 import {
 	buildNamed,
@@ -46,7 +47,9 @@ import {
 	type QueueDeps,
 	type Say
 } from './queue.js';
+import { slotsFor } from './person-config.js';
 import { heldSession, runSession, sessionExists, type Session } from './session.js';
+import { runLogbookCommand } from './logbook-command.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -151,6 +154,7 @@ export async function runNightjar(
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
 	if (argv[0] === 'intake') return runIntakeCommand(argv.slice(1), host);
+	if (argv[0] === 'logbook') return runLogbookCommand(argv.slice(1), host);
 	const args = parseArgs(argv);
 	if (typeof args === 'string') {
 		console.error(`nightjar: ${args}\n\n${USAGE}`);
@@ -267,6 +271,8 @@ export async function runNightjar(
 		runSetup: runCheck,
 		serve: startServe,
 		spend,
+		// written on a terminal or not, as the ledger is
+		logbook: fileLogbook(root),
 		openWorktree,
 		now: () => new Date(),
 		sleep,
@@ -321,7 +327,7 @@ export async function runNightjar(
 		...(pullChecks === null ? {} : { pullChecks }),
 		...(publish === null ? {} : { publish }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
-		slots: args.parallel ?? ready.person.parallel,
+		slots: slotsFor(args.parallel, ready.person),
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 
@@ -382,7 +388,11 @@ export async function runNightjar(
 					console.error(`nightjar: ${why(fault)}`);
 					return 2;
 				}
-				return outcome?.kind === 'pull' || outcome?.kind === 'nothing' ? 0 : 1;
+				return outcome?.kind === 'pull' ||
+					outcome?.kind === 'nothing' ||
+					outcome?.kind === 'diverged'
+					? 0
+					: 1;
 			} finally {
 				lease?.release();
 			}

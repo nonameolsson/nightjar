@@ -1,7 +1,6 @@
 // The one reader over .factory/ that the live views share: status.json, the session tail and what completed.
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
-import { z } from 'zod';
 import { logsPath } from './coding-agent.js';
 import {
 	builtOn,
@@ -11,6 +10,7 @@ import {
 	spends,
 	spentOnFeature
 } from './ledger.js';
+import { renderSession } from './session-render.js';
 import {
 	buildsOf,
 	featureStart,
@@ -79,44 +79,6 @@ function pidAlive(pid: number): boolean {
 	}
 }
 
-const Line = z.looseObject({
-	type: z.string(),
-	message: z.looseObject({ content: z.array(z.looseObject({ type: z.string() })) }).optional()
-});
-const Text = z.looseObject({ text: z.string() });
-const ToolUse = z.looseObject({
-	name: z.string(),
-	input: z.looseObject({ command: z.string().optional(), file_path: z.string().optional() })
-});
-
-const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
-
-// What one stream-json line of a session shows: assistant text, and each tool call as its name plus command or file path.
-function shown(text: string): string[] {
-	let value: unknown;
-	try {
-		value = JSON.parse(text);
-	} catch {
-		return [];
-	}
-	const line = Line.safeParse(value);
-	if (!line.success || line.data.type !== 'assistant') return [];
-	const out: string[] = [];
-	for (const block of line.data.message?.content ?? []) {
-		if (block.type === 'text') {
-			const got = Text.safeParse(block);
-			if (got.success && oneLine(got.data.text) !== '') out.push(oneLine(got.data.text));
-		} else if (block.type === 'tool_use') {
-			const got = ToolUse.safeParse(block);
-			if (got.success) {
-				const target = got.data.input.command ?? got.data.input.file_path;
-				out.push(oneLine(target === undefined ? got.data.name : `${got.data.name} ${target}`));
-			}
-		}
-	}
-	return out;
-}
-
 function readEnd(path: string): string | null {
 	let fd: number;
 	try {
@@ -139,7 +101,9 @@ function sessionTail(root: string, session: string | null, keep: number): string
 	if (session === null) return [];
 	const text = readEnd(join(logsPath(root), `${session}.jsonl`));
 	if (text === null) return [];
-	return text.split('\n').flatMap(shown).slice(-keep);
+	return renderSession(text.split('\n'))
+		.map((line) => line.text)
+		.slice(-keep);
 }
 
 const isDone = (event: Event): event is Done => event.kind === 'pull' || event.kind === 'failed';

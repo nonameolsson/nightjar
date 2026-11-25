@@ -69,7 +69,10 @@ export function heldSession(
 			const hold = spend.hold(req.budgetUsd, now(), dailyUsd);
 			if (typeof hold !== 'string') {
 				try {
-					return await run(req);
+					const got = await run(req);
+					// its ledger line comes later, so what it spent stays counted until then
+					if ('costUsd' in got) hold.settle(got.sessionId, got.costUsd);
+					return got;
 				} finally {
 					hold.release();
 				}

@@ -8,6 +8,7 @@ import type {
 	FeatureWriter,
 	ItemId,
 	ItemText,
+	Shelf,
 	Standing,
 	Ticket,
 	TicketCount,
@@ -36,6 +37,8 @@ const CommentSchema = z.looseObject({
 const SearchSchema = z.looseObject({
 	items: z.array(IssueSchema.extend({ created_at: z.string() }))
 });
+
+const UpdatedIssueSchema = IssueSchema.extend({ updated_at: z.string() });
 
 // GitHub's search pages hold 100 at most and reach no further than 1,000 results.
 const SEARCH_PAGES = 10;
@@ -174,6 +177,34 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 				(i) => i.pull_request === undefined && ((i.sub_issues_summary?.total ?? 0) > 0 || isLone(i))
 			)
 			.map(toFeature);
+	}
+
+	// Every page of the person's open issues, newest update first, so the total counts them all; a Signal is a label the list cannot leave out, so it is read here.
+	async shelf(person: string, max: number): Promise<Shelf> {
+		const query = new URLSearchParams({
+			state: 'open',
+			assignee: person,
+			sort: 'updated',
+			direction: 'desc'
+		});
+		const raw = await this.api.everyPage(
+			`list the issues assigned to ${person}`,
+			`repos/${this.repo}/issues?${query.toString()}`,
+			z.array(UpdatedIssueSchema),
+			(page) => page
+		);
+		const shelved = raw.filter(
+			(i) => i.pull_request === undefined && !i.parent_issue_url && this.signalsOf(i).length === 0
+		);
+		for (const i of shelved) this.remember(i);
+		return {
+			features: shelved.slice(0, max).map((i) => ({
+				...toFeature(i),
+				hasTickets: (i.sub_issues_summary?.total ?? 0) > 0,
+				updated: i.updated_at
+			})),
+			total: shelved.length
+		};
 	}
 
 	// the sub-issue summary of every issue the lists gave, so counting a listed Feature costs no call

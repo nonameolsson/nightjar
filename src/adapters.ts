@@ -60,6 +60,7 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 	const assign = tracker.assign?.bind(tracker);
 	const trusts = tracker.trusts?.bind(tracker);
 	const ticketCounts = tracker.ticketCounts?.bind(tracker);
+	const shelf = tracker.shelf?.bind(tracker);
 	return {
 		me: () => tracker.me(),
 		assignedFeatures: (person) => tracker.assignedFeatures(person),
@@ -77,6 +78,7 @@ function referencing(tracker: Tracker, fit: (r: TicketReference) => TicketRefere
 		...(assign === undefined ? {} : { assign }),
 		...(trusts === undefined ? {} : { trusts }),
 		...(ticketCounts === undefined ? {} : { ticketCounts }),
+		...(shelf === undefined ? {} : { shelf }),
 		...(tracker.loneIssues === undefined ? {} : { loneIssues: tracker.loneIssues })
 	};
 }

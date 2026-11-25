@@ -168,7 +168,8 @@ async function publishNext(
 	}
 }
 
-// Hands a Feature back to a person after a fault: the claim off, needs info on, the reason said.
+// Hands a Feature back to a person after a fault: the claim and the Go off, needs info on, the reason said.
+// A paused build puts the Go back before it pushes, so a fault after that would otherwise build it again on every pass.
 export async function handBack(
 	deps: QueueDeps,
 	feature: Named,
@@ -190,6 +191,7 @@ export async function handBack(
 	});
 	try {
 		await tracker.removeSignal(id, 'working');
+		await tracker.removeSignal(id, 'go');
 		await tracker.addSignal(id, 'needsInfo');
 		const step = next === undefined ? '' : `\n\n${nextStepText(next)}`;
 		await tracker.comment(id, `Nightjar stopped on a fault: ${reason}${step}${FOOTER}`);
@@ -386,8 +388,10 @@ const didWork = (got: PullFixOutcome | null): got is PullFixOutcome =>
 	got !== null && got.kind !== 'skipped';
 
 // The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
+const GOOD_ENDS: readonly PullFixOutcome['kind'][] = ['fixed', 'gaveUp', 'atLimit', 'diverged'];
+
 export function pullFixExit(got: PullFixOutcome): number {
-	return got.kind === 'fixed' || got.kind === 'gaveUp' || got.kind === 'atLimit' ? 0 : 1;
+	return GOOD_ENDS.includes(got.kind) ? 0 : 1;
 }
 
 // `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today. `portEnv` is the block of ports the caller claimed for it.
@@ -656,6 +660,22 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	let code = 0;
 	let takesMore = true;
 
+	// the Features told why they paused on this run, so a retry after each pause does not comment each time
+	const toldPaused = new Set<string>();
+	const tellPaused = async (feature: ItemId, { why: reason }: Pause) => {
+		const key = `${feature} ${reason}`;
+		if (toldPaused.has(key)) return;
+		toldPaused.add(key);
+		try {
+			await deps.tracker.comment(
+				feature,
+				`Nightjar paused: ${reason}.\n\nNothing to do. Nightjar tries this Feature again by itself when the pause ends, and the Go stays on it.${FOOTER}`
+			);
+		} catch {
+			// the pause goes on without the comment
+		}
+	};
+
 	const pauseAll = (why: Pause) => {
 		if (run.pausing !== null) return;
 		run.pausing = pause(why).then(() => {
@@ -675,7 +695,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		// the block goes back once the work has ended, so the next work can claim it
 		const ended = work
 			.run(say, lease?.env)
-			.then((end) => {
+			.then(async (end) => {
 				running.delete(work.feature);
 				deps.status.finished(work.feature);
 				if (end.code === null) taken -= 1;
@@ -683,7 +703,10 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 				if (end.paused !== undefined) {
 					// --once ends on a pause; --watch pauses every Slot, the running ones finishing
 					if (once) takesMore = false;
-					else pauseAll(end.paused);
+					else {
+						await tellPaused(work.feature, end.paused);
+						pauseAll(end.paused);
+					}
 				}
 				if (end.built !== undefined) {
 					const rest = queued.filter((f) => !running.has(f.id));

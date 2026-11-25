@@ -212,8 +212,8 @@ describe('readFactory', () => {
 		]);
 		expect(readFactory(root, { alive: live }).tail).toEqual([
 			'Reading the marks module.',
-			'Read /w/src/marks.ts',
-			'Bash npm run check',
+			'Read: /w/src/marks.ts',
+			'Bash: npm run check',
 			'TodoWrite'
 		]);
 	});

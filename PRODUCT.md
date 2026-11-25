@@ -16,7 +16,7 @@ Nightjar is a command-line tool that builds a repo's Features with nobody at the
 A software factory that runs unattended on the person's own machine and logins, one draft PR per Feature, driven by the Tracker's specs rather than a chat session.
 
 ## Operating Context
-Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `gh`/`az`, `git` and `claude` sign-ins. The UI is a local web page for a repo whose `factory.json` is committed; run state lives in `.factory/`.
+Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `gh`/`az`, `git` and `claude` sign-ins. The UI is a local web page for a repo whose `factory.json` is committed. Run state (Building, spend, the Session log) lives in `.factory/`. The page reads the Tracker itself, read-only, for the Queue, Waiting on you and the Shelf (their Features that carry no Signal yet), so the person sees them while Nightjar is off (ADR 0009). A Feature there opens a detail panel with its spec and its Tickets in Build order, read from the Tracker when it opens, so the person can read what will be built without opening the Tracker. The Go is still given only in the Tracker.
 
 ## Capabilities and Constraints
 - Domain vocabulary is fixed by `GLOSSARY.md` (Feature, Ticket, Signal, Go, Queue, Workflow, Step, ...); UI copy uses these terms exactly.
@@ -24,7 +24,7 @@ Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `g
 - Hosted/team-wide oversight of many people's Queues is not a goal confirmed here.
 
 ## Brand Commitments
-- The page follows `DESIGN.md` (night-shift teal and amber on near-black). `docs/design/color-scheme.md` is the brand palette for the icon and other assets, not the page.
+- The page follows `DESIGN.md`: Paper, a light list on warm paper greys that follows the light or dark scheme, by default, and the night-shift teal and amber on near-black as the Nightjar theme. `docs/design/color-scheme.md` is the brand palette for the icon and other assets, not the page.
 - Brand assets: `docs/design/assets/` (banner, icon, wordmark).
 
 ## Evidence on Hand

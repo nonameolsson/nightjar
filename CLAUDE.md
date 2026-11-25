@@ -18,7 +18,7 @@ Node 24, TypeScript, npm. `mise.toml` pins Node 24 (`mise trust`, then `mise ins
 - `npm run lint`, `npm run format`, `npm run typecheck`.
 - CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you change with Edit or Write; after any other edit (a script, `sed`), run `npx prettier --write <file>`.
 - `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
-- `npm run ui:dev [building|two-builds|review-round|idle|paused|stopped|off]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
+- `npm run ui:dev [building|two-builds|review-round|idle|paused|stopped|off|shelf]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
 
 ## Architecture
 

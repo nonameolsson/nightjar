@@ -2,6 +2,7 @@
 import { describe, it } from 'vitest';
 import {
 	assignContract,
+	botPullsContract,
 	codeHostContract,
 	featureWriterContract,
 	nightjarDraftsContract,
@@ -9,6 +10,7 @@ import {
 	publishContract,
 	sourcesContract,
 	feedbackContract,
+	shelfContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract
@@ -39,7 +41,11 @@ describe('FakeTracker meets the ticketCounts contract', () => {
 	for (const c of ticketCountsContract) it(c.name, () => c.run(fakeTrackerHarness));
 });
 
-describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom, assign and ticketCounts contracts', () => {
+describe('FakeTracker meets the shelf contract', () => {
+	for (const c of shelfContract) it(c.name, () => c.run(fakeTrackerHarness));
+});
+
+describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom, assign, ticketCounts and shelf contracts', () => {
 	const keyed = keyedTrackerHarness('PROJ-');
 	for (const c of [
 		...trackerContract,
@@ -47,7 +53,8 @@ describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, fe
 		...waitingOnContract,
 		...sourcesContract,
 		...assignContract,
-		...ticketCountsContract
+		...ticketCountsContract,
+		...shelfContract
 	]) {
 		it(c.name, () => c.run(keyed));
 	}
@@ -71,4 +78,8 @@ describe('FakeCodeHost meets the openPulls contract', () => {
 
 describe('FakeCodeHost meets the publish contract', () => {
 	for (const c of publishContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the botPulls contract', () => {
+	for (const c of botPullsContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });
