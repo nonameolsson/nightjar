@@ -498,7 +498,31 @@ describe('sources', () => {
 		one({ type: 'schedule', template: 't' });
 		expect(refusal()).toMatch(/^factory\.json: sources\.a\.cron: missing: /m);
 		one({ type: 'webhook', template: 't', cron: '@daily' });
-		expect(refusal()).toMatch(/^factory\.json: sources\.a\.cron: only a schedule/m);
+		expect(refusal()).toMatch(/^factory\.json: sources\.a\.cron: only a schedule or a botPulls/m);
+	});
+
+	it('loads a botPulls Source with its branch prefixes and cron time', () => {
+		const deps = {
+			type: 'botPulls',
+			branchPrefixes: ['dependabot/', 'renovate/'],
+			cron: '*/30 * * * *',
+			template: 'bot-pull'
+		};
+		one(deps);
+		expect(loadConfig(root).sources?.a).toEqual(deps);
+	});
+
+	it('wants branch prefixes and a cron time on a botPulls Source, and prefixes on nothing else', () => {
+		one({ type: 'botPulls', cron: '@daily', template: 't' });
+		expect(refusal()).toMatch(/^factory\.json: sources\.a\.branchPrefixes: missing: /m);
+		one({ type: 'botPulls', cron: '@daily', template: 't', branchPrefixes: [] });
+		expect(refusal()).toMatch(/^factory\.json: sources\.a\.branchPrefixes: /m);
+		one({ type: 'botPulls', cron: '@daily', template: 't', branchPrefixes: [' '] });
+		expect(refusal()).toMatch(/^factory\.json: sources\.a\.branchPrefixes\.0: /m);
+		one({ type: 'botPulls', template: 't', branchPrefixes: ['dependabot/'] });
+		expect(refusal()).toMatch(/^factory\.json: sources\.a\.cron: missing: /m);
+		one({ type: 'schedule', cron: '@daily', template: 't', branchPrefixes: ['dependabot/'] });
+		expect(refusal()).toMatch(/^factory\.json: sources\.a\.branchPrefixes: only a botPulls/m);
 	});
 
 	it('takes a cron time of five fields, @daily or @weekly', () => {

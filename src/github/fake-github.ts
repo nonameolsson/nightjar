@@ -177,6 +177,8 @@ export class FakeGitHub {
 	private readonly jobs = new Map<number, NewJob>();
 	// the `mergeable` of each pull request GitHub has worked out; true when not set, null while it works
 	private readonly mergeable = new Map<number, boolean | null>();
+	// the pull requests whose head branch is on a fork, which GitHub names by the fork's repo
+	private readonly forked = new Set<number>();
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -371,6 +373,11 @@ export class FakeGitHub {
 		this.change(number, () => ({
 			pull: { head: pull.head, base: pull.base, draft: false }
 		}));
+	}
+
+	// Pull request `number` comes from a fork of the repo.
+	fork(number: number): void {
+		this.forked.add(number);
 	}
 
 	// A person closes issue or pull request `number`.
@@ -600,7 +607,11 @@ export class FakeGitHub {
 			head: {
 				ref: head,
 				sha: this.shaOf(issue.number),
-				repo: { full_name: this.repo }
+				repo: {
+					full_name: this.forked.has(issue.number)
+						? `fork/${this.repo.split('/').at(-1) ?? ''}`
+						: this.repo
+				}
 			},
 			base: { ref: issue.pull?.base ?? '' },
 			mergeable: this.mergeable.has(issue.number) ? this.mergeable.get(issue.number) : true

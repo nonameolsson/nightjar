@@ -435,6 +435,12 @@ const sourcesCheck = check({
 						: await goFault(adapters.tracker, source.owner, loaded.config.trusted);
 				if (fault !== null) faults.push(fault);
 			}
+			// the same refusal intake makes before it starts
+			if (source.type === 'botPulls' && adapters !== undefined && !adapters.codeHost.botPulls) {
+				faults.push(
+					"a botPulls Source reads the open pull requests through the Code host's botPulls, which this Code host lacks (docs/custom-adapters.md)"
+				);
+			}
 			lines.push(sourceLine(said, source, faults, o));
 		}
 		return { lines };
@@ -449,7 +455,7 @@ function sourceLine(
 	o: CheckOptions
 ): Line {
 	const all = [...faults];
-	if (source.type !== 'schedule') {
+	if (source.type === 'webhook' || source.type === 'sentry') {
 		if (source.secretEnv === undefined) {
 			all.push('name the variable that holds its webhook secret, as secretEnv');
 		} else if ((o.env[source.secretEnv] ?? '') === '') {
@@ -460,7 +466,7 @@ function sourceLine(
 	}
 	if (all.length > 0) return { ...said, status: 'fail', detail: all.join('\n') };
 	const go = source.go === true ? `, gives the Go for ${source.owner ?? ''}` : '';
-	if (source.type !== 'schedule') {
+	if (source.type === 'webhook' || source.type === 'sentry') {
 		return {
 			...said,
 			status: 'ok',
@@ -469,10 +475,19 @@ function sourceLine(
 	}
 	// factory.json has loaded, so the cron time reads; intake fires it in the machine's local time zone
 	const next = nextDue(parseCron(source.cron ?? ''), o.now?.() ?? new Date());
+	const when = next === null ? 'never' : localTime(next);
+	if (source.type === 'botPulls') {
+		const prefixes = (source.branchPrefixes ?? []).join(', ');
+		return {
+			...said,
+			status: 'ok',
+			detail: `botPulls of ${prefixes}, next read ${when}, template ${source.template} is in shape${go}`
+		};
+	}
 	return {
 		...said,
 		status: 'ok',
-		detail: `schedule ${source.cron ?? ''}, next due ${next === null ? 'never' : localTime(next)}, template ${source.template} is in shape${go}`
+		detail: `schedule ${source.cron ?? ''}, next due ${when}, template ${source.template} is in shape${go}`
 	};
 }
 

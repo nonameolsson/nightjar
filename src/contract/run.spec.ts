@@ -6,6 +6,7 @@ import { codeHostContract, type CodeHostHarness } from './code-host.js';
 import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { openPullsContract } from './open-pulls.js';
+import { botPullsContract } from './bot-pulls.js';
 import { publishContract } from './publish.js';
 import { ContractRefusal, formatReport, runContract } from './run.js';
 import { featureWriterContract } from './feature-writer.js';
@@ -42,7 +43,8 @@ describe('runContract', () => {
 			'Code host Nightjar drafts',
 			'Code host feedback',
 			'Code host open pull requests',
-			'Code host publish'
+			'Code host publish',
+			'Code host bot pull requests'
 		]);
 		expect(report.suites[0]?.results.map((r) => r.name)).toEqual(
 			trackerContract.map((c) => c.name)
@@ -76,6 +78,9 @@ describe('runContract', () => {
 		expect(report.suites[11]?.results.map((r) => r.name)).toEqual(
 			publishContract.map((c) => c.name)
 		);
+		expect(report.suites[12]?.results.map((r) => r.name)).toEqual(
+			botPullsContract.map((c) => c.name)
+		);
 		expect(report.failed).toBe(0);
 	});
 
@@ -87,6 +92,7 @@ describe('runContract', () => {
 				reply: _b,
 				openPulls: _c,
 				publish: _d,
+				botPulls: _e,
 				...only
 			} = codeHost as FakeCodeHost;
 			return { ...rest, codeHost: only };
@@ -107,7 +113,8 @@ describe('runContract', () => {
 			'Code host',
 			'Code host feedback',
 			'Code host open pull requests',
-			'Code host publish'
+			'Code host publish',
+			'Code host bot pull requests'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -123,7 +130,8 @@ describe('runContract', () => {
 			'Code host',
 			'Code host Nightjar drafts',
 			'Code host feedback',
-			'Code host publish'
+			'Code host publish',
+			'Code host bot pull requests'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -139,7 +147,8 @@ describe('runContract', () => {
 			'Code host',
 			'Code host Nightjar drafts',
 			'Code host feedback',
-			'Code host open pull requests'
+			'Code host open pull requests',
+			'Code host bot pull requests'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -389,6 +398,23 @@ describe('runContract', () => {
 		}
 	});
 
+	it('runs no botPulls suite over a Code host without the method, as a module written before it', async () => {
+		const lacks: CodeHostHarness = async () => {
+			const subject = await fakeCodeHostHarness();
+			const { botPulls: _gone, ...without } = subject.codeHost as FakeCodeHost;
+			return { ...subject, codeHost: without };
+		};
+		const report = await runContract({ codeHostHarness: lacks });
+		expect(report.suites.map((s) => s.title)).toEqual([
+			'Code host',
+			'Code host Nightjar drafts',
+			'Code host feedback',
+			'Code host open pull requests',
+			'Code host publish'
+		]);
+		expect(report.failed).toBe(0);
+	});
+
 	it('runs only the suite whose harness the module exports', async () => {
 		const report = await runContract({ codeHostHarness: fakeCodeHostHarness });
 		expect(report.suites.map((s) => s.title)).toEqual([
@@ -396,7 +422,8 @@ describe('runContract', () => {
 			'Code host Nightjar drafts',
 			'Code host feedback',
 			'Code host open pull requests',
-			'Code host publish'
+			'Code host publish',
+			'Code host bot pull requests'
 		]);
 	});
 

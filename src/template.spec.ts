@@ -83,9 +83,15 @@ describe('cleanValue', () => {
 	});
 
 	it('takes a value that opens as a Model, Effort or Blocked by line for no such line', () => {
-		for (const line of ['Model: opus', '**Effort:** max', 'Blocked by: 1', '## Ticket 2: more']) {
+		for (const line of [
+			'Model: opus',
+			'**Effort:** max',
+			'Blocked by: 1',
+			'Base: evil',
+			'## Ticket 2: more'
+		]) {
 			const got = cleanValue(line);
-			expect(got).not.toMatch(/^(?:\*\*)?(?:Model|Effort|Blocked by):/i);
+			expect(got).not.toMatch(/^(?:\*\*)?(?:Model|Effort|Blocked by|Base):/i);
 			expect(got).not.toMatch(/^##/);
 		}
 	});
@@ -153,6 +159,19 @@ describe('fillTemplate', () => {
 		const tickets = text.indexOf('## Ticket 1');
 		expect(text.indexOf('**Source:** weekly-deps')).toBeLessThan(tickets);
 		expect(text.indexOf(sourceMarker('weekly-deps', ''))).toBeLessThan(tickets);
+	});
+
+	it("puts the Source's own lines above the Source line, as written", () => {
+		const { plan } = fillTemplate({
+			template: TEMPLATE,
+			source: 'deps',
+			payload: PAYLOAD,
+			lines: ['**Base:** dependabot/npm_and_yarn/left-pad-1.1.0', '<!-- a mark -->'],
+			now: NOW
+		});
+		const { body } = plan.feature;
+		expect(body).toContain('**Base:** dependabot/npm_and_yarn/left-pad-1.1.0\n<!-- a mark -->');
+		expect(body.indexOf('**Base:**')).toBeLessThan(body.indexOf('**Source:**'));
 	});
 
 	it('adds no payload block to a schedule, which has none', () => {
@@ -295,6 +314,7 @@ describe('a template on disk', () => {
 	it('is in shape for each template Nightjar ships', () => {
 		expect(templateFaults(root, 'sentry')).toEqual([]);
 		expect(templateFaults(root, 'weekly-deps')).toEqual([]);
+		expect(templateFaults(root, 'bot-pull')).toEqual([]);
 	});
 
 	describe('as `nightjar create --dry-run` reads it', () => {
@@ -342,6 +362,32 @@ describe('a template on disk', () => {
 			expect(out.join('\n')).toContain(
 				'would make Ticket 1 Reproduce the error in a spec, then fix it so the spec passes'
 			);
+		});
+
+		it('passes for the bot-pull template filled from a red bot pull request', async () => {
+			const { text } = fillTemplate({
+				template: readTemplate(root, 'bot-pull'),
+				source: 'deps',
+				payload: {
+					pull: {
+						id: 42,
+						url: 'https://code.example/o/app/pull/42',
+						title: 'Bump left-pad from 1.0.0 to 1.1.0',
+						branch: 'dependabot/npm_and_yarn/left-pad-1.1.0'
+					},
+					checks: [{ check: 'CI / test', job: 'test', step: 'Run tests', logTail: 'FAIL' }]
+				},
+				key: 'pull.id'
+			});
+			expect(text).toContain('Bump left-pad from 1.0.0 to 1.1.0');
+			expect(text).toContain('<!-- nightjar:source=deps key=42 -->');
+			const file = join(root, 'bot.md');
+			writeFileSync(file, text);
+			expect(await runCreateCommand(['--dry-run', file])).toBe(0);
+			expect(out.join('\n')).toContain(
+				'would make the Feature Fix the dependency update: Bump left-pad from 1.0.0 to 1.1.0'
+			);
+			expect(out.join('\n')).not.toContain('would make Ticket 2');
 		});
 
 		it('passes for the weekly-deps template filled for a schedule, which has no payload', async () => {
