@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { oneEscape } from './fakes/github.js';
 import { machine, type Machine, type SandboxTool, type Tool } from './fakes/machine.js';
 import type { Adapters } from './adapters.js';
-import { checkMachine, publishCheck, pullChecksCheck, type CheckOptions } from './checks.js';
+import { FakeTracker } from './fakes/tracker.js';
+import {
+	checkMachine,
+	leftWorkingCheck,
+	publishCheck,
+	pullChecksCheck,
+	type CheckOptions
+} from './checks.js';
+import type { PersonConfig } from './person-config.js';
 import { loadConfig, type Config } from './config.js';
 import { failures, printLines } from './doctor.js';
 import type { FakeGitHub } from './github/fake-github.js';
@@ -208,6 +216,62 @@ describe('nightjar doctor over the Pull-check pass', () => {
 		m.writeConfig(GITHUB);
 		const off = loadConfig(m.root);
 		expect((await run(without, { config: off, rules: null })).lines ?? []).toEqual([]);
+	});
+});
+
+describe('nightjar doctor over a working Signal left on a Ticket', () => {
+	const tracker = () =>
+		new FakeTracker('ann')
+			.add({
+				id: '1',
+				title: 'Left',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['2', '3']
+			})
+			.add({ id: '2', title: 'Ticket 2', signals: ['ready', 'working'] })
+			.add({ id: '3', title: 'Ticket 3', signals: ['ready'] })
+			.add({
+				id: '4',
+				title: 'Built',
+				assignees: ['ann'],
+				signals: ['go', 'working'],
+				children: ['5']
+			})
+			.add({ id: '5', title: 'Ticket 5', signals: ['ready', 'working'] });
+	const run = (t: FakeTracker) =>
+		leftWorkingCheck.run(
+			{
+				adapters: { tracker: t } as unknown as Adapters,
+				me: 'ann',
+				person: {} as PersonConfig
+			},
+			{} as CheckOptions
+		);
+
+	it('warns, without failing, about a Ticket with working whose Feature has none', async () => {
+		m = machine();
+		const passed = await run(tracker());
+		const lines = passed.lines ?? [];
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.status).toBe('warn');
+		expect(lines[0]?.detail).toContain('#2 carries the working Signal');
+		expect(lines[0]?.detail).toContain('the next claim of #1 clears it');
+		expect(failures(lines)).toBe(0);
+	});
+
+	it('says nothing for a Feature that has working itself, or a lone issue', async () => {
+		m = machine();
+		const t = tracker().add({ id: '6', title: 'Lone', assignees: ['ann'], signals: ['go'] });
+		await t.removeSignal('1', 'go');
+		await t.addSignal('1', 'working');
+		await t.addSignal('6', 'working');
+		expect((await run(t)).lines ?? []).toEqual([]);
+	});
+
+	it('still exits 0 in the real command, and lists nothing on a clean Tracker', async () => {
+		expect(await doctor()).toBe(0);
+		expect(out.join('\n')).not.toContain('working Signal');
 	});
 });
 

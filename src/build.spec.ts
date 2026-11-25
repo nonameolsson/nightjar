@@ -1291,6 +1291,33 @@ describe('buildFeature', () => {
 			expect(stopped.tracker.signalsOf('2')).toEqual(['ready']);
 		});
 
+		it('is taken off a Ticket an earlier run left it on, before the first Session starts', async () => {
+			const world = makeGitWorld();
+			await world.tracker.addSignal('2', 'working');
+			await world.tracker.addSignal('3', 'working');
+			const first: (readonly Signal[])[] = [];
+			world.settle = (req) => {
+				if (req.kind === 'build' && first.length === 0) {
+					first.push([...world.tracker.signalsOf('3')]);
+				}
+				return undefined;
+			};
+			await buildFeature(deps(world), setup(world), '1');
+			// Ticket 3 waits behind 2, and no longer looks worked on
+			expect(first).toEqual([['ready']]);
+			expect(world.tracker.signalsOf('2')).toEqual(['ready']);
+			expect(world.tracker.signalsOf('3')).toEqual(['ready']);
+		});
+
+		it('lets a Tracker fault while clearing it reach the caller, which hands the Feature back', async () => {
+			const world = makeGitWorld();
+			await world.tracker.addSignal('3', 'working');
+			world.tracker.removeSignal = (id) =>
+				id === '3' ? Promise.reject(new Error('the Tracker is down')) : Promise.resolve();
+			await expect(buildFeature(deps(world), setup(world), '1')).rejects.toThrow('down');
+			expect(askedOf(world, 'build')).toEqual([]);
+		});
+
 		it('leaves the Build order the same', async () => {
 			const world = makeGitWorld();
 			await buildFeature(deps(world), setup(world), '1');

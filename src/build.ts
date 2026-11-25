@@ -257,6 +257,12 @@ export async function buildFeature(
 		});
 	deps.status.doing(settingUp());
 	const tickets = await tracker.tickets(id);
+	// a run that died could not take working off its Ticket; the claim does, before anything is built. A lone issue is its own Ticket, and its working is the Feature's, just added.
+	for (const ticket of tickets) {
+		if (ticket.id !== id && ticket.signals.includes('working')) {
+			await tracker.removeSignal(ticket.id, 'working');
+		}
+	}
 	const chosen = chooseWorkflow(setup, feature.body);
 	if (chosen.kind === 'refused') {
 		const why = `its Workflow cannot be used: ${chosen.why}`;
