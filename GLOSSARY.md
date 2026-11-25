@@ -98,6 +98,10 @@ _Avoid_: review notes, PR comments, change requests
 A Session that answers the unanswered trusted Feedback on a Feature's open draft pull request, run before the review when the Feature gets the Go again, or under `--watch` and `--once` with no Go when a trusted reviewer requested changes since the branch's last `Factory-Feedback` commit. Such an automatic round's commit names the request in a `Factory-Feedback-Asked` trailer; a pull request gets 5 of them, and after that only a Go starts another round. It goes through the check and its fix rounds and lands as one commit whose `Factory-Feedback` trailer names the Feedback it answered, and Nightjar replies to each one with that commit. A round that fails is thrown away, and the Feature gets needs info.
 _Avoid_: review round, PR fix, follow-up
 
+**Preflight**:
+The Session, before a Feature's first Ticket is built, that reads the Feature, its Tickets and the repo, changes no file, and says whether the Feature can be built in the sandbox: buildable, questions, or out of reach with a reason. Questions give the Feature needs info, and out of reach gives it needs a person. It is off unless the repo switches it on, runs again on each Go until it once says buildable, and when it gives no answer the build goes on.
+_Avoid_: pre-check, feasibility check, triage, gate
+
 **Review**:
 The Session, after the last Ticket and the Steps, that reads the Feature's whole diff against its spec and the repo's rules and says approve or changes, with the issues it found. It is on unless the repo switches it off. Its findings are never Feedback.
 _Avoid_: self-review, AI review, code review (when Nightjar's own is meant)
@@ -115,7 +119,7 @@ The program that builds one Ticket in the Feature's worktree, in a Session Night
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
+One run of the Coding agent on one piece of work: the Preflight, a Ticket's build, a fix round, a Step round, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
 **Logbook**:
