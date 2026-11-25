@@ -66,6 +66,10 @@ _Avoid_: ready-for-agent (on a Feature), start, trigger
 A comment on a Feature or Ticket whose author Nightjar trusts, so it reaches the Coding agent. No other comment does.
 _Avoid_: approved comment
 
+**Status note**:
+The one comment Nightjar keeps on a Feature and rewrites as its build goes on: its state, a headline, its Tickets, its pull request and the Next step. It never notifies anyone; a person who is needed is told by a new comment.
+_Avoid_: tracking comment, sticky comment, progress comment
+
 ### The page
 
 **Mat**:
