@@ -478,6 +478,30 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(pollMs, stop);
 	};
+	// the Features told why they paused on this run, so a retry every PAUSE_MS does not comment each time
+	const toldPaused = new Set<string>();
+	// Why a piece of work paused the run: a build that stopped before its pull request, or one that opened it and then paused.
+	const pausedBy = (outcome: FeatureOutcome | null) =>
+		outcome?.kind === 'paused'
+			? outcome.why
+			: outcome?.kind === 'pull'
+				? outcome.paused
+				: undefined;
+	const pauseFor = async (feature: Named, reason: string) => {
+		const key = `${feature.id} ${reason}`;
+		if (!toldPaused.has(key)) {
+			toldPaused.add(key);
+			try {
+				await deps.tracker.comment(
+					feature.id,
+					`Nightjar paused: ${reason}.\n\nNothing to do. Nightjar tries this Feature again in ${String(PAUSE_MS / 60_000)} minutes, and the Go stays on it.${FOOTER}`
+				);
+			} catch {
+				// the pause goes on without the comment
+			}
+		}
+		await pause(reason);
+	};
 	const pause = async (reason: string) => {
 		const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();
 		deps.status.doing({ kind: 'paused', why: reason, until });
@@ -529,7 +553,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 				const { outcome } = answered;
 				waiting.tell(rest, outcome, answered.feature);
 				if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
-				if (outcome?.kind === 'paused') await pause(outcome.why);
+				const reason = pausedBy(outcome);
+				if (reason !== undefined) await pauseFor(answered.feature, reason);
 				continue;
 			}
 		}
@@ -544,7 +569,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		const outcome = await buildOne(deps, named(next));
 		waiting.tell(rest, outcome, next);
 		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
-		if (outcome?.kind === 'paused') await pause(outcome.why);
+		const paused = pausedBy(outcome);
+		if (paused !== undefined) await pauseFor(named(next), paused);
 	}
 	return 130;
 }

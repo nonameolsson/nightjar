@@ -6,6 +6,6 @@ Each Feature branches from the base branch, and its draft pull request targets t
 
 - **Hold a blocked Feature**: skip it, keep its Go, and take it again once the blocker merges. Rejected: it needs a Feature-level read of blockers and a way to show the wait, for a case that keeping dependent work in one Feature avoids.
 - **Stack on the blocker's branch**, with the pull request based on it and retargeted when it merges, as GitHub's stacked pull requests do. Rejected: every Feedback round or Pull-check fix on the lower draft forces a rebase and force-push of the drafts above it, under any reviewer (see ADR 0004); Azure Repos has no counterpart; and Nightjar keeps each Feature in its own worktree, which `git rebase --update-refs` skips.
-- **Merge or rebase the base into open drafts.** Rejected for now: a rebase rewrites what a reviewer read, a merge needs a Session to resolve conflicts that can fail, and a merge queue makes "up to date" unnecessary for merging. Merging the base into a draft no person has engaged with stays open as a later step.
+- **Merge or rebase the base into open drafts.** Rejected for now: a rebase rewrites what a reviewer read, a merge needs a Session to resolve conflicts that can fail, and a merge queue makes "up to date" unnecessary for merging. Merging the base into a draft no person has engaged with stays open as a later step, which [ADR 0011](0011-nightjar-merges-the-base-into-its-own-conflicting-draft.md) takes up.
 
 Research: `docs/research/feature-queue-branching.md`. Grilled in #241.
