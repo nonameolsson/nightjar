@@ -574,21 +574,22 @@ function features(view: FactoryView, lists: Lists): Features {
 				});
 		}
 	}
-	const queued = (q: Queued): QueuedCard => ({
-		state: 'queue',
-		id: q.id,
-		title: q.title,
-		waitingTickets: [],
-		ticketCounts: q.ticketCounts,
-		progress: q.ticketCounts ? builtOf(q.ticketCounts, q.pull, 'built') : null,
-		...(q.pull === undefined ? {} : { pull: q.pull }),
-		// the median Ticket duration times the Feature's Tickets; none without history or a count
-		estimateMs:
-			view.medianTicketMs == null || !q.ticketCounts
-				? null
-				: view.medianTicketMs * q.ticketCounts.total,
-		...opens
-	});
+	const queued = (q: Queued): QueuedCard => {
+		const progress = q.ticketCounts ? builtOf(q.ticketCounts, q.pull, 'built') : null;
+		const left = progress === null ? 0 : progress.total - progress.built;
+		return {
+			state: 'queue',
+			id: q.id,
+			title: q.title,
+			waitingTickets: [],
+			ticketCounts: q.ticketCounts,
+			progress,
+			...(q.pull === undefined ? {} : { pull: q.pull }),
+			// the median Ticket duration times the Tickets not built yet; none without history, a count, or a Ticket left
+			estimateMs: view.medianTicketMs == null || left === 0 ? null : view.medianTicketMs * left,
+			...opens
+		};
+	};
 	const queue = listed?.map(queued);
 	const onShelf = (f: ShelfFeature): ShelfCard => ({
 		state: 'shelf',

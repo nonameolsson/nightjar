@@ -147,12 +147,12 @@ describe('nightjar ui page', () => {
 				outcome: step === 'build' ? 'built' : 'approve',
 				...(durationMs === undefined ? {} : { durationMs })
 			});
-		const queue = () => {
+		const queue = (closed = 0) => {
 			const file = status();
 			file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 			file.refreshed(
 				[
-					{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed: 0 } },
+					{ id: '275', title: 'Saved filters', ticketCounts: { total: 4, closed } },
 					{ id: '281', title: 'Exports', ticketCounts: null },
 					{ id: '290', title: 'Reports' }
 				],
@@ -182,6 +182,16 @@ describe('nightjar ui page', () => {
 			const rows = (page.split('<tbody>')[1] ?? '').split('<tr');
 			expect(rows.find((r) => r.includes('Saved filters'))).toContain('est.');
 			expect(rows.find((r) => r.includes('Exports'))).not.toContain('est.');
+		});
+
+		it('counts only the Tickets not built yet, and gives none when all are', async () => {
+			built('11', 60_000, 1);
+			queue(2);
+			await open();
+			// 1m x the 2 Tickets left
+			expect(cardOf((await get('/')).text, 'Saved filters')).toMatch(/2m 00s<\/time> <small>est\./);
+			queue(4);
+			expect(cardOf((await get('/')).text, 'Saved filters')).not.toContain('est.');
 		});
 
 		it('shows no estimate while no duration is recorded', async () => {
