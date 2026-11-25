@@ -249,7 +249,7 @@ function waiting(view: FactoryView, lists: Lists, links: Links): string {
 function shelf(view: FactoryView, lists: Lists, links: Links): string {
 	const all = features(view, lists);
 	const li = (c: ShelfCard) =>
-		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}</li>`;
+		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}${earlierHtml(c)}</li>`;
 	const items = (all.shelf ?? []).map(li).join('');
 	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
 	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
@@ -578,8 +578,11 @@ function features(view: FactoryView, lists: Lists): Features {
 		...opens
 	});
 	const shelved = lists.known ? lists.shelf : undefined;
-	// a Feature active again sits on its active Mat alone, with its finished runs on its card
-	const active = new Set([building, ...(waiting ?? []), ...(queue ?? [])].map((c) => c?.id));
+	const shelfCards = shelved?.features.map(onShelf);
+	// a Feature with finished runs that is active again, or back on the Shelf, sits there alone with its runs on its card
+	const active = new Set(
+		[building, ...(waiting ?? []), ...(queue ?? []), ...(shelfCards ?? [])].map((c) => c?.id)
+	);
 	const withEarlier = <C extends FeatureCard>(card: C): C => {
 		const done = completed.find((c) => c.id === card.id);
 		return done === undefined
@@ -592,7 +595,7 @@ function features(view: FactoryView, lists: Lists): Features {
 		waiting: waiting?.map(withEarlier),
 		trackerCannotList: found?.trackerCannotList ?? false,
 		// the Tracker's order, newest update first, which its contract suite holds it to
-		shelf: shelved?.features.map(onShelf),
+		shelf: shelfCards?.map(withEarlier),
 		shelfTotal: shelved?.total ?? 0,
 		shelfCannotList: shelved === null,
 		completed: completed.filter((c) => !active.has(c.id))
@@ -734,7 +737,7 @@ function shelfCard(card: ShelfCard, links: Links): string {
 		card,
 		links,
 		note === '' ? '' : `<p class="meta count">${note}</p>`,
-		'<p class="label">On the Shelf</p>',
+		`<p class="label">On the Shelf</p>${earlierHtml(card)}`,
 		updatedHtml(card.updated)
 	);
 }
@@ -959,7 +962,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			timeText: '',
 			cost: null,
 			outcome: shelfNote(card),
-			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>`,
+			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>${earlierHtml(card)}`,
 			progress: null
 		});
 	for (const card of all.completed) {
