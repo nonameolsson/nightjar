@@ -5,9 +5,12 @@ import { codeHostContract, type CodeHostHarness, type CodeHostSubject } from './
 import { feedbackContract } from './feedback.js';
 import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { openPullsContract } from './open-pulls.js';
+import { botPullsContract } from './bot-pulls.js';
+import { publishContract } from './publish.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
+import { shelfContract } from './shelf.js';
 import { sourcesContract } from './sources.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
@@ -70,12 +73,20 @@ async function optionalSuites(harness: TrackerHarness): Promise<{
 	finds: boolean;
 	assigns: boolean;
 	counts: boolean;
+	shelves: boolean;
 }> {
 	let subject: TrackerSubject;
 	try {
 		subject = await harness({ person: 'ann', trusted: ['ann'], items: [] });
 	} catch {
-		return { creates: false, waitsOn: false, finds: false, assigns: false, counts: false };
+		return {
+			creates: false,
+			waitsOn: false,
+			finds: false,
+			assigns: false,
+			counts: false,
+			shelves: false
+		};
 	}
 	try {
 		return {
@@ -83,15 +94,19 @@ async function optionalSuites(harness: TrackerHarness): Promise<{
 			waitsOn: typeof subject.tracker.waitingOn === 'function',
 			finds: typeof subject.tracker.featuresFrom === 'function',
 			assigns: typeof subject.tracker.assign === 'function',
-			counts: typeof subject.tracker.ticketCounts === 'function'
+			counts: typeof subject.tracker.ticketCounts === 'function',
+			shelves: typeof subject.tracker.shelf === 'function'
 		};
 	} finally {
 		await subject.close?.();
 	}
 }
 
-// Whether the Code host has nightjarDrafts; a harness that cannot build one has failed every case already.
-async function listsDrafts(harness: CodeHostHarness): Promise<boolean> {
+// Whether the Code host has `method`; a harness that cannot build one has failed every case already.
+async function hasMethod(
+	harness: CodeHostHarness,
+	method: 'nightjarDrafts' | 'publish' | 'botPulls'
+): Promise<boolean> {
 	let subject: CodeHostSubject;
 	try {
 		subject = await harness();
@@ -99,7 +114,7 @@ async function listsDrafts(harness: CodeHostHarness): Promise<boolean> {
 		return false;
 	}
 	try {
-		return typeof subject.codeHost.nightjarDrafts === 'function';
+		return typeof subject.codeHost[method] === 'function';
 	} finally {
 		await subject.close?.();
 	}
@@ -126,7 +141,7 @@ async function hasFeedback(
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, and the open pull requests suite when it has openPulls.
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the shelf suite when it has shelf, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, the open pull requests suite when it has openPulls, and the publish suite when it has publish.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -152,10 +167,13 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		if (has.counts) {
 			suites.push(await runSuite('Tracker ticket counts', ticketCountsContract, tracker as never));
 		}
+		if (has.shelves) {
+			suites.push(await runSuite('Tracker shelf', shelfContract, tracker as never));
+		}
 	}
 	if (codeHost !== undefined) {
 		suites.push(await runSuite('Code host', codeHostContract, codeHost as never));
-		if (await listsDrafts(codeHost as CodeHostHarness)) {
+		if (await hasMethod(codeHost as CodeHostHarness, 'nightjarDrafts')) {
 			suites.push(
 				await runSuite('Code host Nightjar drafts', nightjarDraftsContract, codeHost as never)
 			);
@@ -167,6 +185,14 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 		if (has.openPulls) {
 			suites.push(
 				await runSuite('Code host open pull requests', openPullsContract, codeHost as never)
+			);
+		}
+		if (await hasMethod(codeHost as CodeHostHarness, 'publish')) {
+			suites.push(await runSuite('Code host publish', publishContract, codeHost as never));
+		}
+		if (await hasMethod(codeHost as CodeHostHarness, 'botPulls')) {
+			suites.push(
+				await runSuite('Code host bot pull requests', botPullsContract, codeHost as never)
 			);
 		}
 	}

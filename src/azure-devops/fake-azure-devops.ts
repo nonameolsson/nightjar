@@ -203,11 +203,17 @@ export class FakeAzureDevOps {
 	private readonly people = new Map<string, Person>();
 	private readonly discussion = new Map<number, StoredComment[]>();
 	private clock = Date.UTC(2026, 9, 30, 9, 0);
+	// a clock of its own for System.ChangedDate, later than every item's making, so the other dates are as before
+	private changeClock = Date.UTC(2026, 10, 1, 9, 0);
 	// every call it answered, in order
 	readonly asked: Asked[] = [];
 	private readonly faults: { match: RegExp; status: number }[] = [];
 	private readonly repositories = new Map<string, Repository>();
 	private readonly pulls: FakePullRequest[] = [];
+	// the `mergeStatus` of each pull request Azure Repos has settled; succeeded when not set
+	private readonly mergeStatuses = new Map<number, string>();
+	// the pull requests whose source branch is in a fork
+	private readonly forked = new Set<number>();
 	// the artifact links on each work item, such as one to a pull request
 	private readonly artifacts = new Map<number, string[]>();
 	// the commit each pushed branch points at
@@ -222,6 +228,11 @@ export class FakeAzureDevOps {
 	private readonly statuses = new Map<number, StoredStatus[]>();
 	private readonly policies = new Map<number, NewPolicy[]>();
 	private readonly builds = new Map<number, StoredBuild>();
+
+	// What Azure Repos says of `mergeStatus` on a pull request: conflicts, succeeded, queued, notSet, rejectedByPolicy or failure.
+	setMergeStatus(pullRequestId: number, status: string): void {
+		this.mergeStatuses.set(pullRequestId, status);
+	}
 
 	constructor(
 		readonly organization: string,
@@ -242,13 +253,15 @@ export class FakeAzureDevOps {
 	// Makes a work item and gives back its id.
 	workItem(item: NewWorkItem): number {
 		const id = this.items.size + 1;
+		const created = this.tick();
 		const fields: Record<string, unknown> = {
 			'System.Id': id,
 			'System.TeamProject': this.project,
 			'System.WorkItemType': item.type,
 			'System.Title': item.title,
 			'System.State': item.state ?? 'New',
-			'System.CreatedDate': this.tick()
+			'System.CreatedDate': created,
+			'System.ChangedDate': created
 		};
 		if (item.description !== undefined) {
 			fields['System.Description'] = item.html
@@ -287,6 +300,15 @@ export class FakeAzureDevOps {
 			createdDate: this.tick()
 		});
 		this.discussion.set(id, list);
+		this.touch(id);
+	}
+
+	// Azure DevOps stamps System.ChangedDate on every change to an item.
+	private touch(id: number): void {
+		const item = this.get(id);
+		this.changeClock += 60_000;
+		const changed = new Date(this.changeClock).toISOString();
+		this.items.set(id, { ...item, fields: { ...item.fields, 'System.ChangedDate': changed } });
 	}
 
 	// The tags on a work item, as Azure DevOps lists them.
@@ -344,6 +366,12 @@ export class FakeAzureDevOps {
 	// A person publishes the draft, abandons it, or completes it.
 	markReady(id: number): void {
 		this.replacePull({ ...this.pullRequestAt(id), isDraft: false });
+	}
+
+	// The pull request comes from a fork of the repo.
+	fork(id: number): void {
+		this.pullRequestAt(id);
+		this.forked.add(id);
 	}
 
 	abandon(id: number): void {
@@ -888,10 +916,16 @@ export class FakeAzureDevOps {
 	private updatePull(pull: FakePullRequest, body: unknown): AzureDevOpsReply {
 		const got = (body ?? {}) as Record<string, unknown>;
 		for (const name of Object.keys(got)) {
-			if (!['title', 'description'].includes(name))
+			if (!['title', 'description', 'isDraft'].includes(name))
 				throw fault(`a pull request update Nightjar may not send: ${name}`);
 		}
-		const { description, title } = got;
+		const { description, title, isDraft } = got;
+		// Nightjar publishes a draft, and never turns a pull request back into one
+		if (isDraft !== undefined && isDraft !== false) {
+			throw fault(
+				`a pull request update Nightjar may not send: isDraft ${JSON.stringify(isDraft)}`
+			);
+		}
 		if (typeof description === 'string' && description.length > DESCRIPTION_LIMIT) {
 			return refusal(
 				400,
@@ -901,7 +935,8 @@ export class FakeAzureDevOps {
 		const changed = {
 			...pull,
 			...(typeof description === 'string' ? { description } : {}),
-			...(typeof title === 'string' ? { title } : {})
+			...(typeof title === 'string' ? { title } : {}),
+			...(isDraft === false ? { isDraft } : {})
 		};
 		this.replacePull(changed);
 		return json(200, this.renderPull(changed));
@@ -973,7 +1008,13 @@ export class FakeAzureDevOps {
 			description: pull.description,
 			sourceRefName: pull.sourceRefName,
 			targetRefName: pull.targetRefName,
+			...(this.forked.has(pull.pullRequestId)
+				? { forkSource: { repository: { name: 'fork' } } }
+				: {}),
 			isDraft: pull.isDraft,
+			mergeStatus: this.mergeStatuses.get(pull.pullRequestId) ?? 'succeeded',
+			// each pull request opens a minute after the one before
+			creationDate: new Date(Date.UTC(2026, 9, 30, 8, pull.pullRequestId)).toISOString(),
 			...(head === undefined ? {} : { lastMergeSourceCommit: { commitId: head } }),
 			reviewers: reviewers.map((r) => ({ ...this.identity(r.person.uniqueName), vote: r.vote })),
 			createdBy: this.identity(this.person),
@@ -1119,9 +1160,9 @@ export class FakeAzureDevOps {
 				throw fault(`a patch Nightjar may not send: ${JSON.stringify(op)}`);
 			}
 		}
-		const changed = { ...this.get(id), rev: item.rev + 1, fields };
-		this.items.set(id, changed);
-		return json(200, this.render(changed, undefined, false));
+		this.items.set(id, { ...this.get(id), rev: item.rev + 1, fields });
+		this.touch(id);
+		return json(200, this.render(this.get(id), undefined, false));
 	}
 
 	// A work item made with fields and a parent link, as Nightjar makes a Feature or Ticket; any other field is a fault.
@@ -1315,6 +1356,7 @@ export class FakeAzureDevOps {
 		const item = this.get(from);
 		this.get(to);
 		this.items.set(from, { ...item, links: [...item.links, { rel, id: to }] });
+		this.touch(from);
 	}
 
 	private itemUrl(id: number): string {

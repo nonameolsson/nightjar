@@ -329,6 +329,34 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(await again.built()).toEqual(new Set(['2']));
 	});
 
+	it('commits a Review round as its own commit, naming its round and its Session, and says when it changed no file', async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		expect(await tree.commitReview(1, 'Fixed the off-by-one.', 's4')).toBe(false);
+
+		world.write(tree, 'b.txt');
+		expect(await tree.commitReview(1, 'Fixed the off-by-one.', 's4')).toBe(true);
+		expect(world.subjects(tree)).toEqual(['Answer the Review, round 1', 'Share it (#2)']);
+		expect(Object.fromEntries(await tree.headTrailers())).toEqual({
+			'Factory-Review': '1',
+			'Factory-Session': 's4'
+		});
+		expect(await tree.built()).toEqual(new Set(['2']));
+	});
+
+	it('keeps a thrown-away Review round on the -attempt-review side branch', async () => {
+		const { world, branch, tree } = await fresh();
+		world.write(tree, 'a.txt');
+		await tree.commitTicket('2', 'Share it', 'Done.', 's1');
+		const before = await tree.head();
+		world.write(tree, 'b.txt');
+
+		expect(await tree.discard(before, 'review')).toBe(`${branch}-attempt-review`);
+		expect(world.kept(tree, `${branch}-attempt-review`)).toEqual(['b.txt']);
+		expect(await tree.built()).toEqual(new Set(['2']));
+	});
+
 	it("reads the head commit's trailers, and none from a person's own commit", async () => {
 		const { world, tree } = await fresh();
 		world.write(tree, 'a.txt');
@@ -381,6 +409,58 @@ describe('the git worktree against its remote', () => {
 		expect(await again.toRemote()).toBe(true);
 		expect(await again.head()).toBe(sh('-C', other, 'rev-parse', 'HEAD'));
 		expect(await again.headTrailers()).toEqual(new Map());
+	});
+
+	// a person who fixes the draft by hand pushes to the branch; a build that went on from the stale copy could not push
+	it('opens at a commit pushed from elsewhere, so a build goes on from it', async () => {
+		const { branch } = await pushed();
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'fix.txt'), 'by hand\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'Fix the check');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
+		expect(await again.head()).toBe(sh('-C', other, 'rev-parse', 'HEAD'));
+		expect(await again.built()).toEqual(new Set(['2']));
+	});
+
+	// the build's commits and a person's fix both stand, so the push is a fast-forward
+	it('merges the remote in when both it and the remote moved without clashing', async () => {
+		const { branch, tree } = await pushed();
+		writeFileSync(join(tree.at.folder, 'b.txt'), 'work\n');
+		await tree.commitTicket('3', 'Use it', 'Done.', 's2');
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'fix.txt'), 'by hand\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'Fix the check');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
+		expect(await again.built()).toEqual(new Set(['2', '3']));
+		expect(existsSync(join(again.at.folder, 'fix.txt'))).toBe(true);
+		expect(existsSync(join(again.at.folder, 'b.txt'))).toBe(true);
+		expect(await again.toRemote()).toBe(false);
+		inTree(again, 'push', '-q', 'origin', `HEAD:refs/heads/${branch}`);
+	});
+
+	it('opens with its own commits when both it and the remote changed the same lines, and leaves the push to say so', async () => {
+		const { branch, tree } = await pushed();
+		writeFileSync(join(tree.at.folder, 'a.txt'), 'mine\n');
+		await tree.commitTicket('3', 'Use it', 'Done.', 's2');
+		const head = await tree.head();
+		const other = join(repo, `other-${String(n)}`);
+		sh('clone', '-q', '-b', branch, join(repo, 'origin.git'), other);
+		writeFileSync(join(other, 'a.txt'), 'theirs\n');
+		sh('-C', other, 'add', '-A');
+		sh('-C', other, 'commit', '-q', '-m', 'Fix the check');
+		sh('-C', other, 'push', '-q', 'origin', branch);
+
+		const again = await open(branch);
+		expect(await again.head()).toBe(head);
+		expect(inTree(again, 'status', '--porcelain')).toBe('');
 	});
 
 	it('keeps commits the remote lacks, and says so', async () => {

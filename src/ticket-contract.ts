@@ -27,6 +27,23 @@ export function hasAcceptanceCriteria(lines: readonly string[]): boolean {
 	return false;
 }
 
+// What a body says under its "Acceptance criteria" heading, up to the next heading of its level or above, as Markdown; null when it has no such heading. A code block holds no heading.
+export function acceptanceCriteria(body: string): string | null {
+	let fenced = false;
+	let under: number | null = null;
+	const found: string[] = [];
+	for (const line of body.replace(/\r\n/g, '\n').split('\n')) {
+		if (FENCE.test(line)) fenced = !fenced;
+		const criteria = fenced ? null : CRITERIA.exec(line);
+		const heading = fenced ? null : HEADING.exec(line);
+		if (under === null) {
+			if (criteria) under = criteria[1]?.length ?? 1;
+		} else if (heading && (heading[1]?.length ?? 1) <= under) break;
+		else found.push(line);
+	}
+	return under === null ? null : found.join('\n').trim();
+}
+
 // The names of the Model and Effort lines that are there with no value, as "Model".
 export function emptySettings(lines: readonly string[]): string[] {
 	return lines.flatMap((line) => {

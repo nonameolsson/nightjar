@@ -37,6 +37,13 @@ describe('next steps', () => {
 		expect(got).toContain('3. Nightjar goes on from the branch, and answers the feedback');
 	});
 
+	it('tells a person to fix the issues a Review left open, or hand the Feature back with the Go', () => {
+		const got = text(next.reviewStep(renamed));
+		expect(got).toContain('1. Read the issues above');
+		expect(got).toContain('remove `ready-for-human` and add `run-it` on this Feature');
+		expect(got).toContain('Review rounds again');
+	});
+
 	it('tells a person to fix what a failed Ticket names, then hand it back', () => {
 		const got = ticketStep(names, 'retry');
 		expect(got).toContain('Read the reason above');

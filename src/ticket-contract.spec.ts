@@ -1,6 +1,6 @@
 // A Ticket's body checked against docs/ticket-contract.md, with no Coding agent.
 import { describe, expect, it } from 'vitest';
-import { ticketFaults } from './ticket-contract.js';
+import { acceptanceCriteria, ticketFaults } from './ticket-contract.js';
 
 const BODY = `**Model:** opus
 **Effort:** high
@@ -11,6 +11,24 @@ Move \`escapeHtml\` into \`src/escape.ts\`.
 
 - [ ] one module exports escapeHtml
 - [x] the old copy is gone`;
+
+describe('acceptanceCriteria', () => {
+	it('gives what is under the heading, up to the next heading of its level or above', () => {
+		expect(acceptanceCriteria(BODY)).toBe(
+			'- [ ] one module exports escapeHtml\n- [x] the old copy is gone'
+		);
+		expect(
+			acceptanceCriteria(
+				'## Acceptance criteria\r\n\r\n- [ ] a\n\n### Detail\n\nmore\n\n## Notes\n\nnot this'
+			)
+		).toBe('- [ ] a\n\n### Detail\n\nmore');
+	});
+
+	it('gives null for a body without the heading, or with it only in a code block', () => {
+		expect(acceptanceCriteria('Do it.')).toBeNull();
+		expect(acceptanceCriteria('```\n### Acceptance criteria\n- [ ] no\n```')).toBeNull();
+	});
+});
 
 describe('ticketFaults', () => {
 	it('finds no fault in a body with criteria under their heading', () => {

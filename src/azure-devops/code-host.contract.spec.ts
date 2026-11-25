@@ -5,18 +5,19 @@ import { join } from 'node:path';
 import { describe, it } from 'vitest';
 import { run, type Env } from '../git.js';
 import {
+	botPullsContract,
 	codeHostContract,
 	feedbackContract,
 	nightjarDraftsContract,
 	openPullsContract,
-	type DraftsWorld,
+	publishContract,
 	type Given,
-	type Pull,
-	type PullChecks
+	type Pull
 } from '../index.js';
 import { AzureDevOpsApi } from './api.js';
 import { AzureReposCodeHost, REFERENCES_MARK, type ReferencesAs } from './code-host.js';
 import { FakeAzureDevOps } from './fake-azure-devops.js';
+import { azureReposDrafts } from './fake-drafts.js';
 
 // A project and a repo name with spaces, as many have, so every address must encode them.
 const PROJECT = 'Fabrikam Fiber';
@@ -34,47 +35,6 @@ function referencesShown(body: string, linked: readonly number[]): string[] {
 					.map((l) => l.trim().replace(/^- /, ''))
 					.filter((l) => l !== '');
 	return [...lines, ...linked.map((id) => `#${String(id)}`)];
-}
-
-// each line stamped with its time, as Azure Pipelines writes a log
-const stamp = (line: string) => `2026-11-04T06:53:39.1234567Z ${line}`;
-
-// Each Pull check as Azure Repos reports it: one with a job as a failed build of a build validation policy, one without as a status.
-function setChecks(ado: FakeAzureDevOps, pull: Pull, checks: PullChecks): void {
-	ado.clearChecks(pull.id);
-	if (checks.pending) ado.policy(pull.id, { type: 'build', status: 'running' });
-	for (const f of checks.failed) {
-		if (f.job === '') {
-			ado.status(pull.id, { name: f.check, state: 'failed', description: f.logTail });
-			continue;
-		}
-		const log = f.logTail.split('\n').map(stamp).join('\n');
-		const buildId = ado.build([
-			{
-				name: f.job,
-				result: 'failed',
-				...(f.step === '' ? { log } : {}),
-				steps: [
-					{ name: 'Checkout', result: 'succeeded', log: stamp('Syncing repository') },
-					...(f.step === '' ? [] : [{ name: f.step, result: 'failed', log }])
-				]
-			}
-		]);
-		ado.policy(pull.id, { type: 'build', status: 'rejected', displayName: f.check, buildId });
-	}
-}
-
-function azureReposDrafts(ado: FakeAzureDevOps): DraftsWorld {
-	const done = (act: () => void) => {
-		act();
-		return Promise.resolve();
-	};
-	return {
-		checks: (pull, checks) => done(() => setChecks(ado, pull, checks)),
-		engage: (pull) => done(() => ado.sayOnPull(pull.id, 'bea@contoso.com', 'Why this change?')),
-		ready: (pull) => done(() => ado.markReady(pull.id)),
-		closePull: (pull) => done(() => ado.abandon(pull.id))
-	};
 }
 
 // The statuses a service posts for each conclusion; a pass, a skip and a neutral one are not red.
@@ -241,4 +201,12 @@ describe('AzureReposCodeHost meets the feedback contract', { timeout: 30_000 }, 
 
 describe('AzureReposCodeHost meets the openPulls contract', { timeout: 30_000 }, () => {
 	for (const c of openPullsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
+});
+
+describe('AzureReposCodeHost meets the publish contract', { timeout: 30_000 }, () => {
+	for (const c of publishContract) it(c.name, () => c.run(azureReposCodeHost('text')));
+});
+
+describe('AzureReposCodeHost meets the botPulls contract', { timeout: 30_000 }, () => {
+	for (const c of botPullsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 });

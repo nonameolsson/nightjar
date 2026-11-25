@@ -242,6 +242,33 @@ function drafting() {
 
 const stamped = (line: string) => `2026-11-04T06:53:39.1234567Z ${line}`;
 
+describe('AzureReposCodeHost.conflicts', () => {
+	it('answers from mergeStatus: conflicts is yes, succeeded is no, anything else is unknown', async () => {
+		const ado = world();
+		const api = new AzureDevOpsApi('contoso', ado.signIn(), ado.request);
+		const host = new AzureReposCodeHost(
+			api,
+			{ project: 'Fabrikam', repo: 'app', referencesAs: 'text' },
+			noGit
+		);
+		const pull = await host.createDraft({
+			title: 'A',
+			head: 'factory/1-a',
+			base: 'main',
+			body: 'b'
+		});
+		expect(await host.conflicts(pull)).toBe('no');
+		ado.setMergeStatus(pull.id, 'conflicts');
+		expect(await host.conflicts(pull)).toBe('yes');
+		for (const status of ['queued', 'notSet', 'rejectedByPolicy', 'failure']) {
+			ado.setMergeStatus(pull.id, status);
+			expect(await host.conflicts(pull)).toBe('unknown');
+		}
+		ado.setMergeStatus(pull.id, 'succeeded');
+		expect(await host.conflicts(pull)).toBe('no');
+	});
+});
+
 describe('AzureReposCodeHost.nightjarDrafts', () => {
 	it("lists the open drafts on Nightjar's branches oldest first, each with its whole description and head", async () => {
 		const { ado, host, open } = drafting();

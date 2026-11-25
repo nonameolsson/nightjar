@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { USAGE } from './args.js';
+import { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
 
 let dir: string;
@@ -67,6 +68,75 @@ describe('nightjar ui', () => {
 		await vi.waitFor(() => expect(servedPort()).toBeGreaterThan(0));
 		const page = await (await fetch(`http://127.0.0.1:${String(servedPort())}/`)).text();
 		expect(page).toContain('failed: nope');
+		stop.abort();
+		expect(await done).toBe(0);
+	});
+
+	it("reads the Queue and Waiting on you from factory.json's Tracker while nightjar is off, and writes nothing to it", async () => {
+		writeFileSync(
+			join(dir, 'factory.json'),
+			JSON.stringify({
+				tracker: { type: 'github', repo: 'o/app' },
+				codeHost: { type: 'github', repo: 'o/app' },
+				check: 'npm test',
+				allowedCommands: ['npm test']
+			})
+		);
+		const github = new FakeGitHub('o/app', 'ann');
+		const feature = github.issue({
+			title: 'Saved filters',
+			body: '',
+			state: 'open',
+			labels: ['factory-go'],
+			assignees: ['ann']
+		});
+		const ticket = github.issue({
+			title: 'A Ticket',
+			body: '### Acceptance criteria\n\n- [ ] it works\n',
+			state: 'open',
+			labels: ['ready-for-agent'],
+			assignees: ['ann']
+		});
+		github.addSubIssue(feature, ticket);
+		github.issue({
+			title: 'Audit log',
+			body: '',
+			state: 'open',
+			labels: ['needs-info'],
+			assignees: ['ann']
+		});
+		const stop = new AbortController();
+		const done = runNightjar(['ui', '--port', '0'], {
+			...host(dir),
+			// no config.json of the person's own: the page shows the signed-in person's Features
+			env: { PATH: process.env.PATH, XDG_CONFIG_HOME: dir },
+			gh: github.gh,
+			stop: stop.signal
+		});
+		await vi.waitFor(() => expect(servedPort()).toBeGreaterThan(0));
+		const url = `http://127.0.0.1:${String(servedPort())}/`;
+		await vi.waitFor(
+			async () => expect(await (await fetch(url)).text()).toContain('Tracker read'),
+			{ timeout: 10_000 }
+		);
+		const page = await (await fetch(url)).text();
+		expect(page).toContain('Saved filters');
+		expect(page).toContain('Audit log');
+		expect(page).not.toContain('not known while nightjar is off');
+		expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+		stop.abort();
+		expect(await done).toBe(0);
+	});
+
+	it('serves the page when the Tracker cannot be built, and says why', async () => {
+		const stop = new AbortController();
+		const done = runNightjar(['ui', '--port', '0'], { ...host(dir), stop: stop.signal });
+		await vi.waitFor(() => expect(servedPort()).toBeGreaterThan(0));
+		const url = `http://127.0.0.1:${String(servedPort())}/`;
+		await vi.waitFor(
+			async () => expect(await (await fetch(url)).text()).toContain('could not read the Tracker'),
+			{ timeout: 10_000 }
+		);
 		stop.abort();
 		expect(await done).toBe(0);
 	});

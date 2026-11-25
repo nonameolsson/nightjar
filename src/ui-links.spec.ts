@@ -26,6 +26,9 @@ describe('page links', () => {
 		expect(links.tracker).toBe('GitHub');
 		expect(links.issue('12')).toBe('https://github.com/o/app/issues/12');
 		expect(links.issues).toBe('https://github.com/o/app/issues');
+		expect(links.assigned('ann')).toBe(
+			'https://github.com/o/app/issues?q=is%3Aissue%20is%3Aopen%20assignee%3Aann'
+		);
 		expect(links.pulls).toBe('https://github.com/o/app/pulls');
 	});
 
@@ -56,6 +59,8 @@ describe('page links', () => {
 		});
 		expect(links.tracker).toBe('Azure DevOps');
 		expect(links.issue('42')).toBe('https://dev.azure.com/contoso/My%20Proj/_workitems/edit/42');
+		// Azure DevOps takes no assignee in a work item address, so the link is to all of its work items
+		expect(links.assigned('ann')).toBe('https://dev.azure.com/contoso/My%20Proj/_workitems');
 		expect(links.pulls).toBe('https://dev.azure.com/contoso/My%20Proj/_git/web/pullrequests');
 	});
 
@@ -67,6 +72,7 @@ describe('page links', () => {
 			allowedCommands: ['npm test']
 		});
 		expect(links.issue('../x')).toBeNull();
+		expect(NO_LINKS.assigned('ann')).toBeNull();
 		expect(linksFor('/nonexistent-nightjar-root', null)).toEqual(NO_LINKS);
 		expect(NO_LINKS.signals).toEqual(DEFAULT_SIGNAL_NAMES);
 	});

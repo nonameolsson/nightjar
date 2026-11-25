@@ -2,9 +2,12 @@
 import { z } from 'zod';
 import { failedCheckBody } from '../check-output.js';
 import type {
+	BotPull,
 	ChangeRequest,
 	CodeHost,
+	ConflictState,
 	DraftRequest,
+	DraftsListing,
 	FailedCheck,
 	Feedback,
 	NightjarDraft,
@@ -14,8 +17,9 @@ import type {
 	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
-import { firstLine, type Run } from '../git.js';
+import { pushFault, type Run } from '../git.js';
 import { logTail } from '../log-tail.js';
+import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
 import { BRANCH_PREFIX } from '../worktree.js';
 import { GitHubApi, GitHubFailure, PAGE, type GhRunner } from './api.js';
@@ -33,11 +37,21 @@ export interface GitHubCodeHostOptions {
 const PullSchema = z.looseObject({
 	number: z.int(),
 	html_url: z.string(),
-	body: z.string().nullable().optional()
+	body: z.string().nullable().optional(),
+	// null while GitHub has not worked out whether the pull request merges; only a single pull request carries it
+	mergeable: z.boolean().nullable().optional()
 });
 
+// a pull request as publishing reads it: GraphQL names it by its node id
+const PublishedSchema = z.looseObject({ node_id: z.string(), draft: z.boolean().optional() });
+
+const READY_FOR_REVIEW =
+	'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }';
+
 const ListedPullSchema = PullSchema.extend({
+	title: z.string().nullish(),
 	draft: z.boolean().optional(),
+	created_at: z.string().nullish(),
 	head: z.looseObject({
 		ref: z.string(),
 		sha: z.string(),
@@ -220,7 +234,7 @@ export class GitHubCodeHost implements CodeHost {
 	async push(folder: string, branch: string): Promise<void> {
 		const got = await this.git(['push', '-q', '-u', 'origin', `HEAD:refs/heads/${branch}`], folder);
 		if (got.missing) throw new GitHubFailure('git is not on the PATH.');
-		if (!got.ok) throw new GitHubFailure(`git could not push ${branch}: ${firstLine(got.err)}`);
+		if (!got.ok) throw new GitHubFailure(`git could not push ${branch}: ${pushFault(got.err)}`);
 	}
 
 	async openPull(branch: string): Promise<Pull | null> {
@@ -284,6 +298,17 @@ export class GitHubCodeHost implements CodeHost {
 		await this.setBody(pull, join(body.trimEnd(), lines));
 	}
 
+	async conflicts(pull: Pull): Promise<ConflictState> {
+		const n = String(pull.id);
+		const raw = await this.api.parse(
+			`read pull request #${n}`,
+			[`repos/${this.repo}/pulls/${n}`],
+			PullSchema
+		);
+		if (raw.mergeable === true) return 'no';
+		return raw.mergeable === false ? 'yes' : 'unknown';
+	}
+
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {
 		const { text, lines } = split(await this.body(pull));
 		const added = references.map(placed).filter((l) => !lines.includes(l));
@@ -302,8 +327,28 @@ export class GitHubCodeHost implements CodeHost {
 		]);
 	}
 
+	// GitHub's REST API cannot take a pull request out of draft, so this asks its GraphQL API to mark it ready for review.
+	async publish(pull: Pull): Promise<void> {
+		const n = String(pull.id);
+		const raw = await this.api.parse(
+			`read pull request #${n}`,
+			[`repos/${this.repo}/pulls/${n}`],
+			PublishedSchema
+		);
+		if (raw.draft !== true) return;
+		await this.api.call(`publish pull request #${n}`, [
+			'-X',
+			'POST',
+			'graphql',
+			'-f',
+			`query=${READY_FOR_REVIEW}`,
+			'-f',
+			`id=${raw.node_id}`
+		]);
+	}
+
 	// Open draft pull requests from this repo's own Nightjar branches, oldest first.
-	async nightjarDrafts(): Promise<NightjarDraft[]> {
+	async nightjarDrafts(listing: DraftsListing = {}): Promise<NightjarDraft[]> {
 		const query = new URLSearchParams({ state: 'open', sort: 'created', direction: 'asc' });
 		const raw = await this.api.parse(
 			"list Nightjar's draft pull requests",
@@ -313,16 +358,21 @@ export class GitHubCodeHost implements CodeHost {
 		const own = (full: string | undefined) => full?.toLowerCase() === this.repo.toLowerCase();
 		const drafts: NightjarDraft[] = [];
 		for (const p of raw) {
-			if (p.draft !== true || !p.head.ref.startsWith(BRANCH_PREFIX)) continue;
-			if (!own(p.head.repo?.full_name)) continue;
+			// a draft, or a pull request Nightjar published itself, which its body's mark says
+			if (p.draft !== true && !publishedByNightjar(p.body ?? '')) continue;
+			if (!p.head.ref.startsWith(BRANCH_PREFIX) || !own(p.head.repo?.full_name)) continue;
 			const pull = toPull(p);
+			const { checks, count } = await this.pullChecks(p.head.sha);
 			drafts.push({
 				pull,
 				branch: p.head.ref,
 				headCommit: p.head.sha,
 				body: p.body ?? '',
-				checks: await this.pullChecks(p.head.sha),
-				personEngaged: await this.personEngaged(pull)
+				checks,
+				personEngaged: await this.personEngaged(pull),
+				...(p.created_at == null ? {} : { openedAt: p.created_at }),
+				checkCount: count,
+				...(listing.commits === true ? { commits: await this.commits(pull) } : {})
 			});
 		}
 		return drafts;
@@ -348,6 +398,31 @@ export class GitHubCodeHost implements CodeHost {
 				body: p.body ?? '',
 				commits: await this.commits(pull),
 				changesRequested: await this.changesRequested(pull)
+			});
+		}
+		return found;
+	}
+
+	// Open pull requests from this repo's own branches under any of `prefixes`, oldest first, with the Pull checks on each head commit.
+	async botPulls(prefixes: readonly string[]): Promise<BotPull[]> {
+		const query = new URLSearchParams({ state: 'open', sort: 'created', direction: 'asc' });
+		const raw = await this.api.everyPage(
+			'list the open pull requests',
+			`repos/${this.repo}/pulls?${query.toString()}`,
+			z.array(ListedPullSchema),
+			(page) => page
+		);
+		const own = (full: string | undefined) => full?.toLowerCase() === this.repo.toLowerCase();
+		const found: BotPull[] = [];
+		for (const p of raw) {
+			if (!prefixes.some((prefix) => p.head.ref.startsWith(prefix))) continue;
+			if (!own(p.head.repo?.full_name)) continue;
+			found.push({
+				pull: toPull(p),
+				title: p.title ?? '',
+				branch: p.head.ref,
+				headCommit: p.head.sha,
+				checks: (await this.pullChecks(p.head.sha)).checks
 			});
 		}
 		return found;
@@ -384,8 +459,8 @@ export class GitHubCodeHost implements CodeHost {
 		return found;
 	}
 
-	// The check runs and commit statuses on `sha`.
-	private async pullChecks(sha: string): Promise<PullChecks> {
+	// The check runs and commit statuses on `sha`, and how many there are.
+	private async pullChecks(sha: string): Promise<{ checks: PullChecks; count: number }> {
 		const commit = `repos/${this.repo}/commits/${sha}`;
 		const short = sha.slice(0, 7);
 		const runs = await this.api.parse(
@@ -412,7 +487,10 @@ export class GitHubCodeHost implements CodeHost {
 				failed.push({ check: s.context, job: '', step: '', logTail: s.description ?? '' });
 			}
 		}
-		return { pending, failed };
+		return {
+			checks: { pending, failed },
+			count: runs.check_runs.length + statuses.statuses.length
+		};
 	}
 
 	// An Actions job names its workflow, failed step and log; any other app's check run only itself.

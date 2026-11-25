@@ -1,4 +1,5 @@
-// What is wrong across a Feature's Tickets rather than in one Ticket's body (docs/ticket-contract.md): checked by `nightjar doctor FEATURE` only, never before a Session.
+// What is wrong across a Feature's Tickets rather than in one Ticket's body (docs/ticket-contract.md): checked by `nightjar doctor FEATURE` and shown in the `nightjar ui` detail panel (`readFeature` in src/ui-tracker.ts), never before a Session.
+import { ticketFaults } from './ticket-contract.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
 import { workflowLine } from './workflow.js';
 
@@ -73,7 +74,7 @@ export function featureFaults(
 			if (blocker.open && !own.has(blocker.id)) {
 				add(
 					ticket.id,
-					`It is blocked by ${ref(blocker.id)}, which is open and not a Ticket of this Feature, so a build never reaches it; close the blocker or take the link off.`
+					`It is blocked by ${ref(blocker.id)}, which is open and not a Ticket of this Feature, so it waits until that Ticket closes, when its Feature's pull request merges; merge that, then give the Go again.`
 				);
 			}
 		}
@@ -100,4 +101,43 @@ export function featureFaults(
 		);
 	}
 	return { tickets: forTickets, feature: forFeature };
+}
+
+// A Feature's Tickets against the Ticket contract (docs/ticket-contract.md).
+export interface TicketChecks {
+	// the faults of each open Ticket, in the Tracker's order, by its id; none for one that holds. A closed Ticket is not checked.
+	readonly tickets: ReadonlyMap<ItemId, readonly string[]>;
+	// the faults of the Feature as a whole
+	readonly feature: readonly string[];
+}
+
+// The check `nightjar doctor FEATURE` runs and the Feature detail panel of `nightjar ui` shows: each open Ticket's own faults
+// (its body, then what its Feature's Tickets say of it), and the Feature's. A lone issue is its own one Ticket, so it is checked as that.
+export function checkTickets(
+	feature: Feature,
+	tickets: readonly Ticket[],
+	workflows: readonly string[],
+	ref: (id: ItemId) => string
+): TicketChecks {
+	const across = featureFaults(feature, tickets, workflows, ref);
+	const checked = new Map<ItemId, readonly string[]>();
+	for (const ticket of tickets) {
+		if (!ticket.open) continue;
+		checked.set(ticket.id, [
+			...ticketFaults(ticket.body),
+			...(across.tickets.get(ticket.id) ?? [])
+		]);
+	}
+	return { tickets: checked, feature: across.feature };
+}
+
+export interface Tally {
+	readonly meet: number;
+	readonly of: number;
+}
+
+// How many of the checked Tickets hold, of how many; a Feature's own faults do not count here.
+export function tallyChecks(checks: TicketChecks): Tally {
+	const faults = [...checks.tickets.values()];
+	return { meet: faults.filter((f) => f.length === 0).length, of: faults.length };
 }

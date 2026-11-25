@@ -16,9 +16,14 @@ export const elapsed = (ms: number) => {
 	return `${String(Math.floor(s / 60))}m ${two(s % 60)}s`;
 };
 
-// How a view names a build's step: the step as it is, but for a Pull-check fix round and a Feedback round.
-export const stepText = (step: string) =>
-	step === 'pullChecks' ? 'Pull-check fix' : step === 'feedback' ? 'Feedback round' : step;
+const STEP_TEXT: Readonly<Record<string, string>> = {
+	pullChecks: 'Pull-check fix',
+	feedback: 'Feedback round',
+	reviewRound: 'Review round'
+};
+
+// How a view names a build's step: the step as it is, but for a Pull-check fix round, a Feedback round and a Review round.
+export const stepText = (step: string) => STEP_TEXT[step] ?? step;
 
 // How a view names the kind of work a ledger line records.
 export const KIND_TEXT: Readonly<Record<string, string>> = {
@@ -57,7 +62,7 @@ export function runState(view: FactoryView): RunState {
 	}
 }
 
-// With no run going there is no Queue to show, only history.
+// With no run going, .factory/ holds no Queue, only history; the page's own read of the Tracker still has one.
 export const running = (view: FactoryView) => {
 	const state = runState(view);
 	return state !== 'off' && state !== 'stopped';

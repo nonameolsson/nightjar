@@ -277,6 +277,31 @@ export const pullChecksCheck = check({
 	}
 });
 
+// a warning only: nothing is published, but every build still runs
+export const publishCheck = check({
+	name: 'publish',
+	needs: ['adapters', 'loaded'],
+	unmet: null,
+	run: ({ adapters, loaded }) => {
+		if (loaded.config.publish !== true) return {};
+		const { codeHost } = adapters;
+		const lacking = (['publish', 'nightjarDrafts'] as const).filter(
+			(method) => typeof codeHost[method] !== 'function'
+		);
+		if (lacking.length === 0) return {};
+		return {
+			lines: [
+				{
+					name: 'publish',
+					status: 'warn',
+					detail: `publish is on, but this Code host cannot publish its pull requests (its Adapter has no ${lacking.join(' and no ')}), so every pull request stays a draft.`,
+					summary: null
+				}
+			]
+		};
+	}
+});
+
 // a warning only: an install in allowedCommands cannot fetch in a sandbox, but the build still runs
 export const installsCheck = check({
 	name: 'allowedCommands',
@@ -299,6 +324,48 @@ export const installsCheck = check({
 			}))
 		);
 		return { lines };
+	}
+});
+
+// a warning only: a Ticket left carrying working, while its Feature does not, blocks nothing, and the next claim of the Feature clears it. Looks at the person's Features that carry the Go or wait on a person; a Feature being built carries working itself.
+export const leftWorkingCheck = check({
+	name: 'working Signal',
+	needs: ['adapters', 'me', 'person'],
+	unmet: null,
+	run: async ({ adapters, me, person }) => {
+		const { tracker } = adapters;
+		const assignee = person.assignee ?? me;
+		const warn = (detail: string): Line => ({
+			name: 'working Signal',
+			status: 'warn',
+			detail,
+			summary: null
+		});
+		try {
+			const features = new Set<string>();
+			for (const f of await tracker.assignedFeatures(assignee)) features.add(f.id);
+			if (typeof tracker.waitingOn === 'function') {
+				for (const f of await tracker.waitingOn(assignee)) features.add(f.id);
+			}
+			const lines: Line[] = [];
+			for (const feature of features) {
+				if ((await tracker.standing(feature)).signals.includes('working')) continue;
+				for (const ticket of await tracker.tickets(feature)) {
+					// a lone issue is its own Ticket, and has just been seen without working
+					if (ticket.id === feature || !ticket.signals.includes('working')) continue;
+					lines.push(
+						warn(
+							`#${ticket.id} carries the working Signal, but its Feature #${feature} does not. It blocks nothing, and the next claim of #${feature} clears it.`
+						)
+					);
+				}
+			}
+			return { lines };
+		} catch (fault) {
+			return {
+				lines: [warn(`could not look for a Ticket left with the working Signal: ${why(fault)}`)]
+			};
+		}
 	}
 });
 
@@ -410,6 +477,12 @@ const sourcesCheck = check({
 						: await goFault(adapters.tracker, source.owner, loaded.config.trusted);
 				if (fault !== null) faults.push(fault);
 			}
+			// the same refusal intake makes before it starts
+			if (source.type === 'botPulls' && adapters !== undefined && !adapters.codeHost.botPulls) {
+				faults.push(
+					"a botPulls Source reads the open pull requests through the Code host's botPulls, which this Code host lacks (docs/custom-adapters.md)"
+				);
+			}
 			lines.push(sourceLine(said, source, faults, o));
 		}
 		return { lines };
@@ -424,7 +497,7 @@ function sourceLine(
 	o: CheckOptions
 ): Line {
 	const all = [...faults];
-	if (source.type !== 'schedule') {
+	if (source.type === 'webhook' || source.type === 'sentry') {
 		if (source.secretEnv === undefined) {
 			all.push('name the variable that holds its webhook secret, as secretEnv');
 		} else if ((o.env[source.secretEnv] ?? '') === '') {
@@ -435,7 +508,7 @@ function sourceLine(
 	}
 	if (all.length > 0) return { ...said, status: 'fail', detail: all.join('\n') };
 	const go = source.go === true ? `, gives the Go for ${source.owner ?? ''}` : '';
-	if (source.type !== 'schedule') {
+	if (source.type === 'webhook' || source.type === 'sentry') {
 		return {
 			...said,
 			status: 'ok',
@@ -444,10 +517,19 @@ function sourceLine(
 	}
 	// factory.json has loaded, so the cron time reads; intake fires it in the machine's local time zone
 	const next = nextDue(parseCron(source.cron ?? ''), o.now?.() ?? new Date());
+	const when = next === null ? 'never' : localTime(next);
+	if (source.type === 'botPulls') {
+		const prefixes = (source.branchPrefixes ?? []).join(', ');
+		return {
+			...said,
+			status: 'ok',
+			detail: `botPulls of ${prefixes}, next read ${when}, template ${source.template} is in shape${go}`
+		};
+	}
 	return {
 		...said,
 		status: 'ok',
-		detail: `schedule ${source.cron ?? ''}, next due ${next === null ? 'never' : localTime(next)}, template ${source.template} is in shape${go}`
+		detail: `schedule ${source.cron ?? ''}, next due ${when}, template ${source.template} is in shape${go}`
 	};
 }
 
@@ -463,7 +545,9 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	trackerCheck,
 	codeHostCheck,
 	pullChecksCheck,
+	publishCheck,
 	installsCheck,
+	leftWorkingCheck,
 	claudeCheck,
 	signingCheck,
 	workflowsCheck,

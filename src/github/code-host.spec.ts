@@ -47,6 +47,27 @@ describe('GitHubCodeHost', () => {
 		);
 	});
 
+	it('names why git rejected a push, not the line that names the remote', async () => {
+		const git: GitRunner = () =>
+			Promise.resolve(
+				failed(
+					[
+						'To github.com:o/r.git',
+						' ! [rejected]        HEAD -> factory/1-a (fetch first)',
+						"error: failed to push some refs to 'github.com:o/r.git'",
+						'hint: Updates were rejected because the remote contains work that you do not'
+					].join('\n')
+				)
+			);
+		await expect(
+			new GitHubCodeHost('o/r', fakeGh().gh, git).push('/w', 'factory/1-a')
+		).rejects.toThrow(
+			new GitHubFailure(
+				'git could not push factory/1-a: ! [rejected] HEAD -> factory/1-a (fetch first)'
+			)
+		);
+	});
+
 	it('finds the open pull request of a branch, or none', async () => {
 		const { gh, calls } = fakeGh(
 			on('GET', 'repos/o/r/pulls', (call) =>
@@ -117,6 +138,34 @@ describe('GitHubCodeHost', () => {
 		const { gh, calls } = fakeGh(on('POST', 'repos/o/r/issues/9/comments', ok({})));
 		await new GitHubCodeHost('o/r', gh, noGit).comment(PULL, 'A review');
 		expect(calls[0]?.fields).toEqual({ body: 'A review' });
+	});
+});
+
+describe('GitHubCodeHost.conflicts', () => {
+	it("answers from the pull request's mergeable: false is a conflict, null is unknown", async () => {
+		const github = new FakeGitHub('o/r', 'nightjar-bot');
+		const host = new GitHubCodeHost('o/r', github.gh, noGit);
+		github.pushed('factory/1-a', 'sha-1');
+		const pull = await host.createDraft({
+			title: 'A',
+			head: 'factory/1-a',
+			base: 'main',
+			body: 'b'
+		});
+		expect(await host.conflicts(pull)).toBe('no');
+		github.setMergeable(pull.id, false);
+		expect(await host.conflicts(pull)).toBe('yes');
+		github.setMergeable(pull.id, null);
+		expect(await host.conflicts(pull)).toBe('unknown');
+		github.setMergeable(pull.id, true);
+		expect(await host.conflicts(pull)).toBe('no');
+	});
+
+	it('counts a pull request that does not say as unknown', async () => {
+		const { gh } = fakeGh(
+			on('GET', 'repos/o/r/pulls/9', ok({ number: 9, html_url: 'https://github.com/o/r/pull/9' }))
+		);
+		expect(await new GitHubCodeHost('o/r', gh, noGit).conflicts(PULL)).toBe('unknown');
 	});
 });
 

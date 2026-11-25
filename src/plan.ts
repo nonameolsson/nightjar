@@ -15,30 +15,56 @@ export function nextTicket(tickets: readonly Ticket[], built: ReadonlySet<ItemId
 	return tickets.find((t) => buildable(t, built)) ?? null;
 }
 
+// All of a Feature's Tickets in Build order, open and closed, as nextTicket would reach them were each built in turn: the first in the Feature's order whose blockers are closed or placed before it. Those an open blocker outside the Feature, or a loop of blockers, holds back come last, in the Feature's order.
+export function buildOrder(tickets: readonly Ticket[]): Ticket[] {
+	const placed = new Set<ItemId>();
+	const order: Ticket[] = [];
+	let left = [...tickets];
+	for (;;) {
+		const next = left.find((t) => unblocked(t, placed));
+		if (next === undefined) break;
+		order.push(next);
+		placed.add(next.id);
+		left = left.filter((t) => t !== next);
+	}
+	return [...order, ...left];
+}
+
 export interface Waiting {
 	readonly id: ItemId;
 	readonly title: string;
 	readonly why: string;
 	// the Ticket it waits for, which `why` leaves each place to name its own way
 	readonly blocker?: ItemId;
+	// the blocker is no Ticket of this Feature, so it closes when another Feature's pull request merges
+	readonly outside?: true;
 }
 
 // The open Tickets a run leaves unbuilt, for the pull request and the Feature's comment.
 export function waiting(tickets: readonly Ticket[], built: ReadonlySet<ItemId>): Waiting[] {
+	const ids = new Set(tickets.map((t) => t.id));
 	return tickets
 		.filter((t) => t.open && !built.has(t.id))
-		.map((t) => ({ id: t.id, title: t.title, ...whyWaiting(t, built) }));
+		.map((t) => ({ id: t.id, title: t.title, ...whyWaiting(t, built, ids) }));
 }
 
 // the reasons Waiting on you lists, shared so a reworded one cannot empty it
 export const NEEDS_A_PERSON = 'needs a person';
 export const NEEDS_INFO = 'needs info';
 
-function whyWaiting(ticket: Ticket, built: ReadonlySet<ItemId>): Pick<Waiting, 'why' | 'blocker'> {
+function whyWaiting(
+	ticket: Ticket,
+	built: ReadonlySet<ItemId>,
+	own: ReadonlySet<ItemId>
+): Pick<Waiting, 'why' | 'blocker' | 'outside'> {
 	if (ticket.signals.includes('human')) return { why: NEEDS_A_PERSON };
 	if (ticket.signals.includes('needsInfo')) return { why: NEEDS_INFO };
 	const blocker = ticket.blockedBy.find((b) => b.open && !built.has(b.id));
-	if (blocker) return { why: 'blocked by', blocker: blocker.id };
+	if (blocker) {
+		return own.has(blocker.id)
+			? { why: 'blocked by', blocker: blocker.id }
+			: { why: 'blocked by', blocker: blocker.id, outside: true };
+	}
 	if (!ticket.signals.includes('ready')) return { why: 'not marked ready' };
 	return { why: 'not reached' };
 }

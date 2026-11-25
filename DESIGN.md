@@ -107,6 +107,13 @@ components:
 
 # Design System: Nightjar UI
 
+## Themes
+
+The page has two themes, each a whole stylesheet of its own (`src/ui-theme.ts`), and a switch at the end of the bar that keeps the person's pick in local storage (`nightjar-theme`). The theme not shown is turned off with `media="not all"`, and a head script applies a kept pick before the body draws.
+
+- **Paper**, the default (`PAPER_STYLE` in `src/ui-theme.ts`): one line per Feature on warm paper greys, the platform sans at 13px with tabular figures, one hairline for every rule, and a 6px radius. It follows the machine's light or dark scheme. Each state's group stands under a 32px grey label with a dot of its hue (blue building, amber needs a person, violet queue, grey shelf, green completed), its name and a bare count. Tickets are 14px status icons that keep the Hue-Plus-Shape Rule: a green disc with a check (built), a blue half-filled ring (building), an amber disc with a bar (needs a person), a dashed ring (waiting). Hue lives in those small objects and a state's words, never in a field; blue also draws focus and selection. No banner, no uppercase tracked labels, no coloured left edge. Its type ramp is 11.5, 12, 12.5, 13, 13.5, 14 and 16px. Colours are tokens on `:root`, light first and dark second, under the same no-literal rule as below.
+- **Nightjar**: the night-shift HUD this file describes from here on (`STYLE` in `src/ui.ts`).
+
 ## Overview
 
 **Creative North Star: "The Night Shift Mat"**
@@ -135,6 +142,7 @@ A teal-and-amber HUD palette on near-black, with two supporting state hues.
 
 ### Tertiary
 - **Queue Slate Violet** (#8f98e0): the queue mat only.
+- **Shelf Grey** (#7f979b, the muted ink): the shelf mat only. Work with no Go yet is neither live nor waiting, so it takes the quiet neutral rather than a state hue.
 - **Completed Green** (#3fd17f): the completed mat and a pulled entry's label.
 - **Fault Red** (#ff5a5f): failed entries only.
 
@@ -203,7 +211,7 @@ Square frames, round sockets, hexagonal counters. Mats, the detail panel, meters
 A sticky bar at 94% void with a Line bottom border. The mark is mono, bold, 0.2em tracked, in Signal Teal. View tabs are square, borderless buttons in Soft Ink; hover goes Ink; active is Signal Teal text on a 7% teal wash with a Deep Teal border. Focus shows a 2px teal outline, 2px offset.
 
 ### Habitat Mat
-A bordered rectangle tinted from its left by 12% of its state hue. Left rail is a vertical label tab (mono uppercase, reading bottom-to-top) with a hexagon tally below it, ruled off by a 2px state-hue border. Waiting is amber, building teal, queue slate violet, completed green. Entries are separated by dashed Line rules.
+A bordered rectangle tinted from its left by 12% of its state hue. Left rail is a vertical label tab (mono uppercase, reading bottom-to-top) with a hexagon tally below it, ruled off by a 2px state-hue border. Waiting is amber, building teal, queue slate violet, shelf grey, completed green. Entries are separated by dashed Line rules.
 
 ### Egg and Nest Socket
 - **Built:** solid Deep Teal egg. **Building:** Signal Teal egg with a 2px ring at 3px offset pulsing over 2.4s (`incubate`). **Needs a person:** amber egg with two small amber wings angled 20 degrees (the wing-flash). **Waiting:** dashed Socket Dash outline, no fill (hidden inside a socket, which stands for the empty nest).
@@ -211,6 +219,9 @@ A bordered rectangle tinted from its left by 12% of its state hue. Left rail is 
 
 ### Building-Now Panel
 Sticky, mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
+
+### Feature Detail Panel
+A modal drawer on the right, 640px wide (full width on a phone), full height and scrolling on its own over a 45% black backdrop. Same frame as the Building-now panel: translucent with a teal top wash, a Deep Teal border and teal corner brackets (top-left, bottom-right). A mono caption and a Close button, then the Feature's title in sans with a mono id. Spec and Tickets sit under Line-ruled mono section heads; the spec's own headings drop to 1rem sans. Tickets use the Building-now stepper: a closed Ticket is a filled Deep Teal hexagon in muted text, an open one an outline, and each says `open` or `closed` in words. Each Ticket's acceptance criteria fold under a teal mono `<summary>`. A Feature's title that opens the panel is a text button with a dotted underline that goes teal on hover.
 
 ### Chips and Table
 Filter chips are pill outlines in Deep Teal with teal text; on state they fill Signal Teal with void text. Table headers are tracked mono buttons that turn teal when sorted, with a rotated-border chevron for direction; rows have Line bottom borders.

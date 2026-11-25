@@ -46,6 +46,8 @@ Which Signal each item carries, and when it changes, under the default names:
 | A person stops the run                                           | `agent-working` off                                 | `agent-working` off                                          |
 | The run ends with a draft pull request                           | `agent-working` off; `needs-info` on while a Ticket waits or the check is red | no change                          |
 | The run builds nothing, its Workflow is refused, its setup fails, or a fault stops it | `agent-working` off, `needs-info` on | no change                                               |
+| A Review round fails (its check stays red, the Session fails or reports itself blocked, or it changes no file): it is thrown away onto the branch's `-attempt-review` side branch, no more rounds run, and the draft opens | `agent-working` off, `ready-for-human` on, with a comment naming what the last Review left open, ending with its Next step | no change |
+| The Review rounds run out and the last Review still says `changes` | `agent-working` off, `ready-for-human` on, with the same comment | no change |
 | The Pull-check pass fixes its red draft pull request (`pullChecks.enabled`) | `agent-working` on for the round, then off | no change                                            |
 | A Pull-check fix round gives up: the check stays red, the Session gives up, or the round runs over `fixUsd` or `fixMinutes` | `ready-for-human` on, with a comment naming the pull request and each failing Pull check | no change |
 | The pull request is red again after `fixRounds` Pull-check fix rounds | `ready-for-human` on, with the same comment; no Session runs | no change                  |
@@ -66,6 +68,16 @@ A Feature may carry a **`**Workflow:**`** line anywhere in its body, on a line o
 ```
 
 The rest of the line is the Workflow's name. Without the line the Feature gets the repo's `defaultWorkflow`, if it has one; a name no Workflow has marks the Feature as needing info. See the README's Workflows section.
+
+## A Feature's base branch
+
+A Feature may carry a **`**Base:**`** line, on a line of its own, naming the branch its own branch is cut from instead of the repo's base branch:
+
+```markdown
+**Base:** dependabot/npm_and_yarn/left-pad-1.1.0
+```
+
+A `botPulls` Source writes it, naming the dependency bot's branch, so the build has the new versions to fix against. The draft pull request still opens against the repo's base branch, and the Feature's diff, its Review and its Steps read only what Nightjar added on top of the named branch. Nightjar never pushes to that branch. A name git could read as something else (an option, a range such as `a..b`, a space) marks the Feature as needing info, and nothing is built. A payload value can never write the line: a Source escapes a value that opens as `Base:`.
 
 ## The Feature file
 
@@ -107,7 +119,7 @@ A Ticket on the Tracker is held to the same contract before its Session. One wit
 
 `nightjar doctor FEATURE` checks a Feature's open Tickets against that contract, and also what sits across the Feature's Tickets, which the build does not check before a Session. Each is a fault, and any fault makes it exit 1:
 
-- an open blocker that is not one of the Feature's Tickets (a closed blocker, or one among the Feature's Tickets, is no fault), since a build never reaches it;
+- an open blocker that is not one of the Feature's Tickets (a closed blocker, or one among the Feature's Tickets, is no fault), since that Ticket waits until its Feature's pull request merges (ADR 0007);
 - a blocking loop between Tickets, named by each Ticket in it, since none of them is built;
 - an open Ticket without the ready Signal, since a build skips it;
 - a Feature with no open Tickets, since a build has nothing to do;

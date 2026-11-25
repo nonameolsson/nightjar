@@ -10,6 +10,8 @@ import {
 import type { AddressInfo } from 'node:net';
 import { dirname, join } from 'node:path';
 import { makeAdapters, type Adapters, type Seams } from './adapters.js';
+import { baseLine, baseOf, botPullMarker } from './base-line.js';
+import type { BotPull, CodeHost, FailedCheck } from './code-host.js';
 import { INTAKE_USAGE, parseIntakeArgs } from './args.js';
 import { ConfigError, DEFAULT_MAX_PER_DAY, loadConfig, type Config } from './config.js';
 import { makeFeature } from './create.js';
@@ -72,6 +74,26 @@ export interface ScheduledSource {
 	readonly owner?: string;
 }
 
+// A botPulls Source as intake polls it: at each due time it reads the open pull requests under its prefixes.
+export interface BotPullsSource {
+	readonly template: string;
+	readonly cron: Cron;
+	readonly branchPrefixes: readonly string[];
+	readonly maxPerDay: number;
+	readonly owner?: string;
+}
+
+// the key path of a botPulls Source: its Features are marked by the pull request's id
+const BOT_PULL_KEY = 'pull.id';
+
+// a failed check with no job, no step and no log never started, as when the runners were down or the bill unpaid: it says nothing of the code
+const started = (f: FailedCheck): boolean =>
+	f.job !== '' || f.step !== '' || f.logTail.trim() !== '';
+
+// The failed checks of a bot pull request worth a Feature: none while a check still runs, and none that never started.
+export const checksToFix = (p: BotPull): FailedCheck[] =>
+	p.checks.pending ? [] : p.checks.failed.filter(started);
+
 // how often intake looks at the clock for a schedule that has come due
 export const TICK_MS = 1000;
 
@@ -80,6 +102,10 @@ export interface IntakeOptions {
 	readonly sources: ReadonlyMap<string, ServedSource>;
 	// the schedules, which fire at their due times as the clock reaches them; none when left out
 	readonly schedules?: ReadonlyMap<string, ScheduledSource>;
+	// the botPulls Sources, read at their due times as schedules are fired; none when left out
+	readonly botPulls?: ReadonlyMap<string, BotPullsSource>;
+	// the Code host a botPulls Source reads, which must have botPulls
+	readonly codeHost?: Pick<CodeHost, 'botPulls'>;
 	// how often the clock is looked at; 0 leaves it to `tick`, as a spec does
 	readonly tickMs?: number;
 	readonly host: string;
@@ -269,7 +295,19 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 	const now = o.now ?? (() => new Date());
 	const say = o.say ?? sayLine;
 	const { tracker } = o;
-	const going = [...o.sources, ...(o.schedules ?? [])].filter(([, s]) => s.owner !== undefined);
+	const bots = o.botPulls ?? new Map<string, BotPullsSource>();
+	const botPullsOf = o.codeHost?.botPulls?.bind(o.codeHost);
+	if (bots.size > 0 && botPullsOf === undefined) {
+		const names = [...bots.keys()].join(', ');
+		return Promise.reject(
+			new Error(
+				`Source ${names}: a botPulls Source reads the Code host's botPulls, which it lacks (docs/custom-adapters.md)`
+			)
+		);
+	}
+	const going = [...o.sources, ...(o.schedules ?? []), ...bots].filter(
+		([, s]) => s.owner !== undefined
+	);
 	if (going.length > 0 && typeof tracker.assign !== 'function') {
 		const names = going.map(([name]) => name).join(', ');
 		return Promise.reject(
@@ -369,12 +407,17 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		return [...found, ...lately.filter((f) => !known.has(f.id))];
 	};
 
+	// A webhook's delivery, a schedule's due time, or a red bot pull request found at a botPulls Source's due time.
+	type Kind = 'webhook' | 'schedule' | 'botPull';
+
 	const make = async (
 		name: string,
 		source: Pick<ServedSource, 'template' | 'key' | 'maxPerDay' | 'owner'>,
 		payload: unknown,
-		scheduled = false
+		kind: Kind = 'webhook',
+		lines: readonly string[] = []
 	): Promise<Answer> => {
+		const scheduled = kind === 'schedule';
 		let filled;
 		try {
 			filled = fillTemplate({
@@ -383,12 +426,13 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 				payload,
 				key: source.key,
 				...(scheduled ? { fixedKey: name } : {}),
+				lines,
 				now: now()
 			});
 		} catch (fault) {
 			if (!(fault instanceof FeatureFileError)) throw fault;
 			say(
-				scheduled
+				kind !== 'webhook'
 					? `Source ${name}: the template does not make a Feature: ${why(fault)}`
 					: `Source ${name}: the payload does not fill the template: ${why(fault)}`
 			);
@@ -398,7 +442,7 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			const found = withRecent(name, await tracker.featuresFrom(name));
 			const open = found.filter((f) => f.open && f.key === filled.key).at(-1);
 			if (filled.key !== '' && open !== undefined) {
-				if (scheduled) return { status: 200, outcome: 'still open', feature: open.id };
+				if (kind !== 'webhook') return { status: 200, outcome: 'still open', feature: open.id };
 				const commented = await again(name, open);
 				return { status: 200, outcome: 'again', feature: open.id, commented };
 			}
@@ -503,24 +547,65 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 	// The next due time of each schedule, counted from the start: a time that passed while intake was down is not made up.
 	const schedules = o.schedules ?? new Map<string, ScheduledSource>();
 	const due = new Map<string, Date | null>();
-	for (const [name, schedule] of schedules) due.set(name, nextDue(schedule.cron, now()));
+	for (const [name, schedule] of [...schedules, ...bots]) {
+		due.set(name, nextDue(schedule.cron, now()));
+	}
+
+	// One Feature for each red bot pull request that has none open; one the Source made before is passed over without a line in the log.
+	const poll = async (name: string, source: BotPullsSource): Promise<void> => {
+		let pulls: BotPull[];
+		try {
+			pulls = (await botPullsOf?.(source.branchPrefixes)) ?? [];
+		} catch (fault) {
+			say(`Source ${name}: the Code host failed: ${why(fault)}`);
+			return;
+		}
+		for (const p of pulls) {
+			const checks = checksToFix(p);
+			if (checks.length === 0) continue;
+			const base = baseOf(baseLine(p.branch));
+			if (base === null || 'fault' in base) {
+				say(`Source ${name}: ${p.pull.url} left alone, its branch ${p.branch} is no branch name`);
+				continue;
+			}
+			// the bot's body and release notes stay out: they are outside text
+			const payload = {
+				pull: { id: p.pull.id, url: p.pull.url, title: p.title, branch: p.branch },
+				checks
+			};
+			const lines = [baseLine(p.branch), botPullMarker(p.pull)];
+			const keyed = { ...source, key: BOT_PULL_KEY };
+			const made = await inTurn(name, () => make(name, keyed, payload, 'botPull', lines));
+			if (made.outcome !== 'still open') record(name, `pull-${String(p.pull.id)}`, made);
+		}
+	};
 
 	const tick = async (): Promise<void> => {
 		const at = now();
-		await Promise.all(
-			[...schedules].map(async ([name, schedule]) => {
+		const comeDue = (name: string, cron: Cron): boolean => {
+			const when = due.get(name);
+			if (when === undefined || when === null || at < when) return false;
+			due.set(name, nextDue(cron, at));
+			return true;
+		};
+		const polled = [...bots].map(async ([name, source]) => {
+			if (comeDue(name, source.cron)) await poll(name, source);
+		});
+		await Promise.all([
+			...polled,
+			...[...schedules].map(async ([name, schedule]) => {
 				const when = due.get(name);
 				if (when === undefined || when === null || at < when) return;
 				// the next time is counted from now, not from the one that came, so times missed while the machine slept make one Feature
 				due.set(name, nextDue(schedule.cron, at));
 				try {
-					const made = await inTurn(name, () => make(name, schedule, undefined, true));
+					const made = await inTurn(name, () => make(name, schedule, undefined, 'schedule'));
 					record(name, `schedule-${when.toISOString()}`, made);
 				} catch (fault) {
 					say(`Source ${name}: ${why(fault)}`);
 				}
 			})
-		);
+		]);
 	};
 
 	const tickMs = o.tickMs ?? TICK_MS;
@@ -531,7 +616,9 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			const { address, port } = server.address() as AddressInfo;
 			// the clock is watched only once intake is listening
 			const timer =
-				tickMs > 0 && schedules.size > 0 ? setInterval(() => void tick(), tickMs) : undefined;
+				tickMs > 0 && schedules.size + bots.size > 0
+					? setInterval(() => void tick(), tickMs)
+					: undefined;
 			done({
 				address,
 				port,
@@ -570,16 +657,18 @@ function onSignals(): AbortSignal {
 interface Served {
 	readonly sources: Map<string, ServedSource>;
 	readonly schedules: Map<string, ScheduledSource>;
+	readonly bots: Map<string, BotPullsSource>;
 	// why intake cannot start
 	readonly faults: string[];
 	// what intake leaves out
 	readonly notes: string[];
 }
 
-// The webhook and schedule Sources intake runs, with their templates read and their secrets taken.
+// The webhook, schedule and botPulls Sources intake runs, with their templates read and their secrets taken.
 function served(config: Config, root: string, env: Env): Served {
 	const sources = new Map<string, ServedSource>();
 	const schedules = new Map<string, ScheduledSource>();
+	const bots = new Map<string, BotPullsSource>();
 	const faults: string[] = [];
 	const notes: string[] = [];
 	for (const [name, source] of Object.entries(config.sources ?? {})) {
@@ -587,7 +676,7 @@ function served(config: Config, root: string, env: Env): Served {
 			(f) => `template ${source.template}: ${f}`
 		);
 		const secret = source.secretEnv === undefined ? '' : (env[source.secretEnv] ?? '');
-		if (source.type !== 'schedule') {
+		if (source.type === 'webhook' || source.type === 'sentry') {
 			if (source.secretEnv === undefined) {
 				own.push('name the variable that holds its webhook secret, as secretEnv');
 			} else if (secret === '') {
@@ -595,7 +684,7 @@ function served(config: Config, root: string, env: Env): Served {
 			}
 		}
 		let cron: Cron | undefined;
-		if (source.type === 'schedule') {
+		if (source.type === 'schedule' || source.type === 'botPulls') {
 			try {
 				cron = parseCron(source.cron ?? '');
 			} catch (fault) {
@@ -614,7 +703,11 @@ function served(config: Config, root: string, env: Env): Served {
 		const template = readTemplate(root, source.template);
 		const maxPerDay = source.maxPerDay ?? DEFAULT_MAX_PER_DAY;
 		const going = owner === undefined ? {} : { owner };
-		if (cron === undefined) {
+		if (source.type === 'botPulls' && cron !== undefined) {
+			// config load refuses a botPulls Source without its prefixes
+			const branchPrefixes = source.branchPrefixes ?? [];
+			bots.set(name, { template, cron, branchPrefixes, maxPerDay, ...going });
+		} else if (cron === undefined) {
 			const key = source.key ?? (source.type === 'sentry' ? SENTRY_KEY : undefined);
 			sources.set(name, {
 				template,
@@ -628,7 +721,7 @@ function served(config: Config, root: string, env: Env): Served {
 			schedules.set(name, { template, cron, maxPerDay, ...going });
 		}
 	}
-	return { sources, schedules, faults, notes };
+	return { sources, schedules, bots, faults, notes };
 }
 
 // 0 once it is told to stop, 2 when it cannot start.
@@ -669,16 +762,23 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 	if (typeof writer === 'string' || !findsSources(writer) || missing.length > 0) {
 		return refuse(missing.join('\nnightjar: '));
 	}
-	const { sources, schedules, faults, notes } = served(config, root, env);
+	const { sources, schedules, bots, faults, notes } = served(config, root, env);
+	if (bots.size > 0 && adapters.codeHost.botPulls === undefined) {
+		for (const name of bots.keys()) {
+			faults.push(
+				`Source ${name}: a botPulls Source reads the open pull requests through the Code host's botPulls, which this Code host lacks (docs/custom-adapters.md)`
+			);
+		}
+	}
 	// a standing Go only for an owner the Tracker trusts, read before intake listens
-	for (const [name, source] of [...sources, ...schedules]) {
+	for (const [name, source] of [...sources, ...schedules, ...bots]) {
 		if (source.owner === undefined) continue;
 		const fault = await goFault(writer, source.owner, config.trusted);
 		if (fault !== null) faults.push(`Source ${name}: ${fault}`);
 	}
 	if (faults.length > 0) return refuse(faults.join('\nnightjar: '));
-	if (sources.size === 0 && schedules.size === 0) {
-		return refuse('factory.json names no webhook or schedule Source for intake to run.');
+	if (sources.size === 0 && schedules.size === 0 && bots.size === 0) {
+		return refuse('factory.json names no webhook, schedule or botPulls Source for intake to run.');
 	}
 	let server: IntakeServer;
 	try {
@@ -686,6 +786,8 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 			tracker: writer,
 			sources,
 			schedules,
+			botPulls: bots,
+			codeHost: adapters.codeHost,
 			host: args.host,
 			port: args.port,
 			log: intakeLogPath(root),
@@ -704,7 +806,7 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 	const base = `http://${address}:${String(server.port)}`;
 	sayLine(`intake on ${base}  (Ctrl-C to stop)`);
 	for (const name of sources.keys()) sayLine(`Source ${name}: POST ${base}/sources/${name}`);
-	for (const [name, schedule] of schedules) {
+	for (const [name, schedule] of [...schedules, ...bots]) {
 		const next = nextDue(schedule.cron, new Date());
 		sayLine(`Source ${name}: next due ${next === null ? 'never' : localTime(next)}`);
 	}

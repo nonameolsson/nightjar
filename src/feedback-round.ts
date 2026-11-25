@@ -4,7 +4,7 @@ import type { ChangeRequest, CodeHost, Feedback, OpenPull, Pull, PullCommit } fr
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
 import type { Note } from './logbook.js';
-import type { Allowance, Entry } from './spend.js';
+import type { Allowance, Entry, LogEntry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
 import { FEEDBACK_ASKED_TRAILER, FEEDBACK_TRAILER, trailersOf, type Worktree } from './worktree.js';
@@ -36,8 +36,6 @@ export type FeedbackRoundEnd =
 			readonly side: string | null;
 	  }
 	| Halt;
-
-type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
 
 // What the round works with: the run's seams and worktree, and how the run shows, logs and fixes a round.
 export interface FeedbackRoundContext {
