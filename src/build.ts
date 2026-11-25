@@ -19,7 +19,8 @@ import {
 	type FeedbackRoundEnd,
 	type Unanswered
 } from './feedback-round.js';
-import { FOOTER } from './footer.js';
+import { FOOTER, withFooter } from './footer.js';
+import { baseOf, botPullOf } from './base-line.js';
 import type { Env } from './git.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { nextTicket, progress, waiting, type Waiting } from './plan.js';
@@ -189,6 +190,8 @@ export type FeatureOutcome =
 			readonly pull: Pull;
 			readonly built: ItemId[];
 			readonly waiting: Waiting[];
+			// why the run paused after it opened the pull request, so the loop waits before it builds again
+			readonly paused?: string;
 	  }
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
@@ -256,6 +259,12 @@ export async function buildFeature(
 		});
 	deps.status.doing(settingUp());
 	const tickets = await tracker.tickets(id);
+	// a run that died could not take working off its Ticket; the claim does, before anything is built. A lone issue is its own Ticket, and its working is the Feature's, just added.
+	for (const ticket of tickets) {
+		if (ticket.id !== id && ticket.signals.includes('working')) {
+			await tracker.removeSignal(ticket.id, 'working');
+		}
+	}
 	const chosen = chooseWorkflow(setup, feature.body);
 	if (chosen.kind === 'refused') {
 		const why = `its Workflow cannot be used: ${chosen.why}`;
@@ -268,11 +277,23 @@ export async function buildFeature(
 			setup.signals
 		);
 	}
+	// a botPulls Source's Feature is built on the bot's branch, so the new versions are in it
+	const base = baseOf(feature.body);
+	if (base !== null && 'fault' in base) {
+		return needsInfoStop(
+			deps,
+			id,
+			base.fault,
+			`Nightjar built nothing: ${base.fault}.`,
+			waiting(tickets, new Set()),
+			setup.signals
+		);
+	}
 	const tree = await deps.openWorktree(
 		setup.root,
 		setup.worktrees,
 		branch,
-		setup.baseBranch,
+		base?.branch ?? setup.baseBranch,
 		setup.env
 	);
 	const built = await tree.built();
@@ -947,7 +968,13 @@ class FeatureRun {
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
 		}
-		return { kind: 'pull', pull, built: [...this.built], waiting: left };
+		return {
+			kind: 'pull',
+			pull,
+			built: [...this.built],
+			waiting: left,
+			...(paused === null ? {} : { paused })
+		};
 	}
 
 	private async stopped(): Promise<FeatureOutcome> {
@@ -1136,12 +1163,28 @@ class FeatureRun {
 			);
 			return open;
 		}
-		return codeHost.createDraft({
+		const made = await codeHost.createDraft({
 			title: this.feature.title,
 			head: this.tree.at.branch,
 			base: this.setup.baseBranch,
 			body
 		});
+		await this.pointBotAt(made);
+		return made;
+	}
+
+	// The bot's pull request a botPulls Source made the Feature for gets one comment, when the draft opens, linking it; Nightjar never pushes to it or closes it.
+	private async pointBotAt(made: Pull): Promise<void> {
+		const bot = botPullOf(this.feature.body);
+		if (bot === null) return;
+		const text = withFooter(
+			`Nightjar opened ${made.url} with a fix for the red checks here. It holds this pull request's commits too. Merge it, then close this one.`
+		);
+		try {
+			await this.deps.codeHost.comment(bot, text);
+		} catch (fault) {
+			this.deps.say(`could not comment on ${bot.url}: ${why(fault)}`);
+		}
 	}
 }
 
@@ -1286,11 +1329,12 @@ export async function fixPullChecks(
 	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
 	if (day !== null) return { kind: 'paused', why: day };
 	const feature = await tracker.feature(red.feature);
+	const base = baseOf(feature.body);
 	const tree = await deps.openWorktree(
 		setup.root,
 		setup.worktrees,
 		draft.branch,
-		setup.baseBranch,
+		base !== null && 'branch' in base ? base.branch : setup.baseBranch,
 		setup.env
 	);
 	const skip = (why: string): PullFixOutcome => {

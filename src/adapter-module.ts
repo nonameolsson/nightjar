@@ -28,7 +28,8 @@ const LONE_METHODS = [
 	'featuresFrom',
 	'assign',
 	'trusts',
-	'ticketCounts'
+	'ticketCounts',
+	'shelf'
 ] as const satisfies readonly (keyof Tracker)[];
 
 // Typed as records, so a method added to an interface fails to compile until it is listed here.
@@ -52,7 +53,7 @@ const TRACKER_METHODS: Record<
 const CODE_HOST_METHODS: Record<
 	Exclude<
 		keyof CodeHost,
-		'nightjarDrafts' | 'feedback' | 'reply' | 'openPulls' | 'publish' | 'conflicts'
+		'nightjarDrafts' | 'feedback' | 'reply' | 'openPulls' | 'publish' | 'conflicts' | 'botPulls'
 	>,
 	true
 > = {

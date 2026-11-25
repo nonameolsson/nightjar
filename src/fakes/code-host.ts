@@ -1,6 +1,7 @@
 // A Code host kept in memory, for the build loop's specs and for anyone testing against the seam.
 import { failedCheckBody } from '../check-output.js';
 import type {
+	BotPull,
 	ChangeRequest,
 	CodeHost,
 	ConflictState,
@@ -36,6 +37,8 @@ export interface FakePull extends Pull, DraftRequest {
 	readonly checkCount: number;
 	// what the host says of a conflict with the base; `no` until a spec says otherwise
 	readonly conflict: ConflictState;
+	// whether its head branch is on a fork of the repo; a spec sets it
+	readonly fromFork?: boolean;
 }
 
 const NO_CHECKS: PullChecks = { pending: false, failed: [] };
@@ -168,6 +171,20 @@ export class FakeCodeHost implements CodeHost {
 		return Promise.resolve(listed);
 	};
 
+	// in the order they were opened, which is the order of their ids; one from a fork is left out
+	botPulls = (prefixes: readonly string[]): Promise<BotPull[]> => {
+		const under = (p: FakePull) =>
+			p.open && p.fromFork !== true && prefixes.some((prefix) => p.head.startsWith(prefix));
+		const listed = this.pulls.filter(under).map((p): BotPull => ({
+			pull: { id: p.id, url: p.url },
+			title: p.title,
+			branch: p.head,
+			headCommit: this.heads.get(p.head) ?? '',
+			checks: p.checks
+		}));
+		return Promise.resolve(listed);
+	};
+
 	// The branch's commits after a push: those it had keep their dates, while they come first in the same order; the rest are dated now.
 	private dated(branch: string, messages: readonly string[]): PullCommit[] {
 		const had = this.branchCommits.get(branch) ?? [];
@@ -222,6 +239,11 @@ export class FakeCodeHost implements CodeHost {
 
 	close(pull: Pull): void {
 		this.change(pull.id, () => ({ open: false }));
+	}
+
+	// its head branch moves to a fork, as a pull request opened from a fork has it
+	fork(pull: Pull): void {
+		this.change(pull.id, () => ({ fromFork: true }));
 	}
 
 	// the feedback of each pull request, by its id, as people and checks gave it

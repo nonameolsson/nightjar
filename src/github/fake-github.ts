@@ -163,6 +163,9 @@ export class FakeGitHub {
 	// one count for every kind of comment, so no two ids are alike
 	private lastId = 0;
 	private lastMinute = 0;
+	// when each issue was last changed: made, labelled, commented on, given a sub-issue
+	private readonly updated = new Map<number, string>();
+	private lastUpdate = 0;
 	private readonly repoLabels = new Set<string>();
 	// the commit each branch points at, as pushed
 	private readonly heads = new Map<string, string>();
@@ -174,6 +177,8 @@ export class FakeGitHub {
 	private readonly jobs = new Map<number, NewJob>();
 	// the `mergeable` of each pull request GitHub has worked out; true when not set, null while it works
 	private readonly mergeable = new Map<number, boolean | null>();
+	// the pull requests whose head branch is on a fork, which GitHub names by the fork's repo
+	private readonly forked = new Set<number>();
 	private signedOut = false;
 	private labelsRefused = false;
 	// every call gh was asked, in order
@@ -189,7 +194,14 @@ export class FakeGitHub {
 	issue(issue: NewIssue): number {
 		const number = this.issues.size + 1;
 		this.issues.set(number, { ...issue, number, subIssues: [], blockedBy: [] });
+		this.updated.set(number, this.createdAt(number));
 		return number;
+	}
+
+	// a time later than every issue's making and every change before, one minute on from the last
+	private touch(number: number): void {
+		this.lastUpdate += 1;
+		this.updated.set(number, new Date(Date.UTC(2026, 10, 1, 0, this.lastUpdate)).toISOString());
 	}
 
 	addSubIssue(parent: number, child: number): void {
@@ -204,6 +216,7 @@ export class FakeGitHub {
 		const at = new Date(Date.UTC(2026, 9, 30, 9, this.commentCount())).toISOString();
 		const comment = { id: this.nextId(), login, body, createdAt: at };
 		this.comments.set(number, [...(this.comments.get(number) ?? []), comment]);
+		this.touch(number);
 		return comment;
 	}
 
@@ -360,6 +373,11 @@ export class FakeGitHub {
 		this.change(number, () => ({
 			pull: { head: pull.head, base: pull.base, draft: false }
 		}));
+	}
+
+	// Pull request `number` comes from a fork of the repo.
+	fork(number: number): void {
+		this.forked.add(number);
 	}
 
 	// A person closes issue or pull request `number`.
@@ -589,7 +607,11 @@ export class FakeGitHub {
 			head: {
 				ref: head,
 				sha: this.shaOf(issue.number),
-				repo: { full_name: this.repo }
+				repo: {
+					full_name: this.forked.has(issue.number)
+						? `fork/${this.repo.split('/').at(-1) ?? ''}`
+						: this.repo
+				}
 			},
 			base: { ref: issue.pull?.base ?? '' },
 			mergeable: this.mergeable.has(issue.number) ? this.mergeable.get(issue.number) : true
@@ -682,7 +704,7 @@ export class FakeGitHub {
 		return match ? this.issues.get(Number(match[1])) : undefined;
 	}
 
-	// GitHub's filters: state open by default, every label named, the assignee, newest first by default.
+	// GitHub's filters: state open by default, every label named, the assignee, sorted by when made or last updated, newest first by default, a page at a time.
 	private list(query: URLSearchParams) {
 		const state = query.get('state') ?? 'open';
 		const labels = (query.get('labels') ?? '').split(',').filter((l) => l !== '');
@@ -693,8 +715,18 @@ export class FakeGitHub {
 				labels.every((l) => i.labels.includes(l)) &&
 				(assignee === null || i.assignees.includes(assignee))
 		);
+		if (query.get('sort') === 'updated') {
+			found.sort(
+				(a, b) =>
+					this.updatedAt(a.number).localeCompare(this.updatedAt(b.number)) || a.number - b.number
+			);
+		}
 		if (query.get('direction') !== 'asc') found.reverse();
-		return found.map((i) => this.render(i));
+		return page(found, query).map((i) => this.render(i));
+	}
+
+	private updatedAt(number: number): string {
+		return this.updated.get(number) ?? this.createdAt(number);
 	}
 
 	// GitHub's issue search as far as Nightjar asks: this repo, issues, the body, optionally only the open ones, and quoted phrases that must all be in it.
@@ -838,6 +870,7 @@ export class FakeGitHub {
 			body: issue.body,
 			state: issue.state,
 			created_at: this.createdAt(issue.number),
+			updated_at: this.updatedAt(issue.number),
 			labels: issue.labels.map((name) => ({ name })),
 			assignees: issue.assignees.map((login) => ({ login })),
 			user: { login: this.person },
@@ -870,5 +903,6 @@ export class FakeGitHub {
 	private change(number: number, over: (issue: Issue) => Partial<Issue>): void {
 		const issue = this.get(number);
 		this.issues.set(number, { ...issue, ...over(issue) });
+		this.touch(number);
 	}
 }

@@ -486,3 +486,37 @@ describe('makeAdapters and waitingOn', () => {
 		);
 	});
 });
+
+describe('makeAdapters and shelf', () => {
+	it('keeps it on a Tracker whose references it rewrites for Azure Repos', async () => {
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		const adapters = await makeAdapters(
+			config({ tracker: boards('contoso'), codeHost: { ...repos, organization: 'other' } }),
+			dir,
+			env(),
+			{ request: ado.request }
+		);
+		signedInAz();
+		expect(await adapters.tracker.shelf?.('ann@contoso.com', 50)).toEqual({
+			features: [],
+			total: 0
+		});
+	});
+
+	it('loads a module Tracker that lacks it, and leaves it off', async () => {
+		moduleFile('reads.mjs', `export const createTracker = () => (${trackerBody()});`);
+		const adapters = await makeAdapters(
+			config({ tracker: { type: 'module', path: './reads.mjs' }, codeHost: repos }),
+			dir,
+			env()
+		);
+		expect('shelf' in adapters.tracker).toBe(false);
+	});
+
+	it('refuses a module whose shelf is not a function', async () => {
+		moduleFile('bad.mjs', `export const createTracker = () => (${trackerBody('shelf: 1,')});`);
+		expect(await refusal(config({ tracker: { type: 'module', path: './bad.mjs' } }))).toBe(
+			'factory.json: tracker: createTracker in ./bad.mjs returned a Tracker whose shelf is not a function'
+		);
+	});
+});

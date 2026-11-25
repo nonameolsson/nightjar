@@ -35,7 +35,7 @@ The open Features assigned to a person that carry no Signal yet: work they could
 _Avoid_: backlog, drafts, upcoming, icebox
 
 **Slot**:
-One of a run's places for work on one Feature at a time: its build, a Pull-check fix or a Feedback round. A run has as many as the person sets, one unless they say more, and a Feature is never in two at once.
+One of a run's places for work on one Feature at a time: its build, a Pull-check fix, a Conflict fix or a Feedback round. A run has as many as the person sets, one unless they say more, and a Feature is never in two at once.
 _Avoid_: lane, worker, runner, thread
 
 ### Workflows
@@ -49,7 +49,7 @@ One instruction in a Workflow, given to the Coding agent at a fixed point in a b
 _Avoid_: Stage, phase, hook, task
 
 **Source**:
-A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule or a signed webhook. `nightjar intake` runs it; it builds nothing, and makes no Signal unless it has `"go": true`, which gives each Feature a standing Go in its owner's name. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
+A named thing in `factory.json` that makes Features with nobody writing them, from a template: a schedule, a signed webhook, or a `botPulls` Source, which reads a dependency bot's red pull requests at a cron time and makes a Feature for each, built on the bot's branch (its `**Base:**` line). `nightjar intake` runs it; it builds nothing, and makes no Signal unless it has `"go": true`, which gives each Feature a standing Go in its owner's name. Each Feature it makes carries a visible `**Source:**` line and a hidden marker, by which the Tracker finds it again.
 _Avoid_: trigger, automation, integration, hook, feed
 
 ### Steering
@@ -90,6 +90,14 @@ _Avoid_: repo host, forge, remote
 The checks the Code host runs on a draft pull request's head commit, in its own environment, apart from the repo's check. They can fail where the repo's check passed.
 _Avoid_: CI, pipeline, status, build
 
+**Pull-check fix**:
+A Session that fixes the failed Pull checks on Nightjar's own draft pull request, resuming the Session of its head commit, landed as one commit. It runs under `--watch` where the repo turns it on, a set number of times, and stops for good once a person engages.
+_Avoid_: CI fix, autofix, red fix
+
+**Conflict fix**:
+A Session that resolves the merge conflicts between Nightjar's own draft pull request and its base, after Nightjar merges the base into the Feature's branch, landed as one merge commit. It runs under `--watch` where the repo turns it on, before a Pull-check fix, and stops for good once a person engages. A branch that is only behind its base gets none.
+_Avoid_: rebase, sync, update branch, merge fix
+
 **Feedback**:
 What a person or a check said on a Feature's draft pull request that Nightjar may answer: a review comment, on a line or in the conversation, a review with a body, or a failed check on the head commit. Its id carries its kind (`comment:123`, `review:45`, `check:678`). Feedback from an author Nightjar does not trust never reaches the Coding agent, and Nightjar's own words, which end with its footer, are never feedback. It is answered once a `Factory-Feedback` trailer on the branch names it.
 _Avoid_: review notes, PR comments, change requests
@@ -115,7 +123,7 @@ The program that builds one Ticket in the Feature's worktree, in a Session Night
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
+One run of the Coding agent on one piece of work: a Ticket's build, a fix round, a Step round, a Pull-check fix, a Conflict fix, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
 **Logbook**:

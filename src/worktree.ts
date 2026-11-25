@@ -351,6 +351,22 @@ export class GitWorktree implements Worktree {
 		return true;
 	}
 
+	// A branch with commits of its own and the remote's: the remote's merged in when the two do not clash, else the branch left as it was.
+	async mergeRemote(): Promise<boolean> {
+		const remote = `refs/remotes/origin/${this.at.branch}`;
+		const theirs = await run(
+			'git',
+			['rev-parse', '--verify', '--quiet', `${remote}^{commit}`],
+			this.at.folder,
+			this.env
+		);
+		if (!theirs.ok) return false;
+		const merged = await run('git', ['merge', '-q', '--no-edit', remote], this.at.folder, this.env);
+		if (merged.ok) return true;
+		await run('git', ['merge', '--abort'], this.at.folder, this.env);
+		return false;
+	}
+
 	async headTrailers(): Promise<ReadonlyMap<string, string>> {
 		const out = await this.git(['log', '-1', '--format=%(trailers:only,unfold)']);
 		const found = new Map<string, string>();
@@ -434,16 +450,19 @@ export const openWorktree: OpenWorktree = async (root, worktrees, branch, baseBr
 	if (existsSync(folder)) {
 		await tree.git(['reset', '-q', '--hard']);
 		await tree.git(['clean', '-q', '-fd']);
-		return tree;
-	}
-	await must(['worktree', 'prune']);
-	if (await hasRef(root, `refs/heads/${branch}`, env)) {
-		await must(['worktree', 'add', '-q', folder, branch]);
-	} else if (await hasRef(root, `refs/remotes/origin/${branch}`, env)) {
-		await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, `origin/${branch}`]);
 	} else {
-		await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, base]);
+		await must(['worktree', 'prune']);
+		if (await hasRef(root, `refs/heads/${branch}`, env)) {
+			await must(['worktree', 'add', '-q', folder, branch]);
+		} else if (await hasRef(root, `refs/remotes/origin/${branch}`, env)) {
+			await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, `origin/${branch}`]);
+		} else {
+			await must(['worktree', 'add', '-q', '--no-track', '-b', branch, folder, base]);
+		}
 	}
+	// what a person pushed to the branch since, such as a fix to its check, so the next push is not rejected;
+	// a branch with commits on both sides takes the remote's in by a merge, and one that clashes stays as it is, and its push says so
+	if (!(await tree.toRemote())) await tree.mergeRemote();
 	return tree;
 };
 

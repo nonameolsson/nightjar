@@ -6,9 +6,18 @@ import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileSpend, record } from './ledger.js';
 import { featureAfterRunStep, ticketStep } from './next-step.js';
+import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { startUi, type Ui } from './ui.js';
+import { THEMES, type Theme } from './ui-theme.js';
+import {
+	detailFrom,
+	listsFrom,
+	TRACKER_EVERY_MS,
+	type ReadingTracker,
+	type Upcoming
+} from './ui-tracker.js';
 
 let root: string;
 let ui: Ui | null;
@@ -247,7 +256,11 @@ describe('nightjar ui page', () => {
 		// the ledger holds 3 built sessions, but the branch is 3 of the Feature's 4
 		expect(card(board, 'Done one')).toContain('3 of 4 built by the end of this run');
 		expect(card(board, 'Old one')).toContain('>count unknown<');
-		expect(card(board, 'it broke')).toContain('1 of 5 built in this run');
+		// #8 failed and is queued again: it sits in the Queue, its failed run on its card
+		expect(card(board, 'Retry')).toContain('entry queue');
+		expect(card(board, 'Retry')).toContain(
+			'1 earlier run, the latest failed (1 of 5 built in this run)'
+		);
 		expect(row('Billing')).toContain('2 of 6 built now');
 		expect(row('Done one')).toContain('3 of 4 built by the end of this run');
 		expect(row('Unknown')).not.toContain('class="eggs"');
@@ -529,6 +542,271 @@ describe('nightjar ui page', () => {
 	});
 });
 
+describe('nightjar ui reads the Tracker', () => {
+	// each read a minute would bring, which a spec calls itself instead of waiting
+	let minutes: { ms: number; read: () => void }[];
+	let reads: number;
+	beforeEach(() => {
+		minutes = [];
+		reads = 0;
+	});
+	const every = (ms: number, read: () => void) => {
+		minutes.push({ ms, read });
+		return () => {};
+	};
+	// #1 with the Go and two Tickets, one closed; #4 a lone issue that needs info
+	const fakeTracker = () =>
+		new FakeTracker('ann', () => at)
+			.add({
+				id: '1',
+				title: 'Saved filters',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['2', '3']
+			})
+			.add({ id: '2', title: 'Model', open: false })
+			.add({ id: '3', title: 'View' })
+			.add({ id: '4', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] });
+	const readsOf = (tracker: ReadingTracker, fail: () => boolean = () => false) => {
+		const read = listsFrom(
+			() => Promise.resolve({ tracker, person: 'ann' }),
+			() => at
+		);
+		return (): Promise<Upcoming> => {
+			reads += 1;
+			return fail() ? Promise.reject(new Error('gh: Bad Gateway (HTTP 502)')) : read();
+		};
+	};
+	const openOn = async (tracker: () => Promise<Upcoming>) => {
+		ui = await startUi({ root, port: 0, now: () => at, alive: () => alive, tracker, every });
+		return ui;
+	};
+	const page = async () => (await get('/')).text;
+	// the page once its first read of the Tracker has ended
+	const read = async () => {
+		await vi.waitFor(async () => expect(await page()).not.toContain('reading the Tracker'));
+		return page();
+	};
+	const board = (html: string) => html.split('<div class="table">')[0] ?? '';
+	const mat = (html: string, state: string) =>
+		board(html).split(`<section class="mat" data-state="${state}"`)[1]?.split('<section')[0] ?? '';
+
+	it('shows the Queue and Waiting on you while nightjar is off, and when it read them', async () => {
+		const tracker = fakeTracker();
+		const before = structuredClone([...tracker.items.values()]);
+		await openOn(readsOf(tracker));
+		const html = await read();
+		expect(html).toContain('<span class="state">off</span>');
+		expect(html).not.toContain('not known while nightjar is off');
+		expect(mat(html, 'queue')).toContain('Saved filters');
+		expect(mat(html, 'queue')).toContain('0 of 2 built');
+		expect(mat(html, 'waiting')).toContain('Audit log');
+		expect(mat(html, 'waiting')).toContain('needs info');
+		expect(html).toMatch(/waiting on you<\/span> <b>1<\/b>/);
+		expect(html).toContain(`Tracker read <time datetime="${at.toISOString()}">`);
+		// the Table and Overview read the same lists
+		expect(html.split('<div class="table">')[1]).toContain('data-title="Saved filters"');
+		expect(html.split('<div class="overview">')[1]).toContain('Audit log');
+		// read-only: nothing on the Tracker changed
+		expect([...tracker.items.values()]).toEqual(before);
+	});
+
+	it('takes a Feature off Waiting on you once it builds, before the next read says so', async () => {
+		const tracker = fakeTracker();
+		await openOn(readsOf(tracker));
+		await read();
+		status(true).doing({
+			kind: 'building',
+			feature: '4',
+			title: 'Audit log',
+			ticket: null,
+			step: 'setup',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		await vi.waitFor(async () => expect(mat(await page(), 'building')).toContain('Audit log'));
+		const html = await page();
+		expect(mat(html, 'waiting')).not.toContain('Audit log');
+		expect(html).toMatch(/waiting on you<\/span> <b>0<\/b>/);
+	});
+
+	it('reads on open and then once a minute, never on a change under .factory/', async () => {
+		const tracker = fakeTracker();
+		await openOn(readsOf(tracker));
+		await read();
+		expect(reads).toBe(1);
+		expect(minutes.map((m) => m.ms)).toEqual([TRACKER_EVERY_MS]);
+		expect(TRACKER_EVERY_MS).toBe(60_000);
+		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
+		await vi.waitFor(async () => expect(await page()).toContain('<span class="state">idle'));
+		tracker.add({ id: '5', title: 'Reports', assignees: ['ann'], signals: ['go'] });
+		await new Promise((done) => setTimeout(done, 100));
+		expect(reads).toBe(1);
+		expect(await page()).not.toContain('Reports');
+		minutes[0]?.read();
+		await vi.waitFor(async () => expect(mat(await page(), 'queue')).toContain('Reports'));
+		expect(reads).toBe(2);
+	});
+
+	it('keeps the last lists when a read fails, marked with their age, and stays up', async () => {
+		let down = false;
+		await openOn(readsOf(fakeTracker(), () => down));
+		await read();
+		down = true;
+		minutes[0]?.read();
+		await vi.waitFor(async () => expect(await page()).toContain('Bad Gateway'));
+		const got = await get('/');
+		expect(got.status).toBe(200);
+		expect(mat(got.text, 'queue')).toContain('Saved filters');
+		expect(mat(got.text, 'waiting')).toContain('Audit log');
+		const header = got.text.split('<header>')[1]?.split('</header>')[0] ?? '';
+		expect(header).toContain('class="read stale"');
+		expect(header).toContain(`<time data-since="${at.toISOString()}"></time> ago`);
+		expect(header).toContain('could not read it at');
+		// the next read that goes well clears the mark
+		down = false;
+		minutes[0]?.read();
+		await vi.waitFor(async () => expect(await page()).not.toContain('Bad Gateway'));
+	});
+
+	it('says why when no read has gone well yet, in place of the lists', async () => {
+		await openOn(readsOf(fakeTracker(), () => true));
+		const html = await read();
+		expect(mat(html, 'queue')).toContain('could not read the Tracker: gh: Bad Gateway');
+		expect(mat(html, 'waiting')).toContain('could not read the Tracker');
+		expect(html).not.toContain('not known while nightjar is off');
+	});
+
+	it('still says Waiting on you is not available from a Tracker without waitingOn', async () => {
+		const fake = fakeTracker();
+		const tracker: ReadingTracker = { assignedFeatures: (p) => fake.assignedFeatures(p) };
+		await openOn(readsOf(tracker));
+		const html = await read();
+		expect(mat(html, 'waiting')).toContain('not available from this Tracker');
+		expect(mat(html, 'queue')).toContain('Saved filters');
+		// no counts from a Tracker that cannot count
+		expect(mat(html, 'queue')).not.toContain('Tickets');
+	});
+
+	it("shows the person's Shelf while nightjar is off, and says so when the Tracker cannot list it", async () => {
+		const fake = fakeTracker().add({ id: '6', title: 'Old idea', assignees: ['ann'] });
+		await openOn(readsOf(fake));
+		const html = await read();
+		expect(mat(html, 'shelf')).toContain('Old idea');
+		expect(mat(html, 'shelf')).toContain('Lone issue');
+		expect(html.split('<div class="overview">')[1]).toContain('Old idea');
+		await ui?.close();
+		const without: ReadingTracker = {
+			assignedFeatures: (p) => fake.assignedFeatures(p),
+			waitingOn: (p) => fake.waitingOn(p)
+		};
+		await openOn(readsOf(without));
+		const bare = await read();
+		expect(mat(bare, 'shelf')).toContain('Shelf is not available from this Tracker');
+		expect(mat(bare, 'queue')).toContain('Saved filters');
+	});
+
+	it("takes the Tracker's lists over status.json's, keeps the run's waiting Tickets, and queues no Feature being built", async () => {
+		const file = status();
+		file.refreshed([{ id: '50', title: 'Old queue' }], { items: [], trackerCannotList: false });
+		// while a Feature builds, status.json lists its own Tickets that wait
+		file.doing({
+			kind: 'building',
+			feature: '1',
+			title: 'Saved filters',
+			ticket: '3',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '3', title: 'View', state: 'building' },
+				{ id: '12', title: 'Facets', state: 'waiting', why: 'needs info' }
+			]
+		});
+		await openOn(readsOf(fakeTracker()));
+		const html = await read();
+		expect(html).not.toContain('Old queue');
+		expect(mat(html, 'queue')).not.toContain('Saved filters');
+		expect(mat(html, 'building')).toContain('Saved filters');
+		expect(mat(html, 'waiting')).toContain('Audit log');
+		// the building Feature's waiting Ticket sits on its Building card
+		expect(mat(html, 'building')).toContain('Facets');
+		expect(mat(html, 'waiting')).not.toContain('Facets');
+	});
+
+	it('answers GET and HEAD only, as before', async () => {
+		await openOn(readsOf(fakeTracker()));
+		await read();
+		for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+			expect((await get('/', method)).status).toBe(405);
+		}
+		expect((await get('/', 'HEAD')).status).toBe(200);
+	});
+
+	describe('the Feature detail panel', () => {
+		const openWithPanel = async (tracker: FakeTracker) => {
+			const page = () => Promise.resolve({ tracker, person: 'ann', workflows: [] });
+			ui = await startUi({
+				root,
+				port: 0,
+				now: () => at,
+				alive: () => alive,
+				tracker: listsFrom(page, () => at),
+				feature: detailFrom(page),
+				every
+			});
+			return ui;
+		};
+
+		it('opens from a Feature on Waiting on you, the Queue or the Shelf, read through a GET route when it opens', async () => {
+			const tracker = fakeTracker().add({ id: '6', title: 'Old idea', assignees: ['ann'] });
+			const before = structuredClone([...tracker.items.values()]);
+			await openWithPanel(tracker);
+			const html = await read();
+			for (const [state, id] of [
+				['queue', '1'],
+				['waiting', '4'],
+				['shelf', '6']
+			] as const)
+				expect(mat(html, state)).toContain(`data-feature="${id}"`);
+			expect(html).toContain('<dialog id="feature"');
+			const panel = await get('/feature?id=1');
+			expect(panel.status).toBe(200);
+			expect(panel.text).toContain('Tickets in Build order');
+			expect(panel.text).toContain('Model');
+			expect(panel.text).toContain('<details class="criteria">');
+			// the Ticket contract check, as `nightjar doctor` runs it
+			expect(panel.text).toMatch(/\d+ of \d+ open Tickets? meets? the Ticket contract/);
+			const lone = await get('/feature?id=4');
+			expect(lone.text).toContain('Lone issue');
+			// read-only: nothing on the Tracker changed
+			expect([...tracker.items.values()]).toEqual(before);
+		});
+
+		it('shows an error in the panel when the read fails, and still answers nothing but GET and HEAD', async () => {
+			await openWithPanel(fakeTracker());
+			await read();
+			const missing = await get('/feature?id=404');
+			expect(missing.status).toBe(502);
+			expect(missing.text).toContain('could not read #404 from the Tracker');
+			for (const method of ['POST', 'PUT', 'DELETE', 'PATCH'])
+				expect((await get('/feature?id=1', method)).status).toBe(405);
+			expect((await get('/feature?id=1', 'HEAD')).status).toBe(200);
+		});
+
+		it('has no route when the page reads no Feature', async () => {
+			await openOn(readsOf(fakeTracker()));
+			const html = await read();
+			expect(html).not.toContain('data-feature=');
+			expect((await get('/feature?id=1')).status).toBe(404);
+		});
+	});
+});
+
 // The next server-sent event of a stream, as the panels it carries.
 async function nextPanels(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
 	const { value } = await reader.read();
@@ -560,7 +838,7 @@ describe('nightjar ui events', () => {
 });
 
 describe('nightjar ui board', () => {
-	it('opens on a Board of four columns with a card per Feature, and keeps Overview', async () => {
+	it('opens on a Board of five Mats with a card per Feature, and keeps Overview', async () => {
 		const file = status();
 		file.doing({
 			kind: 'building',
@@ -588,7 +866,7 @@ describe('nightjar ui board', () => {
 		await open();
 		const page = (await get('/')).text;
 		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
-		for (const name of ['Queue', 'Building', 'Waiting on you', 'Completed'])
+		for (const name of ['Queue', 'Shelf', 'Building', 'Waiting on you', 'Completed'])
 			expect(page).toContain(`<h2>${name}</h2>`);
 		expect(page).toContain('Exports');
 		expect(page).toContain('Ticket 2 of 3, build, round 1 of 3');
@@ -603,6 +881,43 @@ describe('nightjar ui board', () => {
 			'<i class="slot"><i class="egg built"></i></i><i class="slot"><i class="egg building"></i></i><i class="slot"><i class="egg need"></i></i>'
 		);
 		expect(card).toContain('1 of 3 built now');
+	});
+
+	it("lists a building Feature's waiting Tickets on its Building card, not on a Waiting card of its own", async () => {
+		const file = status(true);
+		file.refreshed([], { items: [], trackerCannotList: false });
+		file.doing({
+			kind: 'building',
+			feature: '5',
+			title: 'Search',
+			ticket: '7',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString(),
+			tickets: [
+				{ id: '7', title: 'Query', state: 'building' },
+				{ id: '8', title: 'Facets', state: 'waiting', why: 'needs info' }
+			]
+		});
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const table = rest.split('<div class="overview">')[0] ?? '';
+		const cards = board
+			.split('<article')
+			.slice(1)
+			.map((a) => a.split('</article>')[0] ?? '');
+		expect(cards.filter((a) => a.includes('Search'))).toHaveLength(1);
+		const card = cards.find((a) => a.includes('entry building')) ?? '';
+		expect(card).toContain('Facets <small>needs info</small>');
+		expect(page).toContain('<h2>Waiting on you</h2><i class="tally">0</i>');
+		// the header still counts the Ticket: it waits on the person
+		expect(page).toMatch(/waiting on you<\/span> <b>1<\/b>/);
+		const rows = table.split('<tr ').filter((r) => r.includes('Search'));
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain('needs info');
 	});
 
 	it('shows one Completed card per Feature: its latest run and how many runs it had', async () => {
@@ -629,6 +944,57 @@ describe('nightjar ui board', () => {
 		expect(table.split('<tr ').filter((r) => r.includes('Retries'))).toHaveLength(1);
 		expect(table).toContain('latest of 3 recent runs');
 		expect(overview.split('<li>').filter((r) => r.includes('Retries'))).toHaveLength(1);
+	});
+
+	it('shows a Feature built again on one Mat, where it is now, with its earlier runs on its card', async () => {
+		const file = status(true);
+		const url = (n: number) => `https://example.test/pull/${String(n)}`;
+		file.happened({ kind: 'pull', feature: '278', title: 'Library', url: url(40) });
+		file.happened({ kind: 'pull', feature: '278', title: 'Library', url: url(41) });
+		file.happened({ kind: 'failed', feature: '190', title: 'Several', why: 'push refused' });
+		file.happened({ kind: 'pull', feature: '9', title: 'Exports', url: url(42) });
+		file.happened({ kind: 'pull', feature: '147', title: 'Retries', url: url(43) });
+		file.doing({
+			kind: 'building',
+			feature: '278',
+			title: 'Library',
+			ticket: null,
+			step: 'setup',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		file.refreshed([{ id: '9', title: 'Exports' }], {
+			items: [{ kind: 'feature', id: '190', title: 'Several', why: 'needs info' }],
+			trackerCannotList: false
+		});
+		await open();
+		const page = (await get('/')).text;
+		const [board = '', rest = ''] = page.split('<div class="table">');
+		const [table = '', overview = ''] = rest.split('<div class="overview">');
+		const cards = (title: string) =>
+			board
+				.split('<article')
+				.slice(1)
+				.map((a) => a.split('</article>')[0] ?? '')
+				.filter((a) => a.includes(title));
+		for (const title of ['Library', 'Several', 'Exports', 'Retries'])
+			expect(cards(title)).toHaveLength(1);
+		expect(cards('Library')[0]).toContain('entry building');
+		expect(cards('Library')[0]).toContain('2 earlier runs');
+		expect(cards('Library')[0]).toContain('pull/41"');
+		expect(cards('Several')[0]).toContain('entry waiting');
+		expect(cards('Several')[0]).toContain('1 earlier run, the latest failed');
+		expect(cards('Exports')[0]).toContain('entry queue');
+		expect(cards('Retries')[0]).toContain('entry pulled');
+		expect(page).toContain('<h2>Completed</h2><i class="tally">1</i>');
+		for (const title of ['Library', 'Several', 'Exports', 'Retries'])
+			expect(table.split('<tr ').filter((r) => r.includes(title))).toHaveLength(1);
+		expect(table.split('<tr ').find((r) => r.includes('Library'))).toContain('2 earlier runs');
+		const done = overview.split('<section id="completed">')[1] ?? '';
+		expect(done).toContain('Retries');
+		expect(done).not.toContain('Library');
 	});
 
 	it('shows on a Waiting card why its Ticket was handed back and the Next step, after the events moved on', async () => {
@@ -867,11 +1233,11 @@ describe('nightjar ui board', () => {
 		expect(panel).toContain('tail line &#60;one&#62;');
 	});
 
-	it('reads the Board with Waiting on you first, then Building, Queue and Completed', async () => {
+	it('reads the Board with Waiting on you first, then Building, Queue, Shelf and Completed', async () => {
 		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		await open();
 		const page = (await get('/')).text;
-		const order = ['waiting', 'building', 'queue', 'completed'].map((state) =>
+		const order = ['waiting', 'building', 'queue', 'shelf', 'completed'].map((state) =>
 			page.indexOf(`<section class="mat" data-state="${state}"`)
 		);
 		expect(order.every((i) => i >= 0)).toBe(true);
@@ -1186,19 +1552,24 @@ describe('nightjar ui page, more', () => {
 });
 
 describe('nightjar ui audit fixes', () => {
-	const css = async () => {
+	// a theme's own stylesheet; each theme is a whole sheet, so the rules every page needs are checked in each
+	const css = async (theme: Theme = 'nightjar') => {
 		await open();
 		const page = (await get('/')).text;
-		return { page, style: page.split('<style>')[1]?.split('</style>')[0] ?? '' };
+		const style =
+			page.split(new RegExp(`<style data-theme="${theme}"[^>]*>`))[1]?.split('</style>')[0] ?? '';
+		return { page, style };
 	};
 	const rule = (style: string, selector: string) =>
 		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
 
 	it('has a status region outside the panels that stays out of sight', async () => {
-		const { page, style } = await css();
-		expect(page).toContain('<p id="live" class="sr" role="status"></p>');
-		expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
-		expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
+		for (const theme of THEMES) {
+			const { page, style } = await css(theme);
+			expect(page).toContain('<p id="live" class="sr" role="status"></p>');
+			expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
+			expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
+		}
 	});
 
 	it('announces only when the waiting or failed count rises', async () => {
@@ -1261,14 +1632,24 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('1 failed');
 	});
 
-	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act'];
-	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
-		const { style } = await css();
-		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
-		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-		for (const s of BUTTONS) expect(coarse, s).toContain(s);
-		expect(coarse).toContain('min-height: 44px');
-	});
+	const BUTTONS = [
+		'th button',
+		'#views button',
+		'#themes button',
+		'.chips button',
+		'button.copy',
+		'a.act'
+	];
+	it.each(THEMES)(
+		'gives sort buttons, view and theme tabs, chips, copy buttons and links a 24px hit area, 44px on touch (%s)',
+		async (theme) => {
+			const { style } = await css(theme);
+			for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
+			const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
+			for (const s of BUTTONS) expect(coarse, s).toContain(s);
+			expect(coarse).toContain('min-height: 44px');
+		}
+	);
 
 	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
 		const { style } = await css();
@@ -1279,14 +1660,25 @@ describe('nightjar ui audit fixes', () => {
 		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
 	});
 
-	it('collapses entries beside the detail panel only between 1261px and 1400px', async () => {
-		const { style } = await css();
-		expect(style).not.toContain('@media (max-width: 1400px)');
-		const block =
-			style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
-		expect(block).toContain('.cols.has-detail .entry');
-		expect(block).toContain('.cols.has-detail .head');
+	it("keeps Paper's font sizes on its 11.5px to 16px ramp", async () => {
+		const { style } = await css('paper');
+		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)px/g)].map((m) => m[1]);
+		expect(sizes.length).toBeGreaterThan(0);
+		const ramp = ['11.5', '12', '12.5', '13', '13.5', '14', '16'];
+		expect(sizes.filter((s) => !ramp.includes(s ?? ''))).toEqual([]);
 	});
+
+	it.each(THEMES)(
+		'collapses entries beside the detail panel only between 1261px and 1400px (%s)',
+		async (theme) => {
+			const { style } = await css(theme);
+			expect(style).not.toContain('@media (max-width: 1400px)');
+			const block =
+				style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
+			expect(block).toContain('.cols.has-detail .entry');
+			expect(block).toContain('.cols.has-detail .head');
+		}
+	);
 
 	it('keeps the inner scroll of the log, detail panel and Table across a live swap', async () => {
 		await open();
@@ -1333,14 +1725,18 @@ describe('nightjar ui audit fixes', () => {
 		expect(rule(style, '.egg.need::before, .egg.need::after')).not.toContain('border-radius');
 	});
 
-	it('draws colours from tokens: no literals outside :root', async () => {
-		const { style } = await css();
+	it.each(THEMES)('draws colours from tokens: no literals outside :root (%s)', async (theme) => {
+		const { style } = await css(theme);
 		const rest = style
 			.split('\n')
 			.filter((l) => !l.startsWith(':root'))
 			.join('\n');
 		expect(rest).not.toMatch(/#[0-9a-f]{3,8}\b/i);
 		expect(rest).not.toContain('rgba(');
+	});
+
+	it('keeps the Nightjar tokens for its sockets, mats and shading', async () => {
+		const { style } = await css('nightjar');
 		for (const t of ['--socket-dash', '--socket-border', '--panel-overlay', '--shade-soft'])
 			expect(style).toContain(`${t}:`);
 	});
@@ -1360,13 +1756,16 @@ describe('nightjar ui audit fixes', () => {
 		expect(page).not.toContain('data-tip');
 	});
 
-	it('lets the whole page scroll on a short or narrow viewport', async () => {
-		const { style } = await css();
-		const block =
-			style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
-		expect(block).toContain('height: auto');
-		expect(block).toContain('overflow: visible');
-	});
+	it.each(THEMES)(
+		'lets the whole page scroll on a short or narrow viewport (%s)',
+		async (theme) => {
+			const { style } = await css(theme);
+			const block =
+				style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
+			expect(block).toContain('height: auto');
+			expect(block).toContain('overflow: visible');
+		}
+	);
 
 	it('puts focus back on a copy button or link after a live swap', async () => {
 		await open();

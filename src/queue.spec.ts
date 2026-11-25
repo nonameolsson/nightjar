@@ -95,6 +95,7 @@ function world() {
 		doing,
 		happened,
 		sleeps,
+		stop,
 		failWith,
 		refreshes,
 		moved,
@@ -117,6 +118,19 @@ describe('queue --once', () => {
 		expect(await queue(w.deps, true)).toBe(0);
 		expect(w.built).toEqual([]);
 		expect(w.lines).toContain('no Feature with the Go is assigned to ann');
+	});
+
+	// a paused build puts the Go back before it pushes; a push that then fails must not leave it on
+	it('takes the Go off a Feature it hands back, so the next pass does not build it again', async () => {
+		const w = world();
+		const pausedThenRejected: QueueDeps['build'] = async ({ id }) => {
+			await w.tracker.addSignal(id, 'working');
+			await w.tracker.removeSignal(id, 'go');
+			await w.tracker.addSignal(id, 'go');
+			throw new Error('git could not push factory/2-older: ! [rejected]');
+		};
+		expect(await queue({ ...w.deps, build: pausedThenRejected }, true)).toBe(1);
+		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
 	});
 
 	it('hands the Feature back when its build fails on a fault', async () => {
@@ -162,6 +176,46 @@ describe('queue --watch', () => {
 		const w = world();
 		await queue({ ...w.deps, pollMs: 45_000 }, false);
 		expect(w.sleeps).toEqual([45_000, 45_000]);
+	});
+
+	// a paused build that had commits to push ends as a pull request, with the pause beside it
+	describe('when a build that opened a pull request paused', () => {
+		const pausedPull = (w: ReturnType<typeof world>): QueueDeps => ({
+			...w.deps,
+			build: async ({ id }) => {
+				w.built.push(id);
+				// a run that never waits would build for ever
+				if (w.built.length >= 5) w.stop.abort();
+				await w.tracker.removeSignal(id, 'go');
+				await w.tracker.addSignal(id, 'go');
+				return {
+					kind: 'pull',
+					pull: { id: 1, url: 'https://example.test/pull/1' },
+					built: [],
+					waiting: [],
+					paused: 'the plan usage limit was reached'
+				};
+			}
+		});
+
+		it('waits out the pause before it builds again', async () => {
+			const w = world();
+			await queue(pausedPull(w), false);
+			expect(w.sleeps).toEqual([30 * 60_000, 30 * 60_000]);
+			expect(w.doing[0]).toMatchObject({
+				kind: 'paused',
+				why: 'the plan usage limit was reached'
+			});
+			expect(w.built).toEqual(['2', '2']);
+		});
+
+		it('tells the Feature once why it paused, so a person can see it', async () => {
+			const w = world();
+			await queue(pausedPull(w), false);
+			const said = w.tracker.said('2').filter((c) => c.startsWith('Nightjar paused'));
+			expect(said).toHaveLength(1);
+			expect(said[0]).toContain('the plan usage limit was reached');
+		});
 	});
 });
 

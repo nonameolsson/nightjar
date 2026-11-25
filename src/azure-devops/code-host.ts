@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { failedCheckBody } from '../check-output.js';
 import type {
+	BotPull,
 	ChangeRequest,
 	CodeHost,
 	ConflictState,
@@ -16,7 +17,7 @@ import type {
 	PullCommit
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
-import { firstLine, type Env, type Run } from '../git.js';
+import { pushFault, type Env, type Run } from '../git.js';
 import { logTail } from '../log-tail.js';
 import { publishedByNightjar } from '../publish.js';
 import type { TicketReference } from '../tracker.js';
@@ -82,6 +83,7 @@ const ListedSchema = z.looseObject({
 const ReviewerSchema = z.looseObject({ id: z.string(), vote: z.number().nullish() });
 
 const DraftSchema = PullSchema.extend({
+	title: z.string().nullish(),
 	creationDate: z.string().nullish(),
 	repository: z.looseObject({ id: z.string(), project: z.looseObject({ id: z.string() }) }),
 	lastMergeSourceCommit: z.looseObject({ commitId: z.string() }).nullish(),
@@ -453,7 +455,7 @@ export class AzureReposCodeHost implements CodeHost {
 		}
 		if (!got.ok) {
 			throw new AzureDevOpsFailure(
-				`git could not push ${branch} to Azure Repos: ${firstLine(got.err)}`
+				`git could not push ${branch} to Azure Repos: ${pushFault(got.err)}`
 			);
 		}
 	}
@@ -702,24 +704,53 @@ export class AzureReposCodeHost implements CodeHost {
 			{ method: 'GET', url: this.at(`pullrequests/${n}?${API}`) },
 			DraftSchema
 		);
-		const head = await this.headPush(id);
-		const statuses = await this.statusChecks(id, head?.id);
-		const policies = await this.policyChecks(raw);
+		const { headCommit, checks, count } = await this.headChecks(raw);
 		const pull = this.toPull(raw);
 		return {
 			pull,
 			branch,
-			headCommit: head?.sourceRefCommit?.commitId ?? raw.lastMergeSourceCommit?.commitId ?? '',
+			headCommit,
 			body: raw.description ?? '',
+			checks,
+			personEngaged: await this.personEngaged(raw),
+			...(raw.creationDate == null ? {} : { openedAt: raw.creationDate }),
+			checkCount: count,
+			...(listing.commits === true ? { commits: await this.commits(pull) } : {})
+		};
+	}
+
+	// The head commit of a pull request, and the Pull checks on it: its statuses and its build validation policies.
+	private async headChecks(
+		raw: Draft
+	): Promise<{ headCommit: string; checks: PullChecks; count: number }> {
+		const head = await this.headPush(raw.pullRequestId);
+		const statuses = await this.statusChecks(raw.pullRequestId, head?.id);
+		const policies = await this.policyChecks(raw);
+		return {
+			headCommit: head?.sourceRefCommit?.commitId ?? raw.lastMergeSourceCommit?.commitId ?? '',
 			checks: {
 				pending: statuses.checks.pending || policies.checks.pending,
 				failed: [...policies.checks.failed, ...statuses.checks.failed]
 			},
-			personEngaged: await this.personEngaged(raw),
-			...(raw.creationDate == null ? {} : { openedAt: raw.creationDate }),
-			checkCount: statuses.count + policies.count,
-			...(listing.commits === true ? { commits: await this.commits(pull) } : {})
+			count: statuses.count + policies.count
 		};
+	}
+
+	// Open pull requests from this repo's own branches under any of `prefixes`, oldest first, with the Pull checks on each head commit; activePulls leaves out a fork's.
+	async botPulls(prefixes: readonly string[]): Promise<BotPull[]> {
+		const listed = await this.activePulls('list the open pull requests');
+		const found: BotPull[] = [];
+		for (const { id, branch } of listed) {
+			if (!prefixes.some((prefix) => branch.startsWith(prefix))) continue;
+			const raw = await this.api.parse(
+				`read pull request ${String(id)}`,
+				{ method: 'GET', url: this.at(`pullrequests/${String(id)}?${API}`) },
+				DraftSchema
+			);
+			const { headCommit, checks } = await this.headChecks(raw);
+			found.push({ pull: this.toPull(raw), title: raw.title ?? '', branch, headCommit, checks });
+		}
+		return found;
 	}
 
 	// The latest status of each name, on the head push or on the pull request itself.
