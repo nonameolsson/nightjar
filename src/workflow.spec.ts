@@ -240,6 +240,7 @@ describe('the Steps of a Workflow', () => {
 				return Promise.resolve(b.fixer(work));
 			},
 			log: (entry) => b.logged.push(entry),
+			verdict: () => undefined,
 			building: (t, session, rounds) => b.shown.push({ ticket: t, session, ...rounds }),
 			dailyPause: () => b.dailyPause,
 			allowance: (cap, spent) => memorySpend().allowance(cap, spent),

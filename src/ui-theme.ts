@@ -124,6 +124,7 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .lines > .empty { padding: 8px 10px; }
 .more { color: var(--muted); font-size: 12px; margin: 0; padding: 8px 10px; }
 .table .more { padding: 10px 12px 0; }
+.detail .more { display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .entry p { margin: 0; }
 .who { font-size: 13.5px; font-weight: 500; }
 .who b { color: var(--muted); display: inline-block; font-size: 12.5px; font-weight: 400; margin-right: 6px; min-width: 40px; }
@@ -207,6 +208,8 @@ button.copy { background: none; border: 1px solid var(--line); border-radius: 6p
 button.copy:hover { background: var(--surface-2); }
 button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; }
 button.open:hover { text-decoration: underline; text-underline-offset: 2px; }
+a.open { align-items: center; display: inline-flex; min-height: 24px; }
+a.book-link { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
 #feature { background: var(--bg); border: 0; border-left: 1px solid var(--line); box-shadow: var(--shadow-pop); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; width: 640px; }
 #feature::backdrop { background: var(--scrim); }
 .fp { min-height: 100%; padding: 14px 24px 32px; }
@@ -252,7 +255,7 @@ button.close:hover { background: var(--surface-2); }
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary { min-height: 44px; }
 	#views button, #themes button, .chips button { padding-inline: 14px; }
 	.tab { height: 40px; }
 }

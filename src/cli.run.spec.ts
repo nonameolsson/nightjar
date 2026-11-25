@@ -107,6 +107,15 @@ describe('nightjar FEATURE', () => {
 		const session = (JSON.parse(ledger[0] ?? '{}') as { session: string }).session;
 		expect(existsSync(join(root, '.factory', 'logs', `${session}.jsonl`))).toBe(true);
 
+		// the Logbook is written with no terminal attached, as the ledger is
+		const logbook = readFileSync(join(root, '.factory', 'logbook', '1.jsonl'), 'utf8')
+			.trim()
+			.split('\n')
+			.map((l) => (JSON.parse(l) as { kind: string }).kind);
+		expect(logbook[0]).toBe('buildStarted');
+		expect(logbook).toContain('ticketBuilt');
+		expect(logbook).toContain('pullOpened');
+
 		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
 			doing: unknown;
 			spentTodayUsd: number;

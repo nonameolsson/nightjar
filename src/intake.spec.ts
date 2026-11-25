@@ -20,6 +20,7 @@ import {
 	SENTRY_ISSUE_ID,
 	sentryHeaders
 } from './fakes/sentry.js';
+import { memoryLogbook, type MemoryLogbook } from './fakes/logbook.js';
 import { FakeTracker } from './fakes/tracker.js';
 import {
 	AGAIN_MARKER,
@@ -68,8 +69,10 @@ let clock: Date;
 let tracker: FakeTracker;
 let server: IntakeServer | null;
 let said: string[];
+let logbook: MemoryLogbook;
 
 beforeEach(() => {
+	logbook = memoryLogbook();
 	dir = realpathSync(mkdtempSync(join(tmpdir(), 'nightjar-intake-')));
 	// local noon, so a day later is another day on any clock
 	clock = new Date(2026, 10, 3, 12, 0);
@@ -98,6 +101,7 @@ async function start(over: Partial<ServedSource> = {}, keyless = false): Promise
 		host: '127.0.0.1',
 		port: 0,
 		log: logPath(),
+		logbook,
 		now: () => clock,
 		say: (line) => said.push(line)
 	});
@@ -202,7 +206,8 @@ describe('intake', () => {
 				]),
 				host: '127.0.0.1',
 				port: 0,
-				log: logPath()
+				log: logPath(),
+				logbook
 			})
 		).rejects.toThrow("Source alerts: go: true needs the Tracker's assign");
 	});
@@ -233,6 +238,82 @@ describe('intake', () => {
 		tracker.close(id);
 		expect((await post(event('k-1'), signed(event('k-1'), { id: 'msg_6' }))).status).toBe(201);
 		expect(features()).toHaveLength(3);
+	});
+
+	it("writes the Logbook of a Feature a Source made: the Source and its key, then the standing Go's owner", async () => {
+		await start({ owner: 'bob' });
+		await post(event('k-1'));
+		const [made] = features();
+		expect(logbook.read(made?.id ?? '')).toEqual([
+			{
+				at: clock.toISOString(),
+				feature: made?.id,
+				kind: 'madeBySource',
+				source: 'alerts',
+				key: 'k-1'
+			},
+			{
+				at: clock.toISOString(),
+				feature: made?.id,
+				kind: 'standingGo',
+				source: 'alerts',
+				owner: 'bob'
+			}
+		]);
+	});
+
+	it('writes no standing Go for a Feature a Source made with no owner', async () => {
+		await start();
+		await post(event('k-1'));
+		const [made] = features();
+		expect(logbook.read(made?.id ?? '')?.map((e) => e.kind)).toEqual(['madeBySource']);
+	});
+
+	it('writes no standing Go when the owner could not be assigned', async () => {
+		tracker.assign = () => Promise.reject(new Error('the Tracker refused'));
+		await start({ owner: 'bob' });
+		await post(event('k-1'));
+		const [made] = features();
+		expect(logbook.read(made?.id ?? '')?.map((e) => e.kind)).toEqual(['madeBySource']);
+	});
+
+	it('writes "happened again" to the Logbook only when it commented, with the count it said', async () => {
+		await start();
+		await post(event('k-1'));
+		const id = features()[0]?.id ?? '';
+		later(1);
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_2' }));
+		later(1);
+		// the second the same day says nothing, and writes nothing
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_3' }));
+		later(24 * 60);
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_4' }));
+		expect(logbook.read(id)?.filter((e) => e.kind === 'happenedAgain')).toMatchObject([
+			{ source: 'alerts', times: 1 },
+			{ source: 'alerts', times: 2 }
+		]);
+	});
+
+	it('makes the Feature and answers 201 when the Logbook cannot be written', async () => {
+		server = await startIntake({
+			tracker,
+			sources: new Map([['alerts', { template: TEMPLATE, secret: SECRET, maxPerDay: 3 }]]),
+			host: '127.0.0.1',
+			port: 0,
+			log: logPath(),
+			logbook: {
+				read: () => null,
+				write: () => {
+					throw new Error('disk full');
+				}
+			},
+			now: () => clock,
+			say: (line) => said.push(line)
+		});
+		expect((await post(event('k-1'))).status).toBe(201);
+		expect(features()).toHaveLength(1);
+		expect(said.join('\n')).toContain('could not write the Logbook');
+		expect(said.join('\n')).toContain('disk full');
 	});
 
 	it('takes every delivery as new for a Source with no key', async () => {
@@ -440,6 +521,7 @@ describe('intake over a schedule', () => {
 			host: '127.0.0.1',
 			port: 0,
 			log: logPath(),
+			logbook,
 			now: () => clock,
 			say: (line) => said.push(line),
 			tickMs
@@ -489,6 +571,10 @@ describe('intake over a schedule', () => {
 		expect(made?.assignees).toEqual(['bob']);
 		expect(made?.signals).toEqual(['go']);
 		expect(logLines().at(-1)).toMatchObject({ answer: 201, outcome: 'made', feature: made?.id });
+		expect(logbook.read(made?.id ?? '')).toMatchObject([
+			{ kind: 'madeBySource', source: 'weekly', key: 'weekly' },
+			{ kind: 'standingGo', source: 'weekly', owner: 'bob' }
+		]);
 	});
 
 	it('makes one Feature at one due time, however often the clock is read', async () => {
@@ -591,6 +677,7 @@ describe('intake over a schedule', () => {
 			host: '127.0.0.1',
 			port: 0,
 			log: logPath(),
+			logbook,
 			now: () => clock,
 			say: (line) => said.push(line),
 			tickMs: 0
@@ -627,6 +714,7 @@ describe('intake over a Sentry Source', () => {
 			host: '127.0.0.1',
 			port: 0,
 			log: logPath(),
+			logbook,
 			now: () => clock,
 			say: (line) => said.push(line)
 		});
@@ -1139,6 +1227,7 @@ describe.each(BOT_WORLDS)('intake over a botPulls Source on %s', (_name, makeWor
 	async function startBots(over: Partial<BotPullsSource> = {}): Promise<IntakeServer> {
 		server = await startIntake({
 			tracker,
+			logbook,
 			codeHost: world.codeHost,
 			sources: new Map(),
 			botPulls: new Map([
@@ -1252,6 +1341,7 @@ describe('intake over a botPulls Source on a Code host without botPulls', () => 
 		await expect(
 			startIntake({
 				tracker,
+				logbook,
 				// a Code host module written before botPulls
 				codeHost: {},
 				sources: new Map(),
