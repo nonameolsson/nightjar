@@ -18,6 +18,7 @@ import { makeFeature } from './create.js';
 import { localTime, nextDue, parseCron, type Cron } from './cron.js';
 import { FeatureFileError } from './feature-file.js';
 import { run, type Env } from './git.js';
+import { fileLogbook, noteFor, type Decision, type Logbook } from './logbook.js';
 import { say as sayLine, why } from './say.js';
 import { fillTemplate, lookup, readTemplate, templateFaults } from './template.js';
 import type { FeatureWriter, ItemId, SourcedFeature, Tracker } from './tracker.js';
@@ -111,6 +112,8 @@ export interface IntakeOptions {
 	readonly port: number;
 	// .factory/intake.log
 	readonly log: string;
+	// each Feature's Logbook, where intake writes the Source that made it, that it happened again, and the standing Go
+	readonly logbook: Logbook;
 	readonly now?: () => Date;
 	readonly say?: (line: string) => void;
 }
@@ -349,6 +352,17 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		);
 	};
 
+	// Writes to a Feature's Logbook, which never fails a delivery: the Feature is made and the sender told so whether or not the file could be written.
+	const note = (source: string, feature: ItemId, entry: Decision) => {
+		try {
+			noteFor(o.logbook, feature, now)(entry);
+		} catch (fault) {
+			say(
+				`Source ${source}: could not write the Logbook of ${tracker.reference(feature).text}: ${why(fault)}`
+			);
+		}
+	};
+
 	// "happened again" on the open Feature, unless it was said there today
 	const again = async (name: string, open: SourcedFeature): Promise<boolean> => {
 		const said = (await tracker.comments(open.id)).filter((c) => c.body.includes(AGAIN_MARKER));
@@ -360,6 +374,7 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			open.id,
 			`Happened again, ${String(times)} ${times === 1 ? 'time' : 'times'} since ${localTime(new Date(since))}.\n\n${AGAIN_MARKER}`
 		);
+		note(name, open.id, { kind: 'happenedAgain', source: name, times });
 		return true;
 	};
 
@@ -370,6 +385,7 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			if (tracker.assign === undefined) throw new Error('the Tracker has no assign');
 			await tracker.assign(feature, owner);
 			await tracker.addSignal(feature, 'go');
+			note(name, feature, { kind: 'standingGo', source: name, owner });
 			return { status: 201, outcome: 'made', feature };
 		} catch (fault) {
 			// the Feature is made, so a retry would only find it open: the sender is told it is made, and the Go waits for a person
@@ -434,6 +450,11 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			const madeToday = found.filter((f) => day(new Date(f.at)) === today).length;
 			if (madeToday >= source.maxPerDay) return { status: 200, outcome: 'day limit' };
 			const made = await makeFeature(tracker, filled.plan, () => undefined);
+			note(name, made.feature, {
+				kind: 'madeBySource',
+				source: name,
+				...(filled.key === '' ? {} : { key: filled.key })
+			});
 			recent.set(name, [
 				...(recent.get(name) ?? []),
 				{ id: made.feature, key: filled.key, open: true, at: now().toISOString() }
@@ -769,7 +790,8 @@ export async function runIntakeCommand(argv: readonly string[], host: IntakeHost
 			codeHost: adapters.codeHost,
 			host: args.host,
 			port: args.port,
-			log: intakeLogPath(root)
+			log: intakeLogPath(root),
+			logbook: fileLogbook(root)
 		});
 	} catch (fault) {
 		if ((fault as NodeJS.ErrnoException).code === 'EADDRINUSE') {

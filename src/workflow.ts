@@ -168,6 +168,8 @@ export interface StepsRun {
 	readonly tree: StepsTree;
 	readonly fix: (work: FixWork) => Promise<FixEnd>;
 	readonly log: (entry: StepLog) => void;
+	// how a Step ended, with the Session that ran it when one did, for the Feature's Logbook
+	readonly verdict: (report: StepReport, session?: string) => void;
 	// tells the status file a Step's round has started
 	readonly building: (
 		ticket: ItemId | null,
@@ -186,6 +188,8 @@ export interface StepsRun {
 interface Undone {
 	readonly kind: 'undone';
 	readonly why: string;
+	// the Session whose work was thrown away; none when the Step never started one
+	readonly session?: string;
 }
 
 // How one Step of a Workflow ended.
@@ -229,13 +233,15 @@ export class WorkflowRun {
 					: { kind: 'undone', why: `its serve command failed: ${served.tail}` };
 				if (end.kind === 'paused' || end.kind === 'aborted') return end;
 				if (end.kind === 'undone') {
-					this.kept.push({
+					const report: StepReport = {
 						step,
 						ticket: ticket?.id ?? null,
 						state: 'undone',
 						why: end.why,
 						left: []
-					});
+					};
+					this.kept.push(report);
+					run.verdict(report, end.session);
 					run.say(`${this.name}/${step.name}: not done, ${end.why}`);
 				}
 			}
@@ -305,7 +311,7 @@ export class WorkflowRun {
 		};
 		const giveUp = async (why: string): Promise<StepEnd> => {
 			await tree.revert(before);
-			return { kind: 'undone', why };
+			return { kind: 'undone', why, session: sessionId };
 		};
 		run.say(`${label}: session ${sessionId}`);
 
@@ -417,13 +423,15 @@ export class WorkflowRun {
 			session: sessionId
 		});
 		this.done.add(key);
-		this.kept.push({
+		const report: StepReport = {
 			step,
 			ticket: after,
 			state: holds ? 'done' : 'unmet',
 			rounds: ran,
 			left: holds ? [] : left
-		});
+		};
+		this.kept.push(report);
+		run.verdict(report, sessionId);
 		return { kind: 'done' };
 	}
 }

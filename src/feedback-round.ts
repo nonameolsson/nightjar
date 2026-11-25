@@ -3,6 +3,7 @@ import type { RunCheck } from './check.js';
 import type { ChangeRequest, CodeHost, Feedback, OpenPull, Pull, PullCommit } from './code-host.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
+import type { Note } from './logbook.js';
 import type { Allowance, Entry, LogEntry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
@@ -61,6 +62,8 @@ export interface FeedbackRoundContext {
 	// the check's fix rounds, in the round's Session
 	readonly fix: (work: FixWork) => Promise<FixEnd>;
 	readonly log: (entry: LogEntry) => void;
+	// writes the Feature's Logbook
+	readonly note: Note;
 	readonly building: (session: string) => void;
 	// the id of the request for changes that started a round with no Go, which its commit names
 	readonly asked?: string;
@@ -116,6 +119,25 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 		const note = said.get(f.id)?.note.trim() ?? '';
 		return note === '' ? 'the Session said nothing of it' : note;
 	};
+	// the round's Logbook entry: what it answered and what it left, each with its reason
+	const record = (
+		end: 'answered' | 'thrownAway' | 'paused' | 'stopped',
+		o: {
+			readonly answered?: readonly Feedback[];
+			readonly left: readonly Unanswered[];
+			readonly commit?: string;
+			readonly why?: string;
+		}
+	) =>
+		ctx.note({
+			kind: 'feedbackRound',
+			end,
+			...(o.commit === undefined ? {} : { commit: o.commit }),
+			...(o.why === undefined ? {} : { why: o.why }),
+			answered: (o.answered ?? []).map((f) => f.id),
+			left: o.left.map((u) => ({ id: u.feedback.id, why: u.why })),
+			session: got.sessionId
+		});
 	const failed = async (why: string): Promise<FeedbackRoundEnd> => {
 		const side = await tree.discard(before, 'feedback');
 		ctx.say(`${name} thrown away: ${why}`);
@@ -124,10 +146,17 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 			feedback: f,
 			why: said.has(f.id) && !isAnswered(f) ? noteOf(f) : why
 		}));
+		ctx.note({ kind: 'thrownAway', branch: side, why, session: got.sessionId });
+		record('thrownAway', { left, why });
 		return { kind: 'failed', pull, why, left, side };
 	};
 	const halted = async (halt: Halt): Promise<FeedbackRoundEnd> => {
 		await tree.discard(before, 'feedback');
+		const why = halt.kind === 'paused' ? `paused: ${halt.why}` : 'stopped by a person';
+		record(halt.kind === 'paused' ? 'paused' : 'stopped', {
+			left: todo.map((f) => ({ feedback: f, why })),
+			why
+		});
 		return halt;
 	};
 
@@ -174,12 +203,14 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 	const commit = await tree.commitFeedback(ids, summary, got.sessionId, ctx.asked);
 	if (commit === null) return failed('it said it answered feedback but changed no file');
 	ctx.say(`${name}: ${commit} answers ${ids.join(', ')}`);
+	const left = todo.filter((f) => !isAnswered(f)).map((f) => ({ feedback: f, why: noteOf(f) }));
+	record('answered', { answered: yes, left, commit });
 	return {
 		kind: 'answered',
 		pull,
 		commit,
 		answered: yes.map((f) => ({ feedback: f, note: noteOf(f) })),
-		left: todo.filter((f) => !isAnswered(f)).map((f) => ({ feedback: f, why: noteOf(f) }))
+		left
 	};
 }
 

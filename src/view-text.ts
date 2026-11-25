@@ -25,6 +25,16 @@ const STEP_TEXT: Readonly<Record<string, string>> = {
 // How a view names a build's step: the step as it is, but for a Pull-check fix round, a Feedback round and a Review round.
 export const stepText = (step: string) => STEP_TEXT[step] ?? step;
 
+// How a view names the kind of work a ledger line records.
+export const KIND_TEXT: Readonly<Record<string, string>> = {
+	build: 'build',
+	fix: 'fix round',
+	step: 'Step round',
+	review: 'Review',
+	pullChecks: 'Pull-check fix',
+	feedback: 'Feedback round'
+};
+
 // The words for a Session tried again after a passing fault.
 export const retryText = (retry: { readonly attempt: number; readonly of: number }) =>
 	`retrying after a passing fault, try ${String(retry.attempt)} of ${String(retry.of)}`;
