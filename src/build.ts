@@ -58,9 +58,10 @@ import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
 import { reviewSection, type ReviewSession } from './review-section.js';
-import { modelsOf, type Entry, type LogEntry, type Spend } from './spend.js';
+import { byModel } from './build-cost.js';
+import { modelsOf, type Entry, type LogEntry, type ModelUsage, type Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
-import { dollars } from './view-text.js';
+import { dollars, tokensText } from './view-text.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
 import {
 	SESSION_TRAILER,
@@ -76,6 +77,7 @@ import {
 	type FixEnd,
 	type FixWork,
 	type Halt,
+	type StepRound,
 	type WorkflowConfig,
 	type WorkflowRun,
 	type WorkflowSettings
@@ -217,6 +219,10 @@ interface Cost {
 	readonly ticket: ItemId | null;
 	readonly work: Work;
 	readonly usd: number;
+	// the Step and its round, for a Step's Session and its fix rounds
+	readonly stepRound?: StepRound;
+	// the models its Session ran on, when it said
+	readonly models?: readonly ModelUsage[];
 }
 
 const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
@@ -563,7 +569,9 @@ class FeatureRun {
 			feature: this.feature,
 			tree: this.tree,
 			fix: (work) => this.fixUntilGreen(work),
-			log: (entry) => this.log(entry),
+			log: (entry, of) => {
+				this.log(entry, workOf(entry.step), of);
+			},
 			verdict: (report, session) =>
 				this.note({
 					kind: 'stepVerdict',
@@ -592,8 +600,14 @@ class FeatureRun {
 		return (await this.deps.tracker.comments(id)).filter((c) => c.trusted);
 	}
 
-	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
-		this.costs.push({ ticket: entry.ticket, work, usd: entry.costUsd });
+	private log(entry: LogEntry, work: Work = workOf(entry.step), stepRound?: StepRound) {
+		this.costs.push({
+			ticket: entry.ticket,
+			work,
+			usd: entry.costUsd,
+			...(stepRound === undefined ? {} : { stepRound }),
+			...modelsOf(entry)
+		});
 		const at = this.deps.now();
 		this.deps.spend.record({
 			at: at.toISOString(),
@@ -873,7 +887,9 @@ class FeatureRun {
 				tree: this.tree,
 				building: (ticket, session, rounds, attempt) =>
 					this.building(ticket, 'fix', session, rounds, attempt),
-				log: (entry, work) => this.log(entry, work),
+				log: (entry, work) => {
+					this.log(entry, work, o.stepRound);
+				},
 				note: this.note
 			},
 			o
@@ -1937,7 +1953,37 @@ export function featureOfBody(body: string): string | undefined {
 	return MARKER.exec(body)?.[1];
 }
 
-// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round, the review and its rounds; a kind with no Session is left out.
+// Each Step after all Tickets on a line of its own, in the order they ran: `- w/polish: $9.80 (3 rounds: $4.10, $3.20, $2.50)`; a round's fix rounds count in it.
+function stepLines(costs: readonly Cost[]): string[] {
+	const after = costs.filter((c) => c.ticket === null && c.work === 'steps');
+	const nameOf = (c: Cost) => c.stepRound?.name ?? 'Steps after all Tickets';
+	return [...new Set(after.map(nameOf))].map((name) => {
+		const own = after.filter((c) => nameOf(c) === name);
+		const rounds = new Map<number, number>();
+		for (const c of own) {
+			const round = c.stepRound?.round ?? 1;
+			rounds.set(round, (rounds.get(round) ?? 0) + c.usd);
+		}
+		const total = own.reduce((n, c) => n + c.usd, 0);
+		const each = [...rounds].sort(([a], [b]) => a - b).map(([, usd]) => dollars(usd));
+		const split = each.length > 1 ? ` (${String(each.length)} rounds: ${each.join(', ')})` : '';
+		return `- ${name}: ${dollars(total)}${split}`;
+	});
+}
+
+// Each model's dollars and tokens over the run's Sessions, and what the Sessions that named none cost; null when none did.
+function modelLines(costs: readonly Cost[]): string | null {
+	const models = byModel(costs);
+	if (models.length === 0) return null;
+	const line = (m: ModelUsage) => `- ${m.model}: ${dollars(m.costUsd)}; tokens: ${tokensText(m)}`;
+	const lines = models.map(line);
+	const bare = costs.filter((c) => c.models === undefined);
+	if (bare.length > 0)
+		lines.push(`- models not recorded: ${dollars(bare.reduce((n, c) => n + c.usd, 0))}`);
+	return `### By model\n\n${lines.join('\n')}`;
+}
+
+// The total, then what each Ticket cost by kind of work, each Step after all Tickets with its rounds, the Feedback round, the review and its rounds, and then each model; a kind with no Session is left out.
 function costSection(
 	spent: number,
 	costs: readonly Cost[],
@@ -1962,12 +2008,13 @@ function costSection(
 		const title = titleOf(id);
 		return `- ${ref(id)}${title === undefined ? '' : ` ${title}`}: ${parts.join(', ')}`;
 	});
-	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
+	lines.push(...stepLines(costs));
 	if (has(null, 'feedback')) lines.push(`- Feedback round: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
 	if (has(null, 'reviewRound')) lines.push(`- Review rounds: ${dollars(sum(null, 'reviewRound'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
-	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
+	const models = modelLines(costs);
+	return [head, lines.join('\n'), models ?? ''].filter((part) => part !== '').join('\n\n');
 }
 
 const issueLines = (issues: Review['issues']) => issues.map(issueLine).join('\n');

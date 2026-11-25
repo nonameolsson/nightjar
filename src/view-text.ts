@@ -41,6 +41,23 @@ export const retryText = (retry: { readonly attempt: number; readonly of: number
 
 export const dollars = (usd: number) => `$${usd.toFixed(2)}`;
 
+// 940, 12.3k or 1.2M tokens, with no `.0`
+export const tokens = (n: number) => {
+	const short = (v: number, unit: string) => `${v.toFixed(1).replace(/\.0$/, '')}${unit}`;
+	if (n < 1000) return String(Math.round(n));
+	if (n < 999_950) return short(n / 1000, 'k');
+	return short(n / 1_000_000, 'M');
+};
+
+// A model's tokens in words: `1.2M in, 34k out, 9.8M cache read, 410k cache write`
+export const tokensText = (m: {
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheReadTokens: number;
+	readonly cacheWriteTokens: number;
+}) =>
+	`${tokens(m.inputTokens)} in, ${tokens(m.outputTokens)} out, ${tokens(m.cacheReadTokens)} cache read, ${tokens(m.cacheWriteTokens)} cache write`;
+
 // a numeric id reads as #42; another Tracker's (PROJ-123) as it is
 export const idText = (id: string) => (/^\d+$/.test(id) ? `#${id}` : id);
 

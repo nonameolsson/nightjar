@@ -245,6 +245,17 @@ button.close:hover { background: var(--surface-2); }
 #feature ul.faults { color: var(--fault); font-size: 12.5px; list-style: disc; margin: 2px 0 4px; padding-left: 1.4em; }
 .criteria summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
 .criteria summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cost summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
+.cost summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+.entry > .cost { grid-column: 1 / -1; }
+.split { font-size: 12px; font-variant-numeric: tabular-nums; max-width: 40rem; padding: 2px 0; }
+.split-head { color: var(--muted); font-size: 12px; font-weight: 500; margin: 8px 0 2px; }
+.split dl { margin: 0; }
+.split dl div { border-top: 1px solid var(--line); display: grid; gap: 2px 12px; grid-template-columns: minmax(0, 10rem) minmax(0, 1fr); padding: 3px 0; }
+.split dt { overflow-wrap: anywhere; }
+.split dd { margin: 0; overflow-wrap: anywhere; }
+.split .empty { margin: 4px 0; }
 @media (prefers-reduced-motion: reduce) { .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -255,7 +266,7 @@ button.close:hover { background: var(--surface-2); }
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .cost summary { min-height: 44px; }
 	#views button, #themes button, .chips button { padding-inline: 14px; }
 	.tab { height: 40px; }
 }
@@ -275,5 +286,6 @@ button.close:hover { background: var(--surface-2); }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }
 	.scroll table { min-width: 36rem; }
+	.split dl div { grid-template-columns: 1fr; }
 }
 `;

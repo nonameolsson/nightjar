@@ -2,6 +2,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { buildCost, type BuildCost } from './build-cost.js';
 import { localDay, spendOver, type Entry, type Spend } from './spend.js';
 
 export const ledgerPath = (root: string) => join(root, '.factory', 'runs.jsonl');
@@ -100,6 +101,11 @@ export interface Spent {
 	readonly built: boolean;
 	// how long the session ran; absent in an older line
 	readonly durationMs?: number;
+	// the kind of work and the Session, which the split by stage reads
+	readonly step: Entry['step'];
+	readonly session: string;
+	// the models the session ran on; absent in an older line
+	readonly models?: NonNullable<Entry['models']>;
 }
 
 // The median time a built Ticket took, or null with none recorded: its build, fix and Step sessions,
@@ -145,8 +151,28 @@ export function spends(path: string): Spent[] {
 		at: Date.parse(e.at),
 		costUsd: e.costUsd,
 		built: e.step === 'build' && e.outcome === 'built',
-		...(e.durationMs === undefined ? {} : { durationMs: e.durationMs })
+		...(e.durationMs === undefined ? {} : { durationMs: e.durationMs }),
+		step: e.step,
+		session: e.session,
+		...(e.models === undefined ? {} : { models: e.models })
 	}));
+}
+
+// What a Feature's sessions after `after` (exclusive) and up to `until` (inclusive) cost, by stage and by model.
+export function costOnFeature(
+	all: readonly Spent[],
+	feature: string,
+	after: number | null,
+	until: number | null
+): BuildCost {
+	return buildCost(
+		all.filter(
+			(s) =>
+				s.feature === feature &&
+				(after === null || s.at > after) &&
+				(until === null || s.at <= until)
+		)
+	);
 }
 
 // How many Tickets of a Feature were built after `after` (exclusive) and up to `until` (inclusive), either open.
@@ -162,19 +188,4 @@ export function builtOnFeature(
 		if ((after === null || s.at > after) && (until === null || s.at <= until)) n += 1;
 	}
 	return n;
-}
-
-// The dollars spent on a Feature after `after` (exclusive) and up to `until` (inclusive), either open.
-export function spentOnFeature(
-	all: readonly Spent[],
-	feature: string,
-	after: number | null,
-	until: number | null
-): number {
-	let sum = 0;
-	for (const s of all) {
-		if (s.feature !== feature) continue;
-		if ((after === null || s.at > after) && (until === null || s.at <= until)) sum += s.costUsd;
-	}
-	return sum;
 }

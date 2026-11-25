@@ -12,7 +12,7 @@ import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { readFactory } from './status-reader.js';
-import { logbookPage, sessionPage, startUi, type Ui } from './ui.js';
+import { logbookPage, renderPanels, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
 import { THEMES, type Theme } from './ui-theme.js';
 import {
@@ -2480,5 +2480,173 @@ describe('nightjar ui Logbook page', () => {
 		expect(page).toContain('id="scroll" role="region" aria-label="Logbook" tabindex="0"');
 		expect(page).toContain('<ol class="book" aria-label="Logbook">');
 		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*\.book summary[^}]*min-height: 44px/);
+	});
+});
+
+describe('nightjar ui cost by stage and model', () => {
+	const models = [
+		{
+			model: 'model-a',
+			inputTokens: 1200,
+			outputTokens: 40,
+			cacheReadTokens: 2_500_000,
+			cacheWriteTokens: 300,
+			costUsd: 2.5
+		}
+	];
+	const line = (
+		feature: string,
+		step: 'build' | 'fix' | 'review',
+		session: string,
+		costUsd: number,
+		withModels = false
+	) =>
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature,
+			ticket: step === 'review' ? null : '2',
+			branch: 'b',
+			step,
+			session,
+			costUsd,
+			outcome: 'built',
+			...(withModels ? { models } : {})
+		});
+	const panels = () => renderPanels(root, readFactory(root, { alive: () => true, now: () => at }));
+	const cardOf = (page: string, id: string) => {
+		const cards = (page.split('<div class="table">')[0] ?? '').split('<article');
+		return cards.find((a) => a.includes(`#${id}`)) ?? '';
+	};
+	const rowOf = (page: string, id: string) => {
+		const rows = (page.split('<div class="table">')[1] ?? '').split('<tr ');
+		return rows.find((r) => r.includes(`data-id="${id}"`)) ?? '';
+	};
+	const pulled = (id: string) => {
+		status().happened({ kind: 'pull', feature: id, url: `https://x.test/${id}` });
+	};
+
+	it("opens a Completed Feature's cost into its stages and its models, on its card and its row, folded", () => {
+		line('7', 'build', 'a', 3, true);
+		line('7', 'fix', 'a', 1, true);
+		line('7', 'review', 'r', 0.5, true);
+		pulled('7');
+		const page = panels();
+
+		const card = cardOf(page, '7');
+		expect(card).toContain('<details class="cost" data-key="card:7:');
+		expect(card).toContain('<summary data-fold="card:7:');
+		expect(card).toContain('>Cost by stage and model</summary>');
+		expect(card).not.toMatch(/<details[^>]* open/);
+		expect(card).toContain('<dt>Tickets</dt><dd>$4.00 <small>2 Sessions</small></dd>');
+		expect(card).toContain('<dt>Review</dt><dd>$0.50 <small>1 Session</small></dd>');
+		expect(card.indexOf('<dt>Tickets</dt>')).toBeLessThan(card.indexOf('<dt>Review</dt>'));
+		expect(card).toContain(
+			'<dt>model-a</dt><dd>$7.50 <small>tokens: 3.6k in, 120 out, 7.5M cache read, 900 cache write</small></dd>'
+		);
+		expect(card).not.toContain('Models were not recorded');
+
+		const row = rowOf(page, '7');
+		expect(row).toContain('data-cost="4.5"');
+		expect(row).toContain('<td class="cost"><details class="cost" data-key="row:7:');
+		expect(row).toContain('$4.50<span class="sr">, cost by stage and model</span></summary>');
+		expect(row).toContain('<dt>Tickets</dt><dd>$4.00');
+	});
+
+	it('shows a Feature whose ledger lines are all older its stages, and a quiet note that models were not recorded', () => {
+		line('7', 'build', 'a', 3);
+		line('7', 'review', 'r', 0.5);
+		pulled('7');
+		const card = cardOf(panels(), '7');
+		expect(card).toContain('<dt>Tickets</dt><dd>$3.00');
+		expect(card).toContain('<dt>Review</dt><dd>$0.50');
+		expect(card).toContain('<p class="empty">Models were not recorded for these Sessions.</p>');
+	});
+
+	it('says what the Sessions that recorded no model cost, beside the models', () => {
+		line('7', 'build', 'a', 3);
+		line('7', 'review', 'r', 0.5, true);
+		pulled('7');
+		const card = cardOf(panels(), '7');
+		expect(card).toContain('<dt>model-a</dt>');
+		expect(card).toContain('Models were not recorded for 1 Session, $3.00.');
+	});
+
+	it('shows the dollars alone for a build with no ledger line', () => {
+		pulled('7');
+		const page = panels();
+		expect(cardOf(page, '7')).not.toContain('<details class="cost"');
+		expect(rowOf(page, '7')).toContain('<td class="cost">$0.00</td>');
+	});
+
+	it('opens the cost of the build in flight in Building now and in its row', () => {
+		line('272', 'build', 'a', 1.18, true);
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: '2',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		const page = panels();
+		const panel = page.split('<aside class="detail"')[1]?.split('</aside>')[0] ?? '';
+		expect(panel).toContain('<details class="cost" data-key="now:272:');
+		expect(panel).toContain('>Cost by stage and model</summary>');
+		expect(panel).toContain('<dt>Tickets</dt><dd>$1.18 <small>1 Session</small></dd>');
+		expect(panel).toContain('<dt>model-a</dt>');
+		expect(rowOf(page, '272')).toContain('data-key="row:272:');
+	});
+
+	it('works by keyboard and at phone width: a fold kept open across a live swap, focus on its summary, 44px on touch', async () => {
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*\.cost summary[^}]*min-height: 44px/);
+		// at phone width a stage or model stacks its dollars under its name
+		expect(page).toContain('\t.split dl div { grid-template-columns: 1fr; }');
+		const script = page.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const summary = { dataset: { fold: 'card:7:x' }, focus: vi.fn(), getAttribute: () => null };
+		const opened = { dataset: { key: 'card:7:x' }, open: true };
+		const fresh = { dataset: { key: 'card:7:x' }, open: false };
+		const other = { dataset: { key: 'row:7:x' }, open: false };
+		let swapped = false;
+		const element = {
+			dataset: {},
+			textContent: '',
+			set innerHTML(_: string) {
+				swapped = true;
+			}
+		};
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			matchMedia: noMedia,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				activeElement: summary,
+				getElementById: () => element,
+				querySelectorAll: (sel: string) => {
+					if (sel === 'details[open][data-key]') return swapped ? [] : [opened];
+					if (sel === 'details[data-key]') return swapped ? [fresh, other] : [opened];
+					if (sel === '[data-fold]') return [summary];
+					return [];
+				}
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		message?.({ data: JSON.stringify('') });
+		expect(fresh.open).toBe(true);
+		expect(other.open).toBe(false);
+		expect(summary.focus).toHaveBeenCalledOnce();
 	});
 });

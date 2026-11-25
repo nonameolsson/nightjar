@@ -47,8 +47,35 @@ writeFileSync(
 const now = new Date();
 const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 const ledger = join(root, '.factory', 'runs.jsonl');
-const session = (feature: string, ticket: string | null, minutes: number, costUsd: number) =>
+// what a Session on two models records: most of its dollars on the stronger one
+const models = (costUsd: number) => [
+	{
+		model: 'claude-opus-5-5',
+		inputTokens: 18_000,
+		outputTokens: 9_400,
+		cacheReadTokens: 1_250_000,
+		cacheWriteTokens: 64_000,
+		costUsd: costUsd * 0.9
+	},
+	{
+		model: 'claude-haiku-5-5',
+		inputTokens: 4_100,
+		outputTokens: 800,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		costUsd: costUsd * 0.1
+	}
+];
+// a Session's ledger line; `recorded` lines name their models, as a line written since #337 does
+const session = (
+	feature: string,
+	ticket: string | null,
+	minutes: number,
+	costUsd: number,
+	recorded = true
+) =>
 	record(ledger, {
+		...(recorded ? { models: models(costUsd) } : {}),
 		at: ago(minutes),
 		repo: 'o/app',
 		feature,
@@ -61,10 +88,10 @@ const session = (feature: string, ticket: string | null, minutes: number, costUs
 		durationMs: 6 * 60_000
 	});
 
-// #268 was built before the Logbook: its Sessions only, and the note that says so
-session('268', '1', 95, 1.4);
-session('268', '2', 80, 2.1);
-session('268', null, 70, 0.6);
+// #268 was built before the Logbook and before the ledger named models: its Sessions only, and the notes that say so
+session('268', '1', 95, 1.4, false);
+session('268', '2', 80, 2.1, false);
+session('268', null, 70, 0.6, false);
 session('270', '1', 50, 1.9);
 if (scenario === 'review-round') {
 	// the Review that asked for changes, then the Review round that is running
@@ -78,6 +105,7 @@ if (scenario === 'review-round') {
 		step: 'reviewRound',
 		session: 's-272-review-round',
 		costUsd: 1.2,
+		models: models(1.2),
 		outcome: 'fixed',
 		durationMs: 3 * 60_000
 	});

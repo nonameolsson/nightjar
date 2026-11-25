@@ -239,6 +239,67 @@ describe('the cost of each build', () => {
 		expect(readFactory(root, { alive: live }).featureCostUsd).toBe(2);
 	});
 
+	it('splits each build by stage and by model, over the same Sessions as its cost', () => {
+		const runs = join(root, '.factory', 'runs.jsonl');
+		const line = (step: 'build' | 'fix' | 'review', costUsd: number, when: Date) =>
+			record(runs, {
+				at: when.toISOString(),
+				repo: 'o/r',
+				feature: '1',
+				ticket: step === 'review' ? null : '2',
+				branch: 'b',
+				step,
+				session: step === 'review' ? 'r' : 's',
+				costUsd,
+				outcome: 'done',
+				...(step === 'review'
+					? {
+							models: [
+								{
+									model: 'm',
+									inputTokens: 1,
+									outputTokens: 2,
+									cacheReadTokens: 3,
+									cacheWriteTokens: 4,
+									costUsd
+								}
+							]
+						}
+					: {})
+			});
+		let now = time(0);
+		const file = new StatusFile({
+			path: join(root, '.factory', 'status.json'),
+			spend: fileSpend(runs),
+			now: () => now,
+			pid: 42,
+			dailyUsd: 60
+		});
+		line('build', 3, time(5));
+		line('fix', 1, time(6));
+		line('review', 0.5, time(7));
+		now = time(10);
+		file.happened({ kind: 'pull', feature: '1', url: 'https://pr/1' });
+		line('build', 2, time(20));
+		file.doing({ ...building(null), featureStartedAt: time(15).toISOString() });
+
+		const view = readFactory(root, { alive: live });
+		const cost = view.completed[0]?.cost;
+		expect(cost?.stages).toEqual([
+			{ stage: 'tickets', usd: 4, sessions: 2 },
+			{ stage: 'review', usd: 0.5, sessions: 1 }
+		]);
+		expect(cost?.models.map((m) => [m.model, m.costUsd])).toEqual([['m', 0.5]]);
+		expect(cost?.unrecorded).toEqual({ sessions: 2, usd: 4 });
+		expect(view.featureCost?.stages).toEqual([{ stage: 'tickets', usd: 2, sessions: 1 }]);
+		expect(view.featureCost?.usd).toBe(view.featureCostUsd);
+	});
+
+	it('has no split while nothing is building', () => {
+		ledger('1', 1);
+		expect(readFactory(root, { alive: live })).not.toHaveProperty('featureCost');
+	});
+
 	it("counts from the Feature's start, not the step's", () => {
 		ledger('1', 1, time(5));
 		ledger('1', 2, time(20));

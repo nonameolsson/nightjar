@@ -54,8 +54,10 @@ import {
 	retryText,
 	runState,
 	stepText,
+	tokensText,
 	two
 } from './view-text.js';
+import { STAGE_TEXT, type BuildCost } from './build-cost.js';
 
 export const UI_PORT = 4545;
 const HOST = '127.0.0.1';
@@ -726,6 +728,7 @@ function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 		`<h3>${feature(card, links)}</h3><p class="sub">${stepLine(doing)}</p>` +
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
+		costFold(view.featureCost, foldKey('now', doing.feature, featureStart(doing)), SPLIT_SUMMARY) +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
 		`<p class="more">${sessionLink(doing.session)}<a class="open" href="${featureHref(doing.feature)}">Open its Logbook</a></p>` +
 		'</aside>'
@@ -747,6 +750,36 @@ const logbookLink = (id: string) =>
 		? ''
 		: ` <a class="open book-link" href="${featureHref(id)}" aria-label="Logbook of ${escape(idText(id))}">Logbook</a>`;
 
+// A fold's key: its place on the page and its Feature's build, so a live swap keeps it open and the same Feature in another view keeps its own
+const foldKey = (place: string, id: string, at: string) => escape(`${place}:${id}:${at}`);
+
+// A build's cost by stage and by model, folded under `summary`; nothing for a build the ledger has no line of
+function costFold(cost: BuildCost | undefined, key: string, summary: string): string {
+	if (cost === undefined || cost.stages.length === 0) return '';
+	const row = (name: string, usd: number, note: string) =>
+		`<div><dt>${name}</dt><dd>${dollars(usd)} <small>${note}</small></dd></div>`;
+	const stages = cost.stages
+		.map((s) => row(STAGE_TEXT[s.stage], s.usd, sessionsText(s.sessions)))
+		.join('');
+	const models = cost.models
+		.map((m) => row(escape(m.model), m.costUsd, `tokens: ${tokensText(m)}`))
+		.join('');
+	const { unrecorded } = cost;
+	let note = '';
+	if (cost.models.length === 0)
+		note = '<p class="empty">Models were not recorded for these Sessions.</p>';
+	else if (unrecorded.sessions > 0)
+		note = `<p class="empty">Models were not recorded for ${sessionsText(unrecorded.sessions)}, ${dollars(unrecorded.usd)}.</p>`;
+	return (
+		`<details class="cost" data-key="${key}"><summary data-fold="${key}">${summary}</summary><div class="split">` +
+		`<p class="split-head">By stage</p><dl>${stages}</dl>` +
+		`<p class="split-head">By model</p>${models === '' ? '' : `<dl>${models}</dl>`}${note}` +
+		'</div></details>'
+	);
+}
+
+const SPLIT_SUMMARY = 'Cost by stage and model';
+
 // A Feature in the Queue: its Ticket count, `k of N` built (closed, or on its open pull request) and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard, links: Links): string {
 	const counts = card.ticketCounts;
@@ -766,7 +799,7 @@ function queuedCard(card: QueuedCard, links: Links): string {
 }
 
 function completedCard(card: CompletedCard, links: Links): string {
-	const { event, costUsd } = card.done;
+	const { event, costUsd, cost } = card.done;
 	const took = tookMs(event);
 	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
 	return nest(
@@ -775,7 +808,8 @@ function completedCard(card: CompletedCard, links: Links): string {
 		links,
 		progressHtml(card.progress),
 		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
-		`${duration}${dollars(costUsd)}`
+		`${duration}${dollars(costUsd)}`,
+		costFold(cost, foldKey('card', event.feature, event.at), SPLIT_SUMMARY)
 	);
 }
 
@@ -969,10 +1003,25 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		readonly time: number | null;
 		readonly timeText: string;
 		readonly cost: number | null;
+		// the cost by stage and by model, and where the build began, when the ledger has its lines
+		readonly split?: { readonly cost: BuildCost | undefined; readonly at: string };
 		readonly outcome: string;
 		readonly outcomeText: string;
 		readonly progress: Progress | null;
 	}
+	// the cell's dollars, opening into the split when there is one
+	const costCell = (r: Row) => {
+		if (r.cost === null) return '';
+		const fold =
+			r.split === undefined
+				? ''
+				: costFold(
+						r.split.cost,
+						foldKey('row', r.card.id, r.split.at),
+						`${dollars(r.cost)}<span class="sr">, ${SPLIT_SUMMARY.toLowerCase()}</span>`
+					);
+		return fold === '' ? dollars(r.cost) : fold;
+	};
 	const rows: Row[] = [];
 	for (const card of all.queue ?? [])
 		rows.push({
@@ -997,6 +1046,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: null,
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
+			split: { cost: view.featureCost, at: featureStart(all.building.doing) },
 			outcome: waits,
 			outcomeText: escape(waits) + earlierHtml(all.building),
 			progress: all.building.progress
@@ -1027,7 +1077,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			progress: null
 		});
 	for (const card of all.completed) {
-		const { event, costUsd } = card.done;
+		const { event, costUsd, cost } = card.done;
 		const took = tookMs(event);
 		rows.push({
 			card,
@@ -1035,6 +1085,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: took,
 			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
 			cost: costUsd,
+			split: { cost, at: event.at },
 			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
 			outcomeText: `${outcomeHtml(event)} <small>${runsText(card.runs)}</small>`,
 			progress: card.progress
@@ -1051,7 +1102,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td class="cost">${costCell(r)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
 		)
 		.join('');
 	let note = '';
@@ -1340,10 +1391,10 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header, chip, help, copy or Feature button or link; put focus back on its twin
+	// a swap drops the focused sort header, chip, help, copy or Feature button, fold or link; put focus back on its twin
 	const was = document.activeElement;
 	const data = (was && was.dataset) || {};
-	const key = ['sort', 'chip', 'help', 'copy', 'feature'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const key = ['sort', 'chip', 'help', 'copy', 'feature', 'fold'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	// links can share an href, so remember which of them had focus
 	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
@@ -1352,9 +1403,13 @@ new EventSource('/events').onmessage = (e) => {
 	for (const sel of SCROLLERS) {
 		document.querySelectorAll(sel).forEach((n, i) => kept.push([sel, i, n.scrollTop, n.scrollLeft]));
 	}
+	// the folds the person opened, by key, open again after the swap
+	const foldOf = (d) => (d.dataset && d.dataset.key) || null;
+	const opened = Array.from(document.querySelectorAll('details[open][data-key]')).map(foldOf).filter(Boolean);
 	const [top, main] = JSON.parse(e.data).split(MAIN);
 	document.getElementById('top').innerHTML = top;
 	panels.innerHTML = main;
+	for (const d of document.querySelectorAll('details[data-key]')) if (opened.includes(foldOf(d))) d.open = true;
 	for (const [sel, i, top, left] of kept) {
 		const n = document.querySelectorAll(sel)[i];
 		if (n) { n.scrollTop = top; n.scrollLeft = left; }
@@ -1580,6 +1635,17 @@ a.book-link { font: 400 0.75rem var(--mono); margin-left: 10px; vertical-align: 
 .book summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding-top: 4px; }
 .book summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .book pre { max-height: 24rem; }
+.cost summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding-top: 4px; }
+.cost summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+td.cost summary { color: inherit; font-size: 0.85rem; padding-top: 0; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+.entry > .cost { grid-column: 1 / -1; }
+.split { font: 0.75rem var(--mono); max-width: 40rem; padding: 2px 0; }
+.split-head { color: var(--muted); font: 600 0.75rem var(--mono); margin: 8px 0 2px; }
+.split dl { margin: 0; }
+.split dl div { border-top: 1px dashed var(--line); display: grid; gap: 2px 12px; grid-template-columns: minmax(0, 10rem) minmax(0, 1fr); padding: 3px 0; }
+.split dt { color: var(--ink2); overflow-wrap: anywhere; }
+.split dd { margin: 0; overflow-wrap: anywhere; }
+.split .empty { margin: 4px 0; }
 button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
 button.open:hover { color: var(--teal); text-decoration-style: solid; }
 #feature { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; scrollbar-color: var(--teal2) var(--void); width: 640px; }
@@ -1634,7 +1700,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .log summary, .book summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .log summary, .book summary, .cost summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1658,6 +1724,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.85rem; }
 	.lines { padding: 4px 12px; }
 	.scroll table { min-width: 36rem; }
+	.split dl div { grid-template-columns: 1fr; }
 }
 `;
 
