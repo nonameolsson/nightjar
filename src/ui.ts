@@ -22,6 +22,7 @@ import type {
 import { featureStart } from './status.js';
 import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
 import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
+import { PAPER_STYLE, THEME_SCRIPT, THEME_SWITCH, themeStyles } from './ui-theme.js';
 import {
 	watchTracker,
 	type FeatureDetail,
@@ -1053,12 +1054,13 @@ const PAGE = (panels: string, links: Links) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nightjar</title>
-<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
+${themeStyles({ paper: PAPER_STYLE, nightjar: `${STYLE}.banner { background-image: url(${BANNER}); }` })}
+<script id="theme">${THEME_SCRIPT}</script>
 </head>
 <body>
 <a class="skip" href="#panels">Skip to Features</a>
 <p id="live" class="sr" role="status"></p>
-<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}</div>
+<div class="bar"><p class="mark">nightjar</p><nav id="views" aria-label="View"><button type="button" data-view="board">Board</button><button type="button" data-view="table">Table</button><button type="button" data-view="overview">Overview</button></nav>${elsewhere(links)}${THEME_SWITCH}</div>
 <div id="top">${top}</div>
 <div id="scroll" role="region" aria-label="Features" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" data-view="board" tabindex="-1">${main}</main></div>
 ${FEATURE_DIALOG}
@@ -1287,6 +1289,10 @@ time, .clock, td, .meta, .label, .tally, .head, .sub, .meters, .steps small, pre
 #views button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 5px 16px; }
 #views button:hover { color: var(--ink); }
 #views button[data-on="true"] { background: var(--teal-wash); border-color: var(--teal2); color: var(--teal); }
+#themes { border-left: 1px solid var(--line); display: flex; gap: 4px; margin-left: 12px; padding-left: 12px; }
+#themes button { background: none; min-height: 24px; border: 1px solid transparent; color: var(--ink2); cursor: pointer; font: 0.75rem var(--mono); padding: 3px 10px; }
+#themes button:hover { color: var(--ink); }
+#themes button[data-on="true"] { border-color: var(--teal2); color: var(--teal); }
 #panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 16px 32px 56px; }
 h1, h2 { font-size: 1em; margin: 0; }
 header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 12px 0 2px; }
@@ -1492,7 +1498,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, button.open, button.close, .criteria summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
