@@ -21,7 +21,7 @@ const TAIL = 40;
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 
-const plain = (text: string): string => text.replace(ANSI, '');
+export const plain = (text: string): string => text.replace(ANSI, '');
 
 // The first group of each line the pattern matches, once each, in order.
 function firstGroups(lines: readonly string[], pattern: string): string[] {

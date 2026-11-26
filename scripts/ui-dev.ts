@@ -7,6 +7,7 @@ import { FakeCodeHost } from '../src/fakes/code-host.js';
 import { featureMarker } from '../src/build.js';
 import { ticketCommitMessage } from '../src/worktree.js';
 import { fileSpend, record } from '../src/ledger.js';
+import type { Entry } from '../src/spend.js';
 import { fileLogbook, type Decision, type Place } from '../src/logbook.js';
 import { StatusFile } from '../src/status.js';
 import { SHELF_MAX } from '../src/tracker.js';
@@ -48,8 +49,35 @@ writeFileSync(
 const now = new Date();
 const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 const ledger = join(root, '.factory', 'runs.jsonl');
-const session = (feature: string, ticket: string | null, minutes: number, costUsd: number) =>
+// what a Session on two models records: most of its dollars on the stronger one
+const models = (costUsd: number) => [
+	{
+		model: 'claude-opus-5-5',
+		inputTokens: 18_000,
+		outputTokens: 9_400,
+		cacheReadTokens: 1_250_000,
+		cacheWriteTokens: 64_000,
+		costUsd: costUsd * 0.9
+	},
+	{
+		model: 'claude-haiku-5-5',
+		inputTokens: 4_100,
+		outputTokens: 800,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		costUsd: costUsd * 0.1
+	}
+];
+// a Session's ledger line; `recorded` lines name their models, as a line written since #337 does
+const session = (
+	feature: string,
+	ticket: string | null,
+	minutes: number,
+	costUsd: number,
+	recorded = true
+) =>
 	record(ledger, {
+		...(recorded ? { models: models(costUsd) } : {}),
 		at: ago(minutes),
 		repo: 'o/app',
 		feature,
@@ -62,11 +90,51 @@ const session = (feature: string, ticket: string | null, minutes: number, costUs
 		durationMs: 6 * 60_000
 	});
 
-// #268 was built before the Logbook: its Sessions only, and the note that says so
-session('268', '1', 95, 1.4);
-session('268', '2', 80, 2.1);
-session('268', null, 70, 0.6);
+// any ledger line, for the builds the Steps bar draws
+const ran = (
+	feature: string,
+	minutes: number,
+	ticket: string | null,
+	step: Entry['step'],
+	session: string,
+	costUsd: number,
+	outcome: string,
+	failure?: Entry['failure']
+) =>
+	record(ledger, {
+		models: models(costUsd),
+		at: ago(minutes),
+		repo: 'o/app',
+		feature,
+		ticket,
+		branch: `nightjar/${feature}`,
+		step,
+		session,
+		costUsd,
+		outcome,
+		durationMs: 4 * 60_000,
+		...(failure === undefined ? {} : { failure })
+	});
+
+// #268 was built before the Logbook and before the ledger named models: a clean build, its Sessions only, and the notes that say so
+session('268', '1', 95, 1.4, false);
+session('268', '2', 80, 2.1, false);
+session('268', null, 70, 0.6, false);
+// #270 went red: its fix rounds gave up, so its Tickets failed and the Review was not reached
 session('270', '1', 50, 1.9);
+ran('270', 49, '1', 'fix', 's-270-1', 0.4, 'round 1');
+ran('270', 48, '1', 'fix', 's-270-1', 0.4, 'round 2');
+ran('270', 47, '1', 'fix', 's-270-1', 0.5, 'round 3 gave up', 'lasting');
+// #271 was a hard build: a retry after a passing fault, a fix round, a Step's second round and a Review round, each on its Steps bar
+ran('271', 140, '1', 'build', 's-271-1a', 0.3, 'failed: overloaded', 'passing');
+ran('271', 135, '1', 'build', 's-271-1', 1.6, 'built');
+ran('271', 132, '1', 'fix', 's-271-1', 0.5, 'round 1');
+ran('271', 125, '2', 'build', 's-271-2', 1.2, 'built');
+ran('271', 117, null, 'step', 's-271-polish-1', 0.6, 'Polish: round 1');
+ran('271', 114, null, 'step', 's-271-polish-2', 0.6, 'Polish: round 2');
+ran('271', 110, null, 'review', 's-271-r1', 0.8, 'changes');
+ran('271', 105, null, 'reviewRound', 's-271-rr', 1.1, 'fixed');
+ran('271', 100, null, 'review', 's-271-r2', 0.7, 'approve');
 if (scenario === 'review-round') {
 	// the Review that asked for changes, then the Review round that is running
 	session('272', null, 12, 0.7);
@@ -79,6 +147,7 @@ if (scenario === 'review-round') {
 		step: 'reviewRound',
 		session: 's-272-review-round',
 		costUsd: 1.2,
+		models: models(1.2),
 		outcome: 'fixed',
 		durationMs: 3 * 60_000
 	});
@@ -144,6 +213,14 @@ const file = new StatusFile({
 	watching: scenario === 'idle'
 });
 
+file.happened({
+	kind: 'pull',
+	feature: '271',
+	title: 'Bulk edit',
+	url: 'https://github.com/o/app/pull/298',
+	startedAt: ago(141),
+	tickets: { built: 2, total: 2 }
+});
 file.happened({ kind: 'built', feature: '268', ticket: '1' });
 file.happened({
 	kind: 'pull',

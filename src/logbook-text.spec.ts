@@ -110,6 +110,18 @@ describe('decisionText', () => {
 				'1 failing Pull check: ci / test / npm test'
 			],
 			[
+				{
+					kind: 'pullFix',
+					round: 1,
+					rounds: 2,
+					failing: [{ check: 'ci', job: 'test', step: 'npm test' }],
+					end: 'faulted',
+					why: 'auth failed; the work is kept on nightjar/1-push-1'
+				},
+				'Pull-check fix round 1 of 2 could not push: auth failed; the work is kept on nightjar/1-push-1',
+				'1 failing Pull check: ci / test / npm test'
+			],
+			[
 				{ kind: 'madeBySource', source: 'sentry', key: 'ISSUE-1' },
 				'Made by the Source sentry for ISSUE-1'
 			],
@@ -124,6 +136,26 @@ describe('decisionText', () => {
 			[
 				{ kind: 'handed', to: 'human', why: 'needs a login' },
 				'Handed to a person with `ready-for-human`: needs a login'
+			],
+			[
+				{
+					kind: 'fault',
+					place: 'in the Review',
+					why: 'the disk is full',
+					passing: false,
+					stack: 'Error: the disk is full\n    at run (x.js:1:1)'
+				},
+				'Stopped on a fault in the Review: the disk is full',
+				'Stack trace: Error: the disk is full\n    at run (x.js:1:1)'
+			],
+			[
+				{
+					kind: 'fault',
+					place: 'while setting up the Feature',
+					why: 'read ECONNRESET',
+					passing: true
+				},
+				'Stopped on a fault while setting up the Feature: read ECONNRESET (a passing fault)'
 			]
 		];
 		for (const [decision, line, more] of cases) {

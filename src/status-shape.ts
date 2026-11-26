@@ -42,6 +42,8 @@ export interface WaitingItem extends Named {
 	readonly feature?: string;
 	// a Feature's open pull request, as on Queued
 	readonly pull?: FeaturePull;
+	// why and what to do, as the Feature's Status note on the Tracker says it; read by the page, never written to status.json
+	readonly note?: HandBack;
 }
 
 export interface WaitingOnYou {

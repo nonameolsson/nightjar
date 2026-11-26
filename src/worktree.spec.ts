@@ -520,6 +520,32 @@ describe('the git worktree against its remote', () => {
 			expect(await tree.pushOutcome()).toBe('fault');
 		});
 
+		it('holds no unpushed Ticket commit on a branch the remote has in full', async () => {
+			const { tree } = await pushed();
+			expect(await tree.holdsUnpushedTicket()).toBe(false);
+		});
+
+		it('holds none when only a Feedback commit is unpushed', async () => {
+			const { tree } = await pushed();
+			writeFileSync(join(tree.at.folder, 'b.txt'), 'work\n');
+			await tree.commitFeedback(['7'], 'Renamed it.', 's2');
+			expect(await tree.holdsUnpushedTicket()).toBe(false);
+		});
+
+		it('holds one when a Ticket commit is unpushed, with a Feedback commit on top of it', async () => {
+			const { tree } = await pushed();
+			await commit(tree, 'b.txt');
+			writeFileSync(join(tree.at.folder, 'c.txt'), 'work\n');
+			await tree.commitFeedback(['7'], 'Renamed it.', 's3');
+			expect(await tree.holdsUnpushedTicket()).toBe(true);
+		});
+
+		it('holds one on a branch the remote lacks when a Ticket commit is on it', async () => {
+			const tree = await open(`factory/r${String((n += 1))}-unpushed`);
+			await commit(tree, 'b.txt');
+			expect(await tree.holdsUnpushedTicket()).toBe(true);
+		});
+
 		it("sets its own commits aside on the -attempt-push branch and takes the remote's head", async () => {
 			const { branch, tree } = await pushed();
 			const mine = await commit(tree, 'b.txt');
@@ -531,6 +557,13 @@ describe('the git worktree against its remote', () => {
 			expect(inTree(tree, 'rev-parse', `${branch}-attempt-push`)).toBe(mine);
 			expect(inTree(tree, 'status', '--porcelain')).toBe('');
 			expect(await tree.toRemote()).toBe(true);
+		});
+
+		it('sets nothing aside when there is no remote head to go back to', async () => {
+			const tree = await open(`factory/r${String((n += 1))}-unpushed`);
+			const mine = await commit(tree, 'b.txt');
+			expect(await tree.setAsidePush()).toBeNull();
+			expect(await tree.head()).toBe(mine);
 		});
 
 		it('overwrites the -attempt-push branch on a second set-aside', async () => {

@@ -6,6 +6,7 @@ import {
 	featureWriterContract,
 	shelfContract,
 	sourcesContract,
+	statusNoteContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
@@ -124,6 +125,15 @@ describe('AzureBoardsTracker meets the waitingOn contract', () => {
 		describe(`with the ${label} Signal names`, () => {
 			const harness = azureBoardsTracker(names, trust);
 			for (const c of waitingOnContract) it(c.name, () => c.run(harness));
+		});
+	}
+});
+
+describe('AzureBoardsTracker meets the statusNote contract', () => {
+	for (const trust of ['Contributors', 'trusted list'] as const) {
+		describe(`with ${trust} as trust`, () => {
+			const harness = azureBoardsTracker(DEFAULT_SIGNAL_NAMES, trust);
+			for (const c of statusNoteContract) it(c.name, () => c.run(harness));
 		});
 	}
 });

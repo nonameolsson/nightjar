@@ -38,6 +38,83 @@ describe('settle', () => {
 		expect(settle(init(), false)).toBeNull();
 	});
 
+	it('names each model of the result with its tokens and dollars', () => {
+		const modelUsage = {
+			'model-a': {
+				inputTokens: 120,
+				outputTokens: 40,
+				cacheReadInputTokens: 900,
+				cacheCreationInputTokens: 300,
+				webSearchRequests: 0,
+				costUSD: 1,
+				contextWindow: 200000
+			},
+			'model-b': {
+				inputTokens: 5,
+				outputTokens: 6,
+				cacheReadInputTokens: 7,
+				cacheCreationInputTokens: 8,
+				costUSD: 0.25
+			}
+		};
+		const models = [
+			{
+				model: 'model-a',
+				inputTokens: 120,
+				outputTokens: 40,
+				cacheReadTokens: 900,
+				cacheWriteTokens: 300,
+				costUsd: 1
+			},
+			{
+				model: 'model-b',
+				inputTokens: 5,
+				outputTokens: 6,
+				cacheReadTokens: 7,
+				cacheWriteTokens: 8,
+				costUsd: 0.25
+			}
+		];
+		expect(settle(result({ modelUsage }), false)).toEqual({
+			kind: 'done',
+			costUsd: 1.25,
+			models,
+			output: { outcome: 'built' }
+		});
+		// a Session that stopped still says what it spent on each model
+		const failed = result({ modelUsage, is_error: true, subtype: 'error_max_turns' });
+		expect(settle(failed, false)).toEqual({
+			kind: 'stopped',
+			costUsd: 1.25,
+			models,
+			why: 'it ended with error_max_turns',
+			failure: 'lasting'
+		});
+	});
+
+	it('gives no models for a result without modelUsage, or with one it cannot read', () => {
+		const unreadable = [undefined, {}, 'none', { 'model-a': 'x' }];
+		for (const modelUsage of unreadable) {
+			expect(settle(result({ modelUsage }), false)).not.toHaveProperty('models');
+		}
+	});
+
+	it('counts a number a model entry lacks as zero', () => {
+		const modelUsage = { 'model-a': { costUSD: 0.5 } };
+		expect(settle(result({ modelUsage }), false)).toMatchObject({
+			models: [
+				{
+					model: 'model-a',
+					inputTokens: 0,
+					outputTokens: 0,
+					cacheReadTokens: 0,
+					cacheWriteTokens: 0,
+					costUsd: 0.5
+				}
+			]
+		});
+	});
+
 	it('stops on a rejected usage limit, with when it resets', () => {
 		const line = {
 			type: 'rate_limit_event',

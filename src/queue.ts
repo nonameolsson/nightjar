@@ -1,7 +1,9 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, which red draft pull request the revisit pass fixes first, and what happens to a Feature whose build fails on a fault.
 import {
+	askAPerson,
 	featureOfBody,
 	handedOver,
+	noteTickets,
 	type FeatureOutcome,
 	type Pause,
 	type PullFixOutcome,
@@ -9,12 +11,13 @@ import {
 } from './build.js';
 import type { ChangeRequest, CodeHost, NightjarDraft, OpenPull } from './code-host.js';
 import { AUTOMATIC_ROUNDS, feedbackHistory, newRequest } from './feedback-round.js';
+import { BuildFault, faultAsk, passingFault } from './fault.js';
 import { FOOTER } from './footer.js';
-import { featureStopStep, feedbackLimitStep, nextStepText } from './next-step.js';
+import { faultStep, feedbackLimitStep } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { markPublished, readyToPublish } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
-import { BRANCH_PREFIX, branchFor } from './worktree.js';
+import { BRANCH_PREFIX, branchFor, builtOn } from './worktree.js';
 import {
 	waitingTickets,
 	type Named,
@@ -168,7 +171,7 @@ async function publishNext(
 	}
 }
 
-// Hands a Feature back to a person after a fault: the claim and the Go off, needs info on, the reason said.
+// Hands a Feature back to a person after a fault: the claim and the Go off, needs info on, and a new comment and the Status note naming where the fault happened, from a BuildFault, and whether giving the Go again is likely to help. The stack trace is in the Logbook, never here.
 // A paused build puts the Go back before it pushes, so a fault after that would otherwise build it again on every pass.
 export async function handBack(
 	deps: QueueDeps,
@@ -179,7 +182,14 @@ export async function handBack(
 	const { tracker } = deps;
 	const { id, title } = feature;
 	const reason = why(fault);
-	const next = deps.signals === undefined ? undefined : featureStopStep(deps.signals);
+	const at = fault instanceof BuildFault ? fault : null;
+	const next =
+		deps.signals === undefined
+			? undefined
+			: faultStep(deps.signals, {
+					passing: passingFault(fault),
+					pullFix: at?.place.kind === 'pullFix'
+				});
 	deps.say(`#${id} failed: ${reason}`);
 	deps.status.happened({
 		kind: 'failed',
@@ -193,8 +203,20 @@ export async function handBack(
 		await tracker.removeSignal(id, 'working');
 		await tracker.removeSignal(id, 'go');
 		await tracker.addSignal(id, 'needsInfo');
-		const step = next === undefined ? '' : `\n\n${nextStepText(next)}`;
-		await tracker.comment(id, `Nightjar stopped on a fault: ${reason}${step}${FOOTER}`);
+		await askAPerson(
+			deps,
+			{ id },
+			{
+				ask: faultAsk({
+					fault,
+					place: at?.place ?? null,
+					pull: at?.pull ?? null,
+					next: next ?? []
+				}),
+				tickets: at?.tickets ?? [],
+				session: at?.session ?? null
+			}
+		);
 	} catch {
 		// the Tracker itself may be the fault
 	}
@@ -352,6 +374,7 @@ async function findRed(
 
 // One red draft's Pull-check fix round; a fault is said, and the round is skipped.
 async function fixRed(
+	deps: QueueDeps,
 	pass: PullChecksPass,
 	tried: Set<string>,
 	red: RedDraft,
@@ -362,11 +385,30 @@ async function fixRed(
 		const got = await pass.fix(red, say, portEnv);
 		// the day's limit holds it back, so it is taken once the day is over
 		if (got.kind !== 'paused') tried.add(triedKey(red.draft));
+		// a fix whose push failed on a fault is handed back as a build is, so the Feature carries a Signal and a comment
+		if (got.kind === 'faulted') {
+			await handBack(deps, { id: red.feature, title: got.title }, got.fault);
+		}
 		return got;
 	} catch (fault) {
 		tried.add(triedKey(red.draft));
 		const reason = why(fault);
 		say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
+		// a fault from before the round named itself is still the Pull-check fix's
+		const at =
+			fault instanceof BuildFault
+				? fault
+				: new BuildFault(fault, {
+						place: { kind: 'pullFix', round: null },
+						tickets: [],
+						session: null,
+						pull: red.draft.pull.url
+					});
+		const title = await deps.tracker.feature(red.feature).then(
+			(f) => f.title,
+			() => ''
+		);
+		await handBack(deps, { id: red.feature, title }, at);
 		return { kind: 'skipped', why: reason };
 	}
 }
@@ -380,18 +422,30 @@ async function revisit(
 	portEnv?: PortEnv
 ): Promise<PullFixOutcome | null> {
 	const red = await findRed(deps, pass, tried, new Set(), only);
-	return red === null ? null : fixRed(pass, tried, red, deps.say, portEnv);
+	return red === null ? null : fixRed(deps, pass, tried, red, deps.say, portEnv);
 }
 
 // Whether a round did a piece of work; a skipped one left the pull request alone, so the Queue's next work is still due.
 const didWork = (got: PullFixOutcome | null): got is PullFixOutcome =>
 	got !== null && got.kind !== 'skipped';
 
-// The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
-const GOOD_ENDS: readonly PullFixOutcome['kind'][] = ['fixed', 'gaveUp', 'atLimit', 'diverged'];
+const PULL_FIX_GOOD_ENDS: readonly PullFixOutcome['kind'][] = [
+	'fixed',
+	'gaveUp',
+	'atLimit',
+	'diverged'
+];
 
+// The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
 export function pullFixExit(got: PullFixOutcome): number {
-	return GOOD_ENDS.includes(got.kind) ? 0 : 1;
+	return PULL_FIX_GOOD_ENDS.includes(got.kind) ? 0 : 1;
+}
+
+const FEATURE_GOOD_ENDS: readonly FeatureOutcome['kind'][] = ['pull', 'nothing', 'diverged'];
+
+// The exit code of `nightjar <id>` after a build: a pull request opened, nothing to build, or the Feature handed to a person is a good end.
+export function featureExit(got: FeatureOutcome | null): number {
+	return got !== null && FEATURE_GOOD_ENDS.includes(got.kind) ? 0 : 1;
 }
 
 // `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today. `portEnv` is the block of ports the caller claimed for it.
@@ -458,14 +512,21 @@ async function feedbackLimit(deps: QueueDeps, a: AskedFeature): Promise<void> {
 	const { url } = a.open.pull;
 	if (a.signals.includes('human')) return;
 	deps.say(`#${id}: ${author} asked for changes on ${url}, and ${limitWhy}; handed to a person`);
-	const next = deps.signals === undefined ? null : feedbackLimitStep(deps.signals);
-	const step = next === null ? '' : `\n\n${nextStepText(next)}`;
+	const next = deps.signals === undefined ? [] : feedbackLimitStep(deps.signals);
 	try {
 		await deps.tracker.addSignal(id, 'human');
-		await deps.tracker.comment(
-			id,
-			`Nightjar did not answer the changes ${author} asked for on ${url}: ${limitWhy}, and only a Go starts another.${step}${FOOTER}`
-		);
+		const feature = await deps.tracker.feature(id);
+		const tickets = await deps.tracker.tickets(id);
+		await askAPerson(deps, feature, {
+			ask: {
+				sentence: `Nightjar did not answer the changes ${author} asked for on its pull request.`,
+				cause: `${limitWhy.charAt(0).toUpperCase()}${limitWhy.slice(1)}, and only a Go starts another.`,
+				pull: { url },
+				next
+			},
+			tickets: noteTickets(feature, tickets, builtOn(a.open.commits)),
+			session: null
+		});
 	} catch (fault) {
 		deps.say(`could not hand #${id} to a person: ${why(fault)}`);
 	}
@@ -602,7 +663,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 				return {
 					feature: red.feature,
 					run: async (say, portEnv) => {
-						const got = await fixRed(pass, tried, red, say, portEnv);
+						const got = await fixRed(deps, pass, tried, red, say, portEnv);
 						if (once && got.kind === 'paused') say(got.why);
 						return fixEnd(got);
 					}
@@ -664,7 +725,8 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const toldPaused = new Set<string>();
 	const tellPaused = async (feature: ItemId, { why: reason }: Pause) => {
 		const key = `${feature} ${reason}`;
-		if (toldPaused.has(key)) return;
+		// a Tracker with a Status note says the pause there, as the build's note does
+		if (deps.tracker.statusNote !== undefined || toldPaused.has(key)) return;
 		toldPaused.add(key);
 		try {
 			await deps.tracker.comment(
