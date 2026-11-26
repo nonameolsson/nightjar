@@ -270,6 +270,19 @@ describe('measures', () => {
 		expect(got.timeToPullMs).toBe(30 * 60_000);
 	});
 
+	it('adds the rounds after a draft to its pull request, up to the next build', () => {
+		const logbooks = booksOf(pulled('1', '2026-11-20T10:00:00.000Z', '2026-11-20T10:30:00.000Z'), [
+			claimed('1', '2026-11-25T08:00:00.000Z')
+		]);
+		const ledger = [
+			session('1', '2026-11-20T10:10:00.000Z', 0.5),
+			session('1', '2026-11-21T09:00:00.000Z', 0.25, { step: 'feedback' }),
+			session('1', '2026-11-21T10:00:00.000Z', 0.25, { step: 'reviewRound' }),
+			session('1', '2026-11-25T08:10:00.000Z', 3)
+		];
+		expect(openedPulls(ledger, logbooks)[0]?.costUsd).toBeCloseTo(1);
+	});
+
 	it('leaves the cost of a build that failed out of the next pull request', () => {
 		const logbooks = booksOf(
 			[claimed('1', '2026-11-19T08:50:00.000Z'), handed('1', '2026-11-19T10:00:00.000Z')],

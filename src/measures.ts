@@ -84,14 +84,20 @@ const timeOf = (at: string): number | null => {
 	return Number.isNaN(t) ? null : t;
 };
 
-// The pull requests the Logbooks record, with what each cost: the Sessions of its Feature after the build began (or after its previous draft, whichever is later), up to the draft. A build that failed before the claim is left out, as the Completed list leaves it.
+// The pull requests the Logbooks record, with what each cost: the Sessions of its Feature after the build began, up to the draft, and the Sessions after the draft (Feedback rounds, Review rounds, Pull-check fixes) up to the next build's claim or the next draft. A build that failed before the claim is left out, as the Completed list leaves it.
 export function openedPulls(entries: readonly Entry[], logbooks: Logbooks): OpenedPull[] {
 	const spent: readonly Spent[] = spentFrom(entries);
 	const byUrl = new Map<string, OpenedPull>();
 	for (const [feature, book] of logbooks) {
-		// the claim of the build in flight, and the time this Feature's Sessions are counted up to
+		const mine = spent.filter((s) => s.feature === feature);
+		// the times of the claims and drafts, to know where each draft's later rounds stop
+		const marks = book.flatMap((e) => {
+			const at = timeOf(e.at);
+			return at !== null && (e.kind === 'buildStarted' || e.kind === 'pullOpened') ? [at] : [];
+		});
+		// the claim of the build in flight, and whether an earlier draft already holds the Sessions before this one
 		let claim: number | null = null;
-		let counted: number | null = null;
+		let drafted = false;
 		for (const e of book) {
 			const at = timeOf(e.at);
 			if (at === null) continue;
@@ -100,11 +106,13 @@ export function openedPulls(entries: readonly Entry[], logbooks: Logbooks): Open
 				continue;
 			}
 			if (e.kind !== 'pullOpened') continue;
-			const after = claim === null ? counted : Math.max(claim, counted ?? claim);
+			// no claim and an earlier draft: the Sessions since then are that draft's later rounds
+			const from = claim ?? (drafted ? at : null);
+			const until = marks.find((m) => m > at) ?? Infinity;
 			let costUsd = 0;
-			for (const s of spent) {
-				if (s.feature !== feature) continue;
-				if ((after === null || s.at > after) && s.at <= at) costUsd += s.costUsd;
+			for (const s of mine) {
+				if ((from === null || s.at > from) && s.at <= at) costUsd += s.costUsd;
+				else if (s.at > at && s.at < until) costUsd += s.costUsd;
 			}
 			const known = byUrl.get(e.url);
 			byUrl.set(
@@ -113,7 +121,7 @@ export function openedPulls(entries: readonly Entry[], logbooks: Logbooks): Open
 					? { url: e.url, at, startedAt: claim, costUsd }
 					: { ...known, costUsd: known.costUsd + costUsd }
 			);
-			counted = at;
+			drafted = true;
 			claim = null;
 		}
 	}
