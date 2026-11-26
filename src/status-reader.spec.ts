@@ -119,6 +119,60 @@ describe('readFactory', () => {
 		});
 	});
 
+	it('counts every Feature that ended in the week, past the ten events status.json keeps', () => {
+		const now = new Date(2026, 9, 30, 9, 0);
+		const at = (day: number) => new Date(2026, 9, day, 12);
+		const statusAt = (when: Date) =>
+			new StatusFile({
+				path: join(root, '.factory', 'status.json'),
+				spend: fileSpend(join(root, '.factory', 'runs.jsonl')),
+				now: () => when,
+				pid: 1,
+				dailyUsd: 8
+			});
+		const logbook = fileLogbook(root);
+		// three Features of four Tickets each, every one a draft pull request, as a run records them: fifteen events in all
+		for (const [feature, day] of [
+			['7', 25],
+			['8', 26],
+			['9', 27]
+		] as const) {
+			for (const ticket of ['1', '2', '3', '4'])
+				statusAt(at(day)).happened({ kind: 'built', feature, ticket });
+			statusAt(at(day)).happened({ kind: 'pull', feature, url: `https://x.test/${feature}` });
+			logbook.write({
+				kind: 'pullOpened',
+				url: `https://x.test/${feature}`,
+				created: true,
+				feature,
+				at: at(day).toISOString()
+			});
+		}
+		// a Feature that failed and one handed to a person, early in the week, with their events long gone from status.json
+		logbook.write({
+			kind: 'fault',
+			place: 'in the Review',
+			why: 'gh failed',
+			passing: false,
+			feature: '10',
+			at: at(24).toISOString()
+		});
+		logbook.write({
+			kind: 'handed',
+			to: 'needsInfo',
+			why: 'needs info',
+			feature: '11',
+			ticket: '12',
+			at: at(24).toISOString()
+		});
+		expect(readFactory(root, { alive: live, now: () => now }).week).toEqual({
+			completed: 3,
+			failed: 1,
+			handed: 1,
+			spentUsd: 0
+		});
+	});
+
 	it("adds up the current Feature's cost and the Tickets built today, from the ledger", () => {
 		ledger('1', 1.5);
 		ledger('1', 0.25);

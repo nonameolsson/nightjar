@@ -214,7 +214,7 @@ function week(view: FactoryView): string {
 		count(w.failed, 'failed', 'failed', 'every failed Feature') +
 		count(w.handed, 'waiting', 'handed to a person', 'the Features that need a person now') +
 		`<li><b>${dollars(w.spentUsd)}</b> spent</li></ul>` +
-		'<p class="meta">Features are counted from the recent events and hand-backs that status.json keeps, the dollars from the ledger, by local day. A count opens the Table filtered by its outcome, which shows every Feature the Table holds with that outcome, of any day; Needs a person shows those that wait on a person now.</p></section>'
+		'<p class="meta">Features are counted from their Logbooks, the dollars from the ledger, by local day. A count opens the Table filtered by its outcome, which shows every Feature the Table holds with that outcome, of any day; Needs a person shows those that wait on a person now.</p></section>'
 	);
 }
 
