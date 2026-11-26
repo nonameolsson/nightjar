@@ -378,7 +378,7 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		}
 	};
 
-	// "happened again" in the history of the open Feature's Status note: its count and since when, written over on each delivery. An edit notifies no one, so it is not held to once a day. A Feature no build has touched has no note yet, and gets one that says it waits for the Go. Returns true, as the comment did: the delivery said it, so the log counts it as said.
+	// "happened again" in the history of the open Feature's Status note: its count and since when, written over on each delivery. An edit notifies no one, so it is not held to once a day. A Feature no build has touched has no note yet, and gets one that says it waits for the Go, with no state word: it carries no Signal, so none of the Board's words fits it. Returns true, as the comment did: the delivery said it, so the log counts it as said.
 	const againInNote = async (
 		name: string,
 		open: SourcedFeature,
@@ -401,7 +401,6 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 			open.id,
 			found === undefined
 				? statusNoteText({
-						state: 'waiting',
 						sentence: NOT_BUILT,
 						tickets: [],
 						pull: null,

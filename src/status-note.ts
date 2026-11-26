@@ -39,7 +39,8 @@ export interface LogbookPointer {
 
 // Everything a Status note says, in the order it says it.
 export interface StatusNote {
-	readonly state: NoteState;
+	// left out on a note no run has written, such as the one a Source's "happened again" makes: no Signal is on the Feature, so no state word may say one is
+	readonly state?: NoteState;
 	// when a paused run tries the Feature again, as an ISO date; left out when nothing tries it again on its own
 	readonly until?: string;
 	// one sentence that says what the state means for this Feature now
@@ -163,7 +164,8 @@ const earlierSection = (earlier: readonly EarlierRun[]) =>
 
 export function statusNoteText(note: StatusNote): string {
 	const written = note.at === undefined ? '' : `\n${atLine(note.at)}`;
-	const top = headline(note.state, note.sentence, note.until);
+	const top =
+		note.state === undefined ? note.sentence : headline(note.state, note.sentence, note.until);
 	const parts = [`${STATUS_MARKER}\n${top}${written}`];
 	if (note.tickets.length > 0) {
 		parts.push(`**Tickets**\n\n${note.tickets.map(ticketLine).join('\n')}`);

@@ -35,7 +35,7 @@ import {
 } from './intake.js';
 import { parseCron } from './cron.js';
 import { runNightjar } from './main.js';
-import { statusNoteText } from './status-note.js';
+import { readStatusNote, STATE_WORDS, statusNoteText, waitingOfNote } from './status-note.js';
 import type { SourcedFeature } from './tracker.js';
 import { AzureDevOpsApi } from './azure-devops/api.js';
 import { AzureReposCodeHost } from './azure-devops/code-host.js';
@@ -229,7 +229,13 @@ describe('intake', () => {
 		});
 		// no build has touched the Feature, so its note is made, and says it waits for the Go
 		const first = tracker.note(id) ?? '';
-		expect(first).toContain('**Waiting on you**: Nightjar has not built this Feature yet');
+		expect(first).toMatch(
+			/^<!-- nightjar:status -->\nNightjar has not built this Feature yet; it waits for the Go\.\n/
+		);
+		// it carries no Signal, so no state word says it does, and the page shows no Waiting on you from it
+		for (const word of Object.values(STATE_WORDS)) expect(first).not.toContain(`**${word}**`);
+		expect(readStatusNote(first, clock.toISOString()).current).toBeNull();
+		expect(waitingOfNote(first, clock.toISOString())).toBeNull();
 		expect(first).toContain(
 			`**Earlier runs**\n\n- ${today()} · Happened again, 1 time since 2026-11-03 12:00.`
 		);
