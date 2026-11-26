@@ -33,7 +33,7 @@ import type {
 	WaitingItem,
 	WaitingOnYou
 } from './status-shape.js';
-import { featureStart, readStatus, statusPath } from './status.js';
+import { featureStart } from './status.js';
 import type { Measures } from './measures.js';
 import {
 	measuresView,
@@ -1991,18 +1991,12 @@ export function startUi(o: UiOptions): Promise<Ui> {
 			: watchMeasures({
 					root: o.root,
 					codeHost,
-					status: () => readStatus(statusPath(o.root)),
 					changed: () => refresh(),
 					...(o.every === undefined ? {} : { every: o.every }),
 					...(o.now === undefined ? {} : { now: o.now })
 				});
 	const measuresNow = () =>
-		measuresView(
-			o.root,
-			readStatus(statusPath(o.root)),
-			pulls?.known() ?? NO_PULL_STATE,
-			(o.now ?? (() => new Date()))()
-		);
+		measuresView(o.root, pulls?.known() ?? NO_PULL_STATE, (o.now ?? (() => new Date()))());
 	const panelsNow = () =>
 		renderPanels(
 			o.root,

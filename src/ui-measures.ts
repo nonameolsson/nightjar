@@ -1,10 +1,10 @@
-// The Measures panel's data for `nightjar ui`: the ledger, the status file and the pull states cached under .factory/, and the watch that keeps those pull states read, an hour apart at the most.
+// The Measures panel's data for `nightjar ui`: the ledger, the Logbooks and the pull states cached under .factory/, and the watch that keeps those pull states read, an hour apart at the most.
 import type { CodeHost } from './code-host.js';
 import { ledgerPath, readEntries } from './ledger.js';
+import { readEveryLogbook } from './logbook-reader.js';
 import { measures, openedPulls, withinWindow, type Measures, type PullStates } from './measures.js';
 import { measuresPath, readPullStates, refreshPullStates } from './measures-cache.js';
 import { why } from './say.js';
-import type { Status } from './status-shape.js';
 import { TRACKER_EVERY_MS } from './ui-tracker.js';
 
 // The Code host as the Measures hold it: only whether a pull request merged, and its commits.
@@ -31,16 +31,16 @@ export interface MeasuresView {
 }
 
 // The Measures at `now`, read from .factory/ alone: the Code host is asked by the watch, never here.
-export function measuresView(
-	root: string,
-	status: Status | null,
-	known: CodeHostKnown,
-	now: Date
-): MeasuresView {
+export function measuresView(root: string, known: CodeHostKnown, now: Date): MeasuresView {
 	const cache = readPullStates(measuresPath(root));
 	const pullStates: PullStates =
 		known.reader === 'none' ? null : new Map(Object.entries(cache?.states ?? {}));
-	const result = measures({ entries: readEntries(ledgerPath(root)), status, pullStates, now });
+	const result = measures({
+		entries: readEntries(ledgerPath(root)),
+		logbooks: readEveryLogbook(root),
+		pullStates,
+		now
+	});
 	const fault = known.fault ?? cache?.fault;
 	let note: string | null = null;
 	if (result.autonomy.kind === 'unavailable') {
@@ -56,8 +56,6 @@ export interface MeasuresWatchOptions {
 	readonly root: string;
 	// the Code host, opened on the first call; its `pullState` is absent on a Code host without it
 	readonly codeHost: () => Promise<PullStateReader>;
-	// the status file as the page last read it
-	readonly status: () => Status | null;
 	// told after each look, whether it read the Code host or not
 	readonly changed: () => void;
 	readonly every?: (ms: number, tick: () => void) => () => void;
@@ -97,9 +95,8 @@ export function watchMeasures(o: MeasuresWatchOptions): MeasuresWatch {
 		}
 		known = { reader: 'has', fault: null };
 		const at = now();
-		const urls = withinWindow(openedPulls(readEntries(ledgerPath(o.root)), o.status()), at).map(
-			(p) => p.url
-		);
+		const opened = openedPulls(readEntries(ledgerPath(o.root)), readEveryLogbook(o.root));
+		const urls = withinWindow(opened, at).map((p) => p.url);
 		try {
 			await refreshPullStates({
 				path: measuresPath(o.root),

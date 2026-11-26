@@ -1,9 +1,10 @@
-// The Measures of `nightjar ui`: how well the factory works over the last 30 days. A pure function of the ledger, the status file and what the Code host said of the pull requests; it reads and sends nothing.
+// The Measures of `nightjar ui`: how well the factory works over the last 30 days. A pure function of the ledger, the Logbooks and what the Code host said of the pull requests; it reads and sends nothing.
 import type { PullState } from './code-host.js';
 import { spentFrom, type Spent } from './ledger.js';
+import type { LogbookEntry } from './logbook.js';
 import { hasTrailer } from './publish.js';
 import type { Entry } from './spend.js';
-import type { Event, Status } from './status-shape.js';
+import type { ItemId } from './tracker.js';
 
 export const MEASURE_DAYS = 30;
 const DAY_MS = 86_400_000;
@@ -23,14 +24,27 @@ export type Autonomy =
 	| { readonly kind: 'not read' }
 	| { readonly kind: 'unavailable' };
 
+// How a Session ended, in a few kinds: a ledger outcome carries free text (`failed: ${why}`, `paused: ${why}`, `round 3`), so counting it as written would make each failure its own row. `done` is any other end: built, a verdict, a round that fixed, a proposal.
+export type OutcomeKind = 'done' | 'failed' | 'paused' | 'stopped' | 'questions' | 'gave up';
+
+export function outcomeKind(e: Pick<Entry, 'outcome' | 'failure'>): OutcomeKind {
+	const o = e.outcome;
+	if (o.includes('stopped by a person')) return 'stopped';
+	if (/(^|: )paused: /.test(o)) return 'paused';
+	if (e.failure !== undefined || /\bfailed\b/.test(o)) return 'failed';
+	if (/^questions\b/.test(o)) return 'questions';
+	if (/\bgave up\b|\bblocked\b/.test(o)) return 'gave up';
+	return 'done';
+}
+
 export interface OutcomeCount {
-	readonly outcome: string;
+	readonly outcome: OutcomeKind;
 	readonly count: number;
 }
 
 export interface Measures {
 	readonly days: number;
-	// the pull requests Nightjar opened in the window
+	// the pull requests Nightjar opened in the window, as the Logbooks record them
 	readonly pulls: number;
 	// Nightjar's merged pull requests whose commits are all Nightjar's, as a share
 	readonly autonomy: Autonomy;
@@ -51,50 +65,59 @@ export function median(values: readonly number[]): number | null {
 		: ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
 
-type PullEvent = Extract<Event, { kind: 'pull' }>;
-type Outcome = Extract<Event, { kind: 'pull' | 'failed' }>;
-
-const isOutcome = (e: Event): e is Outcome => e.kind === 'pull' || e.kind === 'failed';
-
-// A pull request Nightjar opened, as the status file's `pull` events tell it. A Feature built again on the same branch updates the same pull request, so each url is one.
+// A pull request Nightjar opened, as its Feature's Logbook tells it. A Feature built again on the same branch updates the same pull request, so each url is one.
 export interface OpenedPull {
 	readonly url: string;
 	// when its first draft opened
 	readonly at: number;
-	// when the build behind it began; null in a file older than `startedAt`
+	// when the build behind it began, its claim; null when the Logbook has no start before the draft
 	readonly startedAt: number | null;
 	// the dollars its builds spent, from the ledger
 	readonly costUsd: number;
 }
 
-// The pull requests the status file remembers, with what each cost: the Sessions of its Feature after the Feature's previous outcome, up to the draft, as the Completed list counts them. The status file keeps only its last ten events, so these reach back no further.
-export function openedPulls(entries: readonly Entry[], status: Status | null): OpenedPull[] {
+// Every Logbook, by its Feature: what `readEveryLogbook` reads.
+export type Logbooks = ReadonlyMap<ItemId, readonly LogbookEntry[]>;
+
+const timeOf = (at: string): number | null => {
+	const t = Date.parse(at);
+	return Number.isNaN(t) ? null : t;
+};
+
+// The pull requests the Logbooks record, with what each cost: the Sessions of its Feature after the build began (or after its previous draft, whichever is later), up to the draft. A build that failed before the claim is left out, as the Completed list leaves it.
+export function openedPulls(entries: readonly Entry[], logbooks: Logbooks): OpenedPull[] {
 	const spent: readonly Spent[] = spentFrom(entries);
-	const done = (status?.recent ?? []).filter(isOutcome);
 	const byUrl = new Map<string, OpenedPull>();
-	for (const [i, event] of done.entries()) {
-		if (event.kind !== 'pull') continue;
-		const before = done.slice(0, i).findLast((e) => e.feature === event.feature);
-		const after = before === undefined ? null : Date.parse(before.at);
-		const until = Date.parse(event.at);
-		let costUsd = 0;
-		for (const s of spent) {
-			if (s.feature !== event.feature) continue;
-			if ((after === null || s.at > after) && s.at <= until) costUsd += s.costUsd;
+	for (const [feature, book] of logbooks) {
+		// the claim of the build in flight, and the time this Feature's Sessions are counted up to
+		let claim: number | null = null;
+		let counted: number | null = null;
+		for (const e of book) {
+			const at = timeOf(e.at);
+			if (at === null) continue;
+			if (e.kind === 'buildStarted') {
+				claim = at;
+				continue;
+			}
+			if (e.kind !== 'pullOpened') continue;
+			const after = claim === null ? counted : Math.max(claim, counted ?? claim);
+			let costUsd = 0;
+			for (const s of spent) {
+				if (s.feature !== feature) continue;
+				if ((after === null || s.at > after) && s.at <= at) costUsd += s.costUsd;
+			}
+			const known = byUrl.get(e.url);
+			byUrl.set(
+				e.url,
+				known === undefined
+					? { url: e.url, at, startedAt: claim, costUsd }
+					: { ...known, costUsd: known.costUsd + costUsd }
+			);
+			counted = at;
+			claim = null;
 		}
-		const known = byUrl.get(event.url);
-		if (known !== undefined) {
-			byUrl.set(event.url, { ...known, costUsd: known.costUsd + costUsd });
-			continue;
-		}
-		byUrl.set(event.url, { url: event.url, at: until, startedAt: startOf(event), costUsd });
 	}
 	return [...byUrl.values()];
-}
-
-function startOf(event: PullEvent): number | null {
-	const started = Date.parse(event.startedAt ?? '');
-	return Number.isNaN(started) ? null : started;
 }
 
 // The pull requests opened in the last 30 days of `now`.
@@ -128,18 +151,19 @@ function autonomyOf(pulls: readonly OpenedPull[], states: PullStates): Autonomy 
 // How well the factory worked in the 30 days up to `now`.
 export function measures(o: {
 	readonly entries: readonly Entry[];
-	readonly status: Status | null;
+	readonly logbooks: Logbooks;
 	readonly pullStates: PullStates;
 	readonly now: Date;
 }): Measures {
-	const { entries, status, pullStates, now } = o;
-	const pulls = withinWindow(openedPulls(entries, status), now);
+	const { entries, logbooks, pullStates, now } = o;
+	const pulls = withinWindow(openedPulls(entries, logbooks), now);
 	const since = now.getTime() - MEASURE_DAYS * DAY_MS;
-	const counts = new Map<string, number>();
+	const counts = new Map<OutcomeKind, number>();
 	for (const e of entries) {
 		const at = Date.parse(e.at);
 		if (at > since && at <= now.getTime()) {
-			counts.set(e.outcome, (counts.get(e.outcome) ?? 0) + 1);
+			const kind = outcomeKind(e);
+			counts.set(kind, (counts.get(kind) ?? 0) + 1);
 		}
 	}
 	const times: number[] = [];
