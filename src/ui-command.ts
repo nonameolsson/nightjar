@@ -63,7 +63,7 @@ export async function runUiCommand(argv: readonly string[], host: UiHost): Promi
 			tracker: listsFrom(page),
 			feature: detailFrom(page),
 			// the Measures ask it whether pull requests merged, an hour apart at the most
-			codeHost: async () => (await page()).codeHost ?? {}
+			codeHost: async () => (await page()).codeHost
 		});
 		say(`http://127.0.0.1:${String(ui.port)}  (Ctrl-C to stop)`);
 		const stop = host.stop ?? onSignals();

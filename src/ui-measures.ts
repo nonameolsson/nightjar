@@ -12,16 +12,19 @@ export type PullStateReader = Pick<CodeHost, 'pullState'>;
 
 // What the watch knows of the Code host.
 export interface CodeHostKnown {
-	// `unread` until the Code host has been opened; `none` when it has no pullState
-	readonly reader: 'unread' | 'has' | 'none';
+	// `unread` until the Code host has been opened; `none` when it has no pullState, `nohost` when the page has no Code host at all
+	readonly reader: 'unread' | 'has' | 'none' | 'nohost';
 	// why the Code host could not be opened or asked, null when it could
 	readonly fault: string | null;
 }
 
 const UNREAD: CodeHostKnown = { reader: 'unread', fault: null };
 
-// What the page knows when it was given no Code host to ask.
+// What the page knows when the Code host it was given cannot say whether a pull request merged.
 export const NO_PULL_STATE: CodeHostKnown = { reader: 'none', fault: null };
+
+// What the page knows when it was given no Code host to ask.
+export const NO_CODE_HOST: CodeHostKnown = { reader: 'nohost', fault: null };
 
 // What the panel draws: the measures, and what is to be said of Autonomy beside them.
 export interface MeasuresView {
@@ -34,7 +37,9 @@ export interface MeasuresView {
 export function measuresView(root: string, known: CodeHostKnown, now: Date): MeasuresView {
 	const cache = readPullStates(measuresPath(root));
 	const pullStates: PullStates =
-		known.reader === 'none' ? null : new Map(Object.entries(cache?.states ?? {}));
+		known.reader === 'none' || known.reader === 'nohost'
+			? null
+			: new Map(Object.entries(cache?.states ?? {}));
 	const result = measures({
 		entries: readEntries(ledgerPath(root)),
 		logbooks: readEveryLogbook(root),
@@ -43,7 +48,9 @@ export function measuresView(root: string, known: CodeHostKnown, now: Date): Mea
 	});
 	const fault = known.fault ?? cache?.fault;
 	let note: string | null = null;
-	if (result.autonomy.kind === 'unavailable') {
+	if (result.autonomy.kind === 'unavailable' && known.reader === 'nohost') {
+		note = 'Autonomy is not shown: this page has no Code host to ask which pull requests merged.';
+	} else if (result.autonomy.kind === 'unavailable') {
 		note =
 			'Autonomy is not shown: this Code host cannot say which pull requests merged (it has no pullState).';
 	} else if (fault !== undefined) {
@@ -55,7 +62,8 @@ export function measuresView(root: string, known: CodeHostKnown, now: Date): Mea
 export interface MeasuresWatchOptions {
 	readonly root: string;
 	// the Code host, opened on the first call; its `pullState` is absent on a Code host without it
-	readonly codeHost: () => Promise<PullStateReader>;
+	// undefined when the page has no Code host
+	readonly codeHost: () => Promise<PullStateReader | undefined>;
 	// told after each look, whether it read the Code host or not
 	readonly changed: () => void;
 	readonly every?: (ms: number, tick: () => void) => () => void;
@@ -81,11 +89,15 @@ export function watchMeasures(o: MeasuresWatchOptions): MeasuresWatch {
 	let inFlight: Promise<void> | null = null;
 	let stopped = false;
 	const look = async () => {
-		let codeHost: PullStateReader;
+		let codeHost: PullStateReader | undefined;
 		try {
 			codeHost = await o.codeHost();
 		} catch (fault) {
 			known = { reader: 'unread', fault: why(fault) };
+			return;
+		}
+		if (codeHost === undefined) {
+			known = NO_CODE_HOST;
 			return;
 		}
 		const pullState = codeHost.pullState?.bind(codeHost);

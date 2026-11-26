@@ -38,7 +38,7 @@ import { featureStart } from './status.js';
 import type { Measures } from './measures.js';
 import {
 	measuresView,
-	NO_PULL_STATE,
+	NO_CODE_HOST,
 	watchMeasures,
 	type MeasuresView,
 	type PullStateReader
@@ -90,7 +90,7 @@ export interface UiOptions {
 	// reads one Feature for its detail panel, when the panel opens; left out, no Feature opens one
 	readonly feature?: (id: ItemId) => Promise<FeatureDetail>;
 	// the Code host, asked for the Measures' pull states, at most once an hour; left out, or without `pullState`, the Measures show no Autonomy
-	readonly codeHost?: () => Promise<PullStateReader>;
+	readonly codeHost?: () => Promise<PullStateReader | undefined>;
 	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
 	readonly every?: (ms: number, read: () => void) => () => void;
 }
@@ -2205,7 +2205,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 					...(o.now === undefined ? {} : { now: o.now })
 				});
 	const measuresNow = () =>
-		measuresView(o.root, pulls?.known() ?? NO_PULL_STATE, (o.now ?? (() => new Date()))());
+		measuresView(o.root, pulls?.known() ?? NO_CODE_HOST, (o.now ?? (() => new Date()))());
 	const panelsNow = () =>
 		renderPanels(
 			o.root,

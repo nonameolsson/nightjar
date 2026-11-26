@@ -10,7 +10,13 @@ import { measuresPath, PULL_STATES_EVERY_MS, refreshPullStates } from './measure
 import { readFactory } from './status-reader.js';
 import { renderPanels, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
-import { measuresView, NO_PULL_STATE, watchMeasures, type CodeHostKnown } from './ui-measures.js';
+import {
+	measuresView,
+	NO_CODE_HOST,
+	NO_PULL_STATE,
+	watchMeasures,
+	type CodeHostKnown
+} from './ui-measures.js';
 
 let root: string;
 let ui: Ui | null;
@@ -357,7 +363,9 @@ describe('the Measures panel of nightjar ui', () => {
 		const page = await get('/');
 		expect(page).toContain('id="measures"');
 		expect(page).not.toContain('<span>autonomy</span>');
-		expect(measuresView(root, NO_PULL_STATE, at).note).toContain('no pullState');
+		expect(page).toContain('this page has no Code host');
+		expect(measuresView(root, NO_CODE_HOST, at).note).toContain('no Code host');
+		expect(measuresView(root, NO_CODE_HOST, at).note).not.toContain('pullState');
 	});
 
 	it('shows an empty panel for a repo with no history', async () => {
