@@ -6,6 +6,7 @@ import {
 	type CodingAgent,
 	type FeedbackRequest,
 	type FixRequest,
+	type RetroRequest,
 	type ReviewRequest,
 	type ReviewRoundRequest,
 	type StepRequest
@@ -17,7 +18,14 @@ import {
 	type SessionResult,
 	type Settled
 } from './session.js';
-import { BUILD_TOOLS, buildSettings, noteSettings } from './settings.js';
+import { RETRO_SCHEMA } from './prompt.js';
+import {
+	BUILD_TOOLS,
+	REVIEW_TOOLS,
+	buildSettings,
+	noteSettings,
+	reviewSettings
+} from './settings.js';
 import type { Feature, Ticket } from './tracker.js';
 import type { StepConfig } from './workflow.js';
 
@@ -898,6 +906,106 @@ describe('a Review round', () => {
 	});
 });
 
+const retroRequest = (): RetroRequest => ({
+	kind: 'retro',
+	sessionId: 's-13',
+	folder: '/repo',
+	budgetUsd: 3,
+	minutes: 10,
+	days: 30,
+	failures: [
+		{
+			session: 's-1',
+			at: '2026-11-25T10:00:00.000Z',
+			feature: '1',
+			ticket: '2',
+			step: 'build',
+			outcome: 'failed: it ran past 60 minutes',
+			costUsd: 1.5,
+			transcript: '.factory/logs/s-1.jsonl',
+			tail: 'Bash: npm run ```lint```'
+		}
+	],
+	more: 4
+});
+
+const FEATURE_FILE =
+	'# Name the check\n\n## Ticket 1: Name it\n\n### Acceptance criteria\n\n- [ ] named';
+
+describe('the Retro', () => {
+	it("starts a new Session in the main checkout that only reads, on the review's tools and settings", async () => {
+		const { sent, session } = fakeSession(done({}));
+		await codingAgent({ ...SETUP, plugins: ['plugins/x'] }, session).retro(retroRequest());
+		const req = sent[0];
+		expect(req?.cwd).toBe('/repo');
+		expect(req?.sessionId).toBe('s-13');
+		expect(req?.resume).toBeUndefined();
+		expect(req?.tools).toEqual(REVIEW_TOOLS);
+		expect(req?.settings).toEqual(reviewSettings());
+		expect(permissions(req).deny).toEqual(expect.arrayContaining(['Edit', 'Write']));
+		expect(req?.schema).toEqual(RETRO_SCHEMA);
+		expect(req?.budgetUsd).toBe(3);
+		expect(req?.minutes).toBe(10);
+		expect(req?.plugins).toEqual([]);
+		expect(req?.log).toBe('/repo/.factory/logs/s-13.jsonl');
+	});
+
+	it('hands it each failure with its transcript, fenced so the transcript cannot close the fence', async () => {
+		const { sent, session } = fakeSession(done({}));
+		await codingAgent(SETUP, session).retro(retroRequest());
+		const prompt = sent[0]?.prompt ?? '';
+		expect(prompt).toContain('the last 30 days');
+		expect(prompt).toContain('## Session s-1');
+		expect(prompt).toContain('Feature #1, Ticket #2, build, $1.50');
+		expect(prompt).toContain('Outcome: failed: it ran past 60 minutes');
+		expect(prompt).toContain('Transcript: `.factory/logs/s-1.jsonl`');
+		expect(prompt).toContain('````text\nBash: npm run ```lint```\n````');
+		expect(prompt).toContain('4 older failed Sessions are not listed');
+		expect(prompt).toContain('Prefer a lint rule or a check');
+		expect(prompt).toContain('1. Navigation');
+		expect(prompt).toContain('7. Information access');
+	});
+
+	it('reads a proposed Feature file', async () => {
+		const answer = { outcome: 'proposed', summary: 'Name it.', featureFile: FEATURE_FILE };
+		const { session } = fakeSession(done(answer));
+		expect(await codingAgent(SETUP, session).retro(retroRequest())).toEqual({
+			kind: 'proposed',
+			summary: 'Name it.',
+			featureFile: FEATURE_FILE,
+			sessionId: 's-13',
+			costUsd: 2.5
+		});
+	});
+
+	it('reads an answer that proposes nothing', async () => {
+		const answer = { outcome: 'nothing', summary: 'Network faults.', featureFile: '' };
+		const { session } = fakeSession(done(answer));
+		expect(await codingAgent(SETUP, session).retro(retroRequest())).toMatchObject({
+			kind: 'nothing',
+			summary: 'Network faults.'
+		});
+	});
+
+	it('fails on a proposal with no Feature file', async () => {
+		const answer = { outcome: 'proposed', summary: 'Name it.', featureFile: ' ' };
+		const { session } = fakeSession(done(answer));
+		expect(await codingAgent(SETUP, session).retro(retroRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
+		});
+	});
+
+	it("runs on the CLI flag's model, else the repo's defaults", async () => {
+		const { sent, session } = fakeSession(done({}));
+		const defaults = { model: 'haiku', effort: 'low' };
+		await codingAgent({ ...SETUP, defaults }, session).retro(retroRequest());
+		await codingAgent({ ...SETUP, defaults, model: 'opus' }, session).retro(retroRequest());
+		expect([sent[0]?.model, sent[0]?.effort]).toEqual(['haiku', 'low']);
+		expect([sent[1]?.model, sent[1]?.effort]).toEqual(['opus', 'low']);
+	});
+});
+
 type Call = (agent: CodingAgent) => Promise<{ readonly kind: string; readonly sessionId: string }>;
 
 // Each kind of work, with the Session its request starts or resumes.
@@ -932,6 +1040,7 @@ const sandboxed: [string, Call, object][] = [
 		.map(([name, call]): [string, Call, object] => [name, call, SEALED]),
 	['a Pull-check fix', (agent) => agent.fix(pullChecksFix(false)), SEALED],
 	['a fresh Pull-check fix', (agent) => agent.fix(pullChecksFix(true)), SEALED],
+	['the Retro', (agent) => agent.retro(retroRequest()), SEALED],
 	[
 		'a Step round of a Workflow without localNetwork',
 		(agent) => agent.step(stepRequest({ extras: { ...extras, localNetwork: false } })),
@@ -985,6 +1094,17 @@ describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) 
 		expect(await ended({ kind: 'rate-limited', resetsAt: 1793390400 })).toEqual({
 			kind: 'paused',
 			why: "the plan's usage limit was reached; it resets at 2026-10-30T20:00:00.000Z",
+			resetsAt: 1793390400,
+			sessionId,
+			costUsd: 0
+		});
+	});
+
+	it('pauses on a Session the day had no room for beside the other Slots', async () => {
+		const why = 'the day is full';
+		expect(await ended({ kind: 'day-over', why })).toEqual({
+			kind: 'paused',
+			why,
 			sessionId,
 			costUsd: 0
 		});

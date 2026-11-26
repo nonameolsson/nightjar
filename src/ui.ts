@@ -23,7 +23,7 @@ import { BANNER } from './ui-banner.js';
 import { escapeHtml as escape } from './markdown.js';
 import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js';
 import { NO_WEEK } from './last-week.js';
-import { readFactory, type Completed, type FactoryView } from './status-reader.js';
+import { readFactory, type BuildView, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
 	FeaturePull,
@@ -35,6 +35,14 @@ import type {
 	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
+import type { Measures } from './measures.js';
+import {
+	measuresView,
+	NO_CODE_HOST,
+	watchMeasures,
+	type MeasuresView,
+	type PullStateReader
+} from './ui-measures.js';
 import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
 import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
 import { PAPER_STYLE, THEME_SCRIPT, THEME_SWITCH, themeStyles } from './ui-theme.js';
@@ -45,10 +53,12 @@ import {
 	type Upcoming
 } from './ui-tracker.js';
 import {
+	buildViews,
 	countdown,
 	dollars,
 	elapsed,
 	idText,
+	pauseOf,
 	KIND_TEXT,
 	pollAfter,
 	running,
@@ -81,6 +91,8 @@ export interface UiOptions {
 	readonly tracker?: () => Promise<Upcoming>;
 	// reads one Feature for its detail panel, when the panel opens; left out, no Feature opens one
 	readonly feature?: (id: ItemId) => Promise<FeatureDetail>;
+	// the Code host, asked for the Measures' pull states, at most once an hour; left out, or without `pullState`, the Measures show no Autonomy
+	readonly codeHost?: () => Promise<PullStateReader | undefined>;
 	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
 	readonly every?: (ms: number, read: () => void) => () => void;
 }
@@ -112,18 +124,17 @@ function listsOf(view: FactoryView, tracker: TrackerLists | undefined, opens: bo
 	const status = view.status;
 	const last = tracker?.last ?? null;
 	if (last !== null) {
-		const doing = status?.doing;
 		// a Feature claimed since the read is Building, not queued or waiting
-		const building = on && doing?.kind === 'building' ? doing.feature : null;
+		const building = new Set(on ? buildViews(view).map((b) => b.build.feature) : []);
 		// the run knows which Tickets wait; the Tracker lists only Features
 		const tickets = on
 			? (status?.waitingOnYou?.items ?? []).filter((i) => i.kind === 'ticket')
 			: [];
 		return {
 			known: true,
-			queue: last.queue.filter((q) => q.id !== building),
+			queue: last.queue.filter((q) => !building.has(q.id)),
 			waitingOnYou: {
-				items: [...last.waiting.filter((w) => w.id !== building), ...tickets],
+				items: [...last.waiting.filter((w) => !building.has(w.id)), ...tickets],
 				trackerCannotList: last.trackerCannotList
 			},
 			shelf: last.shelf,
@@ -171,13 +182,14 @@ function trackerRead(tracker: TrackerLists | undefined): string {
 function header(repo: string, view: FactoryView, tracker: TrackerLists | undefined): string {
 	const doing = view.status?.doing;
 	const after = pollAfter(view);
+	const pause = pauseOf(view);
 	const poll =
 		after !== null
 			? ` <span>next poll after ${escape(after)}</span>`
 			: doing?.kind === 'idle' && running(view)
 				? ` <span>next poll <time data-until="${escape(doing.nextPollAt)}"></time></span>`
-				: doing?.kind === 'paused' && running(view)
-					? ` <span>${escape(doing.why)}${doing.until === null ? '' : ` until <time datetime="${escape(doing.until)}">${clock(doing.until)}</time>`}</span>`
+				: pause !== null && running(view)
+					? ` <span>${escape(pause.why)}${pause.until === null ? '' : ` until <time datetime="${escape(pause.until)}">${clock(pause.until)}</time>`}</span>`
 					: '';
 	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}${trackerRead(tracker)}</header>`;
 }
@@ -212,7 +224,7 @@ function week(view: FactoryView): string {
 		count(w.failed, 'failed', 'failed', 'every failed Feature') +
 		count(w.handed, 'waiting', 'handed to a person', 'the Features that need a person now') +
 		`<li><b>${dollars(w.spentUsd)}</b> spent</li></ul>` +
-		'<p class="meta">Features are counted from the recent events and hand-backs that status.json keeps, the dollars from the ledger, by local day. A count opens the Table filtered by its outcome, which shows every Feature the Table holds with that outcome, of any day; Needs a person shows those that wait on a person now.</p></section>'
+		'<p class="meta">Features are counted from their Logbooks, the dollars from the ledger, by local day. A count opens the Table filtered by its outcome, which shows every Feature the Table holds with that outcome, of any day; Needs a person shows those that wait on a person now.</p></section>'
 	);
 }
 
@@ -241,6 +253,9 @@ function stepLine(doing: Building): string {
 	return `${where}${stepText(doing.step)}${round}${again}`;
 }
 
+// A paused run lets the Sessions it has finish; their panels say so.
+const finishingText = (paused: boolean) => (paused ? 'Finishing: ' : '');
+
 // One `<li>` per Ticket, in order, with its state and why.
 function ticketItems(tickets: readonly TicketProgress[], links: Links): string {
 	return tickets
@@ -252,18 +267,21 @@ function ticketItems(tickets: readonly TicketProgress[], links: Links): string {
 }
 
 function current(view: FactoryView, links: Links): string {
-	const doing = view.status?.doing;
-	let body = '<p class="empty">nothing is being built</p>';
-	if (doing?.kind === 'building' && running(view)) {
-		const tickets = doing.tickets ?? [];
-		const progress = ticketItems(tickets, links);
-		const tail = view.tail.map(escape).join('\n');
-		body =
-			`<p>${idHtml(doing.feature, links)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(view.featureCostUsd)}</p>` +
-			`<p>${stepLine(doing)}</p>` +
+	const builds = running(view) ? buildViews(view) : [];
+	const paused = pauseOf(view) !== null;
+	// one block per busy Slot, oldest first, each with its own Session tail
+	const one = ({ build: doing, tail, costUsd }: BuildView) => {
+		const progress = ticketItems(doing.tickets ?? [], links);
+		const lines = tail.map(escape).join('\n');
+		return (
+			`<p>${idHtml(doing.feature, links)}${doing.title === undefined ? '' : ` ${escape(doing.title)}`} <time data-since="${escape(featureStart(doing))}"></time> ${dollars(costUsd)}</p>` +
+			`<p>${finishingText(paused)}${stepLine(doing)}</p>` +
 			(progress === '' ? '' : `<ul>${progress}</ul>`) +
-			(tail === '' ? '' : `<pre>${tail}</pre>`);
-	}
+			(lines === '' ? '' : `<pre>${lines}</pre>`)
+		);
+	};
+	const body =
+		builds.length === 0 ? '<p class="empty">nothing is being built</p>' : builds.map(one).join('');
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
@@ -401,6 +419,12 @@ const estimateHtml = (ms: number | null) =>
 interface BuildingCard extends FeatureCard {
 	readonly state: 'building';
 	readonly doing: Building;
+	// the build's own Session tail and cost
+	readonly tail: readonly string[];
+	readonly costUsd: number;
+	readonly cost?: BuildCost;
+	// the run is paused and this Session runs on to its end
+	readonly finishing: boolean;
 }
 interface Progress {
 	readonly built: number;
@@ -511,7 +535,8 @@ const STEPS_LEGEND = `<p class="legend stepslegend"><span>Steps bar, one segment
 interface Features {
 	// each is undefined while the lists are not known or not read yet
 	readonly queue: readonly QueuedCard[] | undefined;
-	readonly building: BuildingCard | null;
+	// one per busy Slot, oldest first
+	readonly building: readonly BuildingCard[];
 	readonly waiting: readonly WaitingCard[] | undefined;
 	readonly trackerCannotList: boolean;
 	// newest update first; undefined while the Tracker has not been read
@@ -525,32 +550,37 @@ interface Features {
 
 // The one list of Features, built from what the reader and the Tracker give.
 function features(view: FactoryView, lists: Lists): Features {
-	const status = view.status;
-	const doing = status?.doing;
 	const on = running(view);
-	const tickets = doing?.kind === 'building' ? (doing.tickets ?? []) : [];
-	let building: BuildingCard | null =
-		doing?.kind === 'building' && on
-			? {
-					state: 'building',
-					id: doing.feature,
-					...(doing.title === undefined ? {} : { title: doing.title }),
-					waitingTickets: tickets
-						.filter((t) => t.state === 'waiting')
-						.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
-					// from its own Ticket list, which is empty until the Tickets are planned
-					progress:
-						tickets.length === 0
-							? null
-							: {
-									built: tickets.filter((t) => t.state === 'built').length,
-									total: tickets.length,
-									counts: BUILT_NOW
-								},
-					...(view.featureStages === undefined ? {} : { stages: view.featureStages }),
-					doing
-				}
-			: null;
+	const finishing = pauseOf(view) !== null;
+	let building = (on ? buildViews(view) : []).map(
+		({ build: doing, tail, costUsd, cost, stages }) => {
+			const tickets = doing.tickets ?? [];
+			const card: BuildingCard = {
+				state: 'building',
+				id: doing.feature,
+				...(doing.title === undefined ? {} : { title: doing.title }),
+				waitingTickets: tickets
+					.filter((t) => t.state === 'waiting')
+					.map((t) => ({ kind: 'ticket', id: t.id, title: t.title, why: t.why ?? '' })),
+				// from its own Ticket list, which is empty until the Tickets are planned
+				progress:
+					tickets.length === 0
+						? null
+						: {
+								built: tickets.filter((t) => t.state === 'built').length,
+								total: tickets.length,
+								counts: BUILT_NOW
+							},
+				...(stages === undefined ? {} : { stages }),
+				doing,
+				tail,
+				costUsd,
+				...(cost === undefined ? {} : { cost }),
+				finishing
+			};
+			return card;
+		}
+	);
 	const found = lists.known ? lists.waitingOnYou : undefined;
 	const listed = lists.known ? lists.queue : undefined;
 	const opens = lists.known && lists.opens ? { opens: true as const } : {};
@@ -612,9 +642,9 @@ function features(view: FactoryView, lists: Lists): Features {
 				};
 			});
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
-		const owner = (building ?? completed[0])?.id ?? '';
+		const owner = (building[0] ?? completed[0])?.id ?? '';
 		const titleOf = (id: string) =>
-			[building, ...completed].find((c) => c?.id === id && c.title !== undefined)?.title;
+			[...building, ...completed].find((c) => c.id === id && c.title !== undefined)?.title;
 		const byFeature = new Map<string, WaitingTicket[]>();
 		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
 			const id = t.feature ?? owner;
@@ -624,8 +654,8 @@ function features(view: FactoryView, lists: Lists): Features {
 		}
 		for (const [id, tickets] of byFeature) {
 			// the building Feature's own waiting Tickets go on its Building card
-			if (building !== null && id === building.id) {
-				building = { ...building, waitingTickets: tickets };
+			if (building.some((b) => b.id === id)) {
+				building = building.map((b) => (b.id === id ? { ...b, waitingTickets: tickets } : b));
 				continue;
 			}
 			const at = waiting.findIndex((w) => w.id === id);
@@ -679,7 +709,7 @@ function features(view: FactoryView, lists: Lists): Features {
 	const shelfCards = shelved?.features.map(onShelf);
 	// a Feature with finished runs that is active again, or back on the Shelf, sits there alone with its runs on its card
 	const active = new Set(
-		[building, ...(waiting ?? []), ...(queue ?? []), ...(shelfCards ?? [])].map((c) => c?.id)
+		[...building, ...(waiting ?? []), ...(queue ?? []), ...(shelfCards ?? [])].map((c) => c.id)
 	);
 	const withEarlier = <C extends FeatureCard>(card: C): C => {
 		const done = completed.find((c) => c.id === card.id);
@@ -689,7 +719,7 @@ function features(view: FactoryView, lists: Lists): Features {
 	};
 	return {
 		queue: queue?.map(withEarlier),
-		building: building === null ? null : withEarlier(building),
+		building: building.map(withEarlier),
 		waiting: waiting?.map(withEarlier),
 		trackerCannotList: found?.trackerCannotList ?? false,
 		// the Tracker's order, newest update first, which its contract suite holds it to
@@ -726,7 +756,8 @@ const waitingTicketsHtml = (card: FeatureCard, links: Links) =>
 		? ''
 		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id, links)} ${escape(t.title)} <small>${escape(t.why)}</small>${t.handBack === undefined ? '' : ` <span class="reason">${escape(t.handBack.why)}</span>`}${nextStepHtml(t.handBack)}</li>`).join('')}</ul>`;
 
-// A Feature that waits on a person; its own Next step comes last, as it speaks of the Tickets above
+// A Feature that waits on a person. Its reason sits beneath the row, under the title, where a long one has the room
+// to read on a line or two; its own Next step comes last, as it speaks of the Tickets above
 function waitingCard(card: WaitingCard, links: Links): string {
 	const back = card.handBack;
 	const known = back !== undefined || card.waitingTickets.some((t) => t.handBack !== undefined);
@@ -742,13 +773,15 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why + pullHtml(card) + earlierHtml(card),
+		whyHtml(card, u) + pullHtml(card) + earlierHtml(card),
 		actionLink(u, links),
-		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
+		helpHtml(card, u, links),
+		why + waitingTicketsHtml(card, links) + nextStepHtml(back)
 	);
 }
 
-// One Feature as a nest in the ledger: who, its egg row, where it stands, its clock, and what hangs beneath it.
+// One Feature as a nest in the ledger: who, its egg row, where it stands, its clock; what sits `under` its title, in
+// the Feature column beside the other cells; and what hangs `beneath` the whole row.
 function nest(
 	cls: string,
 	card: FeatureCard,
@@ -756,9 +789,11 @@ function nest(
 	eggs: string,
 	now: string,
 	meta: string,
-	beneath = ''
+	beneath = '',
+	under = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}${stepsBar(card)}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	const below = under === '' ? '' : `<div class="under">${under}</div>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}${stepsBar(card)}</div><div class="now">${now}</div><div class="clock">${meta}</div>${below}${beneath}</article>`;
 }
 
 function buildingCard(card: BuildingCard, links: Links): string {
@@ -769,24 +804,25 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		card,
 		links,
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
-		`<p class="label">Building</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
+		`<p class="label">${card.finishing ? 'Finishing' : 'Building'}</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`,
+		'',
 		waitingTicketsHtml(card, links)
 	);
 }
 
-// What the one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its Session.
-function detail(card: BuildingCard, view: FactoryView, links: Links): string {
+// What one build in flight is doing: its Tickets in order, its clock and cost, and the tail of its own Session. A paused run's build says it is finishing.
+function detail(card: BuildingCard, links: Links): string {
 	const { doing } = card;
 	const tickets = doing.tickets ?? [];
 	const steps = ticketItems(tickets, links);
-	const tail = view.tail.map(escape).join('\n');
+	const tail = card.tail.map(escape).join('\n');
 	return (
 		`<aside class="detail" aria-label="Building now"><p class="dk"><i></i>Building now</p>` +
-		`<h3>${feature(card, links)}</h3><p class="sub">${stepLine(doing)}</p>` +
+		`<h3>${feature(card, links)}</h3><p class="sub">${finishingText(card.finishing)}${stepLine(doing)}</p>` +
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
-		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
-		costFold(view.featureCost, foldKey('now', doing.feature, featureStart(doing)), SPLIT_SUMMARY) +
+		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(card.costUsd)}</b></div></div>` +
+		costFold(card.cost, foldKey('now', doing.feature, featureStart(doing)), SPLIT_SUMMARY) +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
 		`<p class="more">${sessionLink(doing.session)}<a class="open" href="${featureHref(doing.feature)}">Open its Logbook</a></p>` +
 		'</aside>'
@@ -1008,7 +1044,9 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 				? emptyQueue(links)
 				: all.queue.map((q) => queuedCard(q, links)).join('');
 	const building =
-		all.building === null ? none('nothing is being built') : buildingCard(all.building, links);
+		all.building.length === 0
+			? none('nothing is being built')
+			: all.building.map((b) => buildingCard(b, links)).join('');
 	let waiting: string;
 	if (!lists.known) waiting = lists.empty;
 	else if (all.waiting === undefined) waiting = none('not read yet');
@@ -1023,12 +1061,16 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 		all.completed.length === 0
 			? none('nothing has finished yet')
 			: all.completed.map((c) => completedCard(c, links)).join('');
-	const side = all.building === null ? '' : detail(all.building, view, links);
+	// one panel per build, oldest first, stacked in one column beside the Mats
+	const side =
+		all.building.length === 0
+			? ''
+			: `<div class="details">${all.building.map((b) => detail(b, links)).join('')}</div>`;
 	return (
 		`<div class="board">${LEGEND}${STEPS_LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
 		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
-		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
+		group('building', 'Building', on ? all.building.length : null, building) +
 		group('queue', 'Queue', known ? (all.queue?.length ?? null) : null, queued) +
 		group('shelf', 'Shelf', known && all.shelf !== undefined ? all.shelfTotal : null, shelf) +
 		group('completed', 'Completed', all.completed.length, completed) +
@@ -1094,22 +1136,20 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			outcomeText: earlierHtml(card),
 			progress: card.progress
 		});
-	if (all.building !== null) {
+	for (const card of all.building) {
 		// its Tickets that wait on the person, as the Waiting rows say why
-		const waits = all.building.waitingTickets
-			.map((t) => `${idText(t.id)} ${t.title}: ${t.why}`)
-			.join('; ');
+		const waits = card.waitingTickets.map((t) => `${idText(t.id)} ${t.title}: ${t.why}`).join('; ');
 		// the elapsed time is counted by the browser, so the row stays the same between events
 		rows.push({
-			card: all.building,
+			card,
 			state: 'building',
 			time: null,
-			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
-			cost: view.featureCostUsd,
-			split: { cost: view.featureCost, at: featureStart(all.building.doing) },
+			timeText: `<time data-since="${escape(featureStart(card.doing))}"></time>`,
+			cost: card.costUsd,
+			split: { cost: card.cost, at: featureStart(card.doing) },
 			outcome: waits,
-			outcomeText: escape(waits) + earlierHtml(all.building),
-			progress: all.building.progress
+			outcomeText: escape(waits) + earlierHtml(card),
+			progress: card.progress
 		});
 	}
 	for (const card of all.waiting ?? []) {
@@ -1195,6 +1235,37 @@ function titlesOf(view: FactoryView): ReadonlyMap<string, string> {
 
 const sessionsText = (n: number) => (n === 1 ? '1 Session' : `${String(n)} Sessions`);
 
+const share = (s: Extract<Measures['autonomy'], { kind: 'share' }>) =>
+	`<div class="stat"><span>autonomy</span> <b>${String(Math.round(s.share * 100))}%</b> <small>${String(s.autonomous)} of ${String(s.merged)} merged</small></div>`;
+
+// Autonomy is left out, with the reason in the note, when the Code host cannot say which pull requests merged.
+function autonomyStat(autonomy: Measures['autonomy']): string {
+	switch (autonomy.kind) {
+		case 'share':
+			return share(autonomy);
+		case 'none merged':
+			return '<div class="stat"><span>autonomy</span> <b>-</b> <small>none merged yet</small></div>';
+		case 'not read':
+			return '<div class="stat"><span>autonomy</span> <b>-</b> <small>not read yet</small></div>';
+		case 'unavailable':
+			return '';
+	}
+}
+
+// How well the factory worked over the last days: Autonomy, Time to pull request, Cost per pull request and the Sessions by outcome.
+function measuresPanel(view: MeasuresView): string {
+	const { measures: m, note } = view;
+	const time = m.timeToPullMs === null ? '-' : elapsed(m.timeToPullMs);
+	const cost = m.costPerPullUsd === null ? '-' : dollars(m.costPerPullUsd);
+	const stats = `${autonomyStat(m.autonomy)}<div class="stat"><span>time to pull request</span> <b>${time}</b> <small>median</small></div><div class="stat"><span>cost per pull request</span> <b>${cost}</b> <small>median</small></div><div class="stat"><span>pull requests</span> <b>${String(m.pulls)}</b></div>`;
+	const outcomes =
+		m.sessions.length === 0
+			? '<p class="empty">no Session recorded</p>'
+			: `<ul class="outcomes">${m.sessions.map((s) => `<li>${escape(s.outcome)} <b>${String(s.count)}</b></li>`).join('')}</ul>`;
+	const noted = note === null ? '' : `<p class="empty">${escape(note)}</p>`;
+	return `<section id="measures"><h2>Measures <small>last ${String(m.days)} days</small></h2><div class="stats">${stats}</div>${noted}<h3>Sessions by outcome</h3>${outcomes}</section>`;
+}
+
 // Every Feature with a Logbook or ledger lines, the one touched last first, so a Feature off the Board stays reachable.
 function allLogbooks(
 	found: readonly LogbookListing[],
@@ -1227,13 +1298,14 @@ const stampHtml = (iso: string) => {
 const MAIN = '<!--main-->';
 
 // The panels, which the page replaces whole each time an event brings new ones.
-// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel.
+// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel. `measures`: the Measures panel; left out, the page has none.
 export function renderPanels(
 	root: string,
 	view: FactoryView,
 	links: Links = NO_LINKS,
 	tracker?: TrackerLists,
-	opens = false
+	opens = false,
+	measures?: MeasuresView
 ): string {
 	const lists = listsOf(view, tracker, opens);
 	const overview = [
@@ -1243,6 +1315,7 @@ export function renderPanels(
 		shelf(view, lists, links),
 		waiting(view, lists, links),
 		completed(view, lists, links),
+		...(measures === undefined ? [] : [measuresPanel(measures)]),
 		allLogbooks(listLogbooks(root), titlesOf(view))
 	].join('\n');
 	return [
@@ -1558,7 +1631,7 @@ h1 { font: 700 1.6rem var(--mono); }
 header span { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; }
 header .state { color: var(--teal); font-weight: 600; }
 header .stale { color: var(--amber); }
-#cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
+#cards, #measures .stats { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
 .stat b { color: var(--ink); }
 .empty, small, .meta { color: var(--muted); }
 .empty { margin: 10px 0; }
@@ -1602,7 +1675,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
 .tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
 .lines { padding: 4px 18px; }
-.entry { align-items: first baseline; border-top: 1px dashed var(--line); display: grid; gap: 8px 20px; grid-template-areas: "who clock" "eggs eggs" "now now"; grid-template-columns: minmax(0, 1fr) auto; overflow-wrap: anywhere; padding: 14px 0; }
+.entry { --title-in: calc(2.8rem + 10px); align-items: first baseline; border-top: 1px dashed var(--line); display: grid; gap: 8px 20px; grid-template-areas: "who clock" "eggs eggs" "now now"; grid-template-columns: minmax(0, 1fr) auto; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
 .more { border-top: 1px dashed var(--line); font: 0.85rem var(--mono); margin: 0; padding: 12px 0 8px; }
@@ -1612,14 +1685,17 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .eggcell { grid-area: eggs; }
 .now { grid-area: now; }
 .clock { grid-area: clock; }
+.entry:has(> .under) { grid-template-areas: "who clock" "eggs eggs" "now now" "under under"; }
 @container board (min-width: 724px) {
 	.entry { grid-template-areas: "who now clock" "eggs now clock"; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 7.5rem; }
+	.entry:has(> .under) { grid-template-areas: "who now clock" "eggs now clock" "under under under"; }
 }
 @container board (min-width: 1040px) {
 	.entry { grid-template-areas: "who eggs now clock"; grid-template-columns: minmax(0, 1.1fr) 12rem minmax(0, 1fr) 7.5rem; }
+	.entry:has(> .under) { grid-template-areas: "who eggs now clock" "under eggs now clock"; }
 	.head { display: grid; }
 }
-.who { font-size: 1.05rem; font-weight: 600; padding-left: calc(2.8rem + 10px); text-indent: calc(-2.8rem - 10px); }
+.who { font-size: 1.05rem; font-weight: 600; padding-left: var(--title-in); text-indent: calc(-1 * var(--title-in)); }
 .who > * { text-indent: 0; }
 .who b { color: var(--ink2); display: inline-block; font: 500 0.85rem var(--mono); margin-right: 10px; min-width: 2.8rem; }
 .eggcell .meta { font: 0.75rem var(--mono); margin-top: 6px; }
@@ -1630,7 +1706,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .now .label .egg.need::after { right: -0.5rem; }
 .now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
 .clock { color: var(--muted); font: 0.85rem var(--mono); text-align: right; }
-.entry > ul, .entry > .next { grid-column: 1 / -1; }
+.under { grid-area: under; padding-left: var(--title-in); }
+.under > p { color: var(--ink2); font-size: 0.85rem; margin-top: 6px; }
 .next { color: var(--ink2); font: 0.85rem/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 2px 0 0; }
 .next p { color: var(--muted); margin: 6px 0 2px; }
 .next ol { list-style: decimal; margin: 0; padding-left: 1.6em; }
@@ -1644,7 +1721,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .entry.failed .now .label, .entry.failed .now p { color: var(--err); }
 .tickets li { font: 0.85rem var(--mono); padding: 2px 0 2px 4px; }
 .tickets li.waiting { color: var(--amber); }
-.detail { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: sticky; top: 16px; }
+.details { display: grid; gap: 16px; position: sticky; top: 16px; }
+.detail { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); font-family: var(--mono); padding: 18px; position: relative; }
 .detail::before, .detail::after { border: 2px solid var(--teal); content: ""; height: 16px; pointer-events: none; position: absolute; width: 16px; }
 .detail::before { border-bottom: 0; border-right: 0; left: -1px; top: -1px; }
 .detail::after { border-left: 0; border-top: 0; bottom: -1px; right: -1px; }
@@ -1819,7 +1897,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 @media (prefers-reduced-motion: reduce) { .egg.building, .seg.running, .dk i { animation: none; } }
 @media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
-	.detail { order: -1; position: static; }
+	.details { order: -1; position: static; }
 }
 @media (pointer: coarse) {
 	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .log summary, .book summary, .cost summary { min-height: 44px; }
@@ -1832,7 +1910,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 @media (max-width: 760px) {
 	body { --gut: 12px; }
 	h1 { font-size: 1.2rem; }
-	#cards { font-size: 0.75rem; gap: 2px 14px; }
+	#cards, #measures .stats { font-size: 0.75rem; gap: 2px 14px; }
 	.mark { display: none; }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }
@@ -1901,16 +1979,23 @@ const sessionShell = (title: string, main: string, links: Links) =>
 // One ledger line of a Session: its Feature and Ticket, the kind of work, how it ended, what it cost and how long it ran.
 function sessionRun(run: SessionView['runs'][number], links: Links): string {
 	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	let about = '';
+	let book = '';
+	// a Retro works on no Feature, so it names none and has no Logbook to open
+	if (run.kind !== 'retro') {
+		const ticket = run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links);
+		about = field('Feature', idHtml(run.feature, links)) + field('Ticket', ticket);
+		book = `<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>`;
+	}
 	return (
 		'<section class="run"><dl>' +
-		field('Feature', idHtml(run.feature, links)) +
-		field('Ticket', run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links)) +
+		about +
 		field('Kind', escape(KIND_TEXT[run.kind] ?? run.kind)) +
 		field('Outcome', escape(run.outcome)) +
 		field('Cost', dollars(run.costUsd)) +
 		(run.durationMs === undefined ? '' : field('Duration', elapsed(run.durationMs))) +
 		'</dl>' +
-		`<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>` +
+		book +
 		'</section>'
 	);
 }
@@ -2145,13 +2230,28 @@ export function startUi(o: UiOptions): Promise<Ui> {
 					...(o.every === undefined ? {} : { every: o.every }),
 					...(o.now === undefined ? {} : { now: o.now })
 				});
+	// The pull states are read from the Code host when an hour old, and looked at again every minute.
+	const codeHost = o.codeHost;
+	const pulls =
+		codeHost === undefined
+			? null
+			: watchMeasures({
+					root: o.root,
+					codeHost,
+					changed: () => refresh(),
+					...(o.every === undefined ? {} : { every: o.every }),
+					...(o.now === undefined ? {} : { now: o.now })
+				});
+	const measuresNow = () =>
+		measuresView(o.root, pulls?.known() ?? NO_CODE_HOST, (o.now ?? (() => new Date()))());
 	const panelsNow = () =>
 		renderPanels(
 			o.root,
 			factoryNow(),
 			linksFor(o.root, origin),
 			tracker?.lists(),
-			o.feature !== undefined
+			o.feature !== undefined,
+			measuresNow()
 		);
 	const logbookNow = (feature: string) =>
 		logbookMain(readLogbook(o.root, feature), factoryNow(), linksFor(o.root, origin));
@@ -2279,6 +2379,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 		// a port that is taken leaves nothing running behind it
 		server.once('error', (fault) => {
 			tracker?.stop();
+			pulls?.stop();
 			clearInterval(slow);
 			clearTimeout(timer);
 			watcher?.close();
@@ -2292,6 +2393,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				close: () =>
 					new Promise<void>((ended) => {
 						tracker?.stop();
+						pulls?.stop();
 						clearInterval(slow);
 						clearTimeout(timer);
 						watcher?.close();

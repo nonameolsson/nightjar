@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderBlock } from './live-view.js';
 import type { Done, FactoryView } from './status-reader.js';
-import type { Doing, Status } from './status.js';
+import type { Building, Doing, Status } from './status.js';
 
 const now = new Date(2026, 9, 30, 9, 30, 0);
 const iso = (h: number, m: number, s = 0) => new Date(2026, 9, 30, h, m, s).toISOString();
@@ -151,6 +151,53 @@ describe('renderBlock', () => {
 			view(status(building({ featureStartedAt: iso(9, 0), startedAt: iso(9, 29) })))
 		);
 		expect(lines[2]).toMatch(/30m 00s/);
+	});
+
+	describe('several builds', () => {
+		const first = building({ feature: '12', title: 'First', session: 'a' }) as Building;
+		const second = building({
+			feature: '15',
+			title: 'Second',
+			session: 'b',
+			startedAt: iso(9, 25)
+		}) as Building;
+		const several = (more: Partial<Status> = {}) =>
+			status(first, { run: 'building', builds: [first, second], ...more });
+		const two = (more: Partial<FactoryView> = {}) =>
+			view(several(), {
+				builds: [
+					{ build: first, tail: ['first one', 'first newest'], costUsd: 1.5 },
+					{ build: second, tail: ['second newest'], costUsd: 0.25 }
+				],
+				...more
+			});
+
+		it('shows a panel per build, oldest first, each with its own cost and newest Session line', () => {
+			const lines = render(two());
+			const at12 = lines.findIndex((l) => l.startsWith('● #12 First'));
+			const at15 = lines.findIndex((l) => l.startsWith('● #15 Second'));
+			expect(at12).toBeGreaterThan(0);
+			expect(at15).toBeGreaterThan(at12);
+			expect(lines[at12]).toMatch(/\$1\.50$/);
+			expect(lines[at15]).toMatch(/\$0\.25$/);
+			expect(lines.slice(at12, at15)).toContain('  ▸ first newest');
+			expect(lines.slice(at12, at15)).not.toContain('  ▸ second newest');
+			expect(lines.slice(at15)).toContain('  ▸ second newest');
+		});
+
+		it("says a paused run's running builds are finishing", () => {
+			const pause = { why: 'plan usage limit', until: iso(10, 0) };
+			const lines = render(two({ status: several({ run: 'paused', pause }) }));
+			expect(lines[0]).toBe('nightjar  o/app  ·  paused: plan usage limit  ·  next poll 30:00');
+			expect(lines.filter((l) => l.startsWith('  finishing: '))).toHaveLength(2);
+			expect(render(two()).some((l) => l.includes('finishing'))).toBe(false);
+		});
+
+		it('shows one panel for an older file that has no builds', () => {
+			const lines = render(view(status(building()), { tail: ['old tail'] }));
+			expect(lines.filter((l) => l.startsWith('●'))).toHaveLength(1);
+			expect(lines).toContain('  ▸ old tail');
+		});
 	});
 
 	it('says under --watch that the next poll comes after the Feature being built', () => {

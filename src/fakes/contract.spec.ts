@@ -8,6 +8,7 @@ import {
 	nightjarDraftsContract,
 	openPullsContract,
 	publishContract,
+	pullStateContract,
 	sourcesContract,
 	feedbackContract,
 	shelfContract,
@@ -88,4 +89,8 @@ describe('FakeCodeHost meets the publish contract', () => {
 
 describe('FakeCodeHost meets the botPulls contract', () => {
 	for (const c of botPullsContract) it(c.name, () => c.run(fakeCodeHostHarness));
+});
+
+describe('FakeCodeHost meets the pullState contract', () => {
+	for (const c of pullStateContract) it(c.name, () => c.run(fakeCodeHostHarness));
 });

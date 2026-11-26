@@ -11,11 +11,13 @@ import type { Entry } from '../src/spend.js';
 import { fileLogbook, type Decision, type Place } from '../src/logbook.js';
 import { StatusFile } from '../src/status.js';
 import { SHELF_MAX } from '../src/tracker.js';
+import { statusNoteText } from '../src/status-note.js';
 import { startUi, UI_PORT } from '../src/ui.js';
 import { detailFrom, listsFrom } from '../src/ui-tracker.js';
 
 const SCENARIOS = [
 	'building',
+	'two-builds',
 	'review-round',
 	'idle',
 	'paused',
@@ -284,6 +286,32 @@ tracker
 	.add({ id: '281', title: 'CSV <export>', assignees: ['ann'], signals: ['go'] })
 	.add({ id: '262', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
 	.add({ id: '264', title: 'SSO', assignees: ['ann'], signals: ['human'] });
+// Their Status notes: a long reason and a Next step, as a card on the Board shows them
+const waitingNote = (feature: string, sentence: string, next: string[]) =>
+	statusNoteText({
+		state: 'waiting',
+		sentence,
+		tickets: [],
+		pull: null,
+		next,
+		earlier: [],
+		logbook: { feature, session: null }
+	});
+await tracker.statusNote(
+	'262',
+	waitingNote('262', 'git commit failed: error: 1Password: agent returned an error', [
+		'Fix the cause named above.',
+		'On this Feature, remove `needs-info` and add `factory-go` (keep it assigned to you).',
+		'Nightjar builds the Feature again.'
+	])
+);
+await tracker.statusNote(
+	'264',
+	waitingNote('264', 'Its Review still asks for changes.', [
+		"Read the issues above and fix the ones that are right on the branch, or review the pull request: the Review is Nightjar's own and can be wrong.",
+		'To have Nightjar build the Feature on its branch again, remove `ready-for-human` and add `factory-go` on this Feature (keep it assigned to you). A new build gets its Review rounds again.'
+	])
+);
 // The Shelf: Features of ann's that carry no Signal. One has a Ticket; the rest are lone issues. Bob's is on no Shelf of hers.
 ticket('301');
 tracker
@@ -298,20 +326,27 @@ if (scenario === 'shelf') {
 	}
 }
 
-if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-round') {
-	const lines = [
+if (
+	scenario === 'building' ||
+	scenario === 'two-builds' ||
+	scenario === 'stopped' ||
+	scenario === 'review-round'
+) {
+	const log = (name: string, texts: readonly string[]) =>
+		writeFileSync(
+			join(root, '.factory', 'logs', `${name}.jsonl`),
+			texts
+				.map((text) =>
+					JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
+				)
+				.join('\n')
+		);
+	log('dev', [
 		'Reading src/views.ts',
 		'Edit src/views.ts',
 		'Bash npm test',
 		'The list renders; now the share links.'
-	].map((text) => ({
-		type: 'assistant',
-		message: { content: [{ type: 'text', text }] }
-	}));
-	writeFileSync(
-		join(root, '.factory', 'logs', 'dev.jsonl'),
-		lines.map((l) => JSON.stringify(l)).join('\n')
-	);
+	]);
 	// the build in flight writes its Logbook as it goes: open /features/272 to watch it
 	const building = (minutes: number, entry: Decision & Place) =>
 		logbook.write({ at: ago(minutes), feature: '272', ...entry });
@@ -345,6 +380,30 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 					{ id: '4', title: 'Share links', state: 'waiting', why: 'waits for #3' }
 				]
 	});
+	if (scenario === 'two-builds') {
+		// the second Slot's build, newer than the first, with its own Session
+		log('dev-2', [
+			'Reading src/digest.ts',
+			'Bash npm run check',
+			'Lint is clean; now the digest model.'
+		]);
+		file.doing({
+			kind: 'building',
+			feature: '276',
+			title: 'Weekly digest',
+			ticket: '1',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: 'dev-2',
+			startedAt: ago(2),
+			featureStartedAt: ago(2),
+			tickets: [
+				{ id: '1', title: 'Digest model', state: 'building' },
+				{ id: '2', title: 'Digest email', state: 'waiting', why: 'waits for #1' }
+			]
+		});
+	}
 } else if (scenario === 'idle') {
 	file.doing({ kind: 'idle', nextPollAt: new Date(now.getTime() + 120_000).toISOString() });
 } else if (scenario === 'paused') {

@@ -3,6 +3,7 @@ import type { RunCheck } from './check.js';
 import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
 import {
 	envOf,
+	resetOf,
 	type BuildOutcome,
 	type CodingAgent,
 	type FixOutcome,
@@ -71,7 +72,7 @@ import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
 import { reviewSection, type ReviewSession } from './review-section.js';
 import { byModel } from './build-cost.js';
-import { modelsOf, type Entry, type LogEntry, type ModelUsage, type Spend } from './spend.js';
+import { modelsOf, type Allowance, type LogEntry, type ModelUsage, type Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars, tokensText } from './view-text.js';
 import {
@@ -164,7 +165,8 @@ export function pullFixLimits(
 export interface Deps {
 	readonly tracker: Tracker;
 	readonly codeHost: CodeHost;
-	readonly codingAgent: CodingAgent;
+	// the build loop starts no Retro
+	readonly codingAgent: Omit<CodingAgent, 'retro'>;
 	readonly runCheck: RunCheck;
 	// the worktree setup command, run through the same shell as the check
 	readonly runSetup: RunCheck;
@@ -230,19 +232,30 @@ export type FeatureOutcome =
 			readonly pull: Pull;
 			readonly built: ItemId[];
 			readonly waiting: Waiting[];
-			// why the run paused after it opened the pull request, so the loop waits before it builds again
-			readonly paused?: string;
+			// a Session ended on a reason of the machine or the plan after the pull request was opened: the Feature has the Go back, and the run pauses
+			readonly pause?: Pause;
 	  }
 	| { readonly kind: 'nothing'; readonly waiting: Waiting[] }
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
-	| { readonly kind: 'paused'; readonly why: string }
+	| ({ readonly kind: 'paused' } & Pause)
 	| { readonly kind: 'stopped' }
 	// a person pushed to the branch first: the work waits on the local branch `side`, and the Feature is theirs
 	| { readonly kind: 'diverged'; readonly side: string };
 
+// Why the run pauses, and when it may go on: `resetsAt` (epoch seconds) is the plan's usage limit's reset time, when it gave one.
+export interface Pause {
+	readonly why: string;
+	readonly resetsAt?: number;
+}
+
 // A comment for a person: what happened, then what they do next.
 const withNext = (body: string, step: NextStep) => `${body}\n\n${nextStepText(step)}${FOOTER}`;
 
+// What a piece of work with a `cap` that has spent `spent` may still spend. The day's limit with the other Slots' caps is checked where each Session starts (`heldSession`), which makes the Session wait for room rather than leave the work red.
+const allowanceOf =
+	(deps: Pick<Deps, 'spend'>) =>
+	(cap: number, spent: number): Allowance =>
+		deps.spend.allowance(cap, spent);
 const hash = (id: ItemId) => `#${id}`;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
@@ -259,7 +272,7 @@ interface Cost {
 	readonly models?: readonly ModelUsage[];
 }
 
-const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
+const workOf = (step: LogEntry['step']): Work => (step === 'step' ? 'steps' : step);
 
 // What building one Ticket left the run to do next.
 type Step =
@@ -759,7 +772,7 @@ class FeatureRun {
 			feature: this.feature,
 			tree: this.tree,
 			dailyPause: () => this.dailyPause(),
-			allowance: (cap, spent) => deps.spend.allowance(cap, spent),
+			allowance: allowanceOf(deps),
 			fix: (work) => this.fixFeedback(work),
 			log: (entry) => this.log(entry),
 			note: this.note,
@@ -860,11 +873,12 @@ class FeatureRun {
 			building: (ticket, session, rounds, attempt) =>
 				this.building(ticket, 'step', session, rounds, attempt),
 			dailyPause: () => this.dailyPause(),
-			allowance: (cap, spent) => this.deps.spend.allowance(cap, spent),
+			allowance: allowanceOf(this.deps),
 			aborted: () => this.aborted
 		});
 	}
 
+	// Why the day is over, once its spend reached the limit; the caps of the Sessions running in other Slots only make a Session wait where it starts.
 	private dailyPause(): string | null {
 		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd);
 	}
@@ -1026,7 +1040,7 @@ class FeatureRun {
 		};
 		const { outcome: got, earlierUsd } = await retryPassing<BuildOutcome>({
 			budgetUsd: this.setup.limits.ticketUsd,
-			enough: (usd) => this.deps.spend.allowance(usd, 0).enough,
+			enough: (usd) => allowanceOf(this.deps)(usd, 0).enough,
 			reset: () => this.tree.revert(before),
 			sleep: this.deps.sleep,
 			signal: this.setup.signal,
@@ -1082,7 +1096,7 @@ class FeatureRun {
 			case 'paused':
 				await this.throwAway(before, ticket.id, `paused: ${got.why}`);
 				this.log({ ...entry, outcome: `paused: ${got.why}` });
-				return { kind: 'paused', why: got.why };
+				return { kind: 'paused', why: got.why, ...resetOf(got) };
 			case 'failed': {
 				this.log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
 				if (got.failure === 'lasting') this.lastFailure = got.why;
@@ -1267,17 +1281,17 @@ class FeatureRun {
 		const { tracker, codeHost } = this.deps;
 		const id = this.feature.id;
 		const left = waiting(this.tickets, this.built);
-		let paused = last.kind === 'paused' ? last.why : null;
+		let paused: Pause | null = last.kind === 'paused' ? { why: last.why, ...resetOf(last) } : null;
 		this.place = { kind: 'pull' };
 		await this.signals.off('working');
 		if (this.aborted || last.kind === 'aborted') return this.stopped();
-		if (paused) await this.pause(paused);
+		if (paused) await this.pause(paused.why);
 		const repeated =
 			last.kind === 'repeated'
 				? `${String(last.tickets.length)} Tickets in a row failed with the same reason, ${last.tickets.map(hash).join(', ')}: ${last.why}.\n\n`
 				: '';
 		if ((await this.tree.ahead()) === 0) {
-			if (paused) return { kind: 'paused', why: paused };
+			if (paused) return { kind: 'paused', ...paused };
 			const next = featureAfterRunStep(this.setup.signals, {
 				waiting: left.length > 0,
 				red: false
@@ -1315,7 +1329,7 @@ class FeatureRun {
 				// the pull request's Paused section says why, so it gets no Review section
 				if (paused === null) {
 					paused = got.paused;
-					await this.pause(paused);
+					await this.pause(paused.why);
 				}
 			} else if (left.length === 0 && red === null && paused === null) {
 				const rounds = await this.reviewRounds(got, done);
@@ -1327,7 +1341,7 @@ class FeatureRun {
 				if (rounds.stopped) return this.stopped();
 				if (rounds.paused !== null) {
 					paused = rounds.paused;
-					await this.pause(paused);
+					await this.pause(paused.why);
 				}
 			} else {
 				review = got;
@@ -1356,7 +1370,7 @@ class FeatureRun {
 				left,
 				red,
 				repeated,
-				paused,
+				paused: paused?.why ?? null,
 				pausedUntil,
 				complete,
 				handsReview: open !== null && review !== null && review !== 'off',
@@ -1374,7 +1388,7 @@ class FeatureRun {
 			spent: this.costs.reduce((n, c) => n + c.usd, 0),
 			costs: this.costs,
 			titleOf: (id) => this.tickets.find((t) => t.id === id)?.title,
-			paused,
+			paused: paused?.why ?? null,
 			workflow,
 			feedback: rounds.rounds === 0 ? null : feedbackSection(rounds, this.unanswered),
 			note: this.workflow?.workflow.output === 'note' ? this.workflow.name : null,
@@ -1447,7 +1461,7 @@ class FeatureRun {
 			});
 		} else if (paused !== null) {
 			// the Go is back on the Feature, so it reads Paused, now with its pull request
-			await this.notePaused(paused, pausedUntil);
+			await this.notePaused(paused.why, pausedUntil);
 		} else {
 			await writeStatusNote(this.deps, this.feature, {
 				state: 'pull',
@@ -1463,7 +1477,7 @@ class FeatureRun {
 			pull,
 			built: [...this.built],
 			waiting: left,
-			...(paused === null ? {} : { paused })
+			...(paused === null ? {} : { pause: paused })
 		};
 	}
 
@@ -1559,7 +1573,7 @@ class FeatureRun {
 	): Promise<{
 		readonly review: Review | null;
 		readonly sessions: readonly ReviewSession[];
-		readonly paused: string | null;
+		readonly paused: Pause | null;
 		// a person stopped a round, whose work is thrown away
 		readonly stopped: boolean;
 		readonly open: ReviewLeftOpen | null;
@@ -1590,13 +1604,20 @@ class FeatureRun {
 				declined,
 				...this.output,
 				dailyPause: () => this.dailyPause(),
-				allowance: (cap, spent) => deps.spend.allowance(cap, spent),
+				allowance: allowanceOf(deps),
 				fix: (work) => this.fixReviewRound(work, { round, rounds }),
 				log: (entry) => this.log(entry),
 				building: (session) => this.building(null, 'reviewRound', session, { round, rounds })
 			});
 			if (end.kind === 'paused') {
-				return { review, sessions, paused: end.why, stopped: false, open: null, declined };
+				return {
+					review,
+					sessions,
+					paused: { why: end.why, ...resetOf(end) },
+					stopped: false,
+					open: null,
+					declined
+				};
 			}
 			if (end.kind === 'aborted') {
 				return { review, sessions, paused: null, stopped: true, open: null, declined };
@@ -1766,11 +1787,12 @@ interface FixContext {
 async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 	const { deps, setup, tree } = ctx;
 	const { limits, check: command } = setup;
+	const allowance = allowanceOf(deps);
 	const summaries: string[] = [];
 	const work: Work = o.of.kind === 'step' ? 'steps' : 'fix';
 	let { check, spent } = o;
 	for (let round = 1; !check.ok && round <= limits.fixRounds; round += 1) {
-		const { usd: budget, enough } = deps.spend.allowance(o.cap, spent);
+		const { usd: budget, enough } = allowance(o.cap, spent);
 		if (!enough) break;
 		const minutes = minutesLeft(deps.now, o.deadline);
 		if (minutes !== undefined && minutes <= 0) break;
@@ -1787,7 +1809,7 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		const mark = await tree.snapshot();
 		const { outcome: got, earlierUsd } = await retryPassing<FixOutcome>({
 			budgetUsd: budget,
-			enough: (usd) => deps.spend.allowance(usd, 0).enough,
+			enough: (usd) => allowance(usd, 0).enough,
 			reset: () => tree.restore(mark),
 			sleep: deps.sleep,
 			signal: setup.signal,
@@ -1832,7 +1854,7 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		};
 		if (got.kind === 'paused') {
 			ctx.log({ ...entry, outcome: `paused: ${got.why}` }, work);
-			return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
+			return { check, spent, summaries, halt: { kind: 'paused', why: got.why, ...resetOf(got) } };
 		}
 		// the ledger names a fix round that failed or was stopped as one that gave up
 		const gaveUp = got.kind !== 'fixed';
@@ -1905,7 +1927,7 @@ export type PullFixOutcome =
 	  }
 	// the pull request is not Nightjar's to fix after all; nothing was done
 	| { readonly kind: 'skipped'; readonly why: string }
-	| { readonly kind: 'paused'; readonly why: string }
+	| ({ readonly kind: 'paused' } & Pause)
 	| { readonly kind: 'stopped' };
 
 // How a Pull-check fix round that ran ended: the outcomes that are not about a round that never began.
@@ -2195,7 +2217,9 @@ async function pullFixRound(
 	};
 	const halted = async (halt: Halt): Promise<PullFixRound> => {
 		await throwAway(haltWhy(halt));
-		return halt.kind === 'paused' ? { kind: 'paused', why: halt.why } : { kind: 'stopped' };
+		return halt.kind === 'paused'
+			? { kind: 'paused', why: halt.why, ...resetOf(halt) }
+			: { kind: 'stopped' };
 	};
 
 	building();
@@ -2203,7 +2227,9 @@ async function pullFixRound(
 	const deadline = deps.now().getTime() + minutes * 60_000;
 	// why the round stopped short of a green check: one of its own caps, else the fix rounds ran out
 	const stillRed = (spent: number) => {
-		if (!deps.spend.allowance(cap, spent).enough) return `it reached its cap of ${dollars(cap)}`;
+		if (!allowanceOf(deps)(cap, spent).enough) {
+			return `it reached its cap of ${dollars(cap)}`;
+		}
 		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
 		return `\`${setup.check}\` still fails after the fix rounds`;
 	};
@@ -2367,11 +2393,11 @@ async function reviewFeature(
 	show: ShowBuilding,
 	log: (entry: LogEntry) => void,
 	note: Note
-): Promise<Review | null | { readonly paused: string }> {
+): Promise<Review | null | { readonly paused: Pause }> {
 	const before = await tree.head();
 	const { outcome: got } = await retryPassing<ReviewOutcome>({
 		budgetUsd: setup.limits.reviewUsd,
-		enough: (usd) => deps.spend.allowance(usd, 0).enough,
+		enough: (usd) => allowanceOf(deps)(usd, 0).enough,
 		reset: () => tree.revert(before),
 		sleep: deps.sleep,
 		signal: setup.signal,
@@ -2432,7 +2458,7 @@ async function reviewFeature(
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });
-			return { paused: got.why };
+			return { paused: { why: got.why, ...resetOf(got) } };
 		case 'reviewed': {
 			log({ ...entry, outcome: got.review.verdict });
 			const { verdict, summary, issues } = got.review;

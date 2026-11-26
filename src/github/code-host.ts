@@ -14,7 +14,8 @@ import type {
 	OpenPull,
 	Pull,
 	PullChecks,
-	PullCommit
+	PullCommit,
+	PullState
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import { pushFault, type Run } from '../git.js';
@@ -44,6 +45,12 @@ const PullSchema = z.looseObject({
 
 // a pull request as publishing reads it: GraphQL names it by its node id
 const PublishedSchema = z.looseObject({ node_id: z.string(), draft: z.boolean().optional() });
+
+// a single pull request says whether it merged
+const MergedSchema = z.looseObject({
+	merged: z.boolean().optional(),
+	merged_at: z.string().nullish()
+});
 
 const READY_FOR_REVIEW =
 	'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }';
@@ -307,6 +314,19 @@ export class GitHubCodeHost implements CodeHost {
 		);
 		if (raw.mergeable === true) return 'no';
 		return raw.mergeable === false ? 'yes' : 'unknown';
+	}
+
+	async pullState(pull: Pull): Promise<PullState> {
+		const n = String(pull.id);
+		const raw = await this.api.parse(
+			`read pull request #${n}`,
+			[`repos/${this.repo}/pulls/${n}`],
+			MergedSchema
+		);
+		return {
+			merged: raw.merged === true || raw.merged_at != null,
+			commits: await this.commits(pull)
+		};
 	}
 
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {

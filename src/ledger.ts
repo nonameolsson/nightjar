@@ -13,7 +13,16 @@ const EntrySchema = z.looseObject({
 	feature: z.union([z.string(), z.int()]),
 	ticket: z.union([z.string(), z.int()]).nullable(),
 	branch: z.string(),
-	step: z.enum(['build', 'fix', 'review', 'step', 'pullChecks', 'feedback', 'reviewRound']),
+	step: z.enum([
+		'build',
+		'fix',
+		'review',
+		'step',
+		'pullChecks',
+		'feedback',
+		'reviewRound',
+		'retro'
+	]),
 	session: z.string(),
 	costUsd: z.number(),
 	outcome: z.string(),
@@ -145,8 +154,11 @@ export function medianTicketMs(all: readonly Spent[]): number | null {
 }
 
 // Each session's cost, by Feature id and the time it was recorded.
-export function spends(path: string): Spent[] {
-	return readEntries(path).map((e) => ({
+export const spends = (path: string): Spent[] => spentFrom(readEntries(path));
+
+// The same from ledger lines already read.
+export function spentFrom(entries: readonly Entry[]): Spent[] {
+	return entries.map((e) => ({
 		feature: e.feature,
 		branch: e.branch,
 		ticket: e.ticket,

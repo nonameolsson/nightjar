@@ -173,6 +173,19 @@ describe('nightjar logbook --session ID', () => {
 		]);
 	});
 
+	it('names no Feature for a Retro, which works on none', async () => {
+		transcript('retro-1', [assistant({ type: 'text', text: 'Reading the failures' })]);
+		const retro = { feature: '', ticket: null, branch: '', step: 'retro' as const };
+		record(ledgerPath(dir), ran(4, { ...retro, session: 'retro-1', outcome: 'proposed' }));
+		expect(await runNightjar(['logbook', '--session', 'retro-1'], host(dir))).toBe(0);
+		expect(untimed(out.join('\n')).split('\n')).toEqual([
+			'Session retro-1',
+			'<time>  Retro, proposed, $3.00, 1m 02s',
+			'',
+			'Reading the failures'
+		]);
+	});
+
 	it('adds each tool result with --full', async () => {
 		build();
 		expect(await runNightjar(['logbook', '--session', 'session-1', '--full'], host(dir))).toBe(0);

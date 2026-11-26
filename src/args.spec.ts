@@ -51,6 +51,36 @@ describe('parseArgs', () => {
 		expect(parseArgs(['--poll', '60'])).toBe('say what to build');
 	});
 
+	it('reads retro, with --create and the flags a Session takes, and nothing that builds', () => {
+		expect(parseArgs(['retro'])).toEqual({ mode: 'retro', useApiKey: false });
+		expect(parseArgs(['retro', '--create', '--model', 'opus', '--profile', 'work'])).toEqual({
+			mode: 'retro',
+			useApiKey: false,
+			create: true,
+			model: 'opus',
+			profile: 'work'
+		});
+		const alone = 'retro goes alone, with no --watch, --once, Feature or doctor';
+		expect(parseArgs(['retro', '--once'])).toBe(alone);
+		expect(parseArgs(['retro', '42'])).toBe(alone);
+		expect(parseArgs(['doctor', 'retro'])).toBe(alone);
+		expect(parseArgs(['retro', '--poll', '60'])).toBe('--poll goes with --watch only');
+		expect(parseArgs(['--once', '--create'])).toBe('--create goes with retro only');
+	});
+
+	it('reads --parallel with --watch or --once, and refuses it elsewhere or out of range', () => {
+		expect(parseArgs(['--watch', '--parallel', '3'])).toMatchObject({ mode: 'watch', parallel: 3 });
+		expect(parseArgs(['--parallel', '8', '--once'])).toMatchObject({ mode: 'once', parallel: 8 });
+		expect(parseArgs(['--watch'])).not.toHaveProperty('parallel');
+		const only = '--parallel goes with --watch and --once only';
+		expect(parseArgs(['42', '--parallel', '2'])).toBe(only);
+		expect(parseArgs(['doctor', '--parallel', '2'])).toBe(only);
+		expect(parseArgs(['doctor', '42', '--parallel', '2'])).toBe(only);
+		for (const bad of ['0', '9', '1.5', 'many'])
+			expect(parseArgs(['--watch', '--parallel', bad])).toMatch(/from 1 to 8/);
+		expect(parseArgs(['--watch', '--parallel'])).toBe('--parallel needs a value');
+	});
+
 	it('reads --profile with its name', () => {
 		expect(parseArgs(['--once', '--profile', 'work'])).toEqual({
 			mode: 'once',

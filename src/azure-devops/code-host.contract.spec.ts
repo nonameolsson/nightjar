@@ -11,6 +11,7 @@ import {
 	nightjarDraftsContract,
 	openPullsContract,
 	publishContract,
+	pullStateContract,
 	type Given,
 	type Pull
 } from '../index.js';
@@ -209,4 +210,8 @@ describe('AzureReposCodeHost meets the publish contract', { timeout: 30_000 }, (
 
 describe('AzureReposCodeHost meets the botPulls contract', { timeout: 30_000 }, () => {
 	for (const c of botPullsContract) it(c.name, () => c.run(azureReposCodeHost('text')));
+});
+
+describe('AzureReposCodeHost meets the pullState contract', { timeout: 30_000 }, () => {
+	for (const c of pullStateContract) it(c.name, () => c.run(azureReposCodeHost('text')));
 });

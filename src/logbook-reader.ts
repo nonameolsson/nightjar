@@ -143,10 +143,9 @@ export interface LogbookListing {
 	readonly recorded: boolean;
 }
 
-// Every Feature with a Logbook file or ledger lines, the one touched last first.
-export function listLogbooks(root: string): LogbookListing[] {
-	const found = new Map<ItemId, Omit<LogbookListing, 'feature'>>();
-	const later = (a: string, b: string) => (Date.parse(b) > Date.parse(a) ? b : a);
+// Every Logbook file under .factory/logbook/, by Feature: its entries, oldest first. A file whose name does not decode is skipped.
+export function everyLogbook(root: string): Map<ItemId, readonly LogbookEntry[]> {
+	const books = new Map<ItemId, readonly LogbookEntry[]>();
 	let files: string[];
 	try {
 		files = readdirSync(logbookFolder(root));
@@ -162,12 +161,23 @@ export function listLogbooks(root: string): LogbookListing[] {
 		} catch {
 			continue;
 		}
-		const entries = book.read(feature) ?? [];
+		books.set(feature, book.read(feature) ?? []);
+	}
+	return books;
+}
+
+// Every Feature with a Logbook file or ledger lines, the one touched last first.
+export function listLogbooks(root: string): LogbookListing[] {
+	const found = new Map<ItemId, Omit<LogbookListing, 'feature'>>();
+	const later = (a: string, b: string) => (Date.parse(b) > Date.parse(a) ? b : a);
+	for (const [feature, entries] of everyLogbook(root)) {
 		const last = entries.reduce((a, e) => later(a, e.at), entries[0]?.at ?? '');
 		if (last === '') continue;
 		found.set(feature, { lastAt: last, sessions: 0, costUsd: 0, recorded: true });
 	}
 	for (const e of readEntries(ledgerPath(root))) {
+		// a Retro works on no Feature
+		if (e.step === 'retro') continue;
 		const was = found.get(e.feature);
 		found.set(e.feature, {
 			lastAt: was === undefined ? e.at : later(was.lastAt, e.at),

@@ -49,21 +49,24 @@ describe('StatusFile', () => {
 			session: 'abc',
 			startedAt: at.toISOString()
 		});
+		const building = {
+			kind: 'building',
+			feature: '262',
+			ticket: '263',
+			step: 'fix',
+			round: 2,
+			rounds: 3,
+			session: 'abc',
+			startedAt: at.toISOString()
+		};
 		expect(readStatus(path)).toEqual({
 			at: at.toISOString(),
 			pid: 42,
 			spentTodayUsd: 0.4,
 			dailyUsd: 60,
-			doing: {
-				kind: 'building',
-				feature: '262',
-				ticket: '263',
-				step: 'fix',
-				round: 2,
-				rounds: 3,
-				session: 'abc',
-				startedAt: at.toISOString()
-			},
+			doing: building,
+			run: 'building',
+			builds: [building],
 			recent: [],
 			codeMoved: null
 		});
@@ -284,6 +287,127 @@ describe('StatusFile', () => {
 		writeFileSync(broken, '{"at":');
 		expect(readStatus(broken)).toBeNull();
 		expect(file(broken)).toBeInstanceOf(StatusFile);
+	});
+
+	describe('several Slots', () => {
+		const build = (feature: string, over: Partial<Extract<Doing, { kind: 'building' }>> = {}) =>
+			({
+				kind: 'building',
+				feature,
+				ticket: null,
+				step: 'setup',
+				round: null,
+				rounds: null,
+				session: null,
+				startedAt: at.toISOString(),
+				...over
+			}) satisfies Doing;
+
+		it('writes one entry per busy Slot in builds, oldest first, and the oldest in doing', () => {
+			const path = join(dir, 'status.json');
+			const status = file(path);
+			status.doing(build('12'));
+			status.doing(build('15'));
+			const read = readStatus(path);
+			expect(read?.run).toBe('building');
+			expect(read?.builds?.map((b) => b.feature)).toEqual(['12', '15']);
+			expect(read?.doing).toEqual(build('12'));
+			// the older Feature's later update keeps its place
+			status.doing(build('12', { step: 'build' }));
+			expect(readStatus(path)?.builds?.map((b) => b.feature)).toEqual(['12', '15']);
+			// the oldest ends: the next oldest is what `doing` holds
+			status.finished('12');
+			expect(readStatus(path)?.doing).toEqual(build('15'));
+			expect(readStatus(path)?.builds).toEqual([build('15')]);
+		});
+
+		it("changes only its own entry when a Slot's step, round or Session moves", () => {
+			const path = join(dir, 'status.json');
+			const status = file(path);
+			status.doing(build('12'));
+			status.doing(build('15'));
+			const other = build('15', { ticket: '16', step: 'fix', round: 1, rounds: 3, session: 's2' });
+			status.doing(other);
+			status.doing(build('12', { ticket: '13', step: 'build', session: 's1' }));
+			expect(readStatus(path)?.builds).toEqual([
+				build('12', { ticket: '13', step: 'build', session: 's1' }),
+				other
+			]);
+		});
+
+		it('writes run paused with the builds that still run, and the pause', () => {
+			const path = join(dir, 'status.json');
+			const status = file(path);
+			status.doing(build('12'));
+			status.doing(build('15'));
+			status.finished('15');
+			const until = new Date(at.getTime() + 60_000).toISOString();
+			status.doing({ kind: 'paused', why: 'usage limit', until });
+			const read = readStatus(path);
+			expect(read?.run).toBe('paused');
+			expect(read?.builds).toEqual([build('12')]);
+			expect(read?.doing).toEqual(build('12'));
+			expect(read?.pause).toEqual({ why: 'usage limit', until });
+			// a running Session's update does not end the pause
+			status.doing(build('12', { step: 'build' }));
+			expect(readStatus(path)?.run).toBe('paused');
+			// with its last build over, doing is the pause, as before
+			status.finished('12');
+			expect(readStatus(path)?.builds).toEqual([]);
+			expect(readStatus(path)?.doing).toEqual({ kind: 'paused', why: 'usage limit', until });
+			// a Feature that starts once the pause is over ends it
+			status.doing(build('20'));
+			expect(readStatus(path)?.run).toBe('building');
+			expect(readStatus(path)?.pause).toBeUndefined();
+		});
+
+		it("keeps the run's pause and its end when another Slot's Feature pauses inside it, so the pause still ends", () => {
+			const path = join(dir, 'status.json');
+			let now = at;
+			const status = file(path, () => now);
+			status.doing(build('12'));
+			status.doing(build('15'));
+			const until = new Date(at.getTime() + 60_000).toISOString();
+			// the queue pauses the run on #15's usage limit, while #12 still finishes
+			status.doing({ kind: 'paused', why: 'usage limit', until });
+			// #12's Session reaches the limit too, and its Feature writes a pause with no time
+			status.doing({ kind: 'paused', why: 'usage limit again', until: null });
+			expect(readStatus(path)?.pause).toEqual({ why: 'usage limit', until });
+			// once the time passes the pause ends, though #12 still runs
+			now = new Date(at.getTime() + 61_000);
+			status.doing(build('12', { step: 'build' }));
+			expect(readStatus(path)?.run).toBe('building');
+			expect(readStatus(path)?.pause).toBeUndefined();
+			// a Feature's pause with no run's pause held stands, until the queue gives it a time
+			status.doing({ kind: 'paused', why: 'day over', until: null });
+			expect(readStatus(path)?.pause).toEqual({ why: 'day over', until: null });
+			const later = new Date(now.getTime() + 60_000).toISOString();
+			status.doing({ kind: 'paused', why: 'day over', until: later });
+			expect(readStatus(path)?.pause).toEqual({ why: 'day over', until: later });
+		});
+
+		it('writes the run as idle or off with no builds', () => {
+			const path = join(dir, 'status.json');
+			const status = file(path);
+			status.doing(build('12'));
+			status.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+			expect(readStatus(path)).toMatchObject({ run: 'idle', builds: [] });
+			status.doing(build('12'));
+			status.doing({ kind: 'off' });
+			expect(readStatus(path)).toMatchObject({ run: 'off', builds: [], doing: { kind: 'off' } });
+		});
+
+		it("lists every building Feature's waiting Tickets in Waiting on you", () => {
+			const path = join(dir, 'status.json');
+			const status = file(path);
+			status.refreshed([], { items: [], trackerCannotList: false });
+			const waiting = (id: string): TicketProgress[] => [
+				{ id, title: `T${id}`, state: 'waiting', why: 'needs info' }
+			];
+			status.doing(build('12', { tickets: waiting('13') }));
+			status.doing(build('15', { tickets: waiting('16') }));
+			expect(readStatus(path)?.waitingOnYou?.items.map((i) => i.id)).toEqual(['13', '16']);
+		});
 	});
 
 	it('says whether the run is --watch, so a view can tell when the next poll comes', () => {

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Env } from './git.js';
+import type { Spend } from './spend.js';
 import type { ModelUsage } from './spend.js';
 
 export interface SessionRequest {
@@ -50,11 +51,48 @@ export type Settled =
 			readonly failure: Failure;
 	  }
 	| { readonly kind: 'api-key' }
-	| { readonly kind: 'rate-limited'; readonly resetsAt: number | null };
+	| { readonly kind: 'rate-limited'; readonly resetsAt: number | null }
+	// it never started: the day's spend reached the limit while it waited for room beside the Sessions running in other Slots, or a person stopped the run
+	| { readonly kind: 'day-over'; readonly why: string };
 
 export type SessionResult = Settled & { readonly sessionId: string };
 
 export type Session = (req: SessionRequest) => Promise<SessionResult>;
+
+// A Session whose cap counts as spent against `dailyUsd` from its start until it ends, when its ledger line takes its place. The check and the hold are one step, so two Slots cannot both start a Session on the same dollars. One that does not fit beside the other Slots' waits until one of them gives its cap back, and tries again: the caps held never pause the run. Only once the day's own spend reaches the limit, or a person stops the run, does it settle as `day-over` without starting.
+export function heldSession(
+	run: Session,
+	spend: Pick<Spend, 'hold' | 'freed' | 'dayOver'>,
+	now: () => Date,
+	dailyUsd: number
+): Session {
+	return async (req) => {
+		// a Session that has to wait gives up once the day is over or the run stops, before and after each wait
+		const givesUp = (why: string): SessionResult | null => {
+			const over = spend.dayOver(now(), dailyUsd);
+			if (over === null && req.signal?.aborted !== true) return null;
+			return { kind: 'day-over', why: over ?? why, sessionId: req.resume ?? req.sessionId };
+		};
+		for (;;) {
+			const hold = spend.hold(req.budgetUsd, now(), dailyUsd);
+			if (typeof hold !== 'string') {
+				try {
+					const got = await run(req);
+					// its ledger line comes later, so what it spent stays counted until then
+					if ('costUsd' in got) hold.settle(got.sessionId, got.costUsd);
+					return got;
+				} finally {
+					hold.release();
+				}
+			}
+			const before = givesUp(hold);
+			if (before !== null) return before;
+			await spend.freed(req.signal);
+			const after = givesUp(hold);
+			if (after !== null) return after;
+		}
+	};
+}
 
 export function sessionArgs(req: SessionRequest): string[] {
 	const args = [

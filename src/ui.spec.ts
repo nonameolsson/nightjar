@@ -10,7 +10,7 @@ import { fileLogbook, type Decision, type Place } from './logbook.js';
 import { featureAfterRunStep, ticketStep } from './next-step.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
-import { StatusFile } from './status.js';
+import { StatusFile, type Building } from './status.js';
 import { statusNoteText } from './status-note.js';
 import { readFactory } from './status-reader.js';
 import { logbookPage, logbookSection, renderPanels, sessionPage, startUi, type Ui } from './ui.js';
@@ -1489,6 +1489,110 @@ describe('nightjar ui board', () => {
 		expect(panel).toContain('$1.18');
 		expect(panel).toContain('<pre>');
 		expect(panel).toContain('tail line &#60;one&#62;');
+	});
+
+	describe('several builds', () => {
+		const build = (feature: string, session: string, startedAt: Date): Building => ({
+			kind: 'building',
+			feature,
+			title: `Feature ${feature}`,
+			ticket: '1',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session,
+			startedAt: startedAt.toISOString(),
+			tickets: [{ id: '1', title: 'Only', state: 'building' }]
+		});
+		const log = (session: string, text: string) => {
+			mkdirSync(join(root, '.factory', 'logs'), { recursive: true });
+			writeFileSync(
+				join(root, '.factory', 'logs', `${session}.jsonl`),
+				JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
+			);
+		};
+		const panels = (page: string) =>
+			page
+				.split('<aside class="detail"')
+				.slice(1)
+				.map((p) => p.split('</aside>')[0] ?? '');
+		const mat = (page: string) =>
+			page.split('<section class="mat" data-state="building"')[1]?.split('</section>')[0] ?? '';
+
+		it('shows one panel per build, oldest first, each with its own Session tail', async () => {
+			log('first', 'tail of the first');
+			log('second', 'tail of the second');
+			const file = status();
+			file.doing(build('12', 'first', new Date(2026, 9, 30, 8, 0)));
+			file.doing(build('15', 'second', new Date(2026, 9, 30, 8, 30)));
+			await open();
+			const page = (await get('/')).text;
+			const [one, two, ...more] = panels(page);
+			expect(more).toEqual([]);
+			expect(one).toContain('Feature 12');
+			expect(one).toContain('tail of the first');
+			expect(one).not.toContain('tail of the second');
+			expect(two).toContain('Feature 15');
+			expect(two).toContain('tail of the second');
+			expect(two).not.toContain('tail of the first');
+			expect(page).toContain('<div class="cols has-detail">');
+			// the overview's blocks follow the same order
+			const overview = page.split('<section id="current">')[1] ?? '';
+			expect(overview.indexOf('Feature 12')).toBeLessThan(overview.indexOf('Feature 15'));
+			expect(overview).toContain('tail of the second');
+		});
+
+		it('holds a row per build in the Building Mat, tallies them and lists each in the Table', async () => {
+			const file = status();
+			file.doing(build('12', 'first', new Date(2026, 9, 30, 8, 0)));
+			file.doing(build('15', 'second', new Date(2026, 9, 30, 8, 30)));
+			await open();
+			const page = (await get('/')).text;
+			const building = mat(page);
+			expect(building).toContain('<i class="tally">2</i>');
+			expect(building.match(/<article class="entry building">/g)).toHaveLength(2);
+			expect(building.indexOf('Feature 12')).toBeLessThan(building.indexOf('Feature 15'));
+			expect(page.match(/<tr data-state="building"/g)).toHaveLength(2);
+		});
+
+		it("says a paused run's running build is finishing", async () => {
+			const file = status();
+			file.doing(build('12', 'first', new Date(2026, 9, 30, 8, 0)));
+			file.doing({
+				kind: 'paused',
+				why: 'plan usage limit',
+				until: new Date(2026, 9, 30, 12).toISOString()
+			});
+			await open();
+			const page = (await get('/')).text;
+			expect(page).toContain('<span class="state">paused</span>');
+			expect(page).toContain('plan usage limit');
+			expect(panels(page)).toHaveLength(1);
+			expect(panels(page)[0]).toContain('Finishing: ');
+			expect(mat(page)).toContain('Finishing');
+			expect(mat(page)).not.toContain('>Building</p>');
+		});
+
+		it('shows one panel from an older file that lacks builds', async () => {
+			mkdirSync(join(root, '.factory'), { recursive: true });
+			log('old', 'tail of the old one');
+			writeFileSync(
+				join(root, '.factory', 'status.json'),
+				JSON.stringify({
+					at: at.toISOString(),
+					pid: 42,
+					spentTodayUsd: 0,
+					dailyUsd: 8,
+					doing: build('12', 'old', new Date(2026, 9, 30, 8, 0)),
+					recent: []
+				})
+			);
+			await open();
+			const page = (await get('/')).text;
+			expect(panels(page)).toHaveLength(1);
+			expect(panels(page)[0]).toContain('tail of the old one');
+			expect(mat(page)).toContain('<i class="tally">1</i>');
+		});
 	});
 
 	it('reads the Board with Waiting on you first, then Building, Queue, Shelf and Completed', async () => {

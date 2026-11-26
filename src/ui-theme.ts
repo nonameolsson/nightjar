@@ -82,7 +82,7 @@ h1 { font-size: 16px; font-weight: 600; }
 header span { color: var(--muted); font-size: 12px; }
 header .state { background: var(--surface-3); border-radius: 9999px; color: var(--ink); font-size: 11.5px; font-weight: 500; padding: 1px 8px; }
 header .stale { color: var(--ask); }
-#cards { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 4px 20px; margin: 0; padding: 2px 0 10px; }
+#cards, #measures .stats { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 4px 20px; margin: 0; padding: 2px 0 10px; }
 .stat b { color: var(--ink); font-weight: 500; }
 .empty, small, .meta { color: var(--muted); }
 small { font-size: 12px; }
@@ -119,7 +119,8 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .tab h2 { font-size: 12px; font-weight: 500; }
 .tally { color: var(--muted); font-size: 12px; font-style: normal; font-weight: 500; }
 .lines { padding: 2px 0; }
-.entry { align-items: first baseline; border-radius: 6px; display: grid; gap: 6px 20px; grid-template-areas: "who clock" "eggs eggs" "now now"; grid-template-columns: minmax(0, 1fr) auto; min-height: 44px; overflow-wrap: anywhere; padding: 8px 10px; }
+.entry { --title-in: 46px; align-items: first baseline; display: grid; gap: 6px 20px; grid-template-areas: "who clock" "eggs eggs" "now now"; grid-template-columns: minmax(0, 1fr) auto; min-height: 44px; overflow-wrap: anywhere; padding: 10px; }
+.lines > .entry + .entry { border-top: 1px solid var(--line); }
 .entry:hover { background: var(--surface-2); }
 .lines > .empty { padding: 8px 10px; }
 .more { color: var(--muted); font-size: 12px; margin: 0; padding: 8px 10px; }
@@ -130,14 +131,17 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .eggcell { grid-area: eggs; }
 .now { grid-area: now; }
 .clock { grid-area: clock; }
+.entry:has(> .under) { grid-template-areas: "who clock" "eggs eggs" "now now" "under under"; }
 @container board (min-width: 620px) {
 	.entry { grid-template-areas: "who now clock" "eggs now clock"; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 7.5rem; }
+	.entry:has(> .under) { grid-template-areas: "who now clock" "eggs now clock" "under under under"; }
 }
 @container board (min-width: 832px) {
 	.entry { grid-template-areas: "who eggs now clock"; grid-template-columns: minmax(0, 1.1fr) 12rem minmax(0, 1fr) 7.5rem; }
+	.entry:has(> .under) { grid-template-areas: "who eggs now clock" "under eggs now clock"; }
 	.head { display: grid; }
 }
-.who { font-size: 13.5px; font-weight: 500; padding-left: 46px; text-indent: -46px; }
+.who { font-size: 13.5px; font-weight: 500; padding-left: var(--title-in); text-indent: calc(-1 * var(--title-in)); }
 .who > * { text-indent: 0; }
 .who b { color: var(--muted); display: inline-block; font-size: 12.5px; font-weight: 400; margin-right: 6px; min-width: 40px; }
 .eggcell .meta { font-size: 12px; margin-top: 4px; }
@@ -145,9 +149,11 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .now .label .egg { margin-right: 6px; }
 .now p:not(.label) { color: var(--muted); font-size: 12px; }
 .clock { color: var(--muted); font-size: 12px; text-align: right; }
-.entry > ul, .entry > .next { grid-column: 1 / -1; }
-.next { color: var(--muted); font-size: 12.5px; margin: 2px 0 0; }
-.next p { margin: 6px 0 2px; }
+.under { grid-area: under; max-width: 88ch; padding-left: var(--title-in); }
+.under > p { font-size: 12.5px; margin-top: 2px; }
+.under > p + .next > p { margin-top: 8px; }
+.next { color: var(--muted); font-size: 12.5px; margin: 0; }
+.next p { margin: 4px 0 2px; }
 .next ol { list-style: decimal; margin: 0; padding-left: 1.6em; }
 .next li { padding: 1px 0; }
 .tickets .reason { color: var(--muted); font-size: 12.5px; }
@@ -218,7 +224,7 @@ a.act::after { background: currentColor; color: var(--muted); content: ""; heigh
 button.why { align-items: center; flex-wrap: wrap; background: none; border: 0; color: inherit; cursor: pointer; display: inline-flex; font: inherit; padding: 2px 0; text-align: left; }
 button.why span { color: var(--muted); flex-basis: 100%; font-weight: 400; padding: 2px 0 0 20px; text-decoration: underline dotted; text-underline-offset: 2px; white-space: nowrap; }
 button.why[aria-expanded="true"] span { color: var(--ink); }
-.entry > .help { background: var(--ask-bg); border-radius: 6px; font-size: 12.5px; grid-column: 1 / -1; max-width: 72ch; padding: 8px 12px; }
+.entry > .help { background: var(--ask-bg); border-radius: 6px; font-size: 12.5px; grid-column: 1 / -1; margin: 4px 0 2px var(--title-in); max-width: 72ch; padding: 8px 12px; }
 .help p { margin: 4px 0; }
 .help p:last-child { color: var(--muted); }
 .help ol { list-style: decimal; margin: 6px 0; padding-left: 1.3rem; }
@@ -269,7 +275,7 @@ button.close:hover { background: var(--surface-2); }
 .cost summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
 .cost summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
-.entry > .cost { grid-column: 1 / -1; }
+.entry > .cost { grid-column: 1 / -1; padding-left: var(--title-in); }
 .split { font-size: 12px; font-variant-numeric: tabular-nums; max-width: 40rem; padding: 2px 0; }
 .split-head { color: var(--muted); font-size: 12px; font-weight: 500; margin: 8px 0 2px; }
 .split dl { margin: 0; }
@@ -301,7 +307,7 @@ td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: 
 }
 @media (max-width: 760px) {
 	body { --gut: 12px; }
-	#cards { gap: 2px 14px; }
+	#cards, #measures .stats { gap: 2px 14px; }
 	.mark { display: none; }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }

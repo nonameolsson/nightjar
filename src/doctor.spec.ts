@@ -151,6 +151,24 @@ describe('nightjar doctor', () => {
 		expect(m.calls('claude')).toMatch(/auth status --json \[dir= token=\]/);
 	});
 
+	it("says how many Slots the person's config.json sets", async () => {
+		m = machine();
+		m.writeConfig(GITHUB);
+		const person = (value: unknown) => {
+			mkdirSync(join(m.env.HOME ?? '', '.config', 'nightjar'), { recursive: true });
+			writeFileSync(
+				join(m.env.HOME ?? '', '.config', 'nightjar', 'config.json'),
+				JSON.stringify(value)
+			);
+		};
+		expect(await start()).toBe(0);
+		expect(out.join('\n')).toMatch(/config\.json: .*, 1 Slot,/);
+		out.length = 0;
+		person({ parallel: 3 });
+		expect(await start()).toBe(0);
+		expect(out.join('\n')).toMatch(/config\.json: .*, 3 Slots,/);
+	});
+
 	it('refuses a repo with no check command, reaching no Tracker', async () => {
 		m = machine();
 		const { check: _check, ...without } = GITHUB;

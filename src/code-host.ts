@@ -122,6 +122,14 @@ export interface BotPull {
 // Whether a pull request conflicts with its base branch; unknown while the host has not worked it out.
 export type ConflictState = 'yes' | 'no' | 'unknown';
 
+// What the Measures read of one pull request, whoever opened it.
+export interface PullState {
+	// whether it was merged; a pull request still open, or closed without merging, is not
+	readonly merged: boolean;
+	// the commits on its branch that its base lacked, oldest first, as `commits` of a draft lists them. Nightjar makes its commits under the person's own git identity, so an author's name cannot tell them apart: a commit is Nightjar's when its message carries a `Factory-` trailer.
+	readonly commits: readonly PullCommit[];
+}
+
 export interface CodeHost {
 	// pushes the worktree's HEAD in `folder` to `branch` on the host
 	push(folder: string, branch: string): Promise<void>;
@@ -147,4 +155,6 @@ export interface CodeHost {
 	publish?(pull: Pull): Promise<void>;
 	// optional, so a Code host module written before it still loads: the open pull requests, draft or not, of this repo's own branches that start with any of `prefixes`, oldest first, with the Pull checks on each head commit; one from a fork is left out. A Code host without it cannot serve a botPulls Source.
 	botPulls?(prefixes: readonly string[]): Promise<BotPull[]>;
+	// optional, so a Code host module written before it still loads: whether the pull request was merged, and its commits, read now, whatever its state; a Code host without it shows no Autonomy in `nightjar ui`'s Measures
+	pullState?(pull: Pull): Promise<PullState>;
 }

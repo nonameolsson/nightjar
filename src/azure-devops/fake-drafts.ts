@@ -42,6 +42,7 @@ export function azureReposDrafts(ado: FakeAzureDevOps): DraftsWorld {
 		engage: (pull) => done(() => ado.sayOnPull(pull.id, 'bea@contoso.com', 'Why this change?')),
 		ready: (pull) => done(() => ado.markReady(pull.id)),
 		closePull: (pull) => done(() => ado.abandon(pull.id)),
+		merge: (pull) => done(() => ado.complete(pull.id)),
 		fork: (pull) => done(() => ado.fork(pull.id))
 	};
 }
