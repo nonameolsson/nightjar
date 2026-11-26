@@ -107,6 +107,27 @@ export const pushRejectedStep = (n: SignalNames, side: string): NextStep => [
 	`${HAND_BACK} to have Nightjar build on top of your commits, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Or carry on by hand.`
 ];
 
+// A run that paused for a reason of the machine or the plan: the Go stays on the Feature, so the person has nothing to do. `retries` when the run tries the Feature again on its own, at the time the Status note gives.
+export const pausedStep = (retries: boolean): NextStep => [
+	retries
+		? 'Nothing to do: the Go stays on this Feature, and Nightjar tries it again then, going on from the branch.'
+		: 'Nothing to do now: the Go stays on this Feature, and Nightjar goes on from the branch the next time it runs.'
+];
+
+// A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix is handed back by taking needs-info off alone, as no Go starts that pass.
+export function faultStep(
+	n: SignalNames,
+	o: { readonly passing: boolean; readonly pullFix: boolean }
+): NextStep {
+	const task = o.passing
+		? 'Nothing to fix first: this kind of fault usually goes away by itself.'
+		: 'Fix what the fault above names first: in the repo, in its setup, or on the machine that ran Nightjar.';
+	const back = o.pullFix
+		? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries a Pull-check fix again the next time it runs.`
+		: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
+	return [task, back];
+}
+
 // A person stopped the run: whatever made them stop is theirs to settle before the Go.
 export const stoppedStep = (n: SignalNames): NextStep => [
 	'Settle whatever made you stop the run, on the branch or in the Tickets.',

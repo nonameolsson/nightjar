@@ -10,8 +10,9 @@ import {
 } from './build.js';
 import type { ChangeRequest, CodeHost, NightjarDraft, OpenPull } from './code-host.js';
 import { AUTOMATIC_ROUNDS, feedbackHistory, newRequest } from './feedback-round.js';
+import { BuildFault, faultAsk, passingFault } from './fault.js';
 import { FOOTER } from './footer.js';
-import { featureStopStep, feedbackLimitStep, nextStepText } from './next-step.js';
+import { faultStep, feedbackLimitStep } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { markPublished, readyToPublish } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
@@ -153,7 +154,7 @@ async function publishNext(
 	}
 }
 
-// Hands a Feature back to a person after a fault: the claim and the Go off, needs info on, the reason said.
+// Hands a Feature back to a person after a fault: the claim and the Go off, needs info on, and a new comment and the Status note naming where the fault happened, from a BuildFault, and whether giving the Go again is likely to help. The stack trace is in the Logbook, never here.
 // A paused build puts the Go back before it pushes, so a fault after that would otherwise build it again on every pass.
 export async function handBack(
 	deps: QueueDeps,
@@ -164,7 +165,14 @@ export async function handBack(
 	const { tracker } = deps;
 	const { id, title } = feature;
 	const reason = why(fault);
-	const next = deps.signals === undefined ? undefined : featureStopStep(deps.signals);
+	const at = fault instanceof BuildFault ? fault : null;
+	const next =
+		deps.signals === undefined
+			? undefined
+			: faultStep(deps.signals, {
+					passing: passingFault(fault),
+					pullFix: at?.place.kind === 'pullFix'
+				});
 	deps.say(`#${id} failed: ${reason}`);
 	deps.status.happened({
 		kind: 'failed',
@@ -178,8 +186,20 @@ export async function handBack(
 		await tracker.removeSignal(id, 'working');
 		await tracker.removeSignal(id, 'go');
 		await tracker.addSignal(id, 'needsInfo');
-		const step = next === undefined ? '' : `\n\n${nextStepText(next)}`;
-		await tracker.comment(id, `Nightjar stopped on a fault: ${reason}${step}${FOOTER}`);
+		await askAPerson(
+			deps,
+			{ id },
+			{
+				ask: faultAsk({
+					fault,
+					place: at?.place ?? null,
+					pull: at?.pull ?? null,
+					next: next ?? []
+				}),
+				tickets: at?.tickets ?? [],
+				session: at?.session ?? null
+			}
+		);
 	} catch {
 		// the Tracker itself may be the fault
 	}
@@ -340,6 +360,21 @@ async function revisit(
 		tried.add(triedKey(red.draft));
 		const reason = why(fault);
 		deps.say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
+		// a fault from before the round named itself is still the Pull-check fix's
+		const at =
+			fault instanceof BuildFault
+				? fault
+				: new BuildFault(fault, {
+						place: { kind: 'pullFix', round: null },
+						tickets: [],
+						session: null,
+						pull: red.draft.pull.url
+					});
+		const title = await deps.tracker.feature(red.feature).then(
+			(f) => f.title,
+			() => ''
+		);
+		await handBack(deps, { id: red.feature, title }, at);
 		return { kind: 'skipped', why: reason };
 	}
 }
@@ -487,7 +522,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(pollMs, stop);
 	};
-	// the Features told why they paused on this run, so a retry every PAUSE_MS does not comment each time
+	// the Features told why they paused on this run, so a retry every PAUSE_MS does not comment each time; only a Tracker without a Status note is told in a comment, as the build's note says it on one that keeps one
 	const toldPaused = new Set<string>();
 	// Why a piece of work paused the run: a build that stopped before its pull request, or one that opened it and then paused.
 	const pausedBy = (outcome: FeatureOutcome | null) =>
@@ -498,7 +533,7 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 				: undefined;
 	const pauseFor = async (feature: Named, reason: string) => {
 		const key = `${feature.id} ${reason}`;
-		if (!toldPaused.has(key)) {
+		if (deps.tracker.statusNote === undefined && !toldPaused.has(key)) {
 			toldPaused.add(key);
 			try {
 				await deps.tracker.comment(

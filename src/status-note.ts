@@ -39,6 +39,8 @@ export interface LogbookPointer {
 // Everything a Status note says, in the order it says it.
 export interface StatusNote {
 	readonly state: NoteState;
+	// when a paused run tries the Feature again, as an ISO date; left out when nothing tries it again on its own
+	readonly until?: string;
 	// one sentence that says what the state means for this Feature now
 	readonly sentence: string;
 	// a Lone issue is its own Ticket, so it lists none
@@ -51,9 +53,12 @@ export interface StatusNote {
 	readonly logbook: LogbookPointer;
 }
 
-// The state word and the sentence, the line the note opens with and the pull request body will too.
-export const headline = (state: NoteState, sentence: string): string =>
-	`**${STATE_WORDS[state]}**: ${sentence}`;
+// A time as a teammate anywhere reads it: the date, the hour and minute, in UTC.
+export const untilText = (at: string): string => `${at.slice(0, 10)} ${at.slice(11, 16)} UTC`;
+
+// The state word and the sentence, the line the note opens with and the pull request body will too; a pause says until when, as "**Paused** until <time>: <why>".
+export const headline = (state: NoteState, sentence: string, until?: string): string =>
+	`**${STATE_WORDS[state]}**${until === undefined ? '' : ` until ${untilText(until)}`}: ${sentence}`;
 
 // The Building sentence: which Ticket the run is on, as "Ticket 3 of 5: <title>", and the try when a passing fault has the Session run again. `ticket` is null for a Lone issue, which is its own Ticket and has no place in a list.
 export function buildingSentence(at: {
@@ -144,7 +149,7 @@ export function waitingCommentText(c: WaitingComment): string {
 const day = (at: string) => at.slice(0, 10);
 
 export function statusNoteText(note: StatusNote): string {
-	const parts = [`${STATUS_MARKER}\n${headline(note.state, note.sentence)}`];
+	const parts = [`${STATUS_MARKER}\n${headline(note.state, note.sentence, note.until)}`];
 	if (note.tickets.length > 0) {
 		parts.push(`**Tickets**\n\n${note.tickets.map(ticketLine).join('\n')}`);
 	}

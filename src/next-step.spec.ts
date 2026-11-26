@@ -114,7 +114,22 @@ describe('next steps', () => {
 			['a thrown-away Feedback round', next.feedbackStep(names), 'Read why above'],
 			['the Feedback limit', next.feedbackLimitStep(names), 'Answer the requests for changes'],
 			['a rejected push', next.pushRejectedStep(names, 'side'), 'Look at `side`'],
-			['stopped by a person', next.stoppedStep(names), 'Settle whatever made you stop']
+			['stopped by a person', next.stoppedStep(names), 'Settle whatever made you stop'],
+			[
+				'a lasting fault',
+				next.faultStep(names, { passing: false, pullFix: false }),
+				'Fix what the fault above names first'
+			],
+			[
+				'a passing fault',
+				next.faultStep(names, { passing: true, pullFix: false }),
+				'Nothing to fix first'
+			],
+			[
+				'a fault in a Pull-check fix',
+				next.faultStep(names, { passing: false, pullFix: true }),
+				'Fix what the fault above names first'
+			]
 		];
 
 		it.each(variants)('%s: task first, hand-back last', (_name, step, task) => {
@@ -131,6 +146,22 @@ describe('next steps', () => {
 			expect(last).toContain('add `run-it`');
 			expect(next.stoppedStep(renamed).at(-1)).toContain('add `run-it`');
 		});
+	});
+
+	it('gives the Go back after a fault in a build, and only takes needs-info off after one in a Pull-check fix', () => {
+		const build = next.faultStep(renamed, { passing: true, pullFix: false }).at(-1) ?? '';
+		expect(build).toContain('remove `stuck` and add `run-it`');
+		const pullFix = next.faultStep(renamed, { passing: true, pullFix: true }).at(-1) ?? '';
+		expect(pullFix).toContain('remove `stuck`');
+		expect(pullFix).not.toContain('run-it');
+		expect(pullFix).toContain('Nightjar tries a Pull-check fix again');
+	});
+
+	it('tells a person a pause asks nothing of them, and when Nightjar goes on', () => {
+		expect(next.pausedStep(true)).toEqual([
+			'Nothing to do: the Go stays on this Feature, and Nightjar tries it again then, going on from the branch.'
+		]);
+		expect(next.pausedStep(false)[0]).toContain('the next time it runs');
 	});
 
 	it('hands a person the red Pull checks, and says the Go builds the branch with its fix rounds still counted', () => {

@@ -584,7 +584,7 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 
 ## The Logbook
 
-A Feature's **Logbook** is every session Nightjar spent on it and each decision it made between them, in order: each red check with the gate report its fix round was handed, work thrown away and why, each Step's verdict, the Review's issues, each Feedback round, the Signals it put on or took off, the draft pull request, a pause or a hand-over to a person. It stays on your machine: nothing of it is posted to the pull request or the Tracker. `nightjar ui` shows it at `/features/<id>`, from each Feature's card on the Board and from the list of all Logbooks.
+A Feature's **Logbook** is every session Nightjar spent on it and each decision it made between them, in order: each red check with the gate report its fix round was handed, work thrown away and why, each Step's verdict, the Review's issues, each Feedback round, the Signals it put on or took off, the draft pull request, a pause or a hand-over to a person, and a fault that stopped the build with where it happened and its stack trace. It stays on your machine: nothing of it is posted to the pull request or the Tracker. `nightjar ui` shows it at `/features/<id>`, from each Feature's card on the Board and from the list of all Logbooks.
 
 On a terminal, from anywhere inside the repo, with no login (it reads `.factory/` and calls neither the Tracker nor the Code host):
 

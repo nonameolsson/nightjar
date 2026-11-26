@@ -8,6 +8,7 @@ import {
 	headline,
 	logbookLine,
 	statusNoteText,
+	untilText,
 	waitingCommentText,
 	type NoteState,
 	type StatusNote,
@@ -51,6 +52,24 @@ describe('buildingSentence', () => {
 		expect(buildingSentence({ ticket: null, retry: { attempt: 3, of: 3 } })).toBe(
 			'Nightjar is building this issue, retrying after a fault (try 3 of 3).'
 		);
+	});
+});
+
+describe('a paused note', () => {
+	it('says until when, in UTC, between the state word and the sentence', () => {
+		const note = text({
+			state: 'paused',
+			until: '2026-10-30T09:30:00.000Z',
+			sentence: 'The plan’s usage limit was reached.'
+		});
+		expect(note.split('\n')[1]).toBe(
+			'**Paused** until 2026-10-30 09:30 UTC: The plan’s usage limit was reached.'
+		);
+	});
+
+	it('gives no time when nothing tries the Feature again on its own', () => {
+		expect(headline('paused', 'The day is over.')).toBe('**Paused**: The day is over.');
+		expect(untilText('2026-10-30T21:05:59.000Z')).toBe('2026-10-30 21:05 UTC');
 	});
 });
 

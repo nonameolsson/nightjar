@@ -124,6 +124,26 @@ describe('decisionText', () => {
 			[
 				{ kind: 'handed', to: 'human', why: 'needs a login' },
 				'Handed to a person with `ready-for-human`: needs a login'
+			],
+			[
+				{
+					kind: 'fault',
+					place: 'in the Review',
+					why: 'the disk is full',
+					passing: false,
+					stack: 'Error: the disk is full\n    at run (x.js:1:1)'
+				},
+				'Stopped on a fault in the Review: the disk is full',
+				'Stack trace: Error: the disk is full\n    at run (x.js:1:1)'
+			],
+			[
+				{
+					kind: 'fault',
+					place: 'while setting up the Feature',
+					why: 'read ECONNRESET',
+					passing: true
+				},
+				'Stopped on a fault while setting up the Feature: read ECONNRESET (a passing fault)'
 			]
 		];
 		for (const [decision, line, more] of cases) {

@@ -9,6 +9,14 @@ import {
 	type ReviewOutcome
 } from './coding-agent.js';
 import { DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
+import {
+	BuildFault,
+	passingFault,
+	placeText,
+	stackOf,
+	type FaultPlace,
+	type FaultRun
+} from './fault.js';
 import { pullChecksReport } from './gate.js';
 import {
 	feedbackRound,
@@ -47,6 +55,7 @@ import {
 	feedbackStep,
 	nextStepText,
 	noteStep,
+	pausedStep,
 	pullChecksStep,
 	pushRejectedStep,
 	reviewStep,
@@ -168,6 +177,8 @@ export interface Deps {
 	readonly sessionExists: (id: string) => boolean;
 	readonly say: (line: string) => void;
 	readonly status: StatusReport;
+	// how long the run waits after a pause before it tries the Feature again, which the Status note gives as the time it is paused until; left out where nothing tries it again on its own, as under --once
+	readonly pauseMs?: number;
 }
 
 export interface Setup extends WorkflowSettings {
@@ -271,19 +282,65 @@ export interface Asked {
 	readonly asked: string;
 }
 
+// What a fault that escapes the build names: where the run is now, and what its Status note lists.
+interface Whereabouts {
+	now: () => FaultRun;
+}
+
+const SETUP: FaultPlace = { kind: 'setup' };
+
+// A fault that escaped the build, written to the Feature's Logbook with its stack trace and thrown again as a BuildFault that names where it happened. `note` is null before the Feature is known.
+function faultAt(fault: unknown, run: FaultRun, note: Note | null): BuildFault {
+	if (fault instanceof BuildFault) return fault;
+	const stack = stackOf(fault);
+	try {
+		note?.({
+			kind: 'fault',
+			place: placeText(run.place),
+			why: why(fault),
+			passing: passingFault(fault),
+			...(stack === undefined ? {} : { stack }),
+			...(run.session === null ? {} : { session: run.session })
+		});
+	} catch {
+		// the Logbook itself may be the fault
+	}
+	return new BuildFault(fault, run);
+}
+
+// One Feature built. A fault that escapes it is thrown as a BuildFault, which names where in the build it happened.
 export async function buildFeature(
 	deps: Deps,
 	setup: Setup,
 	id: ItemId,
 	started?: Asked
 ): Promise<FeatureOutcome> {
+	const feature = await deps.tracker.feature(id);
+	const note = noteFor(deps.logbook, feature.id, deps.now);
+	const where: Whereabouts = {
+		now: () => ({ place: SETUP, tickets: [], session: null, pull: null })
+	};
+	try {
+		return await startFeature(deps, setup, feature, note, where, started);
+	} catch (fault) {
+		throw faultAt(fault, where.now(), note);
+	}
+}
+
+async function startFeature(
+	deps: Deps,
+	setup: Setup,
+	feature: Feature,
+	note: Note,
+	where: Whereabouts,
+	started?: Asked
+): Promise<FeatureOutcome> {
 	const { tracker } = deps;
-	const feature = await tracker.feature(id);
+	const { id } = feature;
 	const branch = branchFor(feature.id, feature.title);
 	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
 	// the Feature's start, before anything else reads the clock
 	const show = buildingOf(feature, deps.now);
-	const note = noteFor(deps.logbook, feature.id, deps.now);
 	const signals = signalsOf(tracker, feature.id, note);
 	const chosen = chooseWorkflow(setup, feature.body);
 	note({
@@ -341,6 +398,12 @@ export async function buildFeature(
 		setup.env
 	);
 	const built = await tree.built();
+	where.now = () => ({
+		place: SETUP,
+		tickets: noteTickets(feature, tickets, built),
+		session: null,
+		pull: null
+	});
 	// the Tickets are planned once the branch says which are built
 	deps.status.doing(settingUp(progress(tickets, built, null)));
 	await writeStatusNote(deps, feature, {
@@ -377,6 +440,7 @@ export async function buildFeature(
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
 	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show, started);
+	where.now = () => run.whereabouts();
 	return run.build();
 }
 
@@ -451,7 +515,7 @@ interface Asking {
 // The Status note of a Feature that needs a person: Waiting on you, with the same sentence and Next step as the comment that asked.
 function noteWaiting(
 	deps: Pick<Deps, 'tracker' | 'say'>,
-	feature: Feature,
+	feature: Pick<Feature, 'id'>,
 	o: Asking
 ): Promise<void> {
 	const { ask } = o;
@@ -469,7 +533,7 @@ function noteWaiting(
 // A Feature that needs a person: a new comment that notifies them, and its Status note saying Waiting on you.
 export async function askAPerson(
 	deps: Pick<Deps, 'tracker' | 'say'>,
-	feature: Feature,
+	feature: Pick<Feature, 'id'>,
 	o: Asking
 ): Promise<void> {
 	const { ask, session } = o;
@@ -480,7 +544,7 @@ export async function askAPerson(
 // The Feature's Status note, on a Tracker that keeps one; a Tracker without `statusNote` gets no word of a quiet update, as before it. A note that cannot be written is said, and the build goes on: it notifies no one, so nothing waits on it.
 export async function writeStatusNote(
 	deps: Pick<Deps, 'tracker' | 'say'>,
-	feature: Feature,
+	feature: Pick<Feature, 'id'>,
 	note: Omit<StatusNote, 'logbook'> & { readonly session: string | null }
 ): Promise<void> {
 	const { tracker } = deps;
@@ -571,6 +635,10 @@ class FeatureRun {
 	private readonly handBackLinks = new Map<ItemId, string>();
 	// what a Feedback round that was thrown away asked of a person, whose comment is posted; the Status note at the end of the run says it
 	private feedbackAsk: Ask | null = null;
+	// where in the build the run is, which a fault that escapes it names
+	private place: FaultPlace = SETUP;
+	// the Feature's draft pull request, once the run has opened or updated it
+	private pullUrl: string | null = null;
 	// the Tickets handed back in a row with a lasting failure, and why; any other end of a Ticket clears it
 	// the reason the Ticket just built failed for, when its failure is lasting
 	private lastFailure: string | null = null;
@@ -600,6 +668,25 @@ class FeatureRun {
 		return this.setup.signal?.aborted === true;
 	}
 
+	// Where the run is and what its Status note lists, for a fault that escapes it.
+	whereabouts(): FaultRun {
+		return {
+			place: this.place,
+			tickets: this.listed(),
+			session: this.session,
+			pull: this.pullUrl
+		};
+	}
+
+	// The Workflow's Steps at one point, the place a fault would name.
+	private runSteps(steps: WorkflowRun, ticket: Ticket | null): Promise<Step> {
+		const workflow = this.workflow?.name ?? null;
+		this.place = { kind: 'step', workflow, ticket: ticket?.id ?? null };
+		return ticket === null
+			? steps.runAt('afterAllTickets', null)
+			: steps.runAt('afterEachTicket', ticket);
+	}
+
 	// "note" when the Feature's Workflow writes a note under docs/research/, not code
 	private get output(): { readonly output?: 'note' } {
 		const output = this.workflow?.workflow.output;
@@ -624,7 +711,7 @@ class FeatureRun {
 		// the Steps of "all Tickets" run on a Feature whose Tickets are all built
 		const whole = this.built.size > 0 && waiting(this.tickets, this.built).length === 0;
 		if (last.kind === 'next' && !this.aborted && whole && this.steps !== null) {
-			last = await this.steps.runAt('afterAllTickets', null);
+			last = await this.runSteps(this.steps, null);
 		}
 		if (last.kind === 'next' && !this.aborted) last = await this.answerFeedback();
 		return this.finish(last);
@@ -633,6 +720,7 @@ class FeatureRun {
 	// One Feedback round when the branch's open pull request has trusted feedback no commit answers yet; one that fails is thrown away and handed to a person, and the run goes on.
 	private async answerFeedback(): Promise<Step> {
 		const { deps } = this;
+		this.place = { kind: 'feedback' };
 		const end = await feedbackRound({
 			codeHost: deps.codeHost,
 			codingAgent: deps.codingAgent,
@@ -860,6 +948,7 @@ class FeatureRun {
 
 	// The Ticket carries the working Signal from just before its build Session starts until it ends any way: built, handed back, paused or stopped.
 	private async buildTicket(ticket: Ticket): Promise<Step> {
+		this.place = { kind: 'ticket', ticket: ticket.id };
 		this.note({ kind: 'ticketStarted', ticket: ticket.id });
 		const before = await this.tree.head();
 		const faults = ticketFaults(ticket.body);
@@ -1097,7 +1186,7 @@ class FeatureRun {
 		await this.noteBuilding(ticket, { built: true });
 		// later Tickets would build on red, so the run stops here and a person looks
 		if (!check.ok) return { kind: 'red', tail: check.tail };
-		return this.steps === null ? NEXT : this.steps.runAt('afterEachTicket', ticket);
+		return this.steps === null ? NEXT : this.runSteps(this.steps, ticket);
 	}
 
 	private fixUntilGreen(o: FixWork): Promise<FixEnd> {
@@ -1140,6 +1229,7 @@ class FeatureRun {
 		const id = this.feature.id;
 		const left = waiting(this.tickets, this.built);
 		let paused = last.kind === 'paused' ? last.why : null;
+		this.place = { kind: 'pull' };
 		await this.signals.off('working');
 		if (this.aborted || last.kind === 'aborted') return this.stopped();
 		if (paused) await this.pause(paused);
@@ -1205,6 +1295,7 @@ class FeatureRun {
 				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
+		this.place = { kind: 'pull' };
 		const pushed = await pushBranch(this.deps, this.setup, this.tree, id);
 		if (pushed.kind === 'diverged') {
 			// a pause put the Go back, and the Feature is now with a person
@@ -1300,6 +1391,9 @@ class FeatureRun {
 				tickets: this.listed(),
 				session: this.session
 			});
+		} else if (paused !== null) {
+			// the Go is back on the Feature, so it reads Paused, now with its pull request
+			await this.notePaused(paused);
 		} else {
 			const lone = this.feature.lone === true;
 			const total = this.tickets.length;
@@ -1312,7 +1406,7 @@ class FeatureRun {
 					: `Nightjar built ${of} into a draft pull request.`,
 				tickets: this.listed(),
 				pull: { url: pull.url },
-				next: paused === null ? draftStep(pull.url) : null,
+				next: draftStep(pull.url),
 				earlier: [],
 				session: this.session
 			});
@@ -1326,15 +1420,48 @@ class FeatureRun {
 		};
 	}
 
+	// A stop notifies no one: the Status note says Stopped, with how to run the Feature again. A Tracker without a Status note hears it in a comment, as before it kept one.
 	private async stopped(): Promise<FeatureOutcome> {
-		await this.deps.tracker.comment(
-			this.feature.id,
-			withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
-		);
+		const { tracker } = this.deps;
+		const next = stoppedStep(this.setup.signals);
+		if (tracker.statusNote === undefined) {
+			await tracker.comment(
+				this.feature.id,
+				withNext('The Nightjar run was stopped by a person.', next)
+			);
+		} else {
+			await writeStatusNote(this.deps, this.feature, {
+				state: 'stopped',
+				sentence: 'by a person.',
+				tickets: this.listed(),
+				pull: this.pullUrl === null ? null : { url: this.pullUrl },
+				next,
+				earlier: [],
+				session: this.session
+			});
+		}
 		return { kind: 'stopped' };
 	}
 
+	// The Status note of a paused run: Paused, until the run tries the Feature again when it does so on its own, and why. It notifies no one.
+	private notePaused(why: string): Promise<void> {
+		const { pauseMs, now } = this.deps;
+		const until =
+			pauseMs === undefined ? undefined : new Date(now().getTime() + pauseMs).toISOString();
+		return writeStatusNote(this.deps, this.feature, {
+			state: 'paused',
+			...(until === undefined ? {} : { until }),
+			sentence: `${why.charAt(0).toUpperCase()}${why.slice(1)}.`,
+			tickets: this.listed(),
+			pull: this.pullUrl === null ? null : { url: this.pullUrl },
+			next: pausedStep(until !== undefined),
+			earlier: [],
+			session: this.session
+		});
+	}
+
 	private review(done: readonly Ticket[], declined: readonly Declined[] = []) {
+		this.place = { kind: 'review' };
 		return reviewFeature(
 			this.deps,
 			this.setup,
@@ -1372,6 +1499,7 @@ class FeatureRun {
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
 			if (this.aborted)
 				return { review, sessions, paused: null, stopped: true, open: null, declined };
+			this.place = { kind: 'reviewRound', round };
 			const before = this.costs.length;
 			const end = await reviewRound({
 				codingAgent: deps.codingAgent,
@@ -1486,12 +1614,13 @@ class FeatureRun {
 		};
 	}
 
-	// The Go back, so a later run goes on from the branch.
+	// The Go back, so a later run goes on from the branch, and the Status note says Paused and why; a pause notifies no one.
 	private async pause(why: string): Promise<void> {
 		this.note({ kind: 'paused', why });
 		await this.signals.on('go');
 		this.deps.say(`paused: ${why}`);
 		this.deps.status.doing({ kind: 'paused', why, until: null });
+		await this.notePaused(why);
 	}
 
 	// The branch's open pull request with a new body, else a new draft.
@@ -1511,6 +1640,7 @@ class FeatureRun {
 				(await this.publishedBefore(open)) ? markPublished(body) : body
 			);
 			this.note({ kind: 'pullOpened', url: open.url, created: false });
+			this.pullUrl = open.url;
 			return open;
 		}
 		const made = await codeHost.createDraft({
@@ -1520,6 +1650,7 @@ class FeatureRun {
 			body
 		});
 		this.note({ kind: 'pullOpened', url: made.url, created: true });
+		this.pullUrl = made.url;
 		await this.pointBotAt(made);
 		return made;
 	}
@@ -1690,10 +1821,33 @@ export type PullFixOutcome =
 type PullFixRound = Exclude<PullFixOutcome, { readonly kind: 'atLimit' | 'skipped' }>;
 
 // One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
+// A fault that escapes it is thrown as a BuildFault that names the round.
 export async function fixPullChecks(
 	deps: Deps,
 	setup: Setup,
 	red: RedDraft
+): Promise<PullFixOutcome> {
+	const where: { run: FaultRun; note: Note | null } = {
+		run: {
+			place: { kind: 'pullFix', round: null },
+			tickets: [],
+			session: null,
+			pull: red.draft.pull.url
+		},
+		note: null
+	};
+	try {
+		return await fixRedDraft(deps, setup, red, where);
+	} catch (fault) {
+		throw faultAt(fault, where.run, where.note);
+	}
+}
+
+async function fixRedDraft(
+	deps: Deps,
+	setup: Setup,
+	red: RedDraft,
+	where: { run: FaultRun; note: Note | null }
 ): Promise<PullFixOutcome> {
 	const { tracker } = deps;
 	const { draft } = red;
@@ -1702,6 +1856,7 @@ export async function fixPullChecks(
 	if (day !== null) return { kind: 'paused', why: day };
 	const feature = await tracker.feature(red.feature);
 	const note = noteFor(deps.logbook, feature.id, deps.now);
+	where.note = note;
 	const signals = signalsOf(tracker, feature.id, note);
 	const base = baseOf(feature.body);
 	const tree = await deps.openWorktree(
@@ -1744,6 +1899,7 @@ export async function fixPullChecks(
 		headSession !== undefined && deps.sessionExists(headSession)
 			? { kind: 'resume', id: headSession }
 			: { kind: 'fresh', id: deps.newId() };
+	where.run = { ...where.run, place: { kind: 'pullFix', round }, session: session.id };
 	if (session.kind === 'fresh') {
 		deps.say(
 			`${hash(feature.id)}: ${headSession === undefined ? 'the head commit names no Session' : `Session ${headSession} is not on this machine`}, starting a new one`

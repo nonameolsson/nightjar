@@ -166,7 +166,7 @@ describe('nightjar FEATURE', () => {
 		expect(calls()).toMatch(/-X DELETE repos\/o\/r\/issues\/1\/labels\/agent-working/);
 		expect(calls()).toMatch(/-X POST repos\/o\/r\/issues\/1\/labels -f labels\[\]=needs-info/);
 		expect(calls()).toMatch(
-			/-X POST repos\/o\/r\/issues\/1\/comments -f body=Nightjar stopped on a fault/
+			/-X POST repos\/o\/r\/issues\/1\/comments -f body=\*\*Waiting on you\*\*: Nightjar stopped on a fault while setting up the Feature: gh could not list the sub-issues/
 		);
 		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
 			recent: unknown[];
