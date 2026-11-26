@@ -3138,6 +3138,32 @@ describe('the limits of the Pull-check pass', () => {
 			]);
 		});
 
+		it('writes a round that gave up, and the attempt branch its work was thrown away onto', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.fixAgent = (req) => {
+				write(world, req.at.folder, 'half-done.txt');
+				return { kind: 'gaveUp', sessionId: req.resume, costUsd: 1 };
+			};
+			await watch(world);
+			expect(loggedOf(world, 'thrownAway')).toMatchObject([
+				{
+					branch: attemptBranch(BRANCH, 'pull-fix-1'),
+					why: 'the Session could not fix the Pull checks',
+					session: 'session-2'
+				}
+			]);
+		});
+
+		it('writes no work thrown away for a round that gave up having changed nothing', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.fixAgent = (req) => ({ kind: 'gaveUp', sessionId: req.resume, costUsd: 1 });
+			await watch(world);
+			expect(loggedOf(world, 'pullFix')).toMatchObject([{ end: 'gaveUp' }]);
+			expect(loggedOf(world, 'thrownAway')).toEqual([]);
+		});
+
 		it('writes a round whose check stayed red as given up, with the reason the pull request gets', async () => {
 			const world = makeWorld();
 			await redDraft(world);
@@ -3164,6 +3190,38 @@ describe('the limits of the Pull-check pass', () => {
 			await watch(stopped);
 			expect(loggedOf(stopped, 'pullFix')).toMatchObject([{ end: 'stopped' }]);
 			expect(loggedOf(stopped, 'pullFix')[0]?.why).toBeUndefined();
+			// neither round changed a file, so neither kept an attempt branch
+			expect(loggedOf(paused, 'thrownAway')).toEqual([]);
+			expect(loggedOf(stopped, 'thrownAway')).toEqual([]);
+		});
+
+		it('writes the attempt branch the work of a round a pause or a person stopped was thrown away onto', async () => {
+			const why = "today's estimated spend reached the daily limit";
+			const paused = makeWorld();
+			await redDraft(paused);
+			paused.fixAgent = (req) => {
+				write(paused, req.at.folder, 'half-done.txt');
+				return { kind: 'paused', why, sessionId: req.resume, costUsd: 0 };
+			};
+			await watch(paused);
+			expect(loggedOf(paused, 'thrownAway')).toMatchObject([
+				{ branch: attemptBranch(BRANCH, 'pull-fix-1'), why: `paused: ${why}`, session: 'session-2' }
+			]);
+
+			const stopped = makeWorld();
+			await redDraft(stopped);
+			stopped.fixAgent = (req) => {
+				write(stopped, req.at.folder, 'half-done.txt');
+				return { kind: 'aborted', sessionId: req.resume, costUsd: 0 };
+			};
+			await watch(stopped);
+			expect(loggedOf(stopped, 'thrownAway')).toMatchObject([
+				{
+					branch: attemptBranch(BRANCH, 'pull-fix-1'),
+					why: 'stopped by a person',
+					session: 'session-2'
+				}
+			]);
 		});
 
 		it('writes no round for a pull request that has used its rounds, only the hand-over', async () => {
@@ -3941,6 +3999,33 @@ describe('a Feedback round on the draft pull request', () => {
 					answered: [],
 					left: [{ id, why: 'stopped by a person' }]
 				}
+			]);
+			// neither round changed a file, so neither kept an attempt branch
+			expect(loggedOf(world, 'thrownAway')).toEqual([]);
+		});
+
+		it('writes the attempt branch the work of a round a pause or a person stopped was thrown away onto', async () => {
+			const world = makeWorld();
+			const { pull, again } = await opened(world);
+			lineComment(world, pull);
+			const why = "today's estimated spend reached the daily limit";
+			world.settle = (req) => {
+				if (req.kind !== 'feedback') return undefined;
+				write(world, req.at.folder, 'half-done.txt');
+				return { kind: 'paused', why, sessionId: req.sessionId, costUsd: 0 };
+			};
+			await again();
+			world.settle = (req) => {
+				if (req.kind !== 'feedback') return undefined;
+				write(world, req.at.folder, 'half-done.txt');
+				return { kind: 'aborted', sessionId: req.sessionId, costUsd: 0 };
+			};
+			await again();
+			const [first, second] = rounds(world);
+			const branch = 'factory/1-one-escape-attempt-feedback';
+			expect(loggedOf(world, 'thrownAway')).toMatchObject([
+				{ branch, why: `paused: ${why}`, session: first?.sessionId },
+				{ branch, why: 'stopped by a person', session: second?.sessionId }
 			]);
 		});
 	});
