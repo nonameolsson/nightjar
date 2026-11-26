@@ -58,6 +58,9 @@ export function createTracker({ options, signals, trusted }) {
 		addSignal: todo('addSignal'),
 		// a Signal the item does not carry is no fault
 		removeSignal: todo('removeSignal'),
+		// posts a new comment, which notifies people. It may resolve with the web address of the
+		// comment it made (or of the item it made it on) as a string: the Status note links a
+		// handed-back Ticket to it. Resolve with nothing and the link is left out.
 		comment: todo('comment'),
 		// the text the Code host puts in a pull request to link a Ticket
 		reference: (id) => ({ id, text: `#${id}` })

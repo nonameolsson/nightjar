@@ -1,5 +1,6 @@
 // The Status note's words (docs/adr/0012, GLOSSARY.md): one pure function from a Feature's state to the Markdown Nightjar keeps on it.
 import { FOOTER } from './footer.js';
+import { plain } from './gate.js';
 import { nextStepText, type NextStep } from './next-step.js';
 import type { TicketProgress } from './status-shape.js';
 import { STATUS_MARKER, type ItemId } from './tracker.js';
@@ -80,6 +81,64 @@ function ticketLine(t: NoteTicket): string {
 	const why = t.why === undefined ? '' : `, ${t.why}`;
 	const link = t.handBack === undefined ? '' : ` ([why](${t.handBack}))`;
 	return `- #${t.id} ${t.title}: ${t.state}${why}${link}`;
+}
+
+// The most lines of a command's output a comment on the Tracker holds.
+export const EXCERPT_LINES = 15;
+
+// The end of some output, colour codes stripped, cut to at most EXCERPT_LINES lines with a line of "…" where it was cut; where the failure says itself. Empty when the output holds nothing.
+export function excerptOf(output: string): string {
+	const lines = plain(output)
+		.replaceAll('\r\n', '\n')
+		.split('\n')
+		.map((l) => l.trimEnd());
+	while (lines[0] === '') lines.shift();
+	while (lines.at(-1) === '') lines.pop();
+	if (lines.length <= EXCERPT_LINES) return lines.join('\n');
+	return ['…', ...lines.slice(-(EXCERPT_LINES - 1))].join('\n');
+}
+
+// A code block that no backticks inside it can end early.
+function codeBlock(text: string): string {
+	const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+	const fence = '`'.repeat(Math.max(3, longest + 1));
+	return `${fence}\n${text}\n${fence}`;
+}
+
+// What a new comment on a Feature or Ticket says when it needs a person (docs/adr/0012): it stands on its own, so the notification alone says what happened and what to do.
+export interface WaitingComment {
+	// a hidden line the comment opens with, by which Nightjar finds it again, such as the one on a Ticket's questions
+	readonly mark?: string;
+	// the sentence after "Waiting on you"
+	readonly sentence: string;
+	// why, in one to three plain lines
+	readonly cause: string;
+	// the raw output behind the cause, such as a failed command's end; quoted only when no pull request holds it
+	readonly output?: string;
+	// where the full output is when the Feature has a pull request: the link, and the section of its body
+	readonly pull?: { readonly url: string; readonly section?: string };
+	readonly next: NextStep;
+	readonly logbook: LogbookPointer;
+}
+
+export function waitingCommentText(c: WaitingComment): string {
+	const parts = [
+		`${c.mark === undefined ? '' : `${c.mark}\n`}${headline('waiting', c.sentence)}`,
+		c.cause.trim()
+	];
+	if (c.pull !== undefined) {
+		parts.push(
+			c.pull.section === undefined
+				? `The pull request: ${c.pull.url}`
+				: `The full report is in the pull request ${c.pull.url}, in its “${c.pull.section}” section.`
+		);
+	} else {
+		const excerpt = c.output === undefined ? '' : excerptOf(c.output);
+		if (excerpt !== '') parts.push(codeBlock(excerpt));
+	}
+	if (c.next.length > 0) parts.push(nextStepText(c.next));
+	parts.push(logbookLine(c.logbook));
+	return `${parts.join('\n\n')}${FOOTER}`;
 }
 
 const day = (at: string) => at.slice(0, 10);

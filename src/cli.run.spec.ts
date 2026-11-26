@@ -329,7 +329,7 @@ describe('nightjar FEATURE with a setup command and reserved ports', () => {
 		const { env, nightjar, calls } = world(true, { setup: 'echo no network; exit 3' });
 		nightjar(['1']);
 		expect(calls()).toMatch(
-			/-X POST repos\/o\/r\/issues\/1\/comments -f body=Nightjar built nothing: the setup command `echo no network; exit 3` failed[\s\S]*no network/
+			/-X POST repos\/o\/r\/issues\/1\/comments -f body=\*\*Waiting on you\*\*: Nightjar built nothing: the setup command `echo no network; exit 3` failed[\s\S]*no network/
 		);
 		expect(existsSync(join(tree(env), 'built.txt'))).toBe(false);
 	}, 30_000);

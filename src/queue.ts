@@ -1,7 +1,9 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, which red draft pull request the revisit pass fixes first, and what happens to a Feature whose build fails on a fault.
 import {
+	askAPerson,
 	featureOfBody,
 	handedOver,
+	noteTickets,
 	type FeatureOutcome,
 	type PullFixOutcome,
 	type RedDraft
@@ -13,7 +15,7 @@ import { featureStopStep, feedbackLimitStep, nextStepText } from './next-step.js
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { markPublished, readyToPublish } from './publish.js';
 import type { Signal, SignalNames } from './signals.js';
-import { BRANCH_PREFIX, branchFor } from './worktree.js';
+import { BRANCH_PREFIX, branchFor, builtOn } from './worktree.js';
 import {
 	waitingTickets,
 	type Named,
@@ -411,14 +413,21 @@ async function feedbackLimit(deps: QueueDeps, a: AskedFeature): Promise<void> {
 	const { url } = a.open.pull;
 	if (a.signals.includes('human')) return;
 	deps.say(`#${id}: ${author} asked for changes on ${url}, and ${limitWhy}; handed to a person`);
-	const next = deps.signals === undefined ? null : feedbackLimitStep(deps.signals);
-	const step = next === null ? '' : `\n\n${nextStepText(next)}`;
+	const next = deps.signals === undefined ? [] : feedbackLimitStep(deps.signals);
 	try {
 		await deps.tracker.addSignal(id, 'human');
-		await deps.tracker.comment(
-			id,
-			`Nightjar did not answer the changes ${author} asked for on ${url}: ${limitWhy}, and only a Go starts another.${step}${FOOTER}`
-		);
+		const feature = await deps.tracker.feature(id);
+		const tickets = await deps.tracker.tickets(id);
+		await askAPerson(deps, feature, {
+			ask: {
+				sentence: `Nightjar did not answer the changes ${author} asked for on its pull request.`,
+				cause: `${limitWhy.charAt(0).toUpperCase()}${limitWhy.slice(1)}, and only a Go starts another.`,
+				pull: { url },
+				next
+			},
+			tickets: noteTickets(feature, tickets, builtOn(a.open.commits)),
+			session: null
+		});
 	} catch (fault) {
 		deps.say(`could not hand #${id} to a person: ${why(fault)}`);
 	}

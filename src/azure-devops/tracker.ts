@@ -409,7 +409,8 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 		});
 	}
 
-	async comment(id: ItemId, body: string): Promise<void> {
+	// Azure DevOps has no address for one comment, so the work item's is what it gives.
+	async comment(id: ItemId, body: string): Promise<string> {
 		const n = String(workItem(id));
 		await this.api.call(`comment on work item ${n}`, {
 			method: 'POST',
@@ -418,6 +419,7 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			),
 			body: { text: body }
 		});
+		return this.api.at(`${this.project}/_workitems/edit/${n}`);
 	}
 
 	// The note is found among the first page of comments, as `comments` reads them, by the signed-in person's identity id; an edit goes through the comment update call.
@@ -449,7 +451,10 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			),
 			me.name
 		);
-		if (found === undefined) return this.comment(id, body);
+		if (found === undefined) {
+			await this.comment(id, body);
+			return;
+		}
 		await this.api.call(`edit the Status note on work item ${n}`, {
 			method: 'PATCH',
 			url: this.api.at(

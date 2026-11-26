@@ -386,15 +386,18 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		}
 	}
 
-	async comment(id: ItemId, body: string): Promise<void> {
+	// The comment's own address, which GitHub answers with.
+	async comment(id: ItemId, body: string): Promise<string | undefined> {
 		const n = issue(id);
-		await this.api.call(`comment on #${n}`, [
+		const made = await this.api.call(`comment on #${n}`, [
 			'-X',
 			'POST',
 			`repos/${this.repo}/issues/${n}/comments`,
 			'-f',
 			`body=${body}`
 		]);
+		const url = z.looseObject({ html_url: z.string() }).safeParse(made);
+		return url.success ? url.data.html_url : undefined;
 	}
 
 	// Every page of the comments is read, so a note made among more than one page's worth is still found.
@@ -411,7 +414,10 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 			listed.map((c) => ({ id: c.id, author: c.user?.login ?? '', body: c.body ?? '' })),
 			me
 		);
-		if (found === undefined) return this.comment(id, body);
+		if (found === undefined) {
+			await this.comment(id, body);
+			return;
+		}
 		await this.api.call(`edit the Status note on #${n}`, [
 			'-X',
 			'PATCH',

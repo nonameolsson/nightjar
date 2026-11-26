@@ -266,9 +266,11 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		return Promise.resolve();
 	};
 
-	comment = (id: ItemId, body: string): Promise<void> => {
+	// answers with an address for the comment, as GitHub does
+	comment = (id: ItemId, body: string): Promise<string> => {
 		this.say(id, { author: this.person, body, trusted: true });
-		return Promise.resolve();
+		const n = String(this.get(id).comments.length);
+		return Promise.resolve(`https://tracker.example/o/app/${id}#comment-${n}`);
 	};
 
 	// edits the signed-in person's Status note in place, keeping when it was made; makes it when there is none
@@ -276,7 +278,7 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		const item = this.get(id);
 		const at = item.comments.findIndex((c) => c.author === this.person && isStatusNote(c.body));
 		const found = item.comments[at];
-		if (found === undefined) return this.comment(id, body);
+		if (found === undefined) return this.comment(id, body).then(() => undefined);
 		const comments = item.comments.with(at, { ...found, body });
 		this.put({ ...item, comments });
 		return Promise.resolve();

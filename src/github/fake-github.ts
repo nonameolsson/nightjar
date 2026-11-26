@@ -788,6 +788,7 @@ export class FakeGitHub {
 		return {
 			id: comment.id,
 			issue_url: `https://api.github.com/repos/${this.repo}/issues/${String(number)}`,
+			html_url: `https://github.com/${this.repo}/issues/${String(number)}#issuecomment-${String(comment.id)}`,
 			body: comment.body,
 			user: { login: comment.login },
 			created_at: comment.createdAt,

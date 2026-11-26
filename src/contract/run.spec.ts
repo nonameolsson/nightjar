@@ -306,14 +306,16 @@ describe('runContract', () => {
 			expect(suite).toHaveLength(statusNoteContract.length);
 			return suite.filter((r) => !r.ok).map((r) => r.name);
 		};
-		const appends = changed((fake) => (id, body) => fake.comment(id, body));
+		const appends = changed((fake) => (id, body) => fake.comment(id, body).then(() => undefined));
 		expect(await failing(appends)).toEqual(statusNoteContract.slice(1).map((c) => c.name));
 		// the first marked comment, whoever wrote it
 		const anyone = changed((fake) => (id, body) => {
 			const item = fake.items.get(id);
 			const at = item?.comments.findIndex((c) => isStatusNote(c.body)) ?? -1;
 			const found = item?.comments[at];
-			if (item === undefined || found === undefined) return fake.comment(id, body);
+			if (item === undefined || found === undefined) {
+				return fake.comment(id, body).then(() => undefined);
+			}
 			fake.items.set(id, { ...item, comments: item.comments.with(at, { ...found, body }) });
 			return Promise.resolve();
 		});

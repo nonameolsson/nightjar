@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { endsWithFooter } from './footer.js';
 import {
+	EXCERPT_LINES,
 	STATE_WORDS,
 	buildingSentence,
+	excerptOf,
 	headline,
 	logbookLine,
 	statusNoteText,
+	waitingCommentText,
 	type NoteState,
-	type StatusNote
+	type StatusNote,
+	type WaitingComment
 } from './status-note.js';
 import { STATUS_MARKER, isStatusNote } from './tracker.js';
 
@@ -47,6 +51,117 @@ describe('buildingSentence', () => {
 		expect(buildingSentence({ ticket: null, retry: { attempt: 3, of: 3 } })).toBe(
 			'Nightjar is building this issue, retrying after a fault (try 3 of 3).'
 		);
+	});
+});
+
+describe('excerptOf', () => {
+	it('keeps short output as it is, without colour codes or blank edges', () => {
+		expect(excerptOf('\n\n\u001b[31mred\u001b[0m line\r\nsecond  \n\n')).toBe('red line\nsecond');
+	});
+
+	it('cuts long output to its end in at most 15 lines, with a line of … where it was cut', () => {
+		const output = Array.from({ length: 40 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+		const lines = excerptOf(output).split('\n');
+		expect(lines).toHaveLength(EXCERPT_LINES);
+		expect(lines[0]).toBe('…');
+		expect(lines.at(-1)).toBe('line 40');
+		expect(lines[1]).toBe('line 27');
+	});
+
+	it('does not cut output of exactly 15 lines', () => {
+		const output = Array.from({ length: 15 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+		expect(excerptOf(output)).toBe(output);
+	});
+
+	it('is empty for output that holds nothing', () => {
+		expect(excerptOf('  \n\n')).toBe('');
+	});
+});
+
+describe('waitingCommentText', () => {
+	const COMMENT: WaitingComment = {
+		sentence: 'Nightjar built nothing: the setup command `make setup` failed.',
+		cause: 'Nightjar ran it in the new worktree, and no Ticket was started.',
+		next: ['Fix the setup command.', 'Then hand it back.'],
+		logbook: { feature: '12', session: null }
+	};
+
+	it('lays out the headline, the cause, the Next step, the Logbook line and the footer, in that order', () => {
+		const text = waitingCommentText(COMMENT);
+		expect(text.split('\n')[0]).toBe(
+			'**Waiting on you**: Nightjar built nothing: the setup command `make setup` failed.'
+		);
+		const order = [
+			'**Waiting on you**',
+			'Nightjar ran it in the new worktree',
+			'**Next step**',
+			'Logbook: nightjar ui → #12 (on the machine that ran it)',
+			'_Built by Nightjar._'
+		].map((part) => text.indexOf(part));
+		expect(order.every((at) => at >= 0)).toBe(true);
+		expect([...order].sort((a, b) => a - b)).toEqual(order);
+		expect(endsWithFooter(text)).toBe(true);
+	});
+
+	it('is no Status note, so the page and the build loop take it for a comment', () => {
+		expect(isStatusNote(waitingCommentText(COMMENT))).toBe(false);
+	});
+
+	it('quotes the end of the output in a code block when no pull request holds it', () => {
+		const output = Array.from({ length: 40 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+		const text = waitingCommentText({ ...COMMENT, output });
+		const block = /```\n([\s\S]*?)\n```/.exec(text)?.[1] ?? '';
+		expect(block.split('\n')).toHaveLength(EXCERPT_LINES);
+		expect(block).toContain('line 40');
+		expect(block).not.toContain('line 1\n');
+		// the excerpt comes before the Next step
+		expect(text.indexOf('```')).toBeLessThan(text.indexOf('**Next step**'));
+	});
+
+	it('fences the output with more backticks than it holds, so it cannot end the block early', () => {
+		const text = waitingCommentText({ ...COMMENT, output: 'a ``` b' });
+		expect(text).toContain('````\na ``` b\n````');
+	});
+
+	it('quotes no output once a pull request exists, and links the pull request’s section instead', () => {
+		const text = waitingCommentText({
+			...COMMENT,
+			output: 'FAIL src/a.spec.ts\nexpected 1 to be 2',
+			pull: { url: 'https://example.test/o/app/pull/9', section: 'The check fails' }
+		});
+		expect(text).not.toContain('```');
+		expect(text).not.toContain('expected 1 to be 2');
+		expect(text).toContain(
+			'The full report is in the pull request https://example.test/o/app/pull/9, in its “The check fails” section.'
+		);
+	});
+
+	it('names a pull request that has no section of its own', () => {
+		const pull = { url: 'https://example.test/o/app/pull/9' };
+		const text = waitingCommentText({ ...COMMENT, pull });
+		expect(text).toContain('The pull request: https://example.test/o/app/pull/9');
+	});
+
+	it('names the Session in its Logbook line once there is one', () => {
+		const logbook = { feature: '12', session: 's-1' };
+		expect(waitingCommentText({ ...COMMENT, logbook })).toContain(
+			'Logbook: nightjar ui → #12 · session s-1 (on the machine that ran it)'
+		);
+	});
+
+	it('opens with a hidden mark when it has one, so Nightjar finds it again', () => {
+		const text = waitingCommentText({ ...COMMENT, mark: '<!-- nightjar:questions -->' });
+		expect(text.startsWith('<!-- nightjar:questions -->\n**Waiting on you**: ')).toBe(true);
+	});
+
+	it('leaves out the Next step when there is none', () => {
+		expect(waitingCommentText({ ...COMMENT, next: [] })).not.toContain('**Next step**');
+	});
+
+	it('holds no resume command and no stack trace of its own', () => {
+		const text = waitingCommentText(COMMENT);
+		expect(text).not.toContain('claude --resume');
+		expect(text).not.toMatch(/\n\s+at .*\(.*:\d+:\d+\)/);
 	});
 });
 

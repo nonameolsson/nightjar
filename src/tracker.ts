@@ -110,7 +110,8 @@ export interface Tracker {
 	addSignal(id: ItemId, signal: Signal): Promise<void>;
 	// a Signal the item does not carry is no fault
 	removeSignal(id: ItemId, signal: Signal): Promise<void>;
-	comment(id: ItemId, body: string): Promise<void>;
+	// A Tracker may resolve with the web address of the comment it made, or of the item it made it on, as a string; the Status note links a handed-back Ticket there. One that resolves with anything else leaves the link out.
+	comment(id: ItemId, body: string): Promise<unknown>;
 	reference(id: ItemId): TicketReference;
 	// optional, so a Tracker module written before it still loads: the open Features assigned to `person` that carry needs info or needs a person, oldest first
 	waitingOn?(person: string): Promise<WaitingFeature[]>;

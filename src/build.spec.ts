@@ -63,7 +63,17 @@ vi.setConfig({ testTimeout: 30_000 });
 
 // What the scripted agent does with each Ticket's build, by the Ticket's id.
 // 'flaky' fails for a passing reason `flaky` times, leaving a file, and then builds; 'down' does so every time; 'empty' says it built but writes no file
-type Act = 'build' | 'ask' | 'fail' | 'flaky' | 'down' | 'lasting' | 'lasting-other' | 'empty';
+type Act =
+	| 'build'
+	| 'ask'
+	| 'fail'
+	| 'flaky'
+	| 'down'
+	| 'lasting'
+	| 'lasting-other'
+	| 'empty'
+	// fails for a lasting reason whose message holds the output the agent printed
+	| 'noisy';
 
 // One piece of work the build loop asked the Coding agent for.
 type Work =
@@ -338,6 +348,15 @@ function deps(world: World): Deps {
 								costUsd: 1
 							};
 						}
+					}
+					if (act === 'noisy') {
+						return {
+							kind: 'failed',
+							why: 'claude exited with code 2\ntrace line 1\ntrace line 2',
+							failure: 'lasting',
+							sessionId,
+							costUsd: 1
+						};
 					}
 					if (act === 'lasting' || act === 'lasting-other') {
 						return {
@@ -2147,6 +2166,193 @@ describe('the cost split in the pull request', () => {
 	});
 });
 
+describe('a comment that stands on its own when a person is needed', () => {
+	const LOGBOOK = /Logbook: nightjar ui → #1 · session \S+ \(on the machine that ran it\)/;
+	const waitingOn = (world: World, id: string) =>
+		world.tracker.said(id).filter((c) => c.startsWith('**Waiting on you**'));
+
+	it('gives a setup failure a headline, its cause, the end of the output in a code block, the Next step and the Logbook line', async () => {
+		const world = makeWorld();
+		const lines = Array.from({ length: 40 }, (_, i) => `npm error line ${String(i + 1)}`);
+		const tail = ['\u001b[31mred\u001b[0m', ...lines].join('\n');
+		const failing = { ...deps(world), runSetup: () => Promise.resolve({ ok: false, tail }) };
+		await buildFeature(failing, setup(world, { setupCommand: 'make deps' }), '1');
+
+		const [comment = '', ...more] = waitingOn(world, '1');
+		expect(more).toEqual([]);
+		expect(world.tracker.said('1')).toHaveLength(1);
+		expect(comment).toMatch(
+			/^\*\*Waiting on you\*\*: Nightjar built nothing: the setup command `make deps` failed\./
+		);
+		const block = /```\n([\s\S]*?)\n```/.exec(comment)?.[1] ?? '';
+		expect(block.split('\n').length).toBeLessThanOrEqual(15);
+		expect(block).toContain('npm error line 40');
+		expect(block).not.toContain('npm error line 1\n');
+		expect(comment).not.toContain('\u001b');
+		expect(comment.indexOf('```')).toBeLessThan(comment.indexOf('**Next step**'));
+		expect(comment).toContain('Logbook: nightjar ui → #1 (on the machine that ran it)');
+		expect(comment).toMatch(/\n\n---\n_Built by Nightjar\._$/);
+		expect(world.tracker.note('1')).toContain(
+			'**Waiting on you**: Nightjar built nothing: the setup command `make deps` failed.'
+		);
+	});
+
+	it('quotes no output once a pull request holds it: a red check is a link to its section', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+
+		const [comment = ''] = waitingOn(world, '1');
+		const url = world.host.pulls[0]?.url ?? 'no draft';
+		expect(comment).toContain('The check fails after #2.');
+		expect(comment).toContain(`${url}, in its “The check fails” section`);
+		expect(comment).not.toContain('```');
+		expect(comment).not.toContain('lint: 1 problem');
+		expect(world.host.pulls[0]?.body).toContain('lint: 1 problem');
+		expect(world.tracker.note('1')).toContain('**Waiting on you**');
+	});
+
+	it('adds exactly one comment, and one edit of the note, for a build that built nothing', async () => {
+		const world = makeWorld();
+		world.acts['2'] = 'ask';
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(waitingOn(world, '1')).toHaveLength(1);
+		expect(world.tracker.said('1')).toHaveLength(1);
+		expect(world.tracker.note('1')).toMatch(/^<!-- nightjar:status -->\n\*\*Waiting on you\*\*: /);
+	});
+
+	describe('hands a Ticket back in the same shape', () => {
+		const shaped = (comment: string) => {
+			expect(comment).toMatch(/^(<!-- nightjar:questions -->\n)?\*\*Waiting on you\*\*: /);
+			expect(comment).toContain('**Next step**');
+			expect(comment).toMatch(LOGBOOK);
+			expect(comment).not.toContain('claude --resume');
+			expect(comment).not.toContain('Session: `');
+			expect(comment).toMatch(/\n\n---\n_Built by Nightjar\._$/);
+			// the Logbook line comes after the Next step, and the footer last
+			expect(comment.indexOf('Logbook:')).toBeGreaterThan(comment.indexOf('**Next step**'));
+		};
+
+		it('when a Session failed', async () => {
+			const world = makeWorld();
+			world.acts['2'] = 'fail';
+			await buildFeature(deps(world), setup(world), '1');
+			const [comment = ''] = waitingOn(world, '2');
+			shaped(comment);
+			expect(comment).toContain(
+				'**Waiting on you**: Nightjar could not build this Ticket: it reached its budget.'
+			);
+			expect(comment).toContain('used up its budget');
+			expect(comment).not.toContain('Failure: ');
+		});
+
+		it('when a Session said what it asks, and keeps the mark that counts the question rounds', async () => {
+			const world = makeWorld();
+			world.acts['2'] = 'ask';
+			await buildFeature(deps(world), setup(world), '1');
+			const [comment = ''] = world.tracker.said('2');
+			shaped(comment);
+			expect(comment).toContain('1. Which file?\n   - Recommended: marks.ts');
+			expect(comment.startsWith(QUESTIONS_MARK)).toBe(true);
+		});
+
+		it('when the Ticket fails its contract, with no Session to name', async () => {
+			const world = makeWorld();
+			const item = world.tracker.items.get('2');
+			if (item) world.tracker.items.set('2', { ...item, body: 'Just do it.' });
+			await buildFeature(deps(world), setup(world), '1');
+			const [comment = ''] = waitingOn(world, '2');
+			expect(comment).toMatch(/^\*\*Waiting on you\*\*: Nightjar did not start this Ticket: /);
+			expect(comment).toContain('Acceptance criteria');
+			expect(comment).toContain('**Next step**');
+			expect(comment).toContain('Logbook: nightjar ui → #1 (on the machine that ran it)');
+			expect(comment).not.toContain('claude --resume');
+		});
+
+		it('when the Session changed no file', async () => {
+			const world = makeWorld();
+			world.acts['2'] = 'empty';
+			await buildFeature(deps(world), setup(world), '1');
+			const [comment = ''] = waitingOn(world, '2');
+			shaped(comment);
+			expect(comment).toContain('said it built this Ticket but changed no file');
+		});
+
+		it('with no transcript and no stack trace on the Tracker', async () => {
+			const world = makeWorld();
+			world.acts['2'] = 'fail';
+			world.acts['3'] = 'ask';
+			await buildFeature(deps(world), setup(world), '1');
+			for (const id of ['1', '2', '3']) {
+				for (const comment of world.tracker.said(id)) {
+					expect(comment).not.toMatch(/\n\s+at .*\(.*:\d+:\d+\)/);
+					expect(comment).not.toContain('"type":"assistant"');
+				}
+			}
+		});
+	});
+
+	describe('quotes what a failed Ticket printed', () => {
+		const NOISY = 'Nightjar could not build this Ticket: claude exited with code 2.';
+
+		it('while no pull request exists: the first line is the headline, the rest an excerpt', async () => {
+			const world = makeWorld();
+			world.acts['2'] = 'noisy';
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.host.pulls).toEqual([]);
+			const [comment = ''] = waitingOn(world, '2');
+			expect(comment).toContain(NOISY);
+			expect(comment).toContain('```\ntrace line 1\ntrace line 2\n```');
+		});
+
+		it('not once a pull request exists on the Feature’s branch', async () => {
+			const world = makeWorld();
+			world.acts['3'] = 'ask';
+			await buildFeature(deps(world), setup(world), '1');
+			expect(world.host.pulls).toHaveLength(1);
+
+			world.acts['3'] = 'noisy';
+			await world.tracker.removeSignal('3', 'needsInfo');
+			await world.tracker.addSignal('3', 'ready');
+			await world.tracker.removeSignal('1', 'needsInfo');
+			await world.tracker.addSignal('1', 'go');
+			await buildFeature(deps(world), setup(world), '1');
+			// the questions, then this
+			const comments = world.tracker.said('3');
+			expect(comments).toHaveLength(2);
+			const last = comments.at(-1) ?? '';
+			expect(last).toContain(NOISY);
+			expect(last).not.toContain('trace line');
+			expect(last).not.toContain('```');
+		});
+	});
+
+	it('links each handed-back Ticket in the note to its comment, and leaves a built Ticket unlinked', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		const note = world.tracker.note('1') ?? '';
+		expect(note).toContain('- #2 Share the function: built\n');
+		expect(note).toContain('- #3 Use it in marks: waiting, needs info ([why](https://');
+		expect(note).toMatch(/#comment-\d+\)\)\n/);
+	});
+
+	it('gives a Tracker without statusNote the new comment and no note', async () => {
+		const world = makeWorld();
+		world.setupOk = false;
+		const { statusNote: _gone, ...older } = world.tracker;
+		await buildFeature(
+			{ ...deps(world), tracker: older },
+			setup(world, { setupCommand: 'make deps' }),
+			'1'
+		);
+		expect(waitingOn(world, '1')).toHaveLength(1);
+		expect(world.tracker.note('1')).toBeUndefined();
+	});
+});
+
 describe('the next step in each comment', () => {
 	const said = (world: World, id: string) => world.tracker.said(id)[0] ?? '';
 
@@ -2770,13 +2976,19 @@ describe('the limits of the Pull-check pass', () => {
 		expect(world.tracker.signalsOf('1')).toEqual(['human']);
 		expect(world.tracker.said('1')).toHaveLength(before + 1);
 		const comment = lastSaid(world);
+		expect(comment).toMatch(/^\*\*Waiting on you\*\*: Nightjar could not make the Pull checks/);
 		expect(comment).toContain(
-			`Nightjar could not make the Pull checks of ${pull.url} green: Pull-check fix 1 gave up: \`make check\` still fails after the fix rounds.`
+			'Pull-check fix 1 gave up: `make check` still fails after the fix rounds.'
 		);
 		expect(comment).toContain('- `CI / test`: job test, step Run npm test');
 		expect(comment).toContain('- `CI / lint`: job lint, step Run eslint');
+		// the pull request holds the output, so the comment points there and quotes none
+		expect(comment).toContain(`${pull.url}, in its “Pull checks” section`);
+		expect(comment).not.toContain('```');
 		expect(comment).toContain('**Next step**');
 		expect(comment).toContain('remove `ready-for-human` and add `factory-go`');
+		expect(comment).toContain('Logbook: nightjar ui → #1 · session ');
+		expect(world.tracker.note('1')).toMatch(/^<!-- nightjar:status -->\n\*\*Waiting on you\*\*:/);
 		// the body keeps what Nightjar wrote and tells the round, with the hidden mark at its end
 		const body = world.host.pulls[0]?.body ?? '';
 		expect(body).toContain('Nightjar built all of #1 One escape.');
@@ -2860,7 +3072,7 @@ describe('the limits of the Pull-check pass', () => {
 		expect(pushes(world)).toHaveLength(3);
 		expect(world.tracker.signalsOf('1')).toEqual(['human']);
 		expect(lastSaid(world)).toContain(
-			`Nightjar could not make the Pull checks of ${pull.url} green: it has had its 2 Pull-check fix rounds.`
+			'Nightjar could not make the Pull checks of its pull request green: it has had its 2 Pull-check fix rounds.'
 		);
 		expect(lastSaid(world)).toContain('- `CI / lint`: job lint, step Run eslint');
 	});
@@ -3539,10 +3751,19 @@ describe('a Feedback round on the draft pull request', () => {
 				expect(world.trees.sides.has('factory/1-one-escape-attempt-feedback')).toBe(true);
 				expect(world.tracker.signalsOf('1')).toContain('needsInfo');
 				const comment = world.tracker.said('1').at(-1) ?? '';
-				expect(comment).toContain(`Nightjar could not answer the feedback on ${pull.url}`);
+				expect(comment).toMatch(/^\*\*Waiting on you\*\*: Nightjar could not answer the feedback/);
 				expect(comment).toContain(why);
 				expect(comment).toContain(`- \`${id}\` by ann on \`src/marks.ts:3\``);
+				// the pull request holds the report, so the comment points to its section
+				expect(comment).toContain(`${pull.url}, in its “Feedback” section`);
 				expect(comment).toContain('**Next step**');
+				expect(comment).toContain('Logbook: nightjar ui → #1 · session ');
+				// the one new comment notifies; the Status note says the same, in place
+				const asked = world.tracker.said('1').filter((c) => c.startsWith('**Waiting on you**'));
+				expect(asked).toHaveLength(1);
+				expect(world.tracker.note('1')).toContain(
+					'**Waiting on you**: Nightjar could not answer the feedback'
+				);
 				expect(world.host.threads).toEqual([]);
 				expect(world.happened).toContainEqual(
 					expect.objectContaining({ kind: 'needs-info', feature: '1', ticket: null })
@@ -4437,7 +4658,7 @@ describe('a Review round', () => {
 
 	describe('hands the Feature to a person', () => {
 		const said = (world: World) =>
-			world.tracker.said('1').filter((c) => c.includes('still needs a person'));
+			world.tracker.said('1').filter((c) => c.includes('its Review still asks for changes'));
 
 		it('when a round fails: needs a person, a comment naming what the Review left open and ending with its Next step, and agent-working off', async () => {
 			const world = makeWorld();
@@ -4455,17 +4676,19 @@ describe('a Review round', () => {
 			expect(world.tracker.signalsOf('1')).not.toContain('needsInfo');
 			const [comment, ...more] = said(world);
 			expect(more).toEqual([]);
-			expect(comment).toContain(world.host.pulls[0]?.url);
+			const url = world.host.pulls[0]?.url ?? 'no draft';
+			expect(comment).toMatch(/^\*\*Waiting on you\*\*: /);
 			expect(comment).toContain('Review round 1 was thrown away: it reports itself blocked');
 			expect(comment).toContain('factory/1-one-escape-attempt-review');
 			expect(comment).toContain('The last Review said changes');
-			expect(comment).toContain('- `src/marks.ts:3`: It escapes twice.');
-			expect(comment?.indexOf('**Next step**')).toBeGreaterThan(
-				comment?.indexOf('It escapes twice') ?? 0
-			);
+			// the pull request's Review section holds the issues, so the comment points to it
+			expect(comment).toContain(`${url}, in its “Review” section`);
+			expect(comment).not.toContain('It escapes twice');
+			expect(world.host.pulls[0]?.body).toContain('- `src/marks.ts:3`: It escapes twice.');
 			expect(comment).toMatch(
 				/\*\*Next step\*\*[\s\S]*remove `ready-for-human` and add `factory-go`/
 			);
+			expect(world.tracker.note('1')).toContain('**Waiting on you**: Nightjar opened a draft');
 			expect(world.happened).toContainEqual(
 				expect.objectContaining({ kind: 'needs-info', feature: '1' })
 			);
@@ -4483,7 +4706,7 @@ describe('a Review round', () => {
 			expect(more).toEqual([]);
 			expect(comment).toContain('2 Review rounds');
 			expect(comment).toContain('still says changes');
-			expect(comment).toContain('- `src/marks.ts:3`: It escapes twice.');
+			expect(comment).toContain('in its “Review” section');
 			expect(comment).toContain('**Next step**');
 			expect(world.host.pulls).toHaveLength(1);
 		});
@@ -4760,8 +4983,12 @@ describe('a request for changes under --watch', () => {
 		const said = () => world.tracker.said('1').filter((c) => c.includes(limit));
 		expect(said()).toHaveLength(1);
 		const [why] = said();
-		expect(why).toContain(`Nightjar did not answer the changes ann asked for on ${pull.url}`);
+		expect(why).toContain(
+			'**Waiting on you**: Nightjar did not answer the changes ann asked for on its pull request.'
+		);
+		expect(why).toContain(`The pull request: ${pull.url}`);
 		expect(why).toContain('**Next step**');
+		expect(world.tracker.note('1')).toContain('**Waiting on you**');
 
 		await run();
 		expect(said()).toHaveLength(1);
@@ -5242,17 +5469,32 @@ describe('the Status note', () => {
 		expect(world.tracker.said('1')).toEqual(posted);
 	});
 
-	it('leaves the Next step to the comment that hands the Feature to a person', async () => {
+	it('says Waiting on you when a Ticket waits, with the same Next step as the comment that asks', async () => {
 		const world = makeWorld();
 		world.acts['3'] = 'ask';
 		await buildFeature(deps(world), setup(world), '1');
 		const note = world.tracker.note('1') ?? '';
 		expect(note).toContain(
-			'**Draft PR open**: Nightjar built 1 of 2 Tickets into a draft pull request.'
+			'**Waiting on you**: Nightjar opened a draft pull request, and this Feature still needs a person.'
 		);
 		expect(note).toContain('- #3 Use it in marks: waiting, needs info');
-		expect(note).not.toContain('**Next step**');
-		expect(world.tracker.said('1')[0]).toContain('**Next step**');
+		expect(note).toContain('**Next step**');
+		const comment = world.tracker.said('1')[0] ?? '';
+		const next = featureAfterRunStep(DEFAULT_SIGNAL_NAMES, { waiting: true, red: false });
+		expect(comment).toContain(nextStepText(next));
+		expect(note).toContain(nextStepText(next));
+	});
+
+	it('links each handed-back Ticket in the note to the comment that handed it back', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		const note = world.tracker.note('1') ?? '';
+		// the fake Tracker gives a comment its own address
+		expect(note).toContain(
+			'- #3 Use it in marks: waiting, needs info ([why](https://tracker.example/o/app/3#comment-1))'
+		);
+		expect(world.tracker.said('3')).toHaveLength(1);
 	});
 
 	it('puts the note of a Lone issue on the issue itself, with no Ticket list', async () => {
