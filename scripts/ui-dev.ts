@@ -11,6 +11,7 @@ import type { Entry } from '../src/spend.js';
 import { fileLogbook, type Decision, type Place } from '../src/logbook.js';
 import { StatusFile } from '../src/status.js';
 import { SHELF_MAX } from '../src/tracker.js';
+import { statusNoteText } from '../src/status-note.js';
 import { startUi, UI_PORT } from '../src/ui.js';
 import { detailFrom, listsFrom } from '../src/ui-tracker.js';
 
@@ -285,6 +286,32 @@ tracker
 	.add({ id: '281', title: 'CSV <export>', assignees: ['ann'], signals: ['go'] })
 	.add({ id: '262', title: 'Audit log', assignees: ['ann'], signals: ['needsInfo'] })
 	.add({ id: '264', title: 'SSO', assignees: ['ann'], signals: ['human'] });
+// Their Status notes: a long reason and a Next step, as a card on the Board shows them
+const waitingNote = (feature: string, sentence: string, next: string[]) =>
+	statusNoteText({
+		state: 'waiting',
+		sentence,
+		tickets: [],
+		pull: null,
+		next,
+		earlier: [],
+		logbook: { feature, session: null }
+	});
+await tracker.statusNote(
+	'262',
+	waitingNote('262', 'git commit failed: error: 1Password: agent returned an error', [
+		'Fix the cause named above.',
+		'On this Feature, remove `needs-info` and add `factory-go` (keep it assigned to you).',
+		'Nightjar builds the Feature again.'
+	])
+);
+await tracker.statusNote(
+	'264',
+	waitingNote('264', 'Its Review still asks for changes.', [
+		"Read the issues above and fix the ones that are right on the branch, or review the pull request: the Review is Nightjar's own and can be wrong.",
+		'To have Nightjar build the Feature on its branch again, remove `ready-for-human` and add `factory-go` on this Feature (keep it assigned to you). A new build gets its Review rounds again.'
+	])
+);
 // The Shelf: Features of ann's that carry no Signal. One has a Ticket; the rest are lone issues. Bob's is on no Shelf of hers.
 ticket('301');
 tracker
