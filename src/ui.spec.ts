@@ -2151,14 +2151,18 @@ describe('nightjar ui audit fixes', () => {
 	});
 
 	it.each(THEMES)(
-		'collapses entries beside the detail panel only between 1261px and 1400px (%s)',
+		"lays a Board entry out by the Board's own width, not the window's (%s)",
 		async (theme) => {
 			const { style } = await css(theme);
-			expect(style).not.toContain('@media (max-width: 1400px)');
-			const block =
-				style.split('@media (min-width: 1261px) and (max-width: 1400px)')[1]?.split('\n}')[0] ?? '';
-			expect(block).toContain('.cols.has-detail .entry');
-			expect(block).toContain('.cols.has-detail .head');
+			expect(style).toContain('container: board / inline-size');
+			expect(style).not.toContain('@media (min-width: 1261px) and (max-width: 1400px)');
+			// narrow: two columns; middling: three, the name over its eggs; wide: the four the head names
+			const wide = [...style.matchAll(/@container board \(min-width: (\d+)px\)/g)].map((m) =>
+				Number(m[1])
+			);
+			expect(wide).toHaveLength(2);
+			const block = style.split(`@container board (min-width: ${String(wide[1])}px)`)[1] ?? '';
+			expect(block.split('\n}')[0]).toContain('.head { display: grid; }');
 		}
 	);
 
