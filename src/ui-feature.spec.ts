@@ -268,6 +268,22 @@ describe('the Feature detail panel', () => {
 		expect(items(html)[0]).toContain('Ticket &#60;b&#62;bold&#60;/b&#62;');
 	});
 
+	it("ends the panel with the Feature's Logbook section, also when the Tracker cannot be read", async () => {
+		const read = detailFrom(() =>
+			Promise.resolve({ tracker: fakeTracker(), person: 'ann', workflows: [] })
+		);
+		const logbook = (id: string) => `<section class="logbook">Logbook of ${id}</section>`;
+		const ok = await featureAnswer(new URLSearchParams('id=1'), read, links, logbook);
+		expect(ok.body.endsWith('<section class="logbook">Logbook of 1</section>')).toBe(true);
+		const missing = await featureAnswer(new URLSearchParams('id=404'), read, links, logbook);
+		expect(missing.status).toBe(502);
+		expect(missing.body.endsWith('<section class="logbook">Logbook of 404</section>')).toBe(true);
+		// with no section given, the panel is as it was
+		expect((await featureAnswer(new URLSearchParams('id=1'), read, links)).body).not.toContain(
+			'logbook'
+		);
+	});
+
 	it('answers a GET with the panel, an error with a link to the Feature on a failed read, and nothing without an id', async () => {
 		const tracker = fakeTracker();
 		const read = detailFrom(() => Promise.resolve({ tracker, person: 'ann', workflows: [] }));

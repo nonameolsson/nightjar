@@ -65,13 +65,13 @@ const DecisionSchema = z.discriminatedUnion('kind', [
 		answered: z.array(z.string()),
 		left: z.array(z.object({ id: z.string(), why: z.string() }))
 	}),
-	// a Pull-check fix round `round` of `rounds` on the draft pull request, started by the Pull checks `failing`; `why` is what stopped it short of a push, or for `diverged` where its fix was set aside because a person pushed first
+	// a Pull-check fix round `round` of `rounds` on the draft pull request, started by the Pull checks `failing`; `why` is what stopped it short of a push, for `diverged` where its fix was set aside because a person pushed first, or for `faulted` the fault its push failed on
 	z.object({
 		kind: z.literal('pullFix'),
 		round: z.number(),
 		rounds: z.number(),
 		failing: z.array(z.object({ check: z.string(), job: z.string(), step: z.string() })),
-		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped', 'diverged']),
+		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped', 'diverged', 'faulted']),
 		why: z.string().optional()
 	}),
 	// the Feature was made by the Source `source` through `nightjar intake`; `key` is what the Source calls the event, when it has one
@@ -81,7 +81,15 @@ const DecisionSchema = z.discriminatedUnion('kind', [
 	// the Source assigned the Feature to `owner` and gave it the Go
 	z.object({ kind: z.literal('standingGo'), source: z.string(), owner: z.string() }),
 	// the Feature, or the entry's Ticket, handed to a person with needs info or needs a person
-	z.object({ kind: z.literal('handed'), to: z.enum(['needsInfo', 'human']), why: z.string() })
+	z.object({ kind: z.literal('handed'), to: z.enum(['needsInfo', 'human']), why: z.string() }),
+	// a fault stopped the build: where, as the comment says it, its message, whether it looks like one that goes away by itself, and its stack trace, which stays here and never goes to the Tracker
+	z.object({
+		kind: z.literal('fault'),
+		place: z.string(),
+		why: z.string(),
+		passing: z.boolean(),
+		stack: z.string().optional()
+	})
 ]);
 
 export type Decision = z.infer<typeof DecisionSchema>;

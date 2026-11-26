@@ -35,7 +35,7 @@ export interface Retries<R extends Tried> {
 	// a try that failed and is followed by another gets its own line in the ledger
 	readonly record: (failed: R & Failed, attempt: number) => void;
 	// the next try is about to start, after its wait
-	readonly retrying: (attempt: number, why: string) => void;
+	readonly retrying: (attempt: number, why: string) => void | Promise<void>;
 }
 
 export interface Retried<R extends Tried> {
@@ -61,7 +61,7 @@ export async function retryPassing<R extends Tried>(r: Retries<R>): Promise<Retr
 		}
 		r.record(got, attempt);
 		earlierUsd += got.costUsd;
-		r.retrying(attempt + 1, got.why);
+		await r.retrying(attempt + 1, got.why);
 		await r.reset();
 		await r.sleep(wait, r.signal);
 		if (r.signal?.aborted === true) {

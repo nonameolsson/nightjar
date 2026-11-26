@@ -3,6 +3,22 @@
 // The kinds of a build's work: 'pullChecks' is a Pull-check fix round, 'feedback' a Feedback round and 'reviewRound' a Review round, each with its check's own fix rounds.
 type BuildStep = 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
 
+// What one model did in a Session: its tokens and its share of the Session's dollars.
+export interface ModelUsage {
+	readonly model: string;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheReadTokens: number;
+	readonly cacheWriteTokens: number;
+	readonly costUsd: number;
+}
+
+// The `models` a ledger line gets from a Session's outcome, when the Session had them.
+export const modelsOf = (from: {
+	readonly models?: readonly ModelUsage[] | undefined;
+}): { readonly models?: readonly ModelUsage[] } =>
+	from.models === undefined ? {} : { models: from.models };
+
 // One Session's line in the ledger.
 export interface Entry {
 	readonly at: string;
@@ -19,6 +35,8 @@ export interface Entry {
 	readonly failure?: 'passing' | 'budget' | 'lasting';
 	// how long the session ran, in milliseconds; older lines lack it
 	readonly durationMs?: number;
+	// the models the session ran on, one entry each; older lines lack it, and so does a session that reported none
+	readonly models?: readonly ModelUsage[];
 }
 
 // A ledger line as a piece of a build's work gives it: the run adds where and when. A Retro is never part of a build.

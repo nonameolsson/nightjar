@@ -1,7 +1,9 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`buildFeature > names its Feature in the pull request body, once even after the body is edited 1`] = `
-"Nightjar built all of #1 One escape.
+"**Draft PR open**: Nightjar built 2 of 2 Tickets into a draft pull request.
+
+Nightjar built all of #1 One escape.
 
 ## Built
 
@@ -35,7 +37,9 @@ _Built by Nightjar._"
 `;
 
 exports[`what a person sees of a Pull-check fix round > the pull request body > gains a Pull checks section with the round: its summary, its failing checks and its cost 1`] = `
-"Nightjar built all of #1 One escape.
+"**Draft PR open**: Nightjar built 2 of 2 Tickets into a draft pull request.
+
+Nightjar built all of #1 One escape.
 
 ## Built
 

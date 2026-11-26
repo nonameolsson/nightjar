@@ -29,7 +29,8 @@ const PULL_FIX_END = {
 	gaveUp: 'gave up',
 	paused: 'paused',
 	stopped: 'stopped',
-	diverged: 'set its fix aside'
+	diverged: 'set its fix aside',
+	faulted: 'could not push'
 } as const;
 
 const why = (text: string | undefined) => (text === undefined || text === '' ? '' : `: ${text}`);
@@ -124,5 +125,11 @@ export function decisionText(entry: LogbookEntry, signals: SignalNames): Decisio
 			return {
 				line: `Handed to a person with \`${signals[entry.to]}\`${why(entry.why)}`
 			};
+		case 'fault': {
+			const line = `Stopped on a fault ${entry.place}${why(entry.why)}${entry.passing ? ' (a passing fault)' : ''}`;
+			return entry.stack === undefined
+				? { line }
+				: { line, more: { label: 'Stack trace', text: entry.stack } };
+		}
 	}
 }

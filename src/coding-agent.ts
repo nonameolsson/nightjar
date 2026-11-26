@@ -41,6 +41,7 @@ import {
 	stepTools,
 	type StepExtras
 } from './settings.js';
+import { modelsOf, type ModelUsage } from './spend.js';
 import type { Comment, Feature, Ticket } from './tracker.js';
 import type { StepConfig } from './workflow.js';
 import type { FeatureBranch } from './worktree.js';
@@ -209,7 +210,12 @@ export type Ended =
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'aborted' };
 
-type Outcome<T> = (T | Ended) & { readonly sessionId: string; readonly costUsd: number };
+// `models`: what each model did in the Session, when it reported that
+type Outcome<T> = (T | Ended) & {
+	readonly sessionId: string;
+	readonly costUsd: number;
+	readonly models?: readonly ModelUsage[];
+};
 
 export type BuildOutcome = Outcome<
 	// `test`: the test the Session says shows the bug, when it reports one
@@ -310,7 +316,8 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		const result: SessionResult = await session(req);
 		const ended = {
 			sessionId: result.sessionId,
-			costUsd: 'costUsd' in result ? result.costUsd : 0
+			costUsd: 'costUsd' in result ? result.costUsd : 0,
+			...('models' in result ? modelsOf(result) : {})
 		};
 		if (setup.signal?.aborted === true) return { kind: 'aborted', ...ended };
 		if (result.kind === 'api-key' || result.kind === 'rate-limited') {

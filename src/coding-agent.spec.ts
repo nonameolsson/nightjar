@@ -89,6 +89,46 @@ const buildRequest = (over: Partial<{ ticket: Ticket }> = {}) => ({
 });
 
 describe('a build', () => {
+	it('carries the models its Session reported on the outcome, whether it built or failed', async () => {
+		const models = [
+			{
+				model: 'model-a',
+				inputTokens: 10,
+				outputTokens: 20,
+				cacheReadTokens: 30,
+				cacheWriteTokens: 40,
+				costUsd: 2.5
+			}
+		];
+		const built = fakeSession({
+			kind: 'done',
+			costUsd: 2.5,
+			models,
+			output: { outcome: 'built', summary: 'Built it' }
+		});
+		expect(await codingAgent(SETUP, built.session).build(buildRequest())).toMatchObject({
+			kind: 'built',
+			costUsd: 2.5,
+			models
+		});
+		const stopped = fakeSession({
+			kind: 'stopped',
+			costUsd: 2.5,
+			models,
+			why: 'it reached its budget',
+			failure: 'budget'
+		});
+		expect(await codingAgent(SETUP, stopped.session).build(buildRequest())).toMatchObject({
+			kind: 'failed',
+			models
+		});
+		const none = await codingAgent(
+			SETUP,
+			fakeSession(done({ outcome: 'built', summary: 'Built it' })).session
+		).build(buildRequest());
+		expect(none).not.toHaveProperty('models');
+	});
+
 	it('starts a new Session in the worktree on the Ticket, with the build tools and settings', async () => {
 		const { sent, session } = fakeSession(done({ outcome: 'built', summary: 'Built it' }));
 		await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).build(buildRequest());

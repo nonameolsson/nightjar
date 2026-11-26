@@ -36,9 +36,11 @@ import { claimPorts, portEnv } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
+	featureExit,
 	feedbackPass,
 	fixNamed,
 	handBack,
+	PAUSE_MS,
 	publishPass,
 	pullChecksPass,
 	pullFixExit,
@@ -264,7 +266,9 @@ export async function runNightjar(
 		newId: () => randomUUID(),
 		sessionExists: (id) => sessionExists(id, ready.env),
 		say: runSay,
-		status
+		status,
+		// --watch tries a paused Feature again after PAUSE_MS, which its Status note gives as the time it is paused until
+		...(args.mode === 'watch' ? { pauseMs: PAUSE_MS } : {})
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: Named | null = null;
@@ -345,9 +349,7 @@ export async function runNightjar(
 				console.error(`nightjar: ${why(fault)}`);
 				return 2;
 			}
-			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' || outcome?.kind === 'diverged'
-				? 0
-				: 1;
+			return featureExit(outcome);
 		}
 		return await queue(queueDeps, args.mode === 'once');
 	} finally {

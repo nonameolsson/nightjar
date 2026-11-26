@@ -155,8 +155,10 @@ export interface Worktree {
 	toRemote(): Promise<boolean>;
 	// After a push that failed, the branch fetched again: the remote holds the commit, each side has commits the other lacks, or neither.
 	pushOutcome(): Promise<PushOutcome>;
-	// Keeps the branch's commits on its -attempt-push side branch, overwriting one kept before, and takes the remote's head; the side branch's name.
-	setAsidePush(): Promise<string>;
+	// Keeps the branch's commits on its -attempt-push side branch, overwriting one kept before, and takes the remote's head; the side branch's name, or null when no remote head is known to go back to.
+	setAsidePush(): Promise<string | null>;
+	// Whether a commit the remote lacks, as of the last fetch, is a Ticket's.
+	holdsUnpushedTicket(): Promise<boolean>;
 	// The trailers of the head commit, by key; the last value of a key given twice.
 	headTrailers(): Promise<ReadonlyMap<string, string>>;
 	// How many Pull-check fixes the branch's own commits hold, from their trailers.
@@ -186,6 +188,16 @@ export function trailersOf(message: string): Map<string, string> {
 		if (m?.[1] !== undefined) found.set(m[1], (m[2] ?? '').trim());
 	}
 	return found;
+}
+
+// The Tickets a branch's commits built, from the trailers of their messages, for a pull request's commits as the Code host lists them.
+export function builtOn(commits: readonly { readonly message: string }[]): Set<string> {
+	const built = new Set<string>();
+	for (const { message } of commits) {
+		const ticket = trailersOf(message).get(TICKET_TRAILER);
+		if (ticket?.startsWith('#') === true) built.add(ticket.slice(1));
+	}
+	return built;
 }
 
 // What a push that failed turns out to be: the remote holds the commit after all, a person pushed to the branch, or anything else.
@@ -309,8 +321,7 @@ export class GitWorktree implements Worktree {
 
 	// Throws away what a Step left, keeping nothing: the Step is listed as not done.
 	async revert(before: string): Promise<void> {
-		await this.git(['reset', '-q', '--hard', before]);
-		await this.git(['clean', '-q', '-fd']);
+		await this.resetTo(before);
 	}
 
 	// Keeps what the session left on a side branch, which it names; null when it left nothing.
@@ -334,44 +345,60 @@ export class GitWorktree implements Worktree {
 			side = attemptBranch(this.at.branch, ticket);
 			await this.git(['branch', '-f', side, saved]);
 		}
-		await this.git(['reset', '-q', '--hard', before]);
-		await this.git(['clean', '-q', '-fd']);
+		await this.resetTo(before);
 		return side;
+	}
+
+	private get remote() {
+		return `refs/remotes/origin/${this.at.branch}`;
+	}
+
+	// The commit of the remote branch as last fetched, or null when there is none.
+	private async remoteHead(): Promise<string | null> {
+		const found = await run(
+			'git',
+			['rev-parse', '--verify', '--quiet', `${this.remote}^{commit}`],
+			this.at.folder,
+			this.env
+		);
+		return found.ok ? found.out.trim() : null;
+	}
+
+	private async isAncestor(ancestor: string, of: string): Promise<boolean> {
+		const got = await run(
+			'git',
+			['merge-base', '--is-ancestor', ancestor, of],
+			this.at.folder,
+			this.env
+		);
+		return got.ok;
+	}
+
+	// Moves the branch to `commit` and drops what is left in the folder.
+	private async resetTo(commit: string): Promise<void> {
+		await this.git(['reset', '-q', '--hard', commit]);
+		await this.git(['clean', '-q', '-fd']);
 	}
 
 	// The remote branch was fetched when the worktree opened; a branch that is behind it moves on, one ahead of it stays.
 	async toRemote(): Promise<boolean> {
-		const remote = `refs/remotes/origin/${this.at.branch}`;
-		const theirs = await run(
-			'git',
-			['rev-parse', '--verify', '--quiet', `${remote}^{commit}`],
-			this.at.folder,
-			this.env
-		);
-		if (!theirs.ok) return false;
-		if (theirs.out.trim() === (await this.head())) return true;
-		const behind = await run(
-			'git',
-			['merge-base', '--is-ancestor', 'HEAD', remote],
-			this.at.folder,
-			this.env
-		);
-		if (!behind.ok) return false;
-		await this.git(['reset', '-q', '--hard', remote]);
+		const theirs = await this.remoteHead();
+		if (theirs === null) return false;
+		if (theirs === (await this.head())) return true;
+		if (!(await this.isAncestor('HEAD', this.remote))) return false;
+		await this.git(['reset', '-q', '--hard', this.remote]);
 		return true;
 	}
 
 	// A branch with commits of its own and the remote's: the remote's merged in when the two do not clash, else the branch left as it was.
 	async mergeRemote(): Promise<boolean> {
-		const remote = `refs/remotes/origin/${this.at.branch}`;
-		const theirs = await run(
+		if ((await this.remoteHead()) === null) return false;
+		const merged = await run(
 			'git',
-			['rev-parse', '--verify', '--quiet', `${remote}^{commit}`],
+			['merge', '-q', '--no-edit', this.remote],
 			this.at.folder,
 			this.env
 		);
-		if (!theirs.ok) return false;
-		const merged = await run('git', ['merge', '-q', '--no-edit', remote], this.at.folder, this.env);
 		if (merged.ok) return true;
 		await run('git', ['merge', '--abort'], this.at.folder, this.env);
 		return false;
@@ -379,23 +406,30 @@ export class GitWorktree implements Worktree {
 
 	// Sorted by git's view of the two heads, not by what the push said, so it reads alike on every Code host.
 	async pushOutcome(): Promise<PushOutcome> {
-		const remote = `refs/remotes/origin/${this.at.branch}`;
-		const refspec = `+refs/heads/${this.at.branch}:${remote}`;
+		const refspec = `+refs/heads/${this.at.branch}:${this.remote}`;
 		const fetched = await run('git', ['fetch', '-q', 'origin', refspec], this.at.folder, this.env);
 		if (!fetched.ok) return 'fault';
-		const holds = (ancestor: string, of: string) =>
-			run('git', ['merge-base', '--is-ancestor', ancestor, of], this.at.folder, this.env);
-		if ((await holds('HEAD', remote)).ok) return 'pushed';
-		if ((await holds(remote, 'HEAD')).ok) return 'fault';
+		if (await this.isAncestor('HEAD', this.remote)) return 'pushed';
+		if (await this.isAncestor(this.remote, 'HEAD')) return 'fault';
 		return 'diverged';
 	}
 
-	async setAsidePush(): Promise<string> {
+	async setAsidePush(): Promise<string | null> {
+		if ((await this.remoteHead()) === null) return null;
 		const side = pushAttemptBranch(this.at.branch);
 		await this.git(['branch', '-f', side, 'HEAD']);
-		await this.git(['reset', '-q', '--hard', `refs/remotes/origin/${this.at.branch}`]);
-		await this.git(['clean', '-q', '-fd']);
+		await this.resetTo(this.remote);
 		return side;
+	}
+
+	async holdsUnpushedTicket(): Promise<boolean> {
+		const from = (await this.remoteHead()) === null ? this.at.base : this.remote;
+		const out = await this.git([
+			'log',
+			`--format=%(trailers:key=${TICKET_TRAILER},valueonly)`,
+			`${from}..HEAD`
+		]);
+		return out.trim() !== '';
 	}
 
 	async headTrailers(): Promise<ReadonlyMap<string, string>> {

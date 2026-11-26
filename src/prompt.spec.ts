@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
 	BUILD_SCHEMA,
+	QUESTIONS_MARK,
 	REVIEW_SCHEMA,
 	STEP_SCHEMA,
 	buildPrompt,
 	fixPrompt,
+	questionList,
 	questionRounds,
-	questionsComment,
 	readBuildAnswer,
 	readReview,
 	reviewPrompt
 } from './prompt.js';
+import { waitingCommentText } from './status-note.js';
 import { PAYLOAD_HEADING } from './template.js';
 import type { Comment, Feature } from './tracker.js';
 
@@ -70,7 +72,13 @@ describe('readReview', () => {
 
 describe('question rounds', () => {
 	it('counts its own question comments and nothing else', () => {
-		const asked = questionsComment([{ question: 'Q', recommendation: 'R' }], 1);
+		const asked = waitingCommentText({
+			mark: QUESTIONS_MARK,
+			sentence: 'Nightjar has questions about this Ticket.',
+			cause: questionList([{ question: 'Q', recommendation: 'R' }]),
+			next: [],
+			logbook: { feature: '1', session: null }
+		});
 		const comments = [comment(asked), comment('my answer'), comment(`quoting: ${asked}`)];
 		expect(questionRounds(comments)).toBe(1);
 		expect(asked).toContain('1. Q\n   - Recommended: R');

@@ -29,7 +29,8 @@ const LONE_METHODS = [
 	'assign',
 	'trusts',
 	'ticketCounts',
-	'shelf'
+	'shelf',
+	'statusNote'
 ] as const satisfies readonly (keyof Tracker)[];
 
 // Typed as records, so a method added to an interface fails to compile until it is listed here.

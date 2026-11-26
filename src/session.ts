@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Env } from './git.js';
+import type { ModelUsage } from './spend.js';
 
 export interface SessionRequest {
 	readonly cwd: string;
@@ -33,11 +34,18 @@ export interface SessionRequest {
 // Why a Session failed: `passing` may go away on its own, `budget` is its budget or time limit, `lasting` is anything else.
 export type Failure = 'passing' | 'budget' | 'lasting';
 
+// `models`: what each model did, when the `result` line said; absent otherwise
 export type Settled =
-	| { readonly kind: 'done'; readonly costUsd: number; readonly output: unknown }
+	| {
+			readonly kind: 'done';
+			readonly costUsd: number;
+			readonly models?: readonly ModelUsage[];
+			readonly output: unknown;
+	  }
 	| {
 			readonly kind: 'stopped';
 			readonly costUsd: number;
+			readonly models?: readonly ModelUsage[];
 			readonly why: string;
 			readonly failure: Failure;
 	  }
@@ -94,6 +102,29 @@ export function sessionExists(
 const isObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const count = (value: unknown) => (typeof value === 'number' && value >= 0 ? value : 0);
+
+// The per-model usage of a `result` line, one entry per model; none when the line has no `modelUsage`.
+function usageOf(line: Record<string, unknown>): { readonly models?: readonly ModelUsage[] } {
+	const usage = line.modelUsage;
+	if (!isObject(usage)) return {};
+	const models = Object.entries(usage).flatMap(([model, used]) =>
+		isObject(used)
+			? [
+					{
+						model,
+						inputTokens: count(used.inputTokens),
+						outputTokens: count(used.outputTokens),
+						cacheReadTokens: count(used.cacheReadInputTokens),
+						cacheWriteTokens: count(used.cacheCreationInputTokens),
+						costUsd: count(used.costUSD)
+					}
+				]
+			: []
+	);
+	return models.length === 0 ? {} : { models };
+}
+
 // What one stream-json line settles, or null while the session goes on.
 export function settle(line: unknown, allowApiKey: boolean): Settled | null {
 	if (!isObject(line)) return null;
@@ -111,27 +142,35 @@ export function settle(line: unknown, allowApiKey: boolean): Settled | null {
 	}
 	if (line.type !== 'result') return null;
 	const costUsd = typeof line.total_cost_usd === 'number' ? line.total_cost_usd : 0;
+	const models = usageOf(line);
 	if (line.subtype === 'error_max_budget_usd') {
-		return { kind: 'stopped', costUsd, why: 'it reached its budget', failure: 'budget' };
+		return { kind: 'stopped', costUsd, ...models, why: 'it reached its budget', failure: 'budget' };
 	}
 	if (line.is_error === true) {
 		return {
 			kind: 'stopped',
 			costUsd,
+			...models,
 			why: `it ended with ${String(line.subtype)}`,
 			failure: 'lasting'
 		};
 	}
 	if (!isObject(line.structured_output)) {
-		return { kind: 'stopped', costUsd, why: 'it gave no structured answer', failure: 'lasting' };
+		return {
+			kind: 'stopped',
+			costUsd,
+			...models,
+			why: 'it gave no structured answer',
+			failure: 'lasting'
+		};
 	}
-	return { kind: 'done', costUsd, output: line.structured_output };
+	return { kind: 'done', costUsd, ...models, output: line.structured_output };
 }
 
 const TAIL = 2000;
 
-// A last line naming an overload, a 5xx error or a network fault.
-const PASSING_LINE =
+// A last line naming an overload, a 5xx error or a network fault; a fault that stops a build is sorted by it too (fault.ts).
+export const PASSING_LINE =
 	/overloaded|\b5\d\d\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|network|fetch failed/i;
 
 // `command` is the seam a spec swaps for a stand-in.

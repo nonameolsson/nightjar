@@ -19,6 +19,7 @@ import {
 	sourcesContract,
 	feedbackContract,
 	shelfContract,
+	statusNoteContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract,
@@ -262,6 +263,15 @@ describe('GitHubTracker meets the shelf contract', () => {
 		describe(`with the ${label} Signal names`, () => {
 			const harness = gitHubTracker(names, trust);
 			for (const c of shelfContract) it(c.name, () => c.run(harness));
+		});
+	}
+});
+
+describe('GitHubTracker meets the statusNote contract', () => {
+	for (const trust of ['write access', 'trusted list'] as const) {
+		describe(`with ${trust} as trust`, () => {
+			const harness = gitHubTracker(DEFAULT_SIGNAL_NAMES, trust);
+			for (const c of statusNoteContract) it(c.name, () => c.run(harness));
 		});
 	}
 });

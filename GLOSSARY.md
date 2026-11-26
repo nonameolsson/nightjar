@@ -80,6 +80,10 @@ _Avoid_: column, swimlane
 One Ticket's mark on the Board: built, building, needs a person, or waiting. It rests in a round nest socket in its Feature's row.
 _Avoid_: dot, pip, bar
 
+**Steps bar**:
+A row of segments beside a Feature's Eggs, on its Board card and its Table row: one per stage of its latest build, in the loop's order (Tickets, Steps, Review, Review rounds, Pull checks, Feedback), each marked passed, passed after a retry or a round, failed, running, not reached or not needed. It is read from the ledger lines of that build, so a hard build shows without opening it.
+_Avoid_: pipeline, progress bar, timeline, stepper
+
 ### Where things are
 
 **Tracker**:

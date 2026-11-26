@@ -166,7 +166,7 @@ describe('nightjar FEATURE', () => {
 		expect(calls()).toMatch(/-X DELETE repos\/o\/r\/issues\/1\/labels\/agent-working/);
 		expect(calls()).toMatch(/-X POST repos\/o\/r\/issues\/1\/labels -f labels\[\]=needs-info/);
 		expect(calls()).toMatch(
-			/-X POST repos\/o\/r\/issues\/1\/comments -f body=Nightjar stopped on a fault/
+			/-X POST repos\/o\/r\/issues\/1\/comments -f body=\*\*Waiting on you\*\*: Nightjar stopped on a fault while setting up the Feature: gh could not list the sub-issues/
 		);
 		const status = JSON.parse(readFileSync(join(root, '.factory', 'status.json'), 'utf8')) as {
 			recent: unknown[];
@@ -329,7 +329,7 @@ describe('nightjar FEATURE with a setup command and reserved ports', () => {
 		const { env, nightjar, calls } = world(true, { setup: 'echo no network; exit 3' });
 		nightjar(['1']);
 		expect(calls()).toMatch(
-			/-X POST repos\/o\/r\/issues\/1\/comments -f body=Nightjar built nothing: the setup command `echo no network; exit 3` failed[\s\S]*no network/
+			/-X POST repos\/o\/r\/issues\/1\/comments -f body=\*\*Waiting on you\*\*: Nightjar built nothing: the setup command `echo no network; exit 3` failed[\s\S]*no network/
 		);
 		expect(existsSync(join(tree(env), 'built.txt'))).toBe(false);
 	}, 30_000);
