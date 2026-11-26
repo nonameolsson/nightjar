@@ -58,7 +58,7 @@ import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
 import { reviewSection, type ReviewSession } from './review-section.js';
-import type { Entry, LogEntry, Spend } from './spend.js';
+import type { LogEntry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
 import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
@@ -130,7 +130,8 @@ export function pullFixLimits(
 export interface Deps {
 	readonly tracker: Tracker;
 	readonly codeHost: CodeHost;
-	readonly codingAgent: CodingAgent;
+	// the build loop starts no Retro
+	readonly codingAgent: Omit<CodingAgent, 'retro'>;
 	readonly runCheck: RunCheck;
 	// the worktree setup command, run through the same shell as the check
 	readonly runSetup: RunCheck;
@@ -219,7 +220,7 @@ interface Cost {
 	readonly usd: number;
 }
 
-const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
+const workOf = (step: LogEntry['step']): Work => (step === 'step' ? 'steps' : step);
 
 // What building one Ticket left the run to do next.
 type Step =

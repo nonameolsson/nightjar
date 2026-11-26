@@ -10,7 +10,7 @@ import {
 import { DEFAULT_ROUNDS, type Config } from './config.js';
 import type { Env } from './git.js';
 import { retryPassing, TRIES } from './retry.js';
-import type { Allowance, Entry } from './spend.js';
+import type { Allowance, LogEntry } from './spend.js';
 import type { Serve, Served } from './serve.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
 import type { Worktree } from './worktree.js';
@@ -136,7 +136,7 @@ export interface FixEnd {
 }
 
 // A Step's ledger line, which the build loop dates and files under the Feature.
-export type StepLog = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
+export type StepLog = LogEntry;
 
 // What of the Feature's worktree the Steps use.
 export type StepsTree = Pick<

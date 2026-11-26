@@ -1760,16 +1760,23 @@ const sessionShell = (title: string, main: string, links: Links) =>
 // One ledger line of a Session: its Feature and Ticket, the kind of work, how it ended, what it cost and how long it ran.
 function sessionRun(run: SessionView['runs'][number], links: Links): string {
 	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	let about = '';
+	let book = '';
+	// a Retro works on no Feature, so it names none and has no Logbook to open
+	if (run.kind !== 'retro') {
+		const ticket = run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links);
+		about = field('Feature', idHtml(run.feature, links)) + field('Ticket', ticket);
+		book = `<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>`;
+	}
 	return (
 		'<section class="run"><dl>' +
-		field('Feature', idHtml(run.feature, links)) +
-		field('Ticket', run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links)) +
+		about +
 		field('Kind', escape(KIND_TEXT[run.kind] ?? run.kind)) +
 		field('Outcome', escape(run.outcome)) +
 		field('Cost', dollars(run.costUsd)) +
 		(run.durationMs === undefined ? '' : field('Duration', elapsed(run.durationMs))) +
 		'</dl>' +
-		`<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>` +
+		book +
 		'</section>'
 	);
 }

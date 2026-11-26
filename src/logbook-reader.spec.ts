@@ -188,6 +188,12 @@ describe('listLogbooks', () => {
 	it('lists nothing when nothing was recorded', () => {
 		expect(listLogbooks(root)).toEqual([]);
 	});
+
+	it('lists no Feature for a Retro, which works on none', () => {
+		const retro = { feature: '', ticket: null, branch: '', step: 'retro' as const };
+		record(ledgerPath(root), session(4, { ...retro, outcome: 'proposed' }));
+		expect(listLogbooks(root)).toEqual([]);
+	});
 });
 
 describe('sessionSummary', () => {

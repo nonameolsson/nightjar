@@ -14,7 +14,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// gh for a spec that runs the command as a process, which a Host cannot reach; an in-process spec passes a FakeGitHub
+// gh for a spec that runs the command as a process, which a Host cannot reach; an in-process spec passes a FakeGitHub.
+// Every issue it opens is #7, so a Feature made with `nightjar create` or `nightjar retro --create` is #7 and so is each of its Tickets.
 const GH = String.raw`#!/bin/bash
 echo "$*" >> "$FAKE_GH_CALLS"
 issue() { printf '{"number":%s,"title":"%s","body":"## Acceptance criteria\\n- [ ] It works","state":"open","labels":[{"name":"ready-for-agent"}],"assignees":[{"login":"ann"}],"user":{"login":"ann"}%s}' "$1" "$2" "$3"; }
@@ -32,6 +33,8 @@ for a in "$@"; do case "$a" in
   repos/o/r/issues/*/labels*) echo '[]'; exit 0 ;;
   repos/o/r/pulls\?*) echo '[]'; exit 0 ;;
   repos/o/r/pulls|repos/o/r/pulls/9) echo '{"number":9,"html_url":"https://github.com/o/r/pull/9","body":""}'; exit 0 ;;
+  repos/o/r/issues|repos/o/r/issues/7) echo '{"id":1007,"number":7,"title":"t","body":"","state":"open","labels":[],"user":{"login":"ann"}}'; exit 0 ;;
+  repos/o/r/issues/7/sub_issues) echo '{}'; exit 0 ;;
 esac; done
 echo "gh: Not Found (HTTP 404)" >&2; exit 1`;
 
@@ -49,6 +52,8 @@ echo '{"accessToken":"fake-azure-devops"}'`;
 // A session Nightjar starts for a Ticket (it has a session id) writes built.txt, port.txt and login.txt in its
 // folder and answers built, at a cost of $0.50; the review session approves. A Feedback round's session (its schema
 // asks for a feedbackId) writes answered.txt and answers the first feedback id its prompt names, as do its fix rounds.
+// A Retro's session (its schema asks for a featureFile) writes nothing and answers with a Feature file of one Ticket, or with
+// FAKE_CLAUDE_RETRO_NOTHING proposes nothing.
 const CLAUDE = String.raw`#!/bin/bash
 echo "$* [dir=$CLAUDE_CONFIG_DIR token=$CLAUDE_CODE_OAUTH_TOKEN]" >> "$FAKE_CLAUDE_CALLS"
 case "$*" in
@@ -63,6 +68,12 @@ case "$*" in
     case "$*" in
       *--session-id*|*--resume*)
         case "$*" in
+          *featureFile*)
+            if [ -n "$FAKE_CLAUDE_RETRO_NOTHING" ]; then
+              out='{"outcome":"nothing","summary":"Each failure was a network fault.","featureFile":""}'
+            else
+              out='{"outcome":"proposed","summary":"Name the check in CLAUDE.md.","featureFile":"# Name the check in CLAUDE.md\n\nThe Sessions could not find the check.\n\n## Ticket 1: Name the check in CLAUDE.md\n\n### Acceptance criteria\n\n- [ ] CLAUDE.md names the check\n"}'
+            fi ;;
           *feedbackId*)
             echo answered > answered.txt
             id=""

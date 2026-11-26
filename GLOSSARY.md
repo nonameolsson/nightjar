@@ -135,12 +135,16 @@ The program that builds one Ticket in the Feature's worktree, in a Session Night
 _Avoid_: bot, AI, model, worker
 
 **Session**:
-One run of the Coding agent on one piece of work: the Preflight, a Ticket's build, a fix round, a Step round, a Pull-check fix, a Conflict fix, a Feedback round, the Review, or a Review round. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
+One run of the Coding agent on one piece of work: the Preflight, a Ticket's build, a fix round, a Step round, a Pull-check fix, a Conflict fix, a Feedback round, the Review, a Review round, or a Retro. Nightjar starts and ends it; a fix round resumes the Session of the work it fixes, where that Session still exists.
 _Avoid_: run, conversation, chat, job
 
 **Logbook**:
 Every Session Nightjar spent on a Feature, and each decision it made between them, in order. It stays on the person's machine.
 _Avoid_: log, run log, build log, history, timeline
+
+**Retro**:
+One Session, started by a person, that only reads: it reads the Sessions of the last 30 days that failed or handed their work back, and proposes changes to the repo's own guidance (its standards, its CLAUDE.md, a skill, a check, `factory.json`) as a Feature file. Nightjar writes that file; a person reads it, makes the Feature, and gives the Go. A Retro works on no Feature and changes nothing.
+_Avoid_: retrospective, self-improvement, post-mortem, analysis
 
 **Adapter**:
 The piece that connects Nightjar to one Tracker or one Code host, either built in or a module the repo's config names.

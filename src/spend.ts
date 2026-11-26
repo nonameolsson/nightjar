@@ -1,5 +1,8 @@
 // The Spend module: records each Session's cost and answers whether the day is over and whether work may spend more.
 
+// The kinds of a build's work: 'pullChecks' is a Pull-check fix round, 'feedback' a Feedback round and 'reviewRound' a Review round, each with its check's own fix rounds.
+type BuildStep = 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
+
 // One Session's line in the ledger.
 export interface Entry {
 	readonly at: string;
@@ -7,8 +10,8 @@ export interface Entry {
 	readonly feature: string;
 	readonly ticket: string | null;
 	readonly branch: string;
-	// 'pullChecks' is a Pull-check fix round, 'feedback' a Feedback round and 'reviewRound' a Review round, each with its check's own fix rounds
-	readonly step: 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
+	// 'retro' is a Retro, which works on no Feature, so its feature and branch are empty
+	readonly step: BuildStep | 'retro';
 	readonly session: string;
 	readonly costUsd: number;
 	readonly outcome: string;
@@ -18,8 +21,10 @@ export interface Entry {
 	readonly durationMs?: number;
 }
 
-// A ledger line as a piece of work gives it: the run adds where and when.
-export type LogEntry = Omit<Entry, 'at' | 'repo' | 'feature' | 'branch'>;
+// A ledger line as a piece of a build's work gives it: the run adds where and when. A Retro is never part of a build.
+export interface LogEntry extends Omit<Entry, 'at' | 'repo' | 'feature' | 'branch' | 'step'> {
+	readonly step: BuildStep;
+}
 
 // What a piece of work with a cap may still spend.
 export interface Allowance {

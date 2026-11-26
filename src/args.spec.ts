@@ -51,6 +51,23 @@ describe('parseArgs', () => {
 		expect(parseArgs(['--poll', '60'])).toBe('say what to build');
 	});
 
+	it('reads retro, with --create and the flags a Session takes, and nothing that builds', () => {
+		expect(parseArgs(['retro'])).toEqual({ mode: 'retro', useApiKey: false });
+		expect(parseArgs(['retro', '--create', '--model', 'opus', '--profile', 'work'])).toEqual({
+			mode: 'retro',
+			useApiKey: false,
+			create: true,
+			model: 'opus',
+			profile: 'work'
+		});
+		const alone = 'retro goes alone, with no --watch, --once, Feature or doctor';
+		expect(parseArgs(['retro', '--once'])).toBe(alone);
+		expect(parseArgs(['retro', '42'])).toBe(alone);
+		expect(parseArgs(['doctor', 'retro'])).toBe(alone);
+		expect(parseArgs(['retro', '--poll', '60'])).toBe('--poll goes with --watch only');
+		expect(parseArgs(['--once', '--create'])).toBe('--create goes with retro only');
+	});
+
 	it('reads --profile with its name', () => {
 		expect(parseArgs(['--once', '--profile', 'work'])).toEqual({
 			mode: 'once',

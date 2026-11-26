@@ -168,6 +168,8 @@ export function listLogbooks(root: string): LogbookListing[] {
 		found.set(feature, { lastAt: last, sessions: 0, costUsd: 0, recorded: true });
 	}
 	for (const e of readEntries(ledgerPath(root))) {
+		// a Retro works on no Feature
+		if (e.step === 'retro') continue;
 		const was = found.get(e.feature);
 		found.set(e.feature, {
 			lastAt: was === undefined ? e.at : later(was.lastAt, e.at),

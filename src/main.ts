@@ -47,6 +47,7 @@ import {
 } from './queue.js';
 import { runSession, sessionExists } from './session.js';
 import { runLogbookCommand } from './logbook-command.js';
+import { runRetroCommand } from './retro.js';
 import { runUiCommand } from './ui-command.js';
 import { realSeams, startStale } from './stale.js';
 import { startServe } from './serve.js';
@@ -187,6 +188,7 @@ export async function runNightjar(
 		console.error(`nightjar: ${fault.message}`);
 		return 2;
 	}
+	if (args.mode === 'retro') return runRetroCommand(args, ready);
 	const { root, config, adapters } = ready;
 
 	const spend = fileSpend(ledgerPath(root));
