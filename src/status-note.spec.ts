@@ -3,11 +3,15 @@ import { endsWithFooter } from './footer.js';
 import {
 	EXCERPT_LINES,
 	STATE_WORDS,
+	againSentence,
 	buildingSentence,
 	excerptOf,
 	headline,
 	logbookLine,
+	readAgain,
+	readStatusNote,
 	statusNoteText,
+	withEarlier,
 	untilText,
 	waitingCommentText,
 	type NoteState,
@@ -329,5 +333,119 @@ describe('statusNoteText', () => {
 		].map((part) => note.indexOf(part));
 		expect(order.every((at) => at >= 0)).toBe(true);
 		expect([...order].sort((a, b) => a - b)).toEqual(order);
+	});
+
+	it('keeps the time it was written in a hidden line under the headline, and only when it has one', () => {
+		const at = '2026-11-22T08:30:00.000Z';
+		expect(text({ at }).split('\n').slice(0, 3)).toEqual([
+			STATUS_MARKER,
+			'**Building**: Nightjar is building this Feature.',
+			`<!-- nightjar:at ${at} -->`
+		]);
+		expect(isStatusNote(text({ at }))).toBe(true);
+		expect(text({})).not.toContain('nightjar:at');
+	});
+});
+
+describe('reading a Status note back', () => {
+	const at = '2026-11-22T08:30:00.000Z';
+	const earlier = [
+		{ at: '2026-11-20T10:00:00.000Z', state: 'pull', sentence: 'Opened a draft.' },
+		{ at: '2026-11-21T10:00:00.000Z', state: 'stopped', sentence: 'A person stopped it.' }
+	] as const;
+
+	it('gives the headline as a run, dated by the time the note kept', () => {
+		const body = text({ state: 'waiting', sentence: 'A Ticket needs you.', at });
+		expect(readStatusNote(body, 'unused')).toEqual({
+			current: { at, state: 'waiting', sentence: 'A Ticket needs you.' },
+			earlier: []
+		});
+	});
+
+	it('dates the headline of an older note, one that kept no time, by the time it is given', () => {
+		const got = readStatusNote(text({}), '2026-11-25T00:00:00.000Z');
+		expect(got.current?.at).toBe('2026-11-25T00:00:00.000Z');
+	});
+
+	it('reads a Paused headline without its time', () => {
+		const body = text({
+			state: 'paused',
+			until: '2026-10-30T09:30:00.000Z',
+			sentence: 'The usage limit was reached.'
+		});
+		expect(readStatusNote(body, at).current).toEqual({
+			at,
+			state: 'paused',
+			sentence: 'The usage limit was reached.'
+		});
+	});
+
+	it('gives the Earlier runs oldest first, each by its day', () => {
+		const got = readStatusNote(text({ earlier }), at).earlier;
+		expect(got).toEqual([
+			{ at: '2026-11-20', state: 'pull', sentence: 'Opened a draft.' },
+			{ at: '2026-11-21', state: 'stopped', sentence: 'A person stopped it.' }
+		]);
+	});
+
+	it('gives the same Earlier runs back after they are written again', () => {
+		const once = readStatusNote(text({ earlier }), at).earlier;
+		expect(readStatusNote(text({ earlier: once }), at).earlier).toEqual(once);
+	});
+
+	it('reads a note whose host stored it with CRLF line ends', () => {
+		const body = text({ earlier, at }).replaceAll('\n', '\r\n');
+		const got = readStatusNote(body, 'unused');
+		expect(got.current?.at).toBe(at);
+		expect(got.earlier.map((r) => r.state)).toEqual(['pull', 'stopped']);
+	});
+
+	it('reads nothing from text that is no Status note', () => {
+		expect(readStatusNote('Happened again, 2 times.', at)).toEqual({ current: null, earlier: [] });
+	});
+
+	describe('withEarlier', () => {
+		const line = { at, sentence: againSentence(2, '2026-11-03 12:00') };
+
+		it('changes the Earlier runs and nothing else', () => {
+			const body = text({ state: 'pull', next: ['Review it.'], earlier, at });
+			const got = withEarlier(body, [...readStatusNote(body, at).earlier, line]);
+			expect(got).toBe(
+				body.replace(
+					'- 2026-11-21 · **Stopped**: A person stopped it.',
+					'- 2026-11-21 · **Stopped**: A person stopped it.\n- 2026-11-22 · Happened again, 2 times since 2026-11-03 12:00.'
+				)
+			);
+		});
+
+		it('adds the section before the Logbook line when the note has none', () => {
+			const body = text({ at });
+			const got = withEarlier(body, [line]);
+			expect(got).toContain(
+				'**Earlier runs**\n\n- 2026-11-22 · Happened again, 2 times since 2026-11-03 12:00.\n\nLogbook: '
+			);
+			expect(endsWithFooter(got)).toBe(true);
+			expect(readStatusNote(got, at).current).toEqual(readStatusNote(body, at).current);
+		});
+	});
+
+	describe('a "happened again" line', () => {
+		it('says the count and since when, with no state word, and reads back the same', () => {
+			const line = { at, sentence: againSentence(1, '2026-11-03 12:00') };
+			expect(line.sentence).toBe('Happened again, 1 time since 2026-11-03 12:00.');
+			expect(againSentence(3, 'x')).toBe('Happened again, 3 times since x.');
+			const back = readStatusNote(text({ earlier: [line] }), at).earlier;
+			expect(back).toEqual([{ at: '2026-11-22', sentence: line.sentence }]);
+			expect(readAgain(line)).toEqual({ times: 1, since: '2026-11-03 12:00' });
+			expect(back[0] === undefined ? null : readAgain(back[0])).toEqual({
+				times: 1,
+				since: '2026-11-03 12:00'
+			});
+		});
+
+		it('is no run of the build: a run with a state word is never one', () => {
+			expect(readAgain({ at, state: 'stopped', sentence: againSentence(2, 'x') })).toBeNull();
+			expect(readAgain({ at, sentence: 'Something else.' })).toBeNull();
+		});
 	});
 });

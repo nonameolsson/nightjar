@@ -21,7 +21,22 @@ import { run, type Env } from './git.js';
 import { fileLogbook, noteFor, type Decision, type Logbook } from './logbook.js';
 import { say as sayLine, why } from './say.js';
 import { fillTemplate, lookup, readTemplate, templateFaults } from './template.js';
-import type { FeatureWriter, ItemId, SourcedFeature, Tracker } from './tracker.js';
+import {
+	againSentence,
+	NOT_BUILT,
+	readAgain,
+	readStatusNote,
+	statusNoteText,
+	withEarlier,
+	type EarlierRun
+} from './status-note.js';
+import {
+	statusNoteOf,
+	type FeatureWriter,
+	type ItemId,
+	type SourcedFeature,
+	type Tracker
+} from './tracker.js';
 
 // the largest body a delivery may have
 export const BODY_LIMIT = 256 * 1024;
@@ -363,8 +378,49 @@ export function startIntake(o: IntakeOptions): Promise<IntakeServer> {
 		}
 	};
 
-	// "happened again" on the open Feature, unless it was said there today
+	// "happened again" in the history of the open Feature's Status note: its count and since when, written over on each delivery. An edit notifies no one, so it is not held to once a day. A Feature no build has touched has no note yet, and gets one that says it waits for the Go. Returns true, as the comment did: the delivery said it, so the log counts it as said.
+	const againInNote = async (
+		name: string,
+		open: SourcedFeature,
+		statusNote: NonNullable<Tracker['statusNote']>
+	): Promise<boolean> => {
+		const at = now().toISOString();
+		const found = statusNoteOf(await tracker.comments(open.id), await tracker.me());
+		const read = found === undefined ? null : readStatusNote(found.body, at);
+		const earlier = read?.earlier ?? [];
+		const saying = earlier.map(readAgain);
+		const prior = saying.findIndex((a) => a !== null);
+		const before = saying[prior] ?? null;
+		const times = (before?.times ?? 0) + 1;
+		const line: EarlierRun = {
+			at,
+			sentence: againSentence(times, before?.since ?? localTime(new Date(open.at)))
+		};
+		const lines = prior < 0 ? [...earlier, line] : earlier.with(prior, line);
+		await statusNote(
+			open.id,
+			found === undefined
+				? statusNoteText({
+						state: 'waiting',
+						sentence: NOT_BUILT,
+						tickets: [],
+						pull: null,
+						next: null,
+						earlier: lines,
+						logbook: { feature: open.id, session: null },
+						at
+					})
+				: withEarlier(found.body, lines)
+		);
+		note(name, open.id, { kind: 'happenedAgain', source: name, times });
+		return true;
+	};
+
+	// "happened again" on the open Feature: in its Status note's history when the Tracker keeps one, else a comment, unless it was said there today
 	const again = async (name: string, open: SourcedFeature): Promise<boolean> => {
+		if (tracker.statusNote !== undefined) {
+			return againInNote(name, open, tracker.statusNote.bind(tracker));
+		}
 		const said = (await tracker.comments(open.id)).filter((c) => c.body.includes(AGAIN_MARKER));
 		const last = said.at(-1);
 		if (last !== undefined && day(new Date(last.at)) === day(now())) return false;

@@ -75,6 +75,8 @@ import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
 import {
 	buildingSentence,
+	NOT_BUILT,
+	readStatusNote,
 	statusNoteText,
 	waitingCommentText,
 	type NoteTicket,
@@ -83,6 +85,7 @@ import {
 } from './status-note.js';
 import {
 	isStatusNote,
+	statusNoteOf,
 	type Comment,
 	type Feature,
 	type ItemId,
@@ -339,6 +342,7 @@ async function startFeature(
 	const { id } = feature;
 	const branch = branchFor(feature.id, feature.title);
 	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
+	beginRun(tracker, id);
 	// the Feature's start, before anything else reads the clock
 	const show = buildingOf(feature, deps.now);
 	const signals = signalsOf(tracker, feature.id, note);
@@ -415,7 +419,6 @@ async function startFeature(
 		tickets: noteTickets(feature, tickets, built),
 		pull: null,
 		next: null,
-		earlier: [],
 		session: null
 	});
 	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
@@ -514,7 +517,7 @@ interface Asking {
 
 // The Status note of a Feature that needs a person: Waiting on you, with the same sentence and Next step as the comment that asked.
 function noteWaiting(
-	deps: Pick<Deps, 'tracker' | 'say'>,
+	deps: Pick<Deps, 'tracker' | 'say' | 'now'>,
 	feature: Pick<Feature, 'id'>,
 	o: Asking
 ): Promise<void> {
@@ -525,14 +528,13 @@ function noteWaiting(
 		tickets: o.tickets,
 		pull: ask.pull === undefined ? null : { url: ask.pull.url },
 		next: ask.next.length > 0 ? ask.next : null,
-		earlier: [],
 		session: o.session
 	});
 }
 
 // A Feature that needs a person: a new comment that notifies them, and its Status note saying Waiting on you.
 export async function askAPerson(
-	deps: Pick<Deps, 'tracker' | 'say'>,
+	deps: Pick<Deps, 'tracker' | 'say' | 'now'>,
 	feature: Pick<Feature, 'id'>,
 	o: Asking
 ): Promise<void> {
@@ -541,20 +543,38 @@ export async function askAPerson(
 	await noteWaiting(deps, feature, o);
 }
 
+// The Features whose build has begun and whose Status note has not been written since, by Tracker: the next write moves the note's headline under Earlier runs, and the writes after it do not.
+const newRuns = new WeakMap<Tracker, Set<ItemId>>();
+
+function beginRun(tracker: Tracker, feature: ItemId): void {
+	const begun = newRuns.get(tracker) ?? new Set<ItemId>();
+	begun.add(feature);
+	newRuns.set(tracker, begun);
+}
+
 // The Feature's Status note, on a Tracker that keeps one; a Tracker without `statusNote` gets no word of a quiet update, as before it. A note that cannot be written is said, and the build goes on: it notifies no one, so nothing waits on it.
 export async function writeStatusNote(
-	deps: Pick<Deps, 'tracker' | 'say'>,
+	deps: Pick<Deps, 'tracker' | 'say' | 'now'>,
 	feature: Pick<Feature, 'id'>,
-	note: Omit<StatusNote, 'logbook'> & { readonly session: string | null }
+	note: Omit<StatusNote, 'logbook' | 'earlier' | 'at'> & { readonly session: string | null }
 ): Promise<void> {
 	const { tracker } = deps;
 	if (tracker.statusNote === undefined) return;
 	const { session, ...rest } = note;
+	const at = deps.now().toISOString();
+	const beginning = newRuns.get(tracker)?.has(feature.id) === true;
 	try {
+		// the history is the note's own: what it holds now stays, and a new run adds the headline it replaces
+		const found = statusNoteOf(await tracker.comments(feature.id), await tracker.me());
+		const read = found === undefined ? null : readStatusNote(found.body, at);
+		const earlier = [...(read?.earlier ?? [])];
+		const current = read?.current ?? null;
+		if (beginning && current !== null && current.sentence !== NOT_BUILT) earlier.push(current);
 		await tracker.statusNote(
 			feature.id,
-			statusNoteText({ ...rest, logbook: { feature: feature.id, session } })
+			statusNoteText({ ...rest, earlier, at, logbook: { feature: feature.id, session } })
 		);
+		if (beginning) newRuns.get(tracker)?.delete(feature.id);
 	} catch (fault) {
 		deps.say(`${hash(feature.id)}: could not write its Status note: ${why(fault)}`);
 	}
@@ -941,7 +961,6 @@ class FeatureRun {
 			tickets: listed,
 			pull: null,
 			next: null,
-			earlier: [],
 			session: this.session
 		});
 	}
@@ -1407,7 +1426,6 @@ class FeatureRun {
 				tickets: this.listed(),
 				pull: { url: pull.url },
 				next: draftStep(pull.url),
-				earlier: [],
 				session: this.session
 			});
 		}
@@ -1436,7 +1454,6 @@ class FeatureRun {
 				tickets: this.listed(),
 				pull: this.pullUrl === null ? null : { url: this.pullUrl },
 				next,
-				earlier: [],
 				session: this.session
 			});
 		}
@@ -1455,7 +1472,6 @@ class FeatureRun {
 			tickets: this.listed(),
 			pull: this.pullUrl === null ? null : { url: this.pullUrl },
 			next: pausedStep(until !== undefined),
-			earlier: [],
 			session: this.session
 		});
 	}

@@ -5481,6 +5481,40 @@ describe('the Status note', () => {
 		expect(world.tracker.said('1')).toEqual(posted);
 	});
 
+	it('keeps the first run’s headline as a line under Earlier runs when the Feature is built again', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		// one run so far: nothing is earlier
+		expect(world.tracker.note('1')).not.toContain('Earlier runs');
+		const firstHeadline = (world.tracker.note('1') ?? '').split('\n')[1];
+		expect(firstHeadline).toMatch(/^\*\*Waiting on you\*\*: Nightjar opened a draft pull request/);
+
+		world.acts['3'] = 'build';
+		await world.tracker.removeSignal('3', 'needsInfo');
+		await world.tracker.addSignal('3', 'ready');
+		await world.tracker.removeSignal('1', 'needsInfo');
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+
+		const note = world.tracker.note('1') ?? '';
+		// the note is the same one, and every write of the second run left the one line, not one for each
+		expect(all(world, '1').filter((body) => body.includes('nightjar:status'))).toHaveLength(1);
+		expect(note.split('\n')[1]).toMatch(/^\*\*Draft PR open\*\*: /);
+		expect(note).toMatch(/\*\*Earlier runs\*\*\n\n- \d{4}-\d\d-\d\d · \*\*Waiting on you\*\*/);
+		expect(note).toContain(` · ${firstHeadline ?? ''}\n\nLogbook:`);
+	});
+
+	it('dates an earlier run by when its note was written', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		const wrote = deps(world).now().toISOString().slice(0, 10);
+		expect(world.tracker.note('1')).toContain(`<!-- nightjar:at ${wrote}`);
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+		expect(world.tracker.note('1')).toContain(`- ${wrote} · **Draft PR open**: `);
+	});
+
 	it('says Waiting on you when a Ticket waits, with the same Next step as the comment that asks', async () => {
 		const world = makeWorld();
 		world.acts['3'] = 'ask';
