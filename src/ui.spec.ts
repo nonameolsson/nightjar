@@ -11,6 +11,7 @@ import { featureAfterRunStep, ticketStep } from './next-step.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
+import { statusNoteText } from './status-note.js';
 import { readFactory } from './status-reader.js';
 import { logbookPage, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
@@ -623,6 +624,107 @@ describe('nightjar ui reads the Tracker', () => {
 		expect(html.split('<div class="overview">')[1]).toContain('Audit log');
 		// read-only: nothing on the Tracker changed
 		expect([...tracker.items.values()]).toEqual(before);
+	});
+
+	describe("a Waiting on you card and the Feature's Status note", () => {
+		const sentences = {
+			waiting: 'The Review still asks for changes.',
+			building: 'Ticket 1 of 2: Model'
+		};
+		const waitingNote = (state: 'waiting' | 'building' = 'waiting') =>
+			statusNoteText({
+				state,
+				sentence: sentences[state],
+				tickets: [],
+				pull: null,
+				next: [
+					'Read the issues above and fix the ones that are right on the branch.',
+					'Then hand it back: add `go`.'
+				],
+				earlier: [],
+				logbook: { feature: '4', session: null }
+			});
+		const cardOf = (html: string) => {
+			const articles = board(html).split('<article');
+			return articles.find((a) => a.includes('Audit log')) ?? '';
+		};
+
+		it("shows the note's reason and Next step when status.json has no hand-back", async () => {
+			const tracker = fakeTracker();
+			await tracker.statusNote('4', waitingNote());
+			const before = structuredClone([...tracker.items.values()]);
+			const writes = vi.spyOn(tracker, 'comment');
+			const notes = vi.spyOn(tracker, 'statusNote');
+			await openOn(readsOf(tracker));
+			const card = cardOf(await read());
+			expect(card).toContain('<p>The Review still asks for changes.</p>');
+			expect(card).toContain(
+				'<p>Next step</p><ol><li>Read the issues above and fix the ones that are right on the branch.</li><li>Then hand it back: add <code>go</code>.</li></ol>'
+			);
+			expect(card).not.toContain('no reason recorded');
+			// read-only: the page wrote nothing to the Tracker
+			expect(writes).not.toHaveBeenCalled();
+			expect(notes).not.toHaveBeenCalled();
+			expect([...tracker.items.values()]).toEqual(before);
+		});
+
+		it("takes the note's words over a hand-back in status.json", async () => {
+			const tracker = fakeTracker();
+			await tracker.statusNote('4', waitingNote());
+			status().happened({ kind: 'failed', feature: '4', why: 'check red', next: ['Old step.'] });
+			await openOn(readsOf(tracker));
+			const card = cardOf(await read());
+			expect(card).toContain('The Review still asks for changes.');
+			expect(card).not.toContain('check red');
+			expect(card).not.toContain('Old step.');
+		});
+
+		const handBack = () =>
+			status().happened({
+				kind: 'failed',
+				feature: '4',
+				why: 'check red',
+				next: ['Fix the check.']
+			});
+
+		it('falls back to status.json when there is no note', async () => {
+			handBack();
+			await openOn(readsOf(fakeTracker()));
+			const card = cardOf(await read());
+			expect(card).toContain('<p>check red</p>');
+			expect(card).toContain('Fix the check.');
+		});
+
+		it('falls back to status.json when the note is in another state', async () => {
+			const tracker = fakeTracker();
+			await tracker.statusNote('4', waitingNote('building'));
+			handBack();
+			await openOn(readsOf(tracker));
+			const card = cardOf(await read());
+			expect(card).toContain('<p>check red</p>');
+			expect(card).not.toContain('Ticket 1 of 2');
+		});
+
+		it('says no reason is recorded when neither the note nor status.json has one', async () => {
+			await openOn(readsOf(fakeTracker()));
+			const html = await read();
+			expect(cardOf(html)).toContain('no reason recorded; see its comments on the Tracker');
+		});
+
+		it("falls back when the Tracker's comments cannot be read", async () => {
+			const fake = fakeTracker();
+			await fake.statusNote('4', waitingNote());
+			const tracker: ReadingTracker = {
+				assignedFeatures: (p) => fake.assignedFeatures(p),
+				waitingOn: (p) => fake.waitingOn(p),
+				me: () => fake.me(),
+				comments: () => Promise.reject(new Error('gh: Bad Gateway (HTTP 502)'))
+			};
+			await openOn(readsOf(tracker));
+			const html = await read();
+			expect(cardOf(html)).toContain('no reason recorded');
+			expect(html).not.toContain('could not read the Tracker');
+		});
 	});
 
 	it('takes a Feature off Waiting on you once it builds, before the next read says so', async () => {

@@ -14,6 +14,7 @@ import {
 	withEarlier,
 	untilText,
 	waitingCommentText,
+	waitingOfNote,
 	withHeadline,
 	type NoteState,
 	type StatusNote,
@@ -32,6 +33,35 @@ const BARE: StatusNote = {
 };
 
 const text = (more: Partial<StatusNote>) => statusNoteText({ ...BARE, ...more });
+
+describe('waitingOfNote', () => {
+	it("gives a Waiting on you note's sentence and Next step lines", () => {
+		const body = text({
+			state: 'waiting',
+			sentence: 'The Review still asks for changes.',
+			next: ['Fix the issues on the branch.', 'Then hand it back: add `go`.'],
+			earlier: [{ at: '2026-01-02T00:00:00Z', state: 'stopped', sentence: 'A person stopped it.' }]
+		});
+		expect(waitingOfNote(body, '2026-02-01T00:00:00Z')).toEqual({
+			why: 'The Review still asks for changes.',
+			next: ['Fix the issues on the branch.', 'Then hand it back: add `go`.']
+		});
+	});
+
+	it('gives no Next step for a note that has none', () => {
+		const body = text({ state: 'waiting', sentence: 'It needs you.' });
+		expect(waitingOfNote(body, '2026-02-01T00:00:00Z')).toEqual({
+			why: 'It needs you.',
+			next: []
+		});
+	});
+
+	it('gives nothing for a note in any other state', () => {
+		for (const state of ['building', 'paused', 'pull', 'stopped'] as const) {
+			expect(waitingOfNote(text({ state }), '2026-02-01T00:00:00Z')).toBeNull();
+		}
+	});
+});
 
 describe('withHeadline', () => {
 	const draft = headline('pull', 'Nightjar built 2 of 2 Tickets into a draft pull request.');

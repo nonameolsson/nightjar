@@ -538,7 +538,8 @@ function features(view: FactoryView, lists: Lists): Features {
 		waiting = found.items
 			.filter((i) => i.kind === 'feature')
 			.map((i): WaitingCard => {
-				const handBack = backOf(i.id);
+				// the Status note on the Tracker first, then what this run wrote to status.json
+				const handBack = i.note ?? backOf(i.id);
 				return {
 					state: 'waiting',
 					id: i.id,

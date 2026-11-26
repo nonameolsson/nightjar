@@ -220,6 +220,23 @@ export function readStatusNote(body: string, fallbackAt: string): NoteRead {
 	return { current, earlier };
 }
 
+const NEXT_STEP = /\*\*Next step\*\*\n\n((?:\d+\. [^\n]*(?:\n|$))+)/;
+
+// What a Status note in the Waiting on you state says to the person: its headline's sentence as the reason, and its Next step's lines as the Next step. Null for a note in any other state, or one whose headline cannot be read.
+export function waitingOfNote(
+	body: string,
+	at: string
+): { readonly why: string; readonly next: string[] } | null {
+	const { current } = readStatusNote(body, at);
+	if (current?.state !== 'waiting') return null;
+	const lines = NEXT_STEP.exec(body.replaceAll('\r\n', '\n'))?.[1] ?? '';
+	const next = lines
+		.split('\n')
+		.filter((l) => l !== '')
+		.map((l) => l.replace(/^\d+\. /, ''));
+	return { why: current.sentence, next };
+}
+
 // A pull request body whose first line is `line`, a headline: the one it opens with is replaced, and a body written before bodies opened with one gets it ahead of what it said. The rest of the body is as it was.
 export function withHeadline(body: string, line: string): string {
 	const [first = '', ...rest] = body.split('\n');
