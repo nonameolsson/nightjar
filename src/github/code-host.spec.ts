@@ -169,6 +169,22 @@ describe('GitHubCodeHost.conflicts', () => {
 	});
 });
 
+describe('GitHubCodeHost.nightjarDrafts conflicts', () => {
+	it('reports each draft’s conflict state from mergeable: yes, no or unknown', async () => {
+		const github = new FakeGitHub('o/r', 'nightjar-bot');
+		const host = new GitHubCodeHost('o/r', github.gh, noGit);
+		const pulls = [];
+		for (const branch of ['factory/1-a', 'factory/2-b', 'factory/3-c']) {
+			github.pushed(branch, `sha-${branch.replaceAll('/', '-')}`);
+			pulls.push(await host.createDraft({ title: branch, head: branch, base: 'main', body: 'b' }));
+		}
+		github.setMergeable(pulls[0]?.id ?? 0, false);
+		github.setMergeable(pulls[2]?.id ?? 0, null);
+		const listed = await host.nightjarDrafts();
+		expect(listed.map((d) => d.conflicts)).toEqual(['yes', 'no', 'unknown']);
+	});
+});
+
 // o/r signed in as nightjar-bot, whose draft pull requests a spec opens on a pushed branch.
 function draftsWorld() {
 	const github = new FakeGitHub('o/r', 'nightjar-bot');

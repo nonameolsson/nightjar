@@ -42,6 +42,11 @@ const PullSchema = z.looseObject({
 	mergeable: z.boolean().nullable().optional()
 });
 
+const conflictOf = (mergeable: boolean | null | undefined): ConflictState => {
+	if (mergeable === true) return 'no';
+	return mergeable === false ? 'yes' : 'unknown';
+};
+
 // a pull request as publishing reads it: GraphQL names it by its node id
 const PublishedSchema = z.looseObject({ node_id: z.string(), draft: z.boolean().optional() });
 
@@ -305,8 +310,7 @@ export class GitHubCodeHost implements CodeHost {
 			[`repos/${this.repo}/pulls/${n}`],
 			PullSchema
 		);
-		if (raw.mergeable === true) return 'no';
-		return raw.mergeable === false ? 'yes' : 'unknown';
+		return conflictOf(raw.mergeable);
 	}
 
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {
@@ -372,6 +376,8 @@ export class GitHubCodeHost implements CodeHost {
 				personEngaged: await this.personEngaged(pull),
 				...(p.created_at == null ? {} : { openedAt: p.created_at }),
 				checkCount: count,
+				// GitHub's list leaves `mergeable` out; one read of the pull request then says it
+				conflicts: p.mergeable === undefined ? await this.conflicts(pull) : conflictOf(p.mergeable),
 				...(listing.commits === true ? { commits: await this.commits(pull) } : {})
 			});
 		}
