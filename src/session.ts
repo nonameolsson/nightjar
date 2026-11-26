@@ -130,8 +130,8 @@ export function settle(line: unknown, allowApiKey: boolean): Settled | null {
 
 const TAIL = 2000;
 
-// A last line naming an overload, a 5xx error or a network fault.
-const PASSING_LINE =
+// A last line naming an overload, a 5xx error or a network fault; a fault that stops a build is sorted by it too (fault.ts).
+export const PASSING_LINE =
 	/overloaded|\b5\d\d\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|network|fetch failed/i;
 
 // `command` is the seam a spec swaps for a stand-in.

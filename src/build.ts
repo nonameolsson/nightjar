@@ -9,13 +9,21 @@ import {
 	type ReviewOutcome
 } from './coding-agent.js';
 import { DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
+import {
+	BuildFault,
+	passingFault,
+	placeText,
+	stackOf,
+	type FaultPlace,
+	type FaultRun
+} from './fault.js';
 import { pullChecksReport } from './gate.js';
 import {
 	feedbackRound,
 	feedbackRounds,
 	feedbackSection,
 	replyText,
-	thrownAwayComment,
+	thrownAwayAsk,
 	type FeedbackRoundEnd,
 	type Unanswered
 } from './feedback-round.js';
@@ -24,26 +32,30 @@ import { baseOf, botPullOf } from './base-line.js';
 import type { Env } from './git.js';
 import { noteFor, type Logbook, type Note } from './logbook.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
-import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { buildOrder, nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { conflicts, withConflicts, withoutConflicts } from './conflicts-section.js';
 import { why } from './say.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
+	QUESTIONS_MARK,
 	issueLine,
+	questionList,
 	questionRounds,
-	questionsComment,
 	type Declined,
 	type Question,
 	type Review
 } from './prompt.js';
 import type { Serve } from './serve.js';
+import type { Failure } from './session.js';
 import { NOTES_FOLDER } from './settings.js';
 import {
+	draftStep,
 	featureAfterRunStep,
 	featureStopStep,
 	feedbackStep,
 	nextStepText,
 	noteStep,
+	pausedStep,
 	pullChecksStep,
 	pushRejectedStep,
 	reviewStep,
@@ -61,7 +73,27 @@ import { reviewSection, type ReviewSession } from './review-section.js';
 import type { Entry, LogEntry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
-import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
+import {
+	buildingSentence,
+	headline,
+	NOT_BUILT,
+	readStatusNote,
+	statusNoteText,
+	waitingCommentText,
+	withHeadline,
+	type NoteTicket,
+	type StatusNote,
+	type WaitingComment
+} from './status-note.js';
+import {
+	isStatusNote,
+	statusNoteOf,
+	type Comment,
+	type Feature,
+	type ItemId,
+	type Ticket,
+	type Tracker
+} from './tracker.js';
 import {
 	SESSION_TRAILER,
 	TRAILER_PREFIX,
@@ -150,6 +182,8 @@ export interface Deps {
 	readonly sessionExists: (id: string) => boolean;
 	readonly say: (line: string) => void;
 	readonly status: StatusReport;
+	// how long the run waits after a pause before it tries the Feature again, which the Status note gives as the time it is paused until; left out where nothing tries it again on its own, as under --once
+	readonly pauseMs?: number;
 }
 
 export interface Setup extends WorkflowSettings {
@@ -228,6 +262,13 @@ type Step =
 	| { readonly kind: 'red'; readonly tail: string }
 	| { readonly kind: 'repeated'; readonly why: string; readonly tickets: readonly ItemId[] };
 
+// What a Session's failure means for the person who reads the hand-back, in plain words.
+const failureCause: Record<Failure, string> = {
+	passing: 'This kind of fault often goes away by itself, so another try may work.',
+	budget: 'The Session used up its budget or its time before it finished.',
+	lasting: 'This fault will probably repeat, so fix what the reason names before another try.'
+};
+
 // How many Tickets in a row failing with the same lasting reason stop the run.
 const REPEATED_FAILURES = 3;
 
@@ -246,19 +287,66 @@ export interface Asked {
 	readonly asked: string;
 }
 
+// What a fault that escapes the build names: where the run is now, and what its Status note lists.
+interface Whereabouts {
+	now: () => FaultRun;
+}
+
+const SETUP: FaultPlace = { kind: 'setup' };
+
+// A fault that escaped the build, written to the Feature's Logbook with its stack trace and thrown again as a BuildFault that names where it happened. `note` is null before the Feature is known.
+function faultAt(fault: unknown, run: FaultRun, note: Note | null): BuildFault {
+	if (fault instanceof BuildFault) return fault;
+	const stack = stackOf(fault);
+	try {
+		note?.({
+			kind: 'fault',
+			place: placeText(run.place),
+			why: why(fault),
+			passing: passingFault(fault),
+			...(stack === undefined ? {} : { stack }),
+			...(run.session === null ? {} : { session: run.session })
+		});
+	} catch {
+		// the Logbook itself may be the fault
+	}
+	return new BuildFault(fault, run);
+}
+
+// One Feature built. A fault that escapes it is thrown as a BuildFault, which names where in the build it happened.
 export async function buildFeature(
 	deps: Deps,
 	setup: Setup,
 	id: ItemId,
 	started?: Asked
 ): Promise<FeatureOutcome> {
+	const feature = await deps.tracker.feature(id);
+	const note = noteFor(deps.logbook, feature.id, deps.now);
+	const where: Whereabouts = {
+		now: () => ({ place: SETUP, tickets: [], session: null, pull: null })
+	};
+	try {
+		return await startFeature(deps, setup, feature, note, where, started);
+	} catch (fault) {
+		throw faultAt(fault, where.now(), note);
+	}
+}
+
+async function startFeature(
+	deps: Deps,
+	setup: Setup,
+	feature: Feature,
+	note: Note,
+	where: Whereabouts,
+	started?: Asked
+): Promise<FeatureOutcome> {
 	const { tracker } = deps;
-	const feature = await tracker.feature(id);
+	const { id } = feature;
 	const branch = branchFor(feature.id, feature.title);
 	deps.say(`${hash(id)} ${feature.title}: building on ${branch}`);
+	beginRun(tracker, id);
 	// the Feature's start, before anything else reads the clock
 	const show = buildingOf(feature, deps.now);
-	const note = noteFor(deps.logbook, feature.id, deps.now);
 	const signals = signalsOf(tracker, feature.id, note);
 	const chosen = chooseWorkflow(setup, feature.body);
 	note({
@@ -291,10 +379,9 @@ export async function buildFeature(
 		const why = `its Workflow cannot be used: ${chosen.why}`;
 		return needsInfoStop(
 			deps,
-			{ id, note, signals },
+			{ feature, note, signals, tickets, built: new Set() },
 			why,
-			`Nightjar built nothing: ${chosen.why}`,
-			waiting(tickets, new Set()),
+			{ text: 'No Ticket was started.' },
 			setup.signals
 		);
 	}
@@ -303,10 +390,9 @@ export async function buildFeature(
 	if (base !== null && 'fault' in base) {
 		return needsInfoStop(
 			deps,
-			{ id, note, signals },
+			{ feature, note, signals, tickets, built: new Set() },
 			base.fault,
-			`Nightjar built nothing: ${base.fault}.`,
-			waiting(tickets, new Set()),
+			{ text: 'No Ticket was started.' },
 			setup.signals
 		);
 	}
@@ -318,8 +404,25 @@ export async function buildFeature(
 		setup.env
 	);
 	const built = await tree.built();
+	where.now = () => ({
+		place: SETUP,
+		tickets: noteTickets(feature, tickets, built),
+		session: null,
+		pull: null
+	});
 	// the Tickets are planned once the branch says which are built
 	deps.status.doing(settingUp(progress(tickets, built, null)));
+	await writeStatusNote(deps, feature, {
+		state: 'building',
+		sentence:
+			started === undefined
+				? 'Nightjar picked this Feature up and is building it.'
+				: 'Nightjar is building this Feature again, for a request for changes on its pull request.',
+		tickets: noteTickets(feature, tickets, built),
+		pull: null,
+		next: null,
+		session: null
+	});
 	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
 		const command = setup.setupCommand;
 		deps.say(`${hash(id)}: setup: ${command}`);
@@ -329,10 +432,12 @@ export async function buildFeature(
 			const why = `the setup command \`${command}\` failed`;
 			return needsInfoStop(
 				deps,
-				{ id, note, signals },
+				{ feature, note, signals, tickets, built },
 				why,
-				`Nightjar built nothing: ${why} in the worktree.\n\n\`\`\`\n${got.tail}\n\`\`\``,
-				waiting(tickets, built),
+				{
+					text: `Nightjar ran it in the new worktree for this Feature, and no Ticket was started. This is the end of what it printed:`,
+					output: got.tail
+				},
 				setup.signals
 			);
 		}
@@ -340,27 +445,158 @@ export async function buildFeature(
 	}
 	const workflow = chosen.kind === 'workflow' ? chosen : null;
 	const run = new FeatureRun(deps, setup, feature, tree, tickets, built, workflow, show, started);
+	where.now = () => run.whereabouts();
 	return run.build();
 }
 
-// A Feature stopped before it built anything, with the reason on it; a later Go builds it again.
+// A Feature stopped before it built anything, with the reason on it; a later Go builds it again. `cause` says in plain words what the reason means; `output` is what a failed command printed, which the comment quotes the end of, since no pull request holds it yet.
 async function needsInfoStop(
 	deps: Deps,
-	of: { readonly id: ItemId; readonly note: Note; readonly signals: FeatureSignals },
+	of: {
+		readonly feature: Feature;
+		readonly note: Note;
+		readonly signals: FeatureSignals;
+		readonly tickets: readonly Ticket[];
+		readonly built: ReadonlySet<ItemId>;
+	},
 	why: string,
-	comment: string,
-	left: Waiting[],
+	cause: { readonly text: string; readonly output?: string },
 	names: SignalNames
 ): Promise<FeatureOutcome> {
-	const { id, note, signals } = of;
+	const { feature, note, signals, tickets, built } = of;
+	const id = feature.id;
 	const next = featureStopStep(names);
 	deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
 	note({ kind: 'handed', to: 'needsInfo', why });
 	await signals.off('working');
 	await signals.on('needsInfo');
-	await deps.tracker.comment(id, withNext(comment, next));
-	return { kind: 'nothing', waiting: left };
+	await askAPerson(deps, feature, {
+		ask: {
+			sentence: `Nightjar built nothing: ${why}.`,
+			cause: cause.text,
+			...(cause.output === undefined ? {} : { output: cause.output }),
+			next
+		},
+		tickets: noteTickets(feature, tickets, built),
+		session: null
+	});
+	return { kind: 'nothing', waiting: waiting(tickets, built) };
 }
+
+// What a comment that needs a person says, before it names the Logbook.
+type Ask = Omit<WaitingComment, 'logbook'>;
+
+// A comment, and the web address the Tracker gives it, when it gives one.
+async function postComment(
+	tracker: Tracker,
+	to: ItemId,
+	body: string
+): Promise<string | undefined> {
+	const link = await tracker.comment(to, body);
+	return typeof link === 'string' ? link : undefined;
+}
+
+// The new comment that tells a person they are needed. It is a comment, not an edit, so it notifies them, and it stands on its own: the headline, the cause, the Next step and where the Logbook is. `to` is the Feature or the Ticket it goes on; the Logbook is the Feature's.
+async function postAsk(
+	tracker: Tracker,
+	o: {
+		readonly to: ItemId;
+		readonly feature: ItemId;
+		readonly ask: Ask;
+		readonly session: string | null;
+	}
+): Promise<string | undefined> {
+	const logbook = { feature: o.feature, session: o.session };
+	return postComment(tracker, o.to, waitingCommentText({ ...o.ask, logbook }));
+}
+
+// What a Feature that needs a person is told, and the Tickets and Session its Status note shows.
+interface Asking {
+	readonly ask: Ask;
+	readonly tickets: readonly NoteTicket[];
+	readonly session: string | null;
+}
+
+// The Status note of a Feature that needs a person: Waiting on you, with the same sentence and Next step as the comment that asked.
+function noteWaiting(
+	deps: Pick<Deps, 'tracker' | 'say' | 'now'>,
+	feature: Pick<Feature, 'id'>,
+	o: Asking
+): Promise<void> {
+	const { ask } = o;
+	return writeStatusNote(deps, feature, {
+		state: 'waiting',
+		sentence: ask.sentence,
+		tickets: o.tickets,
+		pull: ask.pull === undefined ? null : { url: ask.pull.url },
+		next: ask.next.length > 0 ? ask.next : null,
+		session: o.session
+	});
+}
+
+// A Feature that needs a person: a new comment that notifies them, and its Status note saying Waiting on you.
+export async function askAPerson(
+	deps: Pick<Deps, 'tracker' | 'say' | 'now'>,
+	feature: Pick<Feature, 'id'>,
+	o: Asking
+): Promise<void> {
+	const { ask, session } = o;
+	await postAsk(deps.tracker, { to: feature.id, feature: feature.id, ask, session });
+	await noteWaiting(deps, feature, o);
+}
+
+// The Features whose build has begun and whose Status note has not been written since, by Tracker: the next write moves the note's headline under Earlier runs, and the writes after it do not.
+const newRuns = new WeakMap<Tracker, Set<ItemId>>();
+
+function beginRun(tracker: Tracker, feature: ItemId): void {
+	const begun = newRuns.get(tracker) ?? new Set<ItemId>();
+	begun.add(feature);
+	newRuns.set(tracker, begun);
+}
+
+// The Feature's Status note, on a Tracker that keeps one; a Tracker without `statusNote` gets no word of a quiet update, as before it. A note that cannot be written is said, and the build goes on: it notifies no one, so nothing waits on it.
+export async function writeStatusNote(
+	deps: Pick<Deps, 'tracker' | 'say' | 'now'>,
+	feature: Pick<Feature, 'id'>,
+	note: Omit<StatusNote, 'logbook' | 'earlier' | 'at'> & { readonly session: string | null }
+): Promise<void> {
+	const { tracker } = deps;
+	if (tracker.statusNote === undefined) return;
+	const { session, ...rest } = note;
+	const at = deps.now().toISOString();
+	const beginning = newRuns.get(tracker)?.has(feature.id) === true;
+	try {
+		// the history is the note's own: what it holds now stays, and a new run adds the headline it replaces
+		const found = statusNoteOf(await tracker.comments(feature.id), await tracker.me());
+		const read = found === undefined ? null : readStatusNote(found.body, at);
+		const earlier = [...(read?.earlier ?? [])];
+		const current = read?.current ?? null;
+		if (beginning && current !== null && current.sentence !== NOT_BUILT) earlier.push(current);
+		await tracker.statusNote(
+			feature.id,
+			statusNoteText({ ...rest, earlier, at, logbook: { feature: feature.id, session } })
+		);
+		if (beginning) newRuns.get(tracker)?.delete(feature.id);
+	} catch (fault) {
+		deps.say(`${hash(feature.id)}: could not write its Status note: ${why(fault)}`);
+	}
+}
+
+// A Lone issue is its own Ticket, so its note lists none. The others are listed in Build order, `current` the one being built.
+// `links` are the comments that handed Tickets back, by Ticket; a Ticket still waiting links its comment.
+export const noteTickets = (
+	feature: Feature,
+	tickets: readonly Ticket[],
+	built: ReadonlySet<ItemId>,
+	current: ItemId | null = null,
+	links: ReadonlyMap<ItemId, string> = new Map()
+): NoteTicket[] =>
+	feature.lone === true
+		? []
+		: progress(buildOrder(tickets), built, current).map((t) => {
+				const handBack = t.state === 'waiting' ? links.get(t.id) : undefined;
+				return handBack === undefined ? t : { ...t, handBack };
+			});
 
 // The Signal calls on a Feature and its Tickets, each written to the Feature's Logbook once the Tracker has it; with `ticket`, the Signal is that Ticket's.
 interface FeatureSignals {
@@ -415,6 +651,16 @@ class FeatureRun {
 	// when the Feature's build began, and when the session now running did
 	private readonly startedAt: Date;
 	private sessionStartedAt: Date;
+	// the Session the run was last in, which the Status note's Logbook line names
+	private session: string | null = null;
+	// the comments that handed Tickets back this run, by Ticket, which the Status note's Ticket list links
+	private readonly handBackLinks = new Map<ItemId, string>();
+	// what a Feedback round that was thrown away asked of a person, whose comment is posted; the Status note at the end of the run says it
+	private feedbackAsk: Ask | null = null;
+	// where in the build the run is, which a fault that escapes it names
+	private place: FaultPlace = SETUP;
+	// the Feature's draft pull request, once the run has opened or updated it
+	private pullUrl: string | null = null;
 	// the Tickets handed back in a row with a lasting failure, and why; any other end of a Ticket clears it
 	// the reason the Ticket just built failed for, when its failure is lasting
 	private lastFailure: string | null = null;
@@ -444,6 +690,25 @@ class FeatureRun {
 		return this.setup.signal?.aborted === true;
 	}
 
+	// Where the run is and what its Status note lists, for a fault that escapes it.
+	whereabouts(): FaultRun {
+		return {
+			place: this.place,
+			tickets: this.listed(),
+			session: this.session,
+			pull: this.pullUrl
+		};
+	}
+
+	// The Workflow's Steps at one point, the place a fault would name.
+	private runSteps(steps: WorkflowRun, ticket: Ticket | null): Promise<Step> {
+		const workflow = this.workflow?.name ?? null;
+		this.place = { kind: 'step', workflow, ticket: ticket?.id ?? null };
+		return ticket === null
+			? steps.runAt('afterAllTickets', null)
+			: steps.runAt('afterEachTicket', ticket);
+	}
+
 	// "note" when the Feature's Workflow writes a note under docs/research/, not code
 	private get output(): { readonly output?: 'note' } {
 		const output = this.workflow?.workflow.output;
@@ -468,7 +733,7 @@ class FeatureRun {
 		// the Steps of "all Tickets" run on a Feature whose Tickets are all built
 		const whole = this.built.size > 0 && waiting(this.tickets, this.built).length === 0;
 		if (last.kind === 'next' && !this.aborted && whole && this.steps !== null) {
-			last = await this.steps.runAt('afterAllTickets', null);
+			last = await this.runSteps(this.steps, null);
 		}
 		if (last.kind === 'next' && !this.aborted) last = await this.answerFeedback();
 		return this.finish(last);
@@ -477,6 +742,7 @@ class FeatureRun {
 	// One Feedback round when the branch's open pull request has trusted feedback no commit answers yet; one that fails is thrown away and handed to a person, and the run goes on.
 	private async answerFeedback(): Promise<Step> {
 		const { deps } = this;
+		this.place = { kind: 'feedback' };
 		const end = await feedbackRound({
 			codeHost: deps.codeHost,
 			codingAgent: deps.codingAgent,
@@ -517,7 +783,14 @@ class FeatureRun {
 				});
 				this.note({ kind: 'handed', to: 'needsInfo', why });
 				await this.signals.on('needsInfo');
-				await deps.tracker.comment(this.feature.id, withNext(thrownAwayComment(end), next));
+				// the comment notifies now; the Status note says it with the pull request's, once the run ends
+				this.feedbackAsk = { ...thrownAwayAsk(end), next };
+				await postAsk(deps.tracker, {
+					to: this.feature.id,
+					feature: this.feature.id,
+					ask: this.feedbackAsk,
+					session: this.session
+				});
 				return NEXT;
 			}
 		}
@@ -588,8 +861,10 @@ class FeatureRun {
 		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd);
 	}
 
+	// the Status note is Nightjar's own summary, so it never reaches the Coding agent
 	private async trusted(id: ItemId): Promise<Comment[]> {
-		return (await this.deps.tracker.comments(id)).filter((c) => c.trusted);
+		const comments = await this.deps.tracker.comments(id);
+		return comments.filter((c) => c.trusted && !isStatusNote(c.body));
 	}
 
 	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
@@ -606,13 +881,14 @@ class FeatureRun {
 		this.sessionStartedAt = at;
 	}
 
-	// Hands a Ticket to a person: no code kept on the branch, the reason on the Ticket.
+	// Hands a Ticket to a person: no code kept on the branch, the reason on the Ticket in a comment that stands on its own. `session` is the Session that ended the Ticket, when one ran; `ask.output` is quoted only while no pull request holds the Feature's output.
 	private async handBack(
 		ticket: Ticket,
 		before: string,
-		body: string,
+		ask: Pick<WaitingComment, 'mark' | 'sentence' | 'cause' | 'output'>,
 		kind: TicketHandBack,
-		why: string
+		why: string,
+		session: string | null
 	) {
 		const signal = kind === 'human' ? 'human' : 'needsInfo';
 		const next = ticketStep(this.setup.signals, kind);
@@ -626,7 +902,16 @@ class FeatureRun {
 		this.note({ kind: 'handed', to: signal, why, ticket: ticket.id });
 		const side = await this.throwAway(before, ticket.id, why);
 		const kept = side ? `\n\nThe attempt is kept on branch \`${side}\`.` : '';
-		await this.deps.tracker.comment(ticket.id, withNext(`${body}${kept}`, next));
+		const { output, ...rest } = ask;
+		const quoted =
+			output !== undefined && (await this.deps.codeHost.openPull(this.tree.at.branch)) === null;
+		const link = await postAsk(this.deps.tracker, {
+			to: ticket.id,
+			feature: this.feature.id,
+			ask: { ...rest, cause: `${ask.cause}${kept}`, ...(quoted ? { output } : {}), next },
+			session
+		});
+		if (link !== undefined) this.handBackLinks.set(ticket.id, link);
 		await this.signals.off('ready', ticket.id);
 		await this.signals.on(signal, ticket.id);
 		const i = this.tickets.indexOf(ticket);
@@ -659,11 +944,37 @@ class FeatureRun {
 		return { kind: 'repeated', why: failed, tickets: this.streak.map((f) => f.ticket) };
 	}
 
+	// The Tickets as the Status note lists them, `current` the one being built.
+	private listed(current: ItemId | null = null): NoteTicket[] {
+		return noteTickets(this.feature, this.tickets, this.built, current, this.handBackLinks);
+	}
+
+	// The Status note while `ticket` builds: Building, which Ticket of the Feature's it is, and the Tickets with their states. It rewrites the note and posts no comment.
+	private async noteBuilding(
+		ticket: Ticket,
+		at: Omit<Parameters<typeof buildingSentence>[0], 'ticket'> = {}
+	): Promise<void> {
+		const listed = this.listed(ticket.id);
+		const place = listed.findIndex((t) => t.id === ticket.id) + 1;
+		const listing = place > 0 ? { place, of: listed.length, title: ticket.title } : null;
+		await writeStatusNote(this.deps, this.feature, {
+			state: 'building',
+			sentence: buildingSentence({ ticket: listing, ...at }),
+			tickets: listed,
+			pull: null,
+			next: null,
+			session: this.session
+		});
+	}
+
 	// The Ticket carries the working Signal from just before its build Session starts until it ends any way: built, handed back, paused or stopped.
 	private async buildTicket(ticket: Ticket): Promise<Step> {
+		this.place = { kind: 'ticket', ticket: ticket.id };
 		this.note({ kind: 'ticketStarted', ticket: ticket.id });
 		const before = await this.tree.head();
 		const faults = ticketFaults(ticket.body);
+		// a Ticket that fails its contract starts no Session, so it is not shown as building
+		if (faults.length === 0) await this.noteBuilding(ticket);
 		if (faults.length === 0) await this.signals.on('working', ticket.id);
 		try {
 			return await this.buildWorking(ticket, before, faults);
@@ -681,9 +992,13 @@ class FeatureRun {
 			await this.handBack(
 				ticket,
 				before,
-				`Nightjar did not start a Session on this Ticket, because it does not meet the Ticket contract:\n\n${faults.map((f) => `- ${f}`).join('\n')}`,
+				{
+					sentence: 'Nightjar did not start this Ticket: it does not meet the Ticket contract.',
+					cause: faults.map((f) => `- ${f}`).join('\n')
+				},
 				'retry',
-				`it fails the Ticket contract: ${faults.join(' ')}`
+				`it fails the Ticket contract: ${faults.join(' ')}`,
+				null
 			);
 			return NEXT;
 		}
@@ -728,10 +1043,12 @@ class FeatureRun {
 					outcome: `failed: ${failed.why}`,
 					failure: 'passing'
 				}),
-			retrying: (attempt, why) =>
+			retrying: async (attempt, why) => {
 				this.deps.say(
 					`${hash(ticket.id)}: ${why}; retrying after a passing fault, try ${String(attempt)} of ${String(TRIES)}`
-				)
+				);
+				await this.noteBuilding(ticket, { retry: { attempt, of: TRIES } });
+			}
 		});
 		const sessionId = got.sessionId;
 		const entry = {
@@ -750,21 +1067,29 @@ class FeatureRun {
 				await this.throwAway(before, ticket.id, `paused: ${got.why}`);
 				this.log({ ...entry, outcome: `paused: ${got.why}` });
 				return { kind: 'paused', why: got.why };
-			case 'failed':
+			case 'failed': {
 				this.log({ ...entry, outcome: `failed: ${got.why}`, failure: got.failure });
 				if (got.failure === 'lasting') this.lastFailure = got.why;
+				// a reason of one line is the headline's; any more it printed is the output
+				const [first = '', ...more] = got.why.split('\n');
 				await this.handBack(
 					ticket,
 					before,
-					`Nightjar could not build this Ticket: ${got.why}.\n\nFailure: ${got.failure}.\n\nSession: \`claude --resume ${sessionId}\``,
+					{
+						sentence: `Nightjar could not build this Ticket: ${first.trim()}.`,
+						cause: failureCause[got.failure],
+						...(more.join('\n').trim() === '' ? {} : { output: more.join('\n') })
+					},
 					'retry',
-					got.why
+					got.why,
+					sessionId
 				);
 				return NEXT;
+			}
 			case 'questions': {
 				const round = questionRounds(ticketComments) + 1;
 				this.log({ ...entry, outcome: `questions, round ${String(round)}` });
-				await this.askAbout(ticket, before, got.questions, round);
+				await this.askAbout(ticket, before, got.questions, round, sessionId);
 				return NEXT;
 			}
 			case 'built':
@@ -784,21 +1109,38 @@ class FeatureRun {
 		ticket: Ticket,
 		before: string,
 		questions: readonly Question[],
-		round: number
+		round: number,
+		session: string
 	) {
 		const limit = this.setup.limits.questionRounds;
 		if (round <= limit) {
 			const asked = `it asked ${String(questions.length)} question${questions.length === 1 ? '' : 's'}, round ${String(round)}`;
-			await this.handBack(ticket, before, questionsComment(questions, round), 'answer', asked);
+			await this.handBack(
+				ticket,
+				before,
+				{
+					// the mark is how the next run counts the question rounds
+					mark: QUESTIONS_MARK,
+					sentence: `Nightjar needs answers before it builds this Ticket (round ${String(round)}).`,
+					cause: questionList(questions)
+				},
+				'answer',
+				asked,
+				session
+			);
 			return;
 		}
 		const asked = questions.map((q, i) => `${String(i + 1)}. ${q.question}`).join('\n');
 		await this.handBack(
 			ticket,
 			before,
-			`Nightjar asked about this Ticket ${String(limit)} times and still has questions, so it needs a person:\n\n${asked}`,
+			{
+				sentence: `Nightjar asked about this Ticket ${String(limit)} times and still has questions, so it needs a person.`,
+				cause: asked
+			},
 			'human',
-			`still unclear after ${String(limit)} question rounds, so a person builds it`
+			`still unclear after ${String(limit)} question rounds, so a person builds it`,
+			session
 		);
 	}
 
@@ -832,9 +1174,13 @@ class FeatureRun {
 			await this.handBack(
 				ticket,
 				before,
-				`Nightjar's session said it built this Ticket but changed no file.\n\nSession: \`claude --resume ${sessionId}\``,
+				{
+					sentence: "Nightjar's Session said it built this Ticket but changed no file.",
+					cause: 'Nothing was committed, so the Ticket is still unbuilt.'
+				},
 				'retry',
-				'it said it built the Ticket but changed no file'
+				'it said it built the Ticket but changed no file',
+				sessionId
 			);
 			return NEXT;
 		}
@@ -858,9 +1204,10 @@ class FeatureRun {
 			});
 		}
 		this.deps.status.happened({ kind: 'built', feature: this.feature.id, ticket: ticket.id });
+		await this.noteBuilding(ticket, { built: true });
 		// later Tickets would build on red, so the run stops here and a person looks
 		if (!check.ok) return { kind: 'red', tail: check.tail };
-		return this.steps === null ? NEXT : this.steps.runAt('afterEachTicket', ticket);
+		return this.steps === null ? NEXT : this.runSteps(this.steps, ticket);
 	}
 
 	private fixUntilGreen(o: FixWork): Promise<FixEnd> {
@@ -886,6 +1233,7 @@ class FeatureRun {
 		attempt = 1
 	) {
 		this.sessionStartedAt = this.deps.now();
+		this.session = session;
 		this.shown = this.show({
 			ticket,
 			step,
@@ -902,12 +1250,13 @@ class FeatureRun {
 		const id = this.feature.id;
 		const left = waiting(this.tickets, this.built);
 		let paused = last.kind === 'paused' ? last.why : null;
+		this.place = { kind: 'pull' };
 		await this.signals.off('working');
 		if (this.aborted || last.kind === 'aborted') return this.stopped();
 		if (paused) await this.pause(paused);
 		const repeated =
 			last.kind === 'repeated'
-				? `Nightjar stopped building this Feature: ${String(last.tickets.length)} Tickets in a row failed with the same reason, ${last.tickets.map(hash).join(', ')}.\n\nReason: ${last.why}.\n\n`
+				? `${String(last.tickets.length)} Tickets in a row failed with the same reason, ${last.tickets.map(hash).join(', ')}: ${last.why}.\n\n`
 				: '';
 		if ((await this.tree.ahead()) === 0) {
 			if (paused) return { kind: 'paused', why: paused };
@@ -920,13 +1269,18 @@ class FeatureRun {
 			this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
 			this.note({ kind: 'handed', to: 'needsInfo', why });
 			await this.signals.on('needsInfo');
-			await tracker.comment(
-				id,
-				withNext(
-					`${repeated}Nightjar built nothing for this Feature.\n\n${waitingList(left)}`,
+			await askAPerson(this.deps, this.feature, {
+				ask: {
+					sentence:
+						last.kind === 'repeated'
+							? 'Nightjar stopped building this Feature and built nothing.'
+							: 'Nightjar built nothing for this Feature.',
+					cause: `${repeated}${waitingList(left)}`,
 					next
-				)
-			);
+				},
+				tickets: this.listed(),
+				session: this.session
+			});
 			return { kind: 'nothing', waiting: left };
 		}
 
@@ -962,6 +1316,7 @@ class FeatureRun {
 				reviewSessions = [{ kind: 'review', review: got }];
 			}
 		}
+		this.place = { kind: 'pull' };
 		const pushed = await pushBranch(this.deps, this.setup, this.tree, id);
 		if (pushed.kind === 'diverged') {
 			// a pause put the Go back, and the Feature is now with a person
@@ -973,7 +1328,19 @@ class FeatureRun {
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;
 		// every round the branch had, from the ledger, so a run without one still shows the earlier ones
 		const rounds = feedbackRounds(this.deps.spend.entries(), this.setup.repo, this.tree.at.branch);
+		const pausedUntil = paused === null ? undefined : this.pausedUntil();
 		const body = pullBody({
+			// the line the Status note opens with at the end of this run
+			headline: this.pullHeadline({
+				left,
+				red,
+				repeated,
+				paused,
+				pausedUntil,
+				complete,
+				handsReview: open !== null && review !== null && review !== 'off',
+				handsNote: complete && this.workflow?.workflow.output === 'note'
+			}),
 			tracker,
 			feature: this.feature,
 			check: this.setup.check,
@@ -1017,6 +1384,8 @@ class FeatureRun {
 				total: this.tickets.length
 			}
 		});
+		// what hands the Feature to a person, with its own Next step: one new comment, and the Status note says it
+		let ask: Ask | null = null;
 		if (!paused && (left.length > 0 || red || repeated !== '')) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
 			const next = featureAfterRunStep(this.setup.signals, {
@@ -1032,17 +1401,41 @@ class FeatureRun {
 			this.note({ kind: 'handed', to: 'needsInfo', why });
 			await this.signals.on('needsInfo');
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
-			await tracker.comment(
-				id,
-				withNext(
-					`Nightjar opened ${pull.url}, and this Feature still needs a person.\n\n${repeated}${failing}${waitingList(left)}`,
-					next
-				)
-			);
+			ask = {
+				sentence: STILL_NEEDS_A_PERSON,
+				cause: `${repeated}${failing}${waitingList(left)}`,
+				// the pull request body holds the check's output, or the list of waiting Tickets
+				pull: { url: pull.url, section: red ? 'The check fails' : 'Waiting' },
+				next
+			};
 		} else if (open !== null && review !== null && review !== 'off') {
-			await this.handReview(pull, open, review);
+			ask = await this.handReview(pull, open, review);
 		} else if (complete && this.workflow?.workflow.output === 'note') {
-			await this.handNote(pull);
+			ask = await this.handNote(pull);
+		}
+		if (ask !== null) {
+			await postAsk(tracker, { to: id, feature: id, ask, session: this.session });
+		}
+		// a Feedback round thrown away earlier in the run already told the person; its words stay in the note unless something later asks for them
+		const waits = ask ?? this.feedbackAsk;
+		if (waits !== null) {
+			await noteWaiting(this.deps, this.feature, {
+				ask: waits,
+				tickets: this.listed(),
+				session: this.session
+			});
+		} else if (paused !== null) {
+			// the Go is back on the Feature, so it reads Paused, now with its pull request
+			await this.notePaused(paused, pausedUntil);
+		} else {
+			await writeStatusNote(this.deps, this.feature, {
+				state: 'pull',
+				sentence: this.builtSentence(),
+				tickets: this.listed(),
+				pull: { url: pull.url },
+				next: draftStep(pull.url),
+				session: this.session
+			});
 		}
 		return {
 			kind: 'pull',
@@ -1053,15 +1446,77 @@ class FeatureRun {
 		};
 	}
 
+	// A stop notifies no one: the Status note says Stopped, with how to run the Feature again. A Tracker without a Status note hears it in a comment, as before it kept one.
 	private async stopped(): Promise<FeatureOutcome> {
-		await this.deps.tracker.comment(
-			this.feature.id,
-			withNext('The Nightjar run was stopped by a person.', stoppedStep(this.setup.signals))
-		);
+		const { tracker } = this.deps;
+		const next = stoppedStep(this.setup.signals);
+		if (tracker.statusNote === undefined) {
+			await tracker.comment(
+				this.feature.id,
+				withNext('The Nightjar run was stopped by a person.', next)
+			);
+		} else {
+			await writeStatusNote(this.deps, this.feature, {
+				state: 'stopped',
+				sentence: 'by a person.',
+				tickets: this.listed(),
+				pull: this.pullUrl === null ? null : { url: this.pullUrl },
+				next,
+				session: this.session
+			});
+		}
 		return { kind: 'stopped' };
 	}
 
+	// When a paused run tries the Feature again, as an ISO date; nothing when nothing does so on its own.
+	private pausedUntil(): string | undefined {
+		const { pauseMs, now } = this.deps;
+		return pauseMs === undefined ? undefined : new Date(now().getTime() + pauseMs).toISOString();
+	}
+
+	// What the Status note says of a Feature built into a draft pull request.
+	private builtSentence(): string {
+		if (this.feature.lone === true) return 'Nightjar built this issue into a draft pull request.';
+		const total = this.tickets.length;
+		const builtHere = this.tickets.filter((t) => this.built.has(t.id)).length;
+		return `Nightjar built ${String(builtHere)} of ${String(total)} Ticket${total === 1 ? '' : 's'} into a draft pull request.`;
+	}
+
+	// The line the pull request body opens with: the one the Status note opens with when this run ends, from the same wording function. It follows the order `finish` chooses what the run ends in.
+	private pullHeadline(o: {
+		readonly left: readonly Waiting[];
+		readonly red: object | null;
+		readonly repeated: string;
+		readonly paused: string | null;
+		readonly pausedUntil: string | undefined;
+		readonly complete: boolean;
+		readonly handsReview: boolean;
+		readonly handsNote: boolean;
+	}): string {
+		const asks = !o.paused && (o.left.length > 0 || o.red !== null || o.repeated !== '');
+		if (asks) return headline('waiting', STILL_NEEDS_A_PERSON);
+		if (o.handsReview) return headline('waiting', REVIEW_ASKS);
+		if (o.handsNote) return headline('waiting', NOTE_WAITS);
+		if (this.feedbackAsk !== null) return headline('waiting', this.feedbackAsk.sentence);
+		if (o.paused !== null) return headline('paused', pausedSentence(o.paused), o.pausedUntil);
+		return headline('pull', this.builtSentence());
+	}
+
+	// The Status note of a paused run: Paused, until the run tries the Feature again when it does so on its own, and why. It notifies no one.
+	private notePaused(why: string, until: string | undefined = this.pausedUntil()): Promise<void> {
+		return writeStatusNote(this.deps, this.feature, {
+			state: 'paused',
+			...(until === undefined ? {} : { until }),
+			sentence: pausedSentence(why),
+			tickets: this.listed(),
+			pull: this.pullUrl === null ? null : { url: this.pullUrl },
+			next: pausedStep(until !== undefined),
+			session: this.session
+		});
+	}
+
 	private review(done: readonly Ticket[], declined: readonly Declined[] = []) {
+		this.place = { kind: 'review' };
 		return reviewFeature(
 			this.deps,
 			this.setup,
@@ -1099,6 +1554,7 @@ class FeatureRun {
 		for (let round = 1; round <= rounds && review?.verdict === 'changes'; round += 1) {
 			if (this.aborted)
 				return { review, sessions, paused: null, stopped: true, open: null, declined };
+			this.place = { kind: 'reviewRound', round };
 			const before = this.costs.length;
 			const end = await reviewRound({
 				codingAgent: deps.codingAgent,
@@ -1178,7 +1634,7 @@ class FeatureRun {
 	}
 
 	// The Feature is a person's now: the Review still asks for changes, and Nightjar's Review rounds could not, or did not get to, answer them.
-	private async handReview(pull: Pull, open: ReviewLeftOpen, review: Review): Promise<void> {
+	private async handReview(pull: Pull, open: ReviewLeftOpen, review: Review): Promise<Ask> {
 		const id = this.feature.id;
 		const next = reviewStep(this.setup.signals);
 		const why =
@@ -1188,32 +1644,38 @@ class FeatureRun {
 		this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
 		this.note({ kind: 'handed', to: 'human', why });
 		await this.signals.on('human');
-		await this.deps.tracker.comment(id, withNext(reviewOpenComment(pull.url, open, review), next));
+		return {
+			sentence: REVIEW_ASKS,
+			cause: reviewOpenCause(open, review),
+			// the pull request body holds the issues the Review found
+			pull: { url: pull.url, section: 'Review' },
+			next
+		};
 	}
 
 	// A note is findings for a person, never a change to merge unread: the Feature is handed to them to read it.
-	private async handNote(pull: Pull): Promise<void> {
+	private async handNote(pull: Pull): Promise<Ask> {
 		const id = this.feature.id;
 		const next = noteStep(pull.url);
 		const why = 'its note is for a person to read';
 		this.deps.status.happened({ kind: 'needs-info', feature: id, ticket: null, why, next });
 		this.note({ kind: 'handed', to: 'human', why });
 		await this.signals.on('human');
-		await this.deps.tracker.comment(
-			id,
-			withNext(
-				`Nightjar wrote a note for this Feature, under \`${NOTES_FOLDER}/\` in ${pull.url}. It holds findings, not code, so it waits for a person to read it.`,
-				next
-			)
-		);
+		return {
+			sentence: NOTE_WAITS,
+			cause: `The note is under \`${NOTES_FOLDER}/\` in ${pull.url}. It holds findings, not code.`,
+			pull: { url: pull.url },
+			next
+		};
 	}
 
-	// The Go back, so a later run goes on from the branch.
+	// The Go back, so a later run goes on from the branch, and the Status note says Paused and why; a pause notifies no one.
 	private async pause(why: string): Promise<void> {
 		this.note({ kind: 'paused', why });
 		await this.signals.on('go');
 		this.deps.say(`paused: ${why}`);
 		this.deps.status.doing({ kind: 'paused', why, until: null });
+		await this.notePaused(why);
 	}
 
 	// The branch's open pull request with a new body, else a new draft.
@@ -1233,6 +1695,7 @@ class FeatureRun {
 				(await this.publishedBefore(open)) ? markPublished(body) : body
 			);
 			this.note({ kind: 'pullOpened', url: open.url, created: false });
+			this.pullUrl = open.url;
 			return open;
 		}
 		const made = await codeHost.createDraft({
@@ -1242,6 +1705,7 @@ class FeatureRun {
 			body
 		});
 		this.note({ kind: 'pullOpened', url: made.url, created: true });
+		this.pullUrl = made.url;
 		await this.pointBotAt(made);
 		return made;
 	}
@@ -1412,10 +1876,33 @@ export type PullFixOutcome =
 type PullFixRound = Exclude<PullFixOutcome, { readonly kind: 'atLimit' | 'skipped' }>;
 
 // One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
+// A fault that escapes it is thrown as a BuildFault that names the round.
 export async function fixPullChecks(
 	deps: Deps,
 	setup: Setup,
 	red: RedDraft
+): Promise<PullFixOutcome> {
+	const where: { run: FaultRun; note: Note | null } = {
+		run: {
+			place: { kind: 'pullFix', round: null },
+			tickets: [],
+			session: null,
+			pull: red.draft.pull.url
+		},
+		note: null
+	};
+	try {
+		return await fixRedDraft(deps, setup, red, where);
+	} catch (fault) {
+		throw faultAt(fault, where.run, where.note);
+	}
+}
+
+async function fixRedDraft(
+	deps: Deps,
+	setup: Setup,
+	red: RedDraft,
+	where: { run: FaultRun; note: Note | null }
 ): Promise<PullFixOutcome> {
 	const { tracker } = deps;
 	const { draft } = red;
@@ -1424,6 +1911,7 @@ export async function fixPullChecks(
 	if (day !== null) return { kind: 'paused', why: day };
 	const feature = await tracker.feature(red.feature);
 	const note = noteFor(deps.logbook, feature.id, deps.now);
+	where.note = note;
 	const signals = signalsOf(tracker, feature.id, note);
 	const base = baseOf(feature.body);
 	const tree = await deps.openWorktree(
@@ -1449,7 +1937,14 @@ export async function fixPullChecks(
 	if (used >= rounds) {
 		const why = `it has had its ${String(rounds)} Pull-check fix round${rounds === 1 ? '' : 's'}`;
 		deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, and ${why}`);
-		await handOver(deps, setup, { feature: feature.id, note, signals }, draft, why, draft.body);
+		await handOver(
+			deps,
+			setup,
+			{ feature, note, signals, built: await tree.built(), session: headSession ?? null },
+			draft,
+			why,
+			draft.body
+		);
 		return { kind: 'atLimit', pull, rounds };
 	}
 	const round = used + 1;
@@ -1459,6 +1954,7 @@ export async function fixPullChecks(
 		headSession !== undefined && deps.sessionExists(headSession)
 			? { kind: 'resume', id: headSession }
 			: { kind: 'fresh', id: deps.newId() };
+	where.run = { ...where.run, place: { kind: 'pullFix', round }, session: session.id };
 	if (session.kind === 'fresh') {
 		deps.say(
 			`${hash(feature.id)}: ${headSession === undefined ? 'the head commit names no Session' : `Session ${headSession} is not on this machine`}, starting a new one`
@@ -1490,7 +1986,14 @@ export async function fixPullChecks(
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
-			await handOver(deps, setup, { feature: feature.id, note, signals }, draft, why, body);
+			await handOver(
+				deps,
+				setup,
+				{ feature, note, signals, built: await tree.built(), session: session.id },
+				draft,
+				why,
+				body
+			);
 		}
 	} finally {
 		await signals.off('working');
@@ -1543,11 +2046,19 @@ export function markHandedOver(body: string): string {
 	return handedOver(body) ? body : `${body}\n\n${HANDED_OVER}`;
 }
 
-// The Feature is a person's now: needs a person on it, a comment naming the pull request and its failing Pull checks, and a mark in the body so the pass leaves it alone once the Signal comes off.
+// The Feature is a person's now: needs a person on it, a comment naming the pull request and its failing Pull checks, the Status note saying Waiting on you, and a mark in the body so the pass leaves it alone once the Signal comes off.
 async function handOver(
 	deps: Deps,
 	setup: Setup,
-	of: { readonly feature: ItemId; readonly note: Note; readonly signals: FeatureSignals },
+	of: {
+		readonly feature: Feature;
+		readonly note: Note;
+		readonly signals: FeatureSignals;
+		// the Tickets the branch built
+		readonly built: ReadonlySet<ItemId>;
+		// the Session the round ran in, when one did
+		readonly session: string | null;
+	},
 	draft: NightjarDraft,
 	why: string,
 	// the pull request body as it is to stay, before the mark
@@ -1558,10 +2069,25 @@ async function handOver(
 	note({ kind: 'handed', to: 'human', why });
 	await signals.on('human');
 	const failing = draft.checks.failed.map(failingLine);
-	const comment = `Nightjar could not make the Pull checks of ${pull.url} green: ${why}.\n\nFailing Pull checks:\n\n${failing.join('\n')}`;
-	await deps.tracker.comment(feature, withNext(comment, pullChecksStep(setup.signals)));
-	await deps.codeHost.editBody(pull, markHandedOver(body));
-	deps.say(`${hash(feature)}: handed to a person, ${why}`);
+	const tickets = await deps.tracker.tickets(feature.id);
+	const sentence = `Nightjar could not make the Pull checks of its pull request green: ${why}.`;
+	await askAPerson(deps, feature, {
+		ask: {
+			sentence,
+			cause: `Failing Pull checks:\n\n${failing.join('\n')}`,
+			// the pull request body holds each round and the checks it left failing
+			pull: { url: pull.url, section: 'Pull checks' },
+			next: pullChecksStep(setup.signals)
+		},
+		tickets: noteTickets(feature, tickets, of.built),
+		session: of.session
+	});
+	// the body says what the Status note now says
+	await deps.codeHost.editBody(
+		pull,
+		withHeadline(markHandedOver(body), headline('waiting', sentence))
+	);
+	deps.say(`${hash(feature.id)}: handed to a person, ${why}`);
 }
 
 // The Session a Pull-check fix round runs in: the head commit's, resumed, or a new one when this machine has none.
@@ -1834,6 +2360,14 @@ async function reviewFeature(
 	}
 }
 
+// The sentences a Feature with a draft pull request is handed to a person in, said by both the new comment and the headlines of the Status note and the pull request body.
+const STILL_NEEDS_A_PERSON =
+	'Nightjar opened a draft pull request, and this Feature still needs a person.';
+const REVIEW_ASKS = 'Nightjar opened a draft pull request, and its Review still asks for changes.';
+const NOTE_WAITS = 'Nightjar wrote a note for this Feature, and it waits for a person to read it.';
+
+const pausedSentence = (why: string) => `${why.charAt(0).toUpperCase()}${why.slice(1)}.`;
+
 const BLOCKED_FROM_OUTSIDE =
 	", a Ticket outside this Feature: it closes when its Feature's pull request merges. Merge that, then give the Go again.";
 
@@ -1846,6 +2380,8 @@ function waitingList(left: readonly Waiting[], name: (id: ItemId) => string = ha
 }
 
 function pullBody(p: {
+	// the state word and sentence the body opens with, which the Status note opens with too
+	headline: string;
 	tracker: Tracker;
 	feature: Feature;
 	check: string;
@@ -1873,6 +2409,7 @@ function pullBody(p: {
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
+		p.headline,
 		`Nightjar built ${p.complete ? 'all of' : 'part of'} ${ref(p.feature.id)} ${p.feature.title}.`,
 		`## Built\n\n${p.done.map((t) => `- ${ref(t.id)} ${t.title}`).join('\n')}`
 	];
@@ -1967,14 +2504,13 @@ type ReviewLeftOpen =
 	  }
 	| { readonly kind: 'exhausted'; readonly rounds: number };
 
-// What the last Review left open, as the comment on the Feature says it.
-function reviewOpenComment(url: string, open: ReviewLeftOpen, review: Review): string {
+// What the last Review left open, in a line or two: the pull request's Review section holds the issues.
+function reviewOpenCause(open: ReviewLeftOpen, review: Review): string {
 	const cause =
 		open.kind === 'failed'
-			? `Review round ${String(open.round)} was thrown away: ${open.why}.${open.side === null ? '' : ` Its work is kept on the branch \`${open.side}\`.`} The branch keeps the commits before it, and no more Review rounds ran.\n\nThe last Review said changes`
+			? `Review round ${String(open.round)} was thrown away: ${open.why}.${open.side === null ? '' : ` Its work is kept on the branch \`${open.side}\`.`} No more Review rounds ran. The last Review said changes`
 			: `Nightjar ran ${String(open.rounds)} Review round${open.rounds === 1 ? '' : 's'}, and the last Review still says changes`;
-	const issues = issueLines(review.issues);
-	return `Nightjar opened ${url}, and this Feature still needs a person.\n\n${cause}: ${review.summary}${issues ? `\n\n${issues}` : ''}`;
+	return `${cause}: ${review.summary}`;
 }
 
 // What a Feature is told when a push of its branch is rejected because a person pushed to it, whatever the push followed.

@@ -39,6 +39,7 @@ import {
 	feedbackPass,
 	fixNamed,
 	handBack,
+	PAUSE_MS,
 	publishPass,
 	pullChecksPass,
 	pullFixExit,
@@ -262,7 +263,9 @@ export async function runNightjar(
 		newId: () => randomUUID(),
 		sessionExists: (id) => sessionExists(id, ready.env),
 		say: runSay,
-		status
+		status,
+		// --watch tries a paused Feature again after PAUSE_MS, which its Status note gives as the time it is paused until
+		...(args.mode === 'watch' ? { pauseMs: PAUSE_MS } : {})
 	};
 	// the Feature being built, so a fault that escapes every catch can still hand it back
 	let building: Named | null = null;

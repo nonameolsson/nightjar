@@ -35,6 +35,7 @@ import {
 } from './intake.js';
 import { parseCron } from './cron.js';
 import { runNightjar } from './main.js';
+import { readStatusNote, STATE_WORDS, statusNoteText, waitingOfNote } from './status-note.js';
 import type { SourcedFeature } from './tracker.js';
 import { AzureDevOpsApi } from './azure-devops/api.js';
 import { AzureReposCodeHost } from './azure-devops/code-host.js';
@@ -145,6 +146,9 @@ async function post(
 
 const features = () => [...tracker.items.values()].filter((i) => i.children.length > 0);
 
+// the day a note line dates by, in UTC as the note does
+const today = () => clock.toISOString().slice(0, 10);
+
 const later = (minutes: number) => {
 	clock = new Date(clock.getTime() + minutes * 60 * 1000);
 };
@@ -212,7 +216,83 @@ describe('intake', () => {
 		).rejects.toThrow("Source alerts: go: true needs the Tracker's assign");
 	});
 
-	it('makes nothing while a Feature with the same key is open, and comments at most once a day', async () => {
+	it('makes nothing while a Feature with the same key is open, and says "happened again" in its Status note, with no comment', async () => {
+		await start();
+		expect((await post(event('k-1'))).status).toBe(201);
+		const [made] = features();
+		const id = made?.id ?? '';
+		expect(tracker.note(id)).toBeUndefined();
+		later(1);
+		expect(await post(event('k-1'), signed(event('k-1'), { id: 'msg_2' }))).toEqual({
+			status: 200,
+			json: { outcome: 'again', feature: id }
+		});
+		// no build has touched the Feature, so its note is made, and says it waits for the Go
+		const first = tracker.note(id) ?? '';
+		expect(first).toMatch(
+			/^<!-- nightjar:status -->\nNightjar has not built this Feature yet; it waits for the Go\.\n/
+		);
+		// it carries no Signal, so no state word says it does, and the page shows no Waiting on you from it
+		for (const word of Object.values(STATE_WORDS)) expect(first).not.toContain(`**${word}**`);
+		expect(readStatusNote(first, clock.toISOString()).current).toBeNull();
+		expect(waitingOfNote(first, clock.toISOString())).toBeNull();
+		expect(first).toContain(
+			`**Earlier runs**\n\n- ${today()} · Happened again, 1 time since 2026-11-03 12:00.`
+		);
+		const firstDay = today();
+		later(1);
+		expect((await post(event('k-1'), signed(event('k-1'), { id: 'msg_3' }))).status).toBe(200);
+		// the same note is changed in place: its count goes up and its start stays
+		expect(tracker.note(id)).toContain(
+			`- ${firstDay} · Happened again, 2 times since 2026-11-03 12:00.`
+		);
+		expect(tracker.note(id)).not.toContain('1 time since');
+		expect(tracker.items.get(id)?.comments).toHaveLength(1);
+		expect(tracker.said(id)).toEqual([]);
+		expect(features()).toHaveLength(1);
+		// the next day it goes on counting, since the first
+		later(24 * 60);
+		expect((await post(event('k-1'), signed(event('k-1'), { id: 'msg_4' }))).status).toBe(200);
+		expect(tracker.note(id)).toContain(
+			`- ${today()} · Happened again, 3 times since 2026-11-03 12:00.`
+		);
+		expect(tracker.said(id)).toEqual([]);
+		// another key is another Feature, and a closed one is no longer the same
+		expect((await post(event('k-2'), signed(event('k-2'), { id: 'msg_5' }))).status).toBe(201);
+		tracker.close(id);
+		expect((await post(event('k-1'), signed(event('k-1'), { id: 'msg_6' }))).status).toBe(201);
+		expect(features()).toHaveLength(3);
+	});
+
+	it('keeps the Status note a build wrote, and adds the "happened again" line to its history', async () => {
+		await start();
+		await post(event('k-1'));
+		const id = features()[0]?.id ?? '';
+		await tracker.statusNote(
+			id,
+			statusNoteText({
+				state: 'building',
+				sentence: 'Ticket 1 of 1: Look into it',
+				tickets: [{ id: '1', title: 'Look into it', state: 'building' }],
+				pull: null,
+				next: null,
+				earlier: [{ at: '2026-10-30T10:00:00.000Z', state: 'stopped', sentence: 'A person.' }],
+				logbook: { feature: id, session: null }
+			})
+		);
+		later(1);
+		await post(event('k-1'), signed(event('k-1'), { id: 'msg_2' }));
+		const note = tracker.note(id) ?? '';
+		expect(note).toContain('**Building**: Ticket 1 of 1: Look into it');
+		expect(note).toContain(
+			`- 2026-10-30 · **Stopped**: A person.\n- ${today()} · Happened again, 1 time since 2026-11-03 12:00.`
+		);
+		expect(tracker.items.get(id)?.comments).toHaveLength(1);
+		expect(tracker.said(id)).toEqual([]);
+	});
+
+	it('comments "happened again" at most once a day on a Tracker without a Status note', async () => {
+		(tracker as { statusNote?: unknown }).statusNote = undefined;
 		await start();
 		expect((await post(event('k-1'))).status).toBe(201);
 		const [made] = features();
@@ -277,7 +357,23 @@ describe('intake', () => {
 		expect(logbook.read(made?.id ?? '')?.map((e) => e.kind)).toEqual(['madeBySource']);
 	});
 
-	it('writes "happened again" to the Logbook only when it commented, with the count it said', async () => {
+	it('writes "happened again" to the Logbook for each delivery that changes the Status note, with the count it says', async () => {
+		await start();
+		await post(event('k-1'));
+		const id = features()[0]?.id ?? '';
+		for (const n of [2, 3, 4]) {
+			later(1);
+			await post(event('k-1'), signed(event('k-1'), { id: `msg_${String(n)}` }));
+		}
+		expect(logbook.read(id)?.filter((e) => e.kind === 'happenedAgain')).toMatchObject([
+			{ source: 'alerts', times: 1 },
+			{ source: 'alerts', times: 2 },
+			{ source: 'alerts', times: 3 }
+		]);
+	});
+
+	it('writes "happened again" to the Logbook only when it commented, on a Tracker without a Status note', async () => {
+		(tracker as { statusNote?: unknown }).statusNote = undefined;
 		await start();
 		await post(event('k-1'));
 		const id = features()[0]?.id ?? '';

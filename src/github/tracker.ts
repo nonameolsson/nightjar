@@ -15,7 +15,13 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
+import {
+	sourcedFrom,
+	statusNoteOf,
+	waitingFrom,
+	type SourcedFeature,
+	type WaitingFeature
+} from '../tracker.js';
 import { markerSearch } from '../template.js';
 import {
 	GitHubApi,
@@ -76,6 +82,8 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 	readonly loneIssues = true;
 	private readonly counts = new Map<ItemId, TicketCount>();
 	private readonly trust: GitHubTrust;
+	// the signed-in login, read once, for the Status note
+	private login: Promise<string> | null = null;
 
 	constructor(
 		readonly repo: string,
@@ -378,15 +386,54 @@ export class GitHubTracker implements Tracker, FeatureWriter {
 		}
 	}
 
-	async comment(id: ItemId, body: string): Promise<void> {
+	// The comment's own address, which GitHub answers with.
+	async comment(id: ItemId, body: string): Promise<string | undefined> {
 		const n = issue(id);
-		await this.api.call(`comment on #${n}`, [
+		const made = await this.api.call(`comment on #${n}`, [
 			'-X',
 			'POST',
 			`repos/${this.repo}/issues/${n}/comments`,
 			'-f',
 			`body=${body}`
 		]);
+		const url = z.looseObject({ html_url: z.string() }).safeParse(made);
+		return url.success ? url.data.html_url : undefined;
+	}
+
+	// Every page of the comments is read, so a note made among more than one page's worth is still found.
+	async statusNote(id: ItemId, body: string): Promise<void> {
+		const n = issue(id);
+		const me = await this.signedIn();
+		const listed = await this.api.everyPage(
+			`list the comments on #${n}`,
+			`repos/${this.repo}/issues/${n}/comments`,
+			z.array(CommentSchema.extend({ id: z.number() })),
+			(page) => page
+		);
+		const found = statusNoteOf(
+			listed.map((c) => ({ id: c.id, author: c.user?.login ?? '', body: c.body ?? '' })),
+			me
+		);
+		if (found === undefined) {
+			await this.comment(id, body);
+			return;
+		}
+		await this.api.call(`edit the Status note on #${n}`, [
+			'-X',
+			'PATCH',
+			`repos/${this.repo}/issues/comments/${String(found.id)}`,
+			'-f',
+			`body=${body}`
+		]);
+	}
+
+	private signedIn(): Promise<string> {
+		// a read that failed is not kept, so the next note asks again
+		this.login ??= this.me().catch((fault: unknown) => {
+			this.login = null;
+			throw fault;
+		});
+		return this.login;
 	}
 
 	reference(id: ItemId): TicketReference {

@@ -11,8 +11,9 @@ import { featureAfterRunStep, ticketStep } from './next-step.js';
 import { FakeTracker } from './fakes/tracker.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
+import { statusNoteText } from './status-note.js';
 import { readFactory } from './status-reader.js';
-import { logbookPage, sessionPage, startUi, type Ui } from './ui.js';
+import { logbookPage, logbookSection, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
 import { THEMES, type Theme } from './ui-theme.js';
 import {
@@ -625,6 +626,107 @@ describe('nightjar ui reads the Tracker', () => {
 		expect([...tracker.items.values()]).toEqual(before);
 	});
 
+	describe("a Waiting on you card and the Feature's Status note", () => {
+		const sentences = {
+			waiting: 'The Review still asks for changes.',
+			building: 'Ticket 1 of 2: Model'
+		};
+		const waitingNote = (state: 'waiting' | 'building' = 'waiting') =>
+			statusNoteText({
+				state,
+				sentence: sentences[state],
+				tickets: [],
+				pull: null,
+				next: [
+					'Read the issues above and fix the ones that are right on the branch.',
+					'Then hand it back: add `go`.'
+				],
+				earlier: [],
+				logbook: { feature: '4', session: null }
+			});
+		const cardOf = (html: string) => {
+			const articles = board(html).split('<article');
+			return articles.find((a) => a.includes('Audit log')) ?? '';
+		};
+
+		it("shows the note's reason and Next step when status.json has no hand-back", async () => {
+			const tracker = fakeTracker();
+			await tracker.statusNote('4', waitingNote());
+			const before = structuredClone([...tracker.items.values()]);
+			const writes = vi.spyOn(tracker, 'comment');
+			const notes = vi.spyOn(tracker, 'statusNote');
+			await openOn(readsOf(tracker));
+			const card = cardOf(await read());
+			expect(card).toContain('<p>The Review still asks for changes.</p>');
+			expect(card).toContain(
+				'<p>Next step</p><ol><li>Read the issues above and fix the ones that are right on the branch.</li><li>Then hand it back: add <code>go</code>.</li></ol>'
+			);
+			expect(card).not.toContain('no reason recorded');
+			// read-only: the page wrote nothing to the Tracker
+			expect(writes).not.toHaveBeenCalled();
+			expect(notes).not.toHaveBeenCalled();
+			expect([...tracker.items.values()]).toEqual(before);
+		});
+
+		it("takes the note's words over a hand-back in status.json", async () => {
+			const tracker = fakeTracker();
+			await tracker.statusNote('4', waitingNote());
+			status().happened({ kind: 'failed', feature: '4', why: 'check red', next: ['Old step.'] });
+			await openOn(readsOf(tracker));
+			const card = cardOf(await read());
+			expect(card).toContain('The Review still asks for changes.');
+			expect(card).not.toContain('check red');
+			expect(card).not.toContain('Old step.');
+		});
+
+		const handBack = () =>
+			status().happened({
+				kind: 'failed',
+				feature: '4',
+				why: 'check red',
+				next: ['Fix the check.']
+			});
+
+		it('falls back to status.json when there is no note', async () => {
+			handBack();
+			await openOn(readsOf(fakeTracker()));
+			const card = cardOf(await read());
+			expect(card).toContain('<p>check red</p>');
+			expect(card).toContain('Fix the check.');
+		});
+
+		it('falls back to status.json when the note is in another state', async () => {
+			const tracker = fakeTracker();
+			await tracker.statusNote('4', waitingNote('building'));
+			handBack();
+			await openOn(readsOf(tracker));
+			const card = cardOf(await read());
+			expect(card).toContain('<p>check red</p>');
+			expect(card).not.toContain('Ticket 1 of 2');
+		});
+
+		it('says no reason is recorded when neither the note nor status.json has one', async () => {
+			await openOn(readsOf(fakeTracker()));
+			const html = await read();
+			expect(cardOf(html)).toContain('no reason recorded; see its comments on the Tracker');
+		});
+
+		it("falls back when the Tracker's comments cannot be read", async () => {
+			const fake = fakeTracker();
+			await fake.statusNote('4', waitingNote());
+			const tracker: ReadingTracker = {
+				assignedFeatures: (p) => fake.assignedFeatures(p),
+				waitingOn: (p) => fake.waitingOn(p),
+				me: () => fake.me(),
+				comments: () => Promise.reject(new Error('gh: Bad Gateway (HTTP 502)'))
+			};
+			await openOn(readsOf(tracker));
+			const html = await read();
+			expect(cardOf(html)).toContain('no reason recorded');
+			expect(html).not.toContain('could not read the Tracker');
+		});
+	});
+
 	it('takes a Feature off Waiting on you once it builds, before the next read says so', async () => {
 		const tracker = fakeTracker();
 		await openOn(readsOf(tracker));
@@ -810,6 +912,148 @@ describe('nightjar ui reads the Tracker', () => {
 			for (const method of ['POST', 'PUT', 'DELETE', 'PATCH'])
 				expect((await get('/feature?id=1', method)).status).toBe(405);
 			expect((await get('/feature?id=1', 'HEAD')).status).toBe(200);
+		});
+
+		describe('the Logbook section', () => {
+			const minute = (m: number) => new Date(at.getTime() + m * 60_000).toISOString();
+			const note = (m: number, entry: Decision & Place) =>
+				fileLogbook(root).write({ at: minute(m), feature: '1', ...entry });
+			const ran = (m: number, over: Partial<Parameters<typeof record>[1]> = {}) =>
+				record(ledgerFile(), {
+					at: minute(m),
+					repo: 'o/app',
+					feature: '1',
+					ticket: '3',
+					branch: 'factory/1-saved-filters',
+					step: 'build',
+					session: 'sess-1',
+					costUsd: 1.5,
+					outcome: 'built',
+					durationMs: 125_000,
+					...over
+				});
+			// a build that has ended: a Ticket built after a red check and a fix round, then the Review, then the draft pull request
+			const seed = () => {
+				mkdirSync(join(root, '.factory', 'logs'), { recursive: true });
+				writeFileSync(
+					join(root, '.factory', 'logs', 'sess-1.jsonl'),
+					JSON.stringify({
+						type: 'assistant',
+						message: { content: [{ type: 'text', text: 'Reading <script>alert(1)</script>' }] }
+					})
+				);
+				note(0, {
+					kind: 'buildStarted',
+					by: 'go',
+					branch: 'factory/1-saved-filters',
+					workflow: null
+				});
+				ran(4);
+				note(4, {
+					kind: 'checkRed',
+					report: 'lint: 1 problem',
+					round: 1,
+					rounds: 3,
+					ticket: '3',
+					session: 'sess-1'
+				});
+				ran(6, { step: 'fix', outcome: 'round 1', costUsd: 0.5 });
+				note(7, { kind: 'ticketBuilt', commit: 'abc1234', ticket: '3' });
+				ran(9, {
+					ticket: null,
+					step: 'review',
+					session: 'sess-2',
+					outcome: 'approve',
+					costUsd: 1
+				});
+				note(9, {
+					kind: 'review',
+					verdict: 'approve',
+					summary: 'Reads well.',
+					issues: [],
+					session: 'sess-2'
+				});
+				note(10, { kind: 'pullOpened', url: 'https://example.test/pull/9', created: true });
+			};
+			const panel = async (id = '1') => {
+				await openWithPanel(fakeTracker());
+				await read();
+				return get(`/feature?id=${id}`);
+			};
+
+			it("shows a Feature's Sessions and Nightjar's decisions in order, after its Tickets, once its build has ended", async () => {
+				seed();
+				const got = await panel();
+				expect(got.status).toBe(200);
+				const html = got.text;
+				expect(html.indexOf('class="build"')).toBeLessThan(
+					html.indexOf('<section class="logbook">')
+				);
+				expect(html).toContain('<p class="meta">3 Sessions, $3.00</p>');
+				const where = (s: string) => {
+					const i = html.indexOf(s);
+					expect(i, s).toBeGreaterThan(-1);
+					return i;
+				};
+				const order = [
+					'Build started by the Go on factory/1-saved-filters',
+					'Open the build Session',
+					'Check red, so fix round 1 of 3',
+					'Open the fix round Session',
+					'Ticket built in commit abc1234',
+					'Open the Review Session',
+					'Review approved: Reads well.',
+					'Draft pull request opened'
+				].map(where);
+				expect(order).toEqual([...order].sort((a, b) => a - b));
+				// each Session's kind, outcome and cost
+				const build = html.split('<li class="session">')[1] ?? '';
+				for (const field of [
+					'<dt>Kind</dt><dd>build</dd>',
+					'<dt>Outcome</dt><dd>built</dd>',
+					'<dt>Cost</dt><dd>$1.50</dd>'
+				])
+					expect(build).toContain(field);
+				expect(build).toMatch(/<dt>Ticket<\/dt><dd>(<a[^>]*>)?#3/);
+				expect(html).toContain('<dt>Ticket</dt><dd>the whole Feature</dd>');
+				// no transcript text in the panel itself, and a link to the Logbook's own page
+				expect(html).not.toContain('Reading');
+				expect(html).toContain('href="/features/1"');
+			});
+
+			it("opens a Session's transcript from its entry in a tab of its own, escaped, and serves only that Session's log", async () => {
+				seed();
+				const html = (await panel()).text;
+				expect(html).toContain(
+					'<a class="open" href="/sessions/sess-1" target="_blank" rel="noopener">Open the build Session</a>'
+				);
+				const session = await get('/sessions/sess-1');
+				expect(session.status).toBe(200);
+				expect(session.text).toContain('Reading &#60;script&#62;alert(1)&#60;/script&#62;');
+				expect(session.text).not.toContain('<script>alert(1)');
+				// the review Session has no transcript on this machine: not found, and no other file read in its place
+				expect((await get('/sessions/sess-2')).status).toBe(404);
+				expect((await get('/sessions/..%2Fruns')).status).toBe(400);
+			});
+
+			it('shows the Logbook beside a failed read of the Tracker, as it lives on this machine', async () => {
+				// a Feature the Tracker does not have, whose build the ledger still remembers
+				ran(12, { feature: '404', session: 'sess-9' });
+				const got = await panel('404');
+				expect(got.status).toBe(502);
+				expect(got.text).toContain('could not read #404 from the Tracker');
+				expect(got.text).toContain('<section class="logbook">');
+				expect(got.text).toContain('Open the build Session');
+			});
+
+			it('says plainly that nothing is recorded for a Feature with no Sessions', async () => {
+				seed();
+				const got = await panel('4');
+				expect(got.text).toContain(
+					'<section class="logbook"><h3>Logbook</h3><p class="empty">Nightjar has recorded nothing for this Feature on this machine.</p></section>'
+				);
+				expect(got.text).not.toContain('class="book"');
+			});
 		});
 
 		it('has no route when the page reads no Feature', async () => {
@@ -1053,7 +1297,7 @@ describe('nightjar ui board', () => {
 			'Facets <small>needs info</small> <span class="reason">it asked 1 question, round 1</span>'
 		);
 		expect(card).toContain(
-			'<p>Next step</p><ol><li>Answer in a comment here.</li><li>On this Ticket, remove <code>needs-info</code> and add <code>ready-for-agent</code>.</li>'
+			'<p>Next step</p><ol><li>Answer the questions above in a comment here.</li><li>Then hand it back: on this Ticket, remove <code>needs-info</code> and add <code>ready-for-agent</code>;'
 		);
 		// the Feature's own Next step comes after the Tickets it speaks of
 		const deal = card.indexOf('<li>Deal with the waiting Tickets above');
@@ -2258,6 +2502,45 @@ describe('nightjar ui Logbook page', () => {
 		// a Session over the whole Feature has no Ticket, and one with no transcript here says so
 		expect(page).toContain('<dt>Ticket</dt><dd>the whole Feature</dd>');
 		expect(page).toContain('No transcript of this Session on this machine.');
+	});
+
+	it("draws the Feature detail panel's section from the same items, with no summary, and each transcript opening in a tab of its own", () => {
+		seed();
+		const section = logbookSection(readLogbook(root, '261'));
+		expect(section.startsWith('<section class="logbook"><h3>Logbook</h3>')).toBe(true);
+		expect(section).toContain('<p class="meta">3 Sessions, $3.00</p>');
+		const where = (s: string) => {
+			const i = section.indexOf(s);
+			expect(i, s).toBeGreaterThan(-1);
+			return i;
+		};
+		const order = [
+			'Build started by the Go on factory/261-logbook',
+			'Open the build Session',
+			'Check red, so fix round 1 of 3',
+			'Open the fix round Session',
+			'Ticket built in commit abc1234',
+			'Open the Review Session',
+			'Review asked for changes: Needs a test.',
+			'Draft pull request opened'
+		].map(where);
+		expect(order).toEqual([...order].sort((a, b) => a - b));
+		expect(section).toContain(
+			'<a class="open" href="/sessions/sess-1" target="_blank" rel="noopener">Open the build Session</a>'
+		);
+		expect(section).toContain('<dt>Outcome</dt><dd>built</dd>');
+		expect(section).toContain('<dt>Cost</dt><dd>$1.50</dd>');
+		// the transcript's text is the Session page's to show, escaped there
+		expect(section).not.toContain('Reading the spec');
+		expect(section).not.toContain('<summary>Summary');
+		expect(section).toContain('<a class="open" href="/features/261" target="_blank"');
+	});
+
+	it("says plainly in the panel's section when a Feature has no Sessions", () => {
+		const section = logbookSection(readLogbook(root, '275'));
+		expect(section).toBe(
+			'<section class="logbook"><h3>Logbook</h3><p class="empty">Nightjar has recorded nothing for this Feature on this machine.</p></section>'
+		);
 	});
 
 	it("folds a red check's gate report, and the Review's issues, under the line that says what happened", () => {
