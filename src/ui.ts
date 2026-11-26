@@ -726,7 +726,8 @@ const waitingTicketsHtml = (card: FeatureCard, links: Links) =>
 		? ''
 		: `<ul class="tickets">${card.waitingTickets.map((t) => `<li class="waiting">${idHtml(t.id, links)} ${escape(t.title)} <small>${escape(t.why)}</small>${t.handBack === undefined ? '' : ` <span class="reason">${escape(t.handBack.why)}</span>`}${nextStepHtml(t.handBack)}</li>`).join('')}</ul>`;
 
-// A Feature that waits on a person; its own Next step comes last, as it speaks of the Tickets above
+// A Feature that waits on a person. Its reason sits beneath the row, under the title, where a long one has the room
+// to read on a line or two; its own Next step comes last, as it speaks of the Tickets above
 function waitingCard(card: WaitingCard, links: Links): string {
 	const back = card.handBack;
 	const known = back !== undefined || card.waitingTickets.some((t) => t.handBack !== undefined);
@@ -742,13 +743,15 @@ function waitingCard(card: WaitingCard, links: Links): string {
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + why + pullHtml(card) + earlierHtml(card),
+		whyHtml(card, u) + pullHtml(card) + earlierHtml(card),
 		actionLink(u, links),
-		waitingTicketsHtml(card, links) + nextStepHtml(back) + helpHtml(card, u, links)
+		helpHtml(card, u, links),
+		why + waitingTicketsHtml(card, links) + nextStepHtml(back)
 	);
 }
 
-// One Feature as a nest in the ledger: who, its egg row, where it stands, its clock, and what hangs beneath it.
+// One Feature as a nest in the ledger: who, its egg row, where it stands, its clock; what sits `under` its title, in
+// the Feature column beside the other cells; and what hangs `beneath` the whole row.
 function nest(
 	cls: string,
 	card: FeatureCard,
@@ -756,9 +759,11 @@ function nest(
 	eggs: string,
 	now: string,
 	meta: string,
-	beneath = ''
+	beneath = '',
+	under = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}${stepsBar(card)}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	const below = under === '' ? '' : `<div class="under">${under}</div>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}${stepsBar(card)}</div><div class="now">${now}</div><div class="clock">${meta}</div>${below}${beneath}</article>`;
 }
 
 function buildingCard(card: BuildingCard, links: Links): string {
@@ -771,6 +776,7 @@ function buildingCard(card: BuildingCard, links: Links): string {
 		card.progress === null ? '' : progressHtml(card.progress, tickets),
 		`<p class="label">Building</p><p>${stepLine(doing)}</p>${earlierHtml(card)}`,
 		`<time data-since="${escape(featureStart(doing))}"></time>`,
+		'',
 		waitingTicketsHtml(card, links)
 	);
 }
@@ -1602,7 +1608,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
 .tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
 .lines { padding: 4px 18px; }
-.entry { align-items: center; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
+.entry { align-items: baseline; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
 .more { border-top: 1px dashed var(--line); font: 0.85rem var(--mono); margin: 0; padding: 12px 0 8px; }
@@ -1618,7 +1624,9 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .now .label .egg.need::after { right: -0.5rem; }
 .now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
 .clock { color: var(--muted); font: 0.85rem var(--mono); text-align: right; }
-.entry > ul, .entry > .next { grid-column: 1 / -1; }
+.entry:has(> .under) > :is(.eggcell, .now, .clock) { grid-row: span 2; }
+.under { grid-column: 1; }
+.under > p { color: var(--ink2); font-size: 0.85rem; margin-top: 6px; }
 .next { color: var(--ink2); font: 0.85rem/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 2px 0 0; }
 .next p { color: var(--muted); margin: 6px 0 2px; }
 .next ol { list-style: decimal; margin: 0; padding-left: 1.6em; }
@@ -1807,6 +1815,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 @media (prefers-reduced-motion: reduce) { .egg.building, .seg.running, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
+	.cols.has-detail .entry > * { grid-row: auto; }
 	.cols.has-detail .head { display: none; }
 }
 @media (max-width: 1260px) {
@@ -1823,6 +1832,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 }
 @media (max-width: 900px) {
 	.entry { grid-template-columns: 1fr; }
+	.entry > * { grid-row: auto; }
 	.head { display: none; }
 	.clock { text-align: left; }
 }
