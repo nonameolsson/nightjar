@@ -124,6 +124,22 @@ export interface Tracker {
 	ticketCounts?(featureIds: readonly ItemId[]): Promise<Map<ItemId, TicketCount | null>>;
 	// optional, so a Tracker module written before it still loads: `person`'s Shelf, the open Features assigned to them that carry no Signal, most recently updated first, at most `max` of them, with how many there are in all (docs/adr/0009)
 	shelf?(person: string, max: number): Promise<Shelf>;
+	// optional, so a Tracker module written before it still loads: writes the Feature's Status note (docs/adr/0012), `body` with its marker first. The first call comments as the signed-in person; each later one edits that same comment in place, which notifies no one. A comment by anyone else is never touched, marker or not.
+	statusNote?(id: ItemId, body: string): Promise<void>;
+}
+
+// The hidden first line of a Status note, by which it is found among a Feature's comments.
+export const STATUS_MARKER = '<!-- nightjar:status -->';
+
+// Whether a comment's body is a Status note: it opens with the marker.
+export const isStatusNote = (body: string): boolean => body.trimStart().startsWith(STATUS_MARKER);
+
+// The Feature's Status note among its comments, oldest first: the first one the signed-in person wrote, as the Adapter edits that one.
+export function statusNoteOf<C extends Pick<Comment, 'author' | 'body'>>(
+	comments: readonly C[],
+	me: string
+): C | undefined {
+	return comments.find((c) => c.author === me && isStatusNote(c.body));
 }
 
 // The most Features the page asks a Shelf for; the rest are a link to the Tracker.

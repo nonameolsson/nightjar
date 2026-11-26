@@ -13,7 +13,14 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
+import {
+	isStatusNote,
+	sourcedFrom,
+	statusNoteOf,
+	waitingFrom,
+	type SourcedFeature,
+	type WaitingFeature
+} from '../tracker.js';
 
 export interface FakeItem {
 	readonly id: ItemId;
@@ -96,7 +103,11 @@ export class FakeTracker implements Tracker, FeatureWriter {
 
 	signalsOf = (id: ItemId): readonly Signal[] => this.get(id).signals;
 
-	said = (id: ItemId): string[] => this.get(id).comments.map((c) => c.body);
+	// the comments posted on the item, which notify a person; its Status note, which is edited in place, is `note`
+	said = (id: ItemId): string[] =>
+		this.get(id)
+			.comments.filter((c) => !(c.author === this.person && isStatusNote(c.body)))
+			.map((c) => c.body);
 
 	private get(id: ItemId): FakeItem {
 		const item = this.items.get(id);
@@ -259,6 +270,20 @@ export class FakeTracker implements Tracker, FeatureWriter {
 		this.say(id, { author: this.person, body, trusted: true });
 		return Promise.resolve();
 	};
+
+	// edits the signed-in person's Status note in place, keeping when it was made; makes it when there is none
+	statusNote = (id: ItemId, body: string): Promise<void> => {
+		const item = this.get(id);
+		const at = item.comments.findIndex((c) => c.author === this.person && isStatusNote(c.body));
+		const found = item.comments[at];
+		if (found === undefined) return this.comment(id, body);
+		const comments = item.comments.with(at, { ...found, body });
+		this.put({ ...item, comments });
+		return Promise.resolve();
+	};
+
+	// the Feature's Status note as it reads now, if it has one
+	note = (id: ItemId): string | undefined => statusNoteOf(this.get(id).comments, this.person)?.body;
 
 	reference = (id: ItemId): TicketReference => ({ id, text: `#${id}` });
 

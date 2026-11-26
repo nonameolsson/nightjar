@@ -5180,3 +5180,144 @@ describe('a Feature with a **Base:** line, as a botPulls Source makes one', () =
 		expect(world.tracker.said('1').join('\n')).toContain('a..b');
 	});
 });
+
+describe('the Status note', () => {
+	// each Session's sight of the Feature's note, as a person reading the Tracker would see it then
+	const watch = (world: World, id: string): (string | undefined)[] => {
+		const seen: (string | undefined)[] = [];
+		world.settle = () => {
+			seen.push(world.tracker.note(id));
+			return undefined;
+		};
+		return seen;
+	};
+
+	// the comments on the item, the Status note among them
+	const all = (world: World, id: string) =>
+		world.tracker.items.get(id)?.comments.map((c) => c.body) ?? [];
+
+	it('reads Building while the build runs, then Draft PR open with the link, and stays one comment', async () => {
+		const world = makeWorld();
+		const seen = watch(world, '1');
+		await buildFeature(deps(world), setup(world), '1');
+
+		expect(seen.length).toBeGreaterThan(0);
+		for (const note of seen) {
+			expect(note).toContain('**Building**: Nightjar picked this Feature up and is building it.');
+		}
+		expect(seen[0]).toContain('- #2 Share the function: waiting, not reached');
+		const note = world.tracker.note('1') ?? '';
+		const url = world.host.pulls[0]?.url ?? 'no draft';
+		expect(note.startsWith('<!-- nightjar:status -->\n**Draft PR open**: ')).toBe(true);
+		expect(note).toContain('Nightjar built 2 of 2 Tickets into a draft pull request.');
+		expect(note).toContain(`**Pull request**: ${url}`);
+		// in the Feature's own order, as the page lists them
+		expect(note).toContain('- #3 Use it in marks: built\n- #2 Share the function: built');
+		expect(note).toContain(`1. Review the draft pull request ${url}.`);
+		// the last Session that built
+		expect(note).toContain(
+			'Logbook: nightjar ui → #1 · session session-2 (on the machine that ran it)'
+		);
+		expect(note.endsWith(FOOTER)).toBe(true);
+		// the note is the only comment: a build that asks nothing of a person posts none
+		expect(all(world, '1')).toEqual([note]);
+		expect(world.tracker.said('1')).toEqual([]);
+	});
+
+	it('edits the same note when the Feature is built again', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		const posted = world.tracker.said('1');
+		expect(posted).toHaveLength(1);
+		world.acts['3'] = 'build';
+		await world.tracker.removeSignal('3', 'needsInfo');
+		await world.tracker.addSignal('3', 'ready');
+		await world.tracker.removeSignal('1', 'needsInfo');
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+
+		const notes = all(world, '1').filter((body) => body.startsWith('<!-- nightjar:status -->'));
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toContain('Nightjar built 2 of 2 Tickets into a draft pull request.');
+		expect(world.tracker.said('1')).toEqual(posted);
+	});
+
+	it('leaves the Next step to the comment that hands the Feature to a person', async () => {
+		const world = makeWorld();
+		world.acts['3'] = 'ask';
+		await buildFeature(deps(world), setup(world), '1');
+		const note = world.tracker.note('1') ?? '';
+		expect(note).toContain(
+			'**Draft PR open**: Nightjar built 1 of 2 Tickets into a draft pull request.'
+		);
+		expect(note).toContain('- #3 Use it in marks: waiting, needs info');
+		expect(note).not.toContain('**Next step**');
+		expect(world.tracker.said('1')[0]).toContain('**Next step**');
+	});
+
+	it('puts the note of a Lone issue on the issue itself, with no Ticket list', async () => {
+		const world = makeWorld();
+		world.tracker.add({ id: '9', title: 'Fix the typo', assignees: ['ann'], signals: ['go'] });
+		const seen = watch(world, '9');
+		await buildFeature(deps(world), setup(world), '9');
+
+		expect(seen[0]).toContain('**Building**');
+		const note = world.tracker.note('9') ?? '';
+		expect(note).toContain(
+			'**Draft PR open**: Nightjar built this issue into a draft pull request.'
+		);
+		expect(note).not.toContain('**Tickets**');
+		expect(all(world, '9')).toEqual([note]);
+	});
+
+	it('never hands the note to the Coding agent as a Trusted comment', async () => {
+		const world = makeWorld();
+		world.tracker.say('1', { author: 'ann', body: 'Keep the old name.', trusted: true });
+		await buildFeature(deps(world), setup(world), '1');
+		await world.tracker.addSignal('1', 'go');
+		await buildFeature(deps(world), setup(world), '1');
+		const asked = askedOf(world, 'build');
+		expect(asked.length).toBeGreaterThan(0);
+		for (const req of asked) {
+			expect(req.featureComments.map((c) => c.body)).toEqual(['Keep the old name.']);
+		}
+	});
+
+	it('gives a Tracker without statusNote the same comments as before, and no note', async () => {
+		const withNote = makeWorld();
+		withNote.acts['3'] = 'ask';
+		await buildFeature(deps(withNote), setup(withNote), '1');
+
+		const without = makeWorld();
+		without.acts['3'] = 'ask';
+		const { statusNote: _gone, ...older } = without.tracker;
+		await buildFeature({ ...deps(without), tracker: older }, setup(without), '1');
+
+		expect(without.tracker.note('1')).toBeUndefined();
+		for (const id of ['1', '2', '3']) {
+			expect(all(without, id)).toEqual(withNote.tracker.said(id));
+		}
+	});
+
+	it('goes on building when the note cannot be written', async () => {
+		const world = makeWorld();
+		const said: string[] = [];
+		const { statusNote: _works, ...rest } = world.tracker;
+		const tracker = {
+			...rest,
+			statusNote: () => Promise.reject(new Error('the Tracker is down'))
+		};
+		const say = (line: string) => {
+			said.push(line);
+		};
+		const got = await buildFeature({ ...deps(world), tracker, say }, setup(world), '1');
+		expect(got.kind).toBe('pull');
+		const failed = said.filter((l) => l.includes('could not write its Status note'));
+		expect(failed).toEqual([
+			'#1: could not write its Status note: the Tracker is down',
+			'#1: could not write its Status note: the Tracker is down'
+		]);
+		expect(world.tracker.note('1')).toBeUndefined();
+	});
+});

@@ -15,7 +15,13 @@ import type {
 	TicketReference,
 	Tracker
 } from '../tracker.js';
-import { sourcedFrom, waitingFrom, type SourcedFeature, type WaitingFeature } from '../tracker.js';
+import {
+	sourcedFrom,
+	statusNoteOf,
+	waitingFrom,
+	type SourcedFeature,
+	type WaitingFeature
+} from '../tracker.js';
 import { markerSearch } from '../template.js';
 import { AzureDevOpsFailure, type AzureDevOpsApi } from './api.js';
 import { plainText } from './text.js';
@@ -61,6 +67,8 @@ const WiqlSchema = z.looseObject({ workItems: z.array(z.looseObject({ id: z.int(
 const CommentsSchema = z.looseObject({
 	comments: z.array(
 		z.looseObject({
+			// the comment's id within its work item
+			id: z.int().nullish(),
 			text: z.string().nullish(),
 			format: z.string().nullish(),
 			createdBy: IdentityRefSchema.nullish(),
@@ -407,6 +415,45 @@ export class AzureBoardsTracker implements Tracker, FeatureWriter {
 			method: 'POST',
 			url: this.api.at(
 				`${this.project}/_apis/wit/workItems/${n}/comments?format=markdown&${COMMENTS_API}`
+			),
+			body: { text: body }
+		});
+	}
+
+	// The note is found among the first page of comments, as `comments` reads them, by the signed-in person's identity id; an edit goes through the comment update call.
+	async statusNote(id: ItemId, body: string): Promise<void> {
+		const n = String(workItem(id));
+		const got = await this.api.parse(
+			`read the comments on work item ${n}`,
+			{
+				method: 'GET',
+				url: this.api.at(
+					`${this.project}/_apis/wit/workItems/${n}/comments?$top=${String(COMMENTS_PAGE)}&order=asc&${COMMENTS_API}`
+				)
+			},
+			CommentsSchema
+		);
+		const me = await this.trust.me();
+		const found = statusNoteOf(
+			// a comment Azure DevOps gives no id cannot be edited, so it is no note
+			got.comments.flatMap((c) =>
+				typeof c.id === 'number'
+					? [
+							{
+								id: c.id,
+								author: c.createdBy?.id === me.id ? me.name : '',
+								body: plainText(c.text ?? '', c.format)
+							}
+						]
+					: []
+			),
+			me.name
+		);
+		if (found === undefined) return this.comment(id, body);
+		await this.api.call(`edit the Status note on work item ${n}`, {
+			method: 'PATCH',
+			url: this.api.at(
+				`${this.project}/_apis/wit/workItems/${n}/comments/${String(found.id)}?format=markdown&${COMMENTS_API}`
 			),
 			body: { text: body }
 		});

@@ -122,6 +122,19 @@ To let `nightjar ui` show a person's Shelf, the open Features assigned to them t
 
 Its suite tells which Feature changed last by adding a Signal and taking it off again, one Feature after another, so `updated` must move on with every change to an item, its Signals included.
 
+To let Nightjar keep one Status note on each Feature ([ADR 0012](adr/0012-one-status-note-per-feature-edited-in-place.md)), the comment it rewrites as the build goes on, give the Tracker one more optional method. A Tracker without it builds as before: it gets no note, and the comments that tell a person they are needed stay as they were.
+
+```js
+		// writes the Feature's Status note: `body` opens with the hidden marker
+		// `<!-- nightjar:status -->` (STATUS_MARKER, exported from @nonameolsson/nightjar) and ends
+		// with the footer. The first call comments as the signed-in person; each later one edits that
+		// same comment in place, so it keeps its place and when it was made, and notifies no one. Find
+		// the note as the first comment by the signed-in person whose body opens with the marker
+		// (statusNoteOf does this over `comments`); never touch a comment anyone else wrote, even one
+		// that opens with the marker. Keep the body as it is, as `comment` does.
+		statusNote: todo('statusNote'),
+```
+
 A Code host module is the same, exporting `createCodeHost` and returning `push`, `openPull`, `createDraft`, `editBody`, `placeReferences` and `comment`.
 
 To let Nightjar fix the failed Pull checks of its own draft pull requests (`pullChecks.enabled` in `factory.json`), give the Code host one more optional method. A Code host without it builds as before, and gets no Pull-check pass.
@@ -266,7 +279,7 @@ Then run, from the repo:
 nightjar contract ./tools/my-tracker.contract.js
 ```
 
-The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`, the `assign` suite (`assignContract`, which checks `trusts` too when it is there) when it has `assign`, the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`, the `shelf` suite (`shelfContract`) when it has `shelf`, the `nightjarDrafts` suite (`nightjarDraftsContract`) when the harness's Code host has `nightjarDrafts`, the feedback suite (`feedbackContract`) when it has `feedback` and `reply`, the `openPulls` suite (`openPullsContract`) when it has `openPulls`, the `publish` suite (`publishContract`) when it has `publish`, and the `botPulls` suite (`botPullsContract`) when it has `botPulls`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
+The module may export `trackerHarness`, `codeHostHarness` or both; the suite of each runs, and the creation suite (`featureWriterContract`) too when the harness's Tracker has the `FeatureWriter` methods, the `waitingOn` suite (`waitingOnContract`) when it has `waitingOn`, the `featuresFrom` suite (`sourcesContract`) when it has `featuresFrom`, the `assign` suite (`assignContract`, which checks `trusts` too when it is there) when it has `assign`, the `ticketCounts` suite (`ticketCountsContract`) when it has `ticketCounts`, the `shelf` suite (`shelfContract`) when it has `shelf`, the `statusNote` suite (`statusNoteContract`) when it has `statusNote`, the `nightjarDrafts` suite (`nightjarDraftsContract`) when the harness's Code host has `nightjarDrafts`, the feedback suite (`feedbackContract`) when it has `feedback` and `reply`, the `openPulls` suite (`openPullsContract`) when it has `openPulls`, the `publish` suite (`publishContract`) when it has `publish`, and the `botPulls` suite (`botPullsContract`) when it has `botPulls`. The creation suite makes Features and Tickets on an empty world and reads them back through the Tracker's own methods. The command needs no test runner. It prints each behaviour and, for a failing one, why. Run over the minimal module above, whose methods are not written yet:
 
 ```
 Tracker contract
@@ -279,6 +292,6 @@ Tracker contract
 12 of 12 behaviours fail.
 ```
 
-Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract`, `assignContract`, `ticketCountsContract`, `shelfContract`, `codeHostContract`, `nightjarDraftsContract`, `feedbackContract`, `openPullsContract`, `publishContract` and `botPullsContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
+Exit code 0 means every behaviour holds, 1 that at least one fails, 2 that the module could not be checked (it cannot be loaded, or exports no harness). The same list is available to your own test runner, as `trackerContract`, `featureWriterContract`, `waitingOnContract`, `sourcesContract`, `assignContract`, `ticketCountsContract`, `shelfContract`, `statusNoteContract`, `codeHostContract`, `nightjarDraftsContract`, `feedbackContract`, `openPullsContract`, `publishContract` and `botPullsContract` from `@nonameolsson/nightjar`: each case has a `name` and a `run(harness)`.
 
 Check an Adapter before its first build, and again whenever you change it.

@@ -39,6 +39,7 @@ import {
 import type { Serve } from './serve.js';
 import { NOTES_FOLDER } from './settings.js';
 import {
+	draftStep,
 	featureAfterRunStep,
 	featureStopStep,
 	feedbackStep,
@@ -61,7 +62,15 @@ import { reviewSection, type ReviewSession } from './review-section.js';
 import type { Entry, LogEntry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
-import type { Comment, Feature, ItemId, Ticket, Tracker } from './tracker.js';
+import { statusNoteText, type StatusNote } from './status-note.js';
+import {
+	isStatusNote,
+	type Comment,
+	type Feature,
+	type ItemId,
+	type Ticket,
+	type Tracker
+} from './tracker.js';
 import {
 	SESSION_TRAILER,
 	TRAILER_PREFIX,
@@ -320,6 +329,18 @@ export async function buildFeature(
 	const built = await tree.built();
 	// the Tickets are planned once the branch says which are built
 	deps.status.doing(settingUp(progress(tickets, built, null)));
+	await writeStatusNote(deps, feature, {
+		state: 'building',
+		sentence:
+			started === undefined
+				? 'Nightjar picked this Feature up and is building it.'
+				: 'Nightjar is building this Feature again, for a request for changes on its pull request.',
+		tickets: noteTickets(feature, tickets, built),
+		pull: null,
+		next: null,
+		earlier: [],
+		session: null
+	});
 	if (setup.setupCommand !== undefined && !(await tree.isSetUp())) {
 		const command = setup.setupCommand;
 		deps.say(`${hash(id)}: setup: ${command}`);
@@ -361,6 +382,29 @@ async function needsInfoStop(
 	await deps.tracker.comment(id, withNext(comment, next));
 	return { kind: 'nothing', waiting: left };
 }
+
+// The Feature's Status note, on a Tracker that keeps one; a Tracker without `statusNote` gets no word of a quiet update, as before it. A note that cannot be written is said, and the build goes on: it notifies no one, so nothing waits on it.
+async function writeStatusNote(
+	deps: Deps,
+	feature: Feature,
+	note: Omit<StatusNote, 'logbook'> & { readonly session: string | null }
+): Promise<void> {
+	const { tracker } = deps;
+	if (tracker.statusNote === undefined) return;
+	const { session, ...rest } = note;
+	try {
+		await tracker.statusNote(
+			feature.id,
+			statusNoteText({ ...rest, logbook: { feature: feature.id, session } })
+		);
+	} catch (fault) {
+		deps.say(`${hash(feature.id)}: could not write its Status note: ${why(fault)}`);
+	}
+}
+
+// A Lone issue is its own Ticket, so its note lists none.
+const noteTickets = (feature: Feature, tickets: readonly Ticket[], built: ReadonlySet<ItemId>) =>
+	feature.lone === true ? [] : progress(tickets, built, null);
 
 // The Signal calls on a Feature and its Tickets, each written to the Feature's Logbook once the Tracker has it; with `ticket`, the Signal is that Ticket's.
 interface FeatureSignals {
@@ -415,6 +459,8 @@ class FeatureRun {
 	// when the Feature's build began, and when the session now running did
 	private readonly startedAt: Date;
 	private sessionStartedAt: Date;
+	// the Session the run was last in, which the Status note's Logbook line names
+	private session: string | null = null;
 	// the Tickets handed back in a row with a lasting failure, and why; any other end of a Ticket clears it
 	// the reason the Ticket just built failed for, when its failure is lasting
 	private lastFailure: string | null = null;
@@ -588,8 +634,10 @@ class FeatureRun {
 		return this.deps.spend.dayOver(this.deps.now(), this.setup.limits.dailyUsd);
 	}
 
+	// the Status note is Nightjar's own summary, so it never reaches the Coding agent
 	private async trusted(id: ItemId): Promise<Comment[]> {
-		return (await this.deps.tracker.comments(id)).filter((c) => c.trusted);
+		const comments = await this.deps.tracker.comments(id);
+		return comments.filter((c) => c.trusted && !isStatusNote(c.body));
 	}
 
 	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
@@ -886,6 +934,7 @@ class FeatureRun {
 		attempt = 1
 	) {
 		this.sessionStartedAt = this.deps.now();
+		this.session = session;
 		this.shown = this.show({
 			ticket,
 			step,
@@ -1017,6 +1066,8 @@ class FeatureRun {
 				total: this.tickets.length
 			}
 		});
+		// whether a comment hands the Feature to a person, with its own Next step
+		let handed = true;
 		if (!paused && (left.length > 0 || red || repeated !== '')) {
 			const waits = `${String(left.length)} Ticket${left.length === 1 ? '' : 's'} wait`;
 			const next = featureAfterRunStep(this.setup.signals, {
@@ -1043,7 +1094,22 @@ class FeatureRun {
 			await this.handReview(pull, open, review);
 		} else if (complete && this.workflow?.workflow.output === 'note') {
 			await this.handNote(pull);
-		}
+		} else handed = false;
+		const lone = this.feature.lone === true;
+		const total = this.tickets.length;
+		const builtHere = this.tickets.filter((t) => this.built.has(t.id)).length;
+		const of = `${String(builtHere)} of ${String(total)} Ticket${total === 1 ? '' : 's'}`;
+		await writeStatusNote(this.deps, this.feature, {
+			state: 'pull',
+			sentence: lone
+				? 'Nightjar built this issue into a draft pull request.'
+				: `Nightjar built ${of} into a draft pull request.`,
+			tickets: noteTickets(this.feature, this.tickets, this.built),
+			pull: { url: pull.url },
+			next: handed || paused !== null ? null : draftStep(pull.url),
+			earlier: [],
+			session: this.session
+		});
 		return {
 			kind: 'pull',
 			pull,

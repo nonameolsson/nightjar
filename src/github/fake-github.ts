@@ -449,6 +449,8 @@ export class FakeGitHub {
 		if (method === 'GET' && asked) {
 			return ok({ permission: this.permissions.get(decodeURIComponent(asked[1] ?? '')) ?? 'none' });
 		}
+		const edited = new RegExp(`^${repo}/issues/comments/(\\d+)$`).exec(path);
+		if (method === 'PATCH' && edited !== null) return this.editComment(Number(edited[1]), call);
 		const feedback = this.feedbackRoute(call);
 		if (feedback !== undefined) return feedback;
 		const issue = this.issueAt(path, repo);
@@ -695,6 +697,25 @@ export class FakeGitHub {
 		const labels = issue.labels.filter((l) => l !== name);
 		this.change(issue.number, () => ({ labels }));
 		return ok(labels.map((l) => ({ name: l })));
+	}
+
+	// GitHub lets the signed-in person edit their own comment, which keeps when it was made.
+	private editComment(id: number, call: GhCall): Run {
+		const body = call.fields.body;
+		if (typeof body !== 'string') return INVALID('body is missing');
+		for (const [number, listed] of this.comments) {
+			const at = listed.findIndex((c) => c.id === id);
+			const found = listed[at];
+			if (found === undefined) continue;
+			if (found.login !== this.person) {
+				return failed('gh: Resource not accessible by integration (HTTP 403)');
+			}
+			const changed = { ...found, body };
+			this.comments.set(number, listed.with(at, changed));
+			this.touch(number);
+			return ok(this.renderComment(changed, number));
+		}
+		return NOT_FOUND;
 	}
 
 	// The issue a path such as repos/o/r/issues/7/comments names.

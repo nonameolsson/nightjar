@@ -65,6 +65,11 @@ export function featureAfterRunStep(
 	return [...todo, featureGo(n), 'Nightjar goes on from the branch.'];
 }
 
+// A draft pull request that asks nothing more of Nightjar: it is the person's to review.
+export const draftStep = (url: string): NextStep => [
+	`Review the draft pull request ${url}. When it is right, mark it ready for review and merge it.`
+];
+
 // A Feature whose Workflow has `output: "note"` ends with the note in a draft pull request, for a person to read and act on.
 export const noteStep = (url: string): NextStep => [
 	`Read the note in ${url}.`,
