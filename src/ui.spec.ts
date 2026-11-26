@@ -13,9 +13,9 @@ import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { StatusFile } from './status.js';
 import { statusNoteText } from './status-note.js';
 import { readFactory } from './status-reader.js';
-import { logbookPage, logbookSection, sessionPage, startUi, type Ui } from './ui.js';
+import { logbookPage, logbookSection, renderPanels, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
-import { THEMES, type Theme } from './ui-theme.js';
+import { PAPER_STYLE, THEMES, type Theme } from './ui-theme.js';
 import {
 	detailFrom,
 	listsFrom,
@@ -1655,6 +1655,15 @@ describe('nightjar ui Table', () => {
 		});
 		const sorts = ['id', 'title', 'state', 'time', 'cost', 'outcome'].map((k) => item('sort', k));
 		const chips = ['queue', 'building', 'waiting', 'completed'].map((k) => item('chip', k));
+		let focused: string | null = null;
+		const picks = ['any', 'completed', 'failed', 'waiting'].map((k) => ({
+			...item('pick', k),
+			focus: () => {
+				focused = k;
+			}
+		}));
+		// the line under the filters that says how many rows show
+		const shown = { textContent: '' };
 		let message: ((e: { data: string }) => void) | undefined;
 		const code = html.split('<script>')[1]?.split('</script>')[0] ?? '';
 		const withRows = rows.map((r) => Object.assign(r, { parentNode: body }));
@@ -1662,6 +1671,9 @@ describe('nightjar ui Table', () => {
 			rows: () => body.list,
 			sorts,
 			chips,
+			picks,
+			shown,
+			focused: () => focused,
 			panels,
 			load: () => {
 				runInNewContext(code, {
@@ -1675,7 +1687,11 @@ describe('nightjar ui Table', () => {
 									? sorts
 									: sel === 'button[data-chip]'
 										? chips
-										: []
+										: sel === 'button[data-pick]'
+											? picks
+											: sel === '[data-shown]'
+												? [shown]
+												: []
 					},
 					localStorage: {
 						getItem: (k: string) => store[k] ?? null,
@@ -1691,7 +1707,7 @@ describe('nightjar ui Table', () => {
 					setInterval: () => 0
 				});
 			},
-			click: (item: { dataset: Record<string, string> }, attr: 'sort' | 'chip') =>
+			click: (item: { dataset: Record<string, string> }, attr: 'sort' | 'chip' | 'pick' | 'goto') =>
 				panels.onclick?.({
 					target: { closest: (sel: string) => (sel === `[data-${attr}]` ? item : null) }
 				}),
@@ -1733,6 +1749,207 @@ describe('nightjar ui Table', () => {
 		expect(order(again).slice(0, 2)).toEqual(['31', '32']);
 		expect(again.rows().filter((r) => r.hidden)).toHaveLength(3);
 		expect(again.chips.map((c) => c.dataset['on'])).toEqual(['false', 'false', 'false', 'true']);
+	});
+
+	it('offers the outcomes as a labelled group of buttons beside the state chips', async () => {
+		seed();
+		await open();
+		const table = await tableHtml();
+		const after = table.split('<div class="chips" role="group" aria-label="Outcome">')[1] ?? '';
+		const group = after.split('</div>')[0] ?? '';
+		const buttons = [...group.matchAll(/data-pick="(\w+)">([^<]*)</g)];
+		expect(buttons.map((m) => `${m[1] ?? ''}:${m[2] ?? ''}`)).toEqual([
+			'any:Any',
+			'completed:Completed',
+			'failed:Failed',
+			'waiting:Needs a person'
+		]);
+		expect(group).toContain('class="chips-label">Outcome</span>');
+		// they are buttons, so a keyboard reaches and presses them
+		expect(group).not.toContain('<a ');
+	});
+
+	it('filters by outcome, says how many rows show, and keeps the filter over a refresh and a reload', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		const store: Record<string, string> = {};
+		const s = sandbox(page, store);
+		s.load();
+		const visible = (x: ReturnType<typeof sandbox>) => x.rows().filter((r) => !r.hidden);
+		const ids = (x: ReturnType<typeof sandbox>) => visible(x).map((r) => r.dataset['id']);
+		const pick = (i: number) => s.picks[i] as (typeof s.picks)[number];
+		const [any, done, failed, waiting] = [pick(0), pick(1), pick(2), pick(3)];
+		expect(ids(s)).toEqual(['9', '10', '3', '32', '31']);
+		expect(s.shown.textContent).toBe('');
+		expect(s.picks.map((p) => p.dataset['on'])).toEqual(['true', 'false', 'false', 'false']);
+
+		s.click(failed, 'pick');
+		expect(ids(s)).toEqual(['32']);
+		expect(s.shown.textContent).toBe('Showing 1 of 5 Features');
+		expect(s.picks.map((p) => p.dataset['on'])).toEqual(['false', 'false', 'true', 'false']);
+		// a Feature that failed is not a completed one
+		s.click(done, 'pick');
+		expect(ids(s)).toEqual(['31']);
+		s.click(waiting, 'pick');
+		expect(ids(s)).toEqual(['3']);
+		s.click(any, 'pick');
+		expect(ids(s)).toEqual(['9', '10', '3', '32', '31']);
+		expect(s.shown.textContent).toBe('');
+
+		// it works with the state chips and the sort
+		s.click(failed, 'pick');
+		s.click(s.chips[3] as (typeof s.chips)[number], 'chip');
+		expect(ids(s)).toEqual(['32']);
+		s.click(s.chips[3] as (typeof s.chips)[number], 'chip');
+		s.click(s.sorts[0] as (typeof s.sorts)[number], 'sort');
+		expect(ids(s)).toEqual(['32']);
+
+		// a live refresh keeps it
+		s.refresh();
+		expect(ids(s)).toEqual(['32']);
+
+		// a reload reads it back from local storage
+		const again = sandbox(page, store);
+		again.load();
+		expect(ids(again)).toEqual(['32']);
+		expect(again.picks.map((p) => p.dataset['on'])).toEqual(['false', 'false', 'true', 'false']);
+	});
+
+	it('ignores a stored outcome it does not know, and one stored by an older page', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		for (const kept of [
+			{ states: [], outcome: 'bogus' },
+			{ states: [], sort: 'id' }
+		]) {
+			const s = sandbox(page, { 'nightjar-table': JSON.stringify(kept) });
+			s.load();
+			expect(s.rows().filter((r) => r.hidden)).toHaveLength(0);
+			expect(s.picks.map((p) => p.dataset['on'])).toEqual(['true', 'false', 'false', 'false']);
+		}
+	});
+
+	it('takes a count on the Overview to the Table filtered to it, and focuses the filter', async () => {
+		seed();
+		await open();
+		const page = (await get('/')).text;
+		const store: Record<string, string> = { 'nightjar-view': 'overview' };
+		const s = sandbox(page, store);
+		s.load();
+		s.click({ dataset: { goto: 'failed' } }, 'goto');
+		expect(s.panels.dataset['view']).toBe('table');
+		expect(store['nightjar-view']).toBe('table');
+		expect(JSON.parse(store['nightjar-table'] ?? '{}')).toMatchObject({ outcome: 'failed' });
+		const shown = s.rows().filter((r) => !r.hidden);
+		expect(shown.map((r) => r.dataset['id'])).toEqual(['32']);
+		expect(s.focused()).toBe('failed');
+	});
+});
+
+describe('nightjar ui last seven days', () => {
+	// `at` is Fri 30 Oct 2026, 09:00 local: the week runs from Sat 24 Oct 00:00
+	const day = (d: number, hour = 12) => new Date(2026, 9, d, hour, 0);
+	const statusAt = (when: Date) =>
+		new StatusFile({
+			path: join(root, '.factory', 'status.json'),
+			spend: fileSpend(ledgerFile()),
+			now: () => when,
+			pid: 42,
+			dailyUsd: 8
+		});
+	const spent = (when: Date, costUsd: number, feature = '1') =>
+		record(ledgerFile(), {
+			at: when.toISOString(),
+			repo: 'o/r',
+			feature,
+			ticket: '2',
+			branch: 'b',
+			step: 'build',
+			session: 's',
+			costUsd,
+			outcome: 'built'
+		});
+	const panels = () => renderPanels(root, readFactory(root, { alive: () => true, now: () => at }));
+	const weekOf = () => panels().split('<section id="week">')[1]?.split('</section>')[0] ?? '';
+
+	it('opens the Overview with the four counts of the week, leaving out the lines outside it', () => {
+		// the evening before the week, and a Session of each day in it
+		spent(day(23, 23), 100);
+		spent(day(24, 0), 1);
+		spent(day(25), 2);
+		spent(day(30, 8), 4.5);
+		statusAt(day(20)).happened({ kind: 'pull', feature: '33', url: 'https://x.test/33' });
+		statusAt(day(25)).happened({ kind: 'pull', feature: '31', url: 'https://x.test/31' });
+		statusAt(day(28)).happened({ kind: 'failed', feature: '32', why: 'check red' });
+		statusAt(day(29)).happened({
+			kind: 'needs-info',
+			feature: '40',
+			ticket: '41',
+			why: 'needs info'
+		});
+		statusAt(at).doing({ kind: 'idle', nextPollAt: at.toISOString() });
+
+		const overview = panels().split('<div class="overview">')[1] ?? '';
+		// it comes first, before the Current build
+		expect(overview.startsWith('<section id="week"><h2>Last seven days</h2>')).toBe(true);
+		const week = weekOf();
+		expect(week).toContain('<b>1</b> Feature completed');
+		expect(week).toContain('<b>1</b> Feature failed');
+		// the failed Feature was handed back too, and counts as failed alone
+		expect(week).toContain('<b>1</b> Feature handed to a person');
+		expect(week).toContain('<li><b>$7.50</b> spent</li>');
+	});
+
+	it('links each count of Features to the Table, and the dollars to nothing', () => {
+		const week = weekOf();
+		for (const pick of ['completed', 'failed', 'waiting'])
+			expect(week).toMatch(new RegExp(`<a class="count" href="#panels" data-goto="${pick}">`));
+		expect(week.match(/<a /g)).toHaveLength(3);
+		// each link says what the Table will show, which is not the week's alone
+		expect(week).toContain('<span class="sr">, show every completed Feature in the Table</span>');
+		expect(week).toContain('<span class="sr">, show every failed Feature in the Table</span>');
+		expect(week).toContain(
+			'<span class="sr">, show the Features that need a person now in the Table</span>'
+		);
+		expect(week).toContain(
+			'which shows every Feature the Table holds with that outcome, of any day'
+		);
+		// words carry the meaning, not a colour
+		expect(week).toContain('Features completed');
+		expect(week).toContain('Features failed');
+	});
+
+	it('shows zeros, not an error, for a repo with no ledger and no status', () => {
+		const week = weekOf();
+		expect(week).toContain('<b>0</b> Features completed');
+		expect(week).toContain('<b>0</b> Features failed');
+		expect(week).toContain('<b>0</b> Features handed to a person');
+		expect(week).toContain('<li><b>$0.00</b> spent</li>');
+	});
+
+	it('counts an old ledger line with no models, and skips a ledger line that does not parse', () => {
+		mkdirSync(join(root, '.factory'), { recursive: true });
+		writeFileSync(ledgerFile(), 'not json\n');
+		spent(day(29), 3);
+		expect(weekOf()).toContain('<li><b>$3.00</b> spent</li>');
+	});
+
+	it('draws the week in a hand-made view that has none as zeros', () => {
+		const { week: _week, ...view } = readFactory(root, { alive: () => true, now: () => at });
+		expect(renderPanels(root, view)).toContain('<li><b>$0.00</b> spent</li>');
+	});
+
+	it('has a style for the counts and the filter in both themes, and keeps their targets large on a phone', async () => {
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*a\.count[^}]*min-height: 44px/);
+		expect(PAPER_STYLE).toMatch(/@media \(pointer: coarse\) \{[^}]*a\.count[^}]*min-height: 44px/);
+		for (const style of [page, PAPER_STYLE]) {
+			expect(style).toContain('.week {');
+			expect(style).toContain('.filters {');
+		}
 	});
 });
 
@@ -2764,4 +2981,323 @@ describe('nightjar ui Logbook page', () => {
 		expect(page).toContain('<ol class="book" aria-label="Logbook">');
 		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*\.book summary[^}]*min-height: 44px/);
 	});
+});
+
+describe('nightjar ui cost by stage and model', () => {
+	const models = [
+		{
+			model: 'model-a',
+			inputTokens: 1200,
+			outputTokens: 40,
+			cacheReadTokens: 2_500_000,
+			cacheWriteTokens: 300,
+			costUsd: 2.5
+		}
+	];
+	const line = (
+		feature: string,
+		step: 'build' | 'fix' | 'review',
+		session: string,
+		costUsd: number,
+		withModels = false
+	) =>
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature,
+			ticket: step === 'review' ? null : '2',
+			branch: 'b',
+			step,
+			session,
+			costUsd,
+			outcome: 'built',
+			...(withModels ? { models } : {})
+		});
+	const panels = () => renderPanels(root, readFactory(root, { alive: () => true, now: () => at }));
+	const cardOf = (page: string, id: string) => {
+		const cards = (page.split('<div class="table">')[0] ?? '').split('<article');
+		return cards.find((a) => a.includes(`#${id}`)) ?? '';
+	};
+	const rowOf = (page: string, id: string) => {
+		const rows = (page.split('<div class="table">')[1] ?? '').split('<tr ');
+		return rows.find((r) => r.includes(`data-id="${id}"`)) ?? '';
+	};
+	const pulled = (id: string) => {
+		status().happened({ kind: 'pull', feature: id, url: `https://x.test/${id}` });
+	};
+
+	it("opens a Completed Feature's cost into its stages and its models, on its card and its row, folded", () => {
+		line('7', 'build', 'a', 3, true);
+		line('7', 'fix', 'a', 1, true);
+		line('7', 'review', 'r', 0.5, true);
+		pulled('7');
+		const page = panels();
+
+		const card = cardOf(page, '7');
+		expect(card).toContain('<details class="cost" data-key="card:7:');
+		expect(card).toContain('<summary data-fold="card:7:');
+		expect(card).toContain('>Cost by stage and model</summary>');
+		expect(card).not.toMatch(/<details[^>]* open/);
+		expect(card).toContain('<dt>Tickets</dt><dd>$4.00 <small>2 Sessions</small></dd>');
+		expect(card).toContain('<dt>Review</dt><dd>$0.50 <small>1 Session</small></dd>');
+		expect(card.indexOf('<dt>Tickets</dt>')).toBeLessThan(card.indexOf('<dt>Review</dt>'));
+		expect(card).toContain(
+			'<dt>model-a</dt><dd>$7.50 <small>tokens: 3.6k in, 120 out, 7.5M cache read, 900 cache write</small></dd>'
+		);
+		expect(card).not.toContain('Models were not recorded');
+
+		const row = rowOf(page, '7');
+		expect(row).toContain('data-cost="4.5"');
+		expect(row).toContain('<td class="cost"><details class="cost" data-key="row:7:');
+		expect(row).toContain('$4.50<span class="sr">, cost by stage and model</span></summary>');
+		expect(row).toContain('<dt>Tickets</dt><dd>$4.00');
+	});
+
+	it('shows a Feature whose ledger lines are all older its stages, and a quiet note that models were not recorded', () => {
+		line('7', 'build', 'a', 3);
+		line('7', 'review', 'r', 0.5);
+		pulled('7');
+		const card = cardOf(panels(), '7');
+		expect(card).toContain('<dt>Tickets</dt><dd>$3.00');
+		expect(card).toContain('<dt>Review</dt><dd>$0.50');
+		expect(card).toContain('<p class="empty">Models were not recorded for these Sessions.</p>');
+	});
+
+	it('says what the Sessions that recorded no model cost, beside the models', () => {
+		line('7', 'build', 'a', 3);
+		line('7', 'review', 'r', 0.5, true);
+		pulled('7');
+		const card = cardOf(panels(), '7');
+		expect(card).toContain('<dt>model-a</dt>');
+		expect(card).toContain('Models were not recorded for 1 Session, $3.00.');
+	});
+
+	it('shows the dollars alone for a build with no ledger line', () => {
+		pulled('7');
+		const page = panels();
+		expect(cardOf(page, '7')).not.toContain('<details class="cost"');
+		expect(rowOf(page, '7')).toContain('<td class="cost">$0.00</td>');
+	});
+
+	it('opens the cost of the build in flight in Building now and in its row', () => {
+		line('272', 'build', 'a', 1.18, true);
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: '2',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: null,
+			startedAt: at.toISOString()
+		});
+		const page = panels();
+		const panel = page.split('<aside class="detail"')[1]?.split('</aside>')[0] ?? '';
+		expect(panel).toContain('<details class="cost" data-key="now:272:');
+		expect(panel).toContain('>Cost by stage and model</summary>');
+		expect(panel).toContain('<dt>Tickets</dt><dd>$1.18 <small>1 Session</small></dd>');
+		expect(panel).toContain('<dt>model-a</dt>');
+		expect(rowOf(page, '272')).toContain('data-key="row:272:');
+	});
+
+	it('works by keyboard and at phone width: a fold kept open across a live swap, focus on its summary, 44px on touch', async () => {
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*\.cost summary[^}]*min-height: 44px/);
+		// at phone width a stage or model stacks its dollars under its name
+		expect(page).toContain('\t.split dl div { grid-template-columns: 1fr; }');
+		const script = page.split('<script>')[1]?.split('</script>')[0] ?? '';
+		const summary = { dataset: { fold: 'card:7:x' }, focus: vi.fn(), getAttribute: () => null };
+		const opened = { dataset: { key: 'card:7:x' }, open: true };
+		const fresh = { dataset: { key: 'card:7:x' }, open: false };
+		const other = { dataset: { key: 'row:7:x' }, open: false };
+		let swapped = false;
+		const element = {
+			dataset: {},
+			textContent: '',
+			set innerHTML(_: string) {
+				swapped = true;
+			}
+		};
+		let message: ((e: { data: string }) => void) | undefined;
+		runInNewContext(script, {
+			matchMedia: noMedia,
+			requestAnimationFrame: (f: () => void) => f(),
+			document: {
+				activeElement: summary,
+				getElementById: () => element,
+				querySelectorAll: (sel: string) => {
+					if (sel === 'details[open][data-key]') return swapped ? [] : [opened];
+					if (sel === 'details[data-key]') return swapped ? [fresh, other] : [opened];
+					if (sel === '[data-fold]') return [summary];
+					return [];
+				}
+			},
+			localStorage: { getItem: () => null, setItem: () => {} },
+			EventSource: function EventSource() {
+				return {
+					set onmessage(f: (e: { data: string }) => void) {
+						message = f;
+					}
+				};
+			},
+			setInterval: () => 0
+		});
+		message?.({ data: JSON.stringify('') });
+		expect(fresh.open).toBe(true);
+		expect(other.open).toBe(false);
+		expect(summary.focus).toHaveBeenCalledOnce();
+	});
+});
+
+describe('nightjar ui Steps bar', () => {
+	const line = (
+		feature: string,
+		step: 'build' | 'fix' | 'review' | 'reviewRound',
+		session: string,
+		outcome: string,
+		failure?: 'passing' | 'lasting'
+	) =>
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature,
+			ticket: step === 'build' || step === 'fix' ? '2' : null,
+			branch: 'b',
+			step,
+			session,
+			costUsd: 1,
+			outcome,
+			...(failure === undefined ? {} : { failure })
+		});
+	const panels = () => renderPanels(root, readFactory(root, { alive: () => true, now: () => at }));
+	const boardOf = (page: string) => page.split('<div class="table">')[0] ?? '';
+	const tableOf = (page: string) => page.split('<div class="table">')[1] ?? '';
+	const cardOf = (page: string, id: string) =>
+		boardOf(page)
+			.split('<article')
+			.find((a) => a.includes(`#${id}`)) ?? '';
+	const rowOf = (page: string, id: string) =>
+		tableOf(page)
+			.split('<tr ')
+			.find((r) => r.includes(`data-id="${id}"`)) ?? '';
+	const segment = (state: string, text: string) =>
+		`<li class="seg ${state}" title="${text}"><span class="sr">${text}</span></li>`;
+	const pulled = (id: string) =>
+		status().happened({ kind: 'pull', feature: id, url: `https://x.test/${id}` });
+
+	it('shows a hard build on its card and its row: a segment per stage, in order, each named in words and a tooltip', () => {
+		line('7', 'build', 'a', 'failed: overloaded', 'passing');
+		line('7', 'build', 'b', 'built');
+		line('7', 'fix', 'b', 'round 1');
+		line('7', 'review', 'r1', 'changes');
+		line('7', 'reviewRound', 'rr', 'fixed');
+		line('7', 'review', 'r2', 'approve');
+		pulled('7');
+		const page = panels();
+		const bar = [
+			'<ol class="stepsbar" aria-label="Steps bar of this build">',
+			segment('retried', 'Tickets: passed after a retry or a round, 3 Sessions, $3.00'),
+			segment('notNeeded', 'Steps: not needed, no Session'),
+			segment('retried', 'Review: passed after a retry or a round, 2 Sessions, $2.00'),
+			segment('passed', 'Review rounds: passed, 1 Session, $1.00'),
+			segment('notNeeded', 'Pull checks: not needed, no Session'),
+			segment('notNeeded', 'Feedback: not needed, no Session'),
+			'</ol>'
+		].join('');
+		expect(cardOf(page, '7')).toContain(`<div class="eggcell">`);
+		expect(cardOf(page, '7')).toContain(bar);
+		expect(rowOf(page, '7')).toMatch(/<td class="progress">.*<ol class="stepsbar"/);
+		expect(rowOf(page, '7')).toContain(bar);
+	});
+
+	it('shows a clean build passed first time, and a failed one failed where it failed and not reached after', () => {
+		line('7', 'build', 'a', 'built');
+		line('7', 'review', 'r', 'approve');
+		pulled('7');
+		line('8', 'build', 'c', 'failed: the check stayed red', 'lasting');
+		status().happened({ kind: 'failed', feature: '8', why: 'check red' });
+		const page = panels();
+		expect(cardOf(page, '7')).toContain(segment('passed', 'Tickets: passed, 1 Session, $1.00'));
+		expect(cardOf(page, '7')).toContain(segment('passed', 'Review: passed, 1 Session, $1.00'));
+		expect(cardOf(page, '8')).toContain(segment('failed', 'Tickets: failed, 1 Session, $1.00'));
+		expect(cardOf(page, '8')).toContain(segment('notReached', 'Review: not reached, no Session'));
+	});
+
+	it('marks the stage running now on the build in flight, and moves it as the build goes on', () => {
+		const doing = (step: 'build' | 'review') =>
+			status().doing({
+				kind: 'building',
+				feature: '272',
+				title: 'Custom views',
+				ticket: step === 'build' ? '2' : null,
+				step,
+				round: null,
+				rounds: null,
+				session: null,
+				startedAt: at.toISOString()
+			});
+		doing('build');
+		let page = panels();
+		expect(cardOf(page, '272')).toContain(segment('running', 'Tickets: running, no Session'));
+		expect(rowOf(page, '272')).toContain(segment('running', 'Tickets: running, no Session'));
+
+		line('272', 'build', 'a', 'built');
+		doing('review');
+		page = panels();
+		expect(cardOf(page, '272')).toContain(segment('passed', 'Tickets: passed, 1 Session, $1.00'));
+		expect(cardOf(page, '272')).toContain(segment('running', 'Review: running, no Session'));
+		expect(cardOf(page, '272')).toContain(
+			segment('notReached', 'Review rounds: not reached, no Session')
+		);
+	});
+
+	it('shows no Steps bar for a Feature with no Session in its build', () => {
+		pulled('7');
+		const page = panels();
+		expect(cardOf(page, '7')).not.toContain('stepsbar');
+		expect(rowOf(page, '7')).not.toContain('stepsbar');
+	});
+
+	it('sets a legend of every state once above the Table, and once on the Board', () => {
+		line('7', 'build', 'a', 'built');
+		pulled('7');
+		const page = panels();
+		const legend =
+			'<p class="legend stepslegend"><span>Steps bar, one segment per stage:</span>' +
+			'<span><i class="seg passed"></i>passed</span>' +
+			'<span><i class="seg retried"></i>passed after a retry or a round</span>' +
+			'<span><i class="seg failed"></i>failed</span>' +
+			'<span><i class="seg running"></i>running</span>' +
+			'<span><i class="seg notReached"></i>not reached</span>' +
+			'<span><i class="seg notNeeded"></i>not needed</span></p>';
+		expect(tableOf(page).startsWith(`${legend}<div class="filters">`)).toBe(true);
+		expect(tableOf(page).split(legend)).toHaveLength(2);
+		expect(boardOf(page).split(legend)).toHaveLength(2);
+	});
+
+	it.each(THEMES)(
+		'draws each state from tokens, each with its own shape as well as its hue (%s)',
+		(theme) => {
+			const style =
+				theme === 'paper'
+					? PAPER_STYLE
+					: (logbookPage(readLogbook(root, '7'), readFactory(root, { alive: () => true }))
+							.split('<style>')[1]
+							?.split('</style>')[0] ?? '');
+			const rules = ['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'].map(
+				(s) => style.split('\n').find((l) => l.startsWith(`.seg.${s} {`)) ?? ''
+			);
+			for (const r of rules) {
+				expect(r).toMatch(/var\(--/);
+				expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|rgba\(/i);
+			}
+			// the form differs, not the colour alone: solid, hatched, broken, half-filled, dashed, a thin line
+			const forms = rules.map((r) => r.replace(/var\(--[a-z0-9-]+\)/g, 'C'));
+			expect(new Set(forms).size).toBe(rules.length);
+			expect(rules[1]).toContain('repeating-linear-gradient');
+			expect(rules[4]).toContain('dashed');
+		}
+	);
 });

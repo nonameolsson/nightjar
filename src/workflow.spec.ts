@@ -465,7 +465,8 @@ describe('the Steps of a Workflow', () => {
 				cap: 15,
 				spent: 1,
 				check: { ok: false, tail: 'lint: 1 problem' },
-				of: { kind: 'step', step: critique, extras }
+				of: { kind: 'step', step: critique, extras },
+				stepRound: { name: 'w/critique', round: 1 }
 			}
 		]);
 		expect(b.commits[0]?.summary).toBe('did it\n\nfixed the lint');

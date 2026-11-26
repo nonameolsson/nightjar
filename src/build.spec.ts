@@ -58,7 +58,7 @@ import {
 import { untilText } from './status-note.js';
 import { QUESTIONS_MARK, type Review } from './prompt.js';
 import { markPublished, publishMarkOf, publishedByNightjar } from './publish.js';
-import type { Spend } from './spend.js';
+import type { ModelUsage, Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
@@ -142,6 +142,8 @@ interface World {
 	tests: Record<string, string>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
+	// what every Session reports of the models it ran on, when set
+	models: readonly ModelUsage[] | undefined;
 	checkOk: boolean;
 	setupOk: boolean;
 	// the Sessions this machine has not got, as a Session made on another machine is
@@ -312,6 +314,7 @@ function worldOf(o: {
 		tries: {},
 		tests: {},
 		settle: () => undefined,
+		models: undefined,
 		checkOk: true,
 		setupOk: true,
 		goneSessions: new Set(),
@@ -327,7 +330,10 @@ function deps(world: World): Deps {
 	let id = 0;
 	const answer = <T>(req: Work, got: () => T): Promise<T | Ending> => {
 		world.asked.push(req);
-		return Promise.resolve(world.settle(req) ?? got());
+		const outcome = world.settle(req) ?? got();
+		return Promise.resolve(
+			world.models === undefined ? outcome : { ...outcome, models: world.models }
+		);
 	};
 	return {
 		tracker: world.tracker,
@@ -613,6 +619,53 @@ describe('reserved ports', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.checkEnvs.length).toBeGreaterThan(0);
 		for (const e of world.checkEnvs) expect(e).toEqual(world.env);
+	});
+});
+
+describe('the ledger and the models', () => {
+	const models: readonly ModelUsage[] = [
+		{
+			model: 'model-a',
+			inputTokens: 120,
+			outputTokens: 40,
+			cacheReadTokens: 900,
+			cacheWriteTokens: 300,
+			costUsd: 0.4
+		}
+	];
+
+	it('gives every line the models its Session ran on: build, fix and Review', async () => {
+		const world = makeWorld();
+		world.models = models;
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+		const lines = ledger(world);
+		expect(new Set(lines.map((e) => e.step))).toEqual(new Set(['build', 'fix', 'review']));
+		for (const line of lines) expect(line.models).toEqual(models);
+	});
+
+	it('gives every line the models its Session ran on: Step and Review round', async () => {
+		const world = makeWorld();
+		world.models = models;
+		world.reviewAgent = (req) => reviewed(req, 'changes');
+		const feature = world.tracker.items.get('1');
+		if (feature) world.tracker.items.set('1', { ...feature, body: '**Workflow:** w' });
+		const flow: WorkflowConfig = {
+			steps: [{ name: 'critique', prompt: '/critique', point: 'afterAllTickets' }]
+		};
+		await buildFeature(deps(world), setup(world, { workflows: { w: flow } }), '1');
+		const lines = ledger(world);
+		expect(new Set(lines.map((e) => e.step))).toEqual(
+			new Set(['build', 'step', 'review', 'reviewRound'])
+		);
+		for (const line of lines) expect(line.models).toEqual(models);
+	});
+
+	it('writes no models for a Session that reported none', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(ledger(world).length).toBeGreaterThan(0);
+		for (const line of ledger(world)) expect(line).not.toHaveProperty('models');
 	});
 });
 
@@ -2140,10 +2193,113 @@ describe('the cost split in the pull request', () => {
 				'',
 				'- #2 Share the function: build $3.00, Steps $2.00',
 				'- #3 Use it in marks: build $3.00, Steps $1.00',
-				'- Steps after all Tickets: $2.00',
+				'- w/critique: $2.00',
 				'- Review: $0.50'
 			].join('\n')
 		);
+	});
+
+	it('gives each Step after all Tickets a line of its own, with its rounds and their fix rounds', async () => {
+		const world = makeWorld();
+		const polish = {
+			name: 'polish',
+			prompt: 'polish it',
+			point: 'afterAllTickets',
+			until: 'it shines',
+			maxRounds: 3
+		} as const;
+		const critique = { name: 'critique', prompt: 'look', point: 'afterAllTickets' } as const;
+		feature(world, '**Workflow:** ui');
+		// polish holds after its third round; its second breaks the check, which a fix round puts right
+		world.stepAgent = (req) => {
+			if (req.step.name !== 'polish') return stepDone(req);
+			world.checkOk = req.round !== 2;
+			const costUsd = [4, 2, 2.5][req.round - 1] ?? 0;
+			return stepDone(req, { untilHolds: req.round === 3, costUsd });
+		};
+		world.fixAgent = (req) => {
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1.2 };
+		};
+		await buildFeature(
+			deps(world),
+			setup(world, { workflows: { ui: { steps: [polish, critique] } } }),
+			'1'
+		);
+
+		expect(body(world)).toContain(
+			[
+				'- #3 Use it in marks: build $3.00',
+				'- ui/polish: $9.70 (3 rounds: $4.00, $3.20, $2.50)',
+				'- ui/critique: $1.00',
+				'- Review: $0.50'
+			].join('\n')
+		);
+	});
+
+	it('lists each model with its dollars and tokens, summed over the run', async () => {
+		const world = makeWorld();
+		world.models = [
+			{
+				model: 'model-a',
+				inputTokens: 1200,
+				outputTokens: 40,
+				cacheReadTokens: 2_500_000,
+				cacheWriteTokens: 300,
+				costUsd: 1.5
+			},
+			{
+				model: 'model-b',
+				inputTokens: 10,
+				outputTokens: 5,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				costUsd: 0.25
+			}
+		];
+		await buildFeature(deps(world), setup(world), '1');
+
+		// two builds and a Review, each on both models
+		expect(body(world)).toContain(
+			[
+				'- Review: $0.50',
+				'',
+				'### By model',
+				'',
+				'- model-a: $4.50; tokens: 3.6k in, 120 out, 7.5M cache read, 900 cache write',
+				'- model-b: $0.75; tokens: 30 in, 15 out, 0 cache read, 0 cache write',
+				'',
+				'<!--'
+			].join('\n')
+		);
+	});
+
+	it('leaves the models out when no Session named them', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(body(world)).not.toContain('By model');
+	});
+
+	it('says what the Sessions that named no model cost, beside the models', async () => {
+		const world = makeWorld();
+		world.models = [
+			{
+				model: 'model-a',
+				inputTokens: 1,
+				outputTokens: 1,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				costUsd: 3
+			}
+		];
+		// the builds say which models they ran on; the Review, last, says none
+		world.reviewAgent = (req) => {
+			world.models = undefined;
+			return reviewed(req, 'approve');
+		};
+		await buildFeature(deps(world), setup(world), '1');
+		expect(body(world)).toContain('- model-a: $6.00;');
+		expect(body(world)).toContain('- models not recorded: $0.50');
 	});
 
 	it('leaves the review out when it is off', async () => {

@@ -10,7 +10,7 @@ import {
 import { DEFAULT_ROUNDS, type Config } from './config.js';
 import type { Env } from './git.js';
 import { retryPassing, TRIES } from './retry.js';
-import type { Allowance, Entry } from './spend.js';
+import { modelsOf, type Allowance, type Entry } from './spend.js';
 import type { Serve, Served } from './serve.js';
 import type { Feature, ItemId, Ticket } from './tracker.js';
 import type { Worktree } from './worktree.js';
@@ -125,6 +125,14 @@ export interface FixWork {
 	readonly of: Fixing;
 	// when the whole piece of work must stop, in epoch milliseconds; left out, only each Session's own minutes hold
 	readonly deadline?: number;
+	// the Step round the fix rounds follow, whose cost they add to; none for any other work
+	readonly stepRound?: StepRound;
+}
+
+// Which Step a ledger line is from, as `workflow/step`, and which of its rounds, for the pull request's Cost section.
+export interface StepRound {
+	readonly name: string;
+	readonly round: number;
 }
 
 // How the fix rounds ended: the last check, what the work has spent, and each round's summary.
@@ -167,7 +175,7 @@ export interface StepsRun {
 	readonly feature: Feature;
 	readonly tree: StepsTree;
 	readonly fix: (work: FixWork) => Promise<FixEnd>;
-	readonly log: (entry: StepLog) => void;
+	readonly log: (entry: StepLog, of: StepRound) => void;
 	// how a Step ended, with the Session that ran it when one did, for the Feature's Logbook
 	readonly verdict: (report: StepReport, session?: string) => void;
 	// tells the status file a Step's round has started
@@ -323,6 +331,10 @@ export class WorkflowRun {
 		for (let round = 1; round <= rounds && !(round > 1 && holds); round += 1) {
 			const { usd: budget, enough } = run.allowance(cap, spent);
 			if (round > 1 && !enough) break;
+			const stepRound: StepRound = { name: label, round };
+			const log = (entry: StepLog) => {
+				run.log(entry, stepRound);
+			};
 			// a try that fails for a passing reason starts again from what the rounds before left
 			const mark = await tree.snapshot();
 			const { outcome: got, earlierUsd } = await retryPassing<StepOutcome>({
@@ -353,11 +365,12 @@ export class WorkflowRun {
 					});
 				},
 				record: (failed) =>
-					run.log({
+					log({
 						ticket: after,
 						step: 'step',
 						session: failed.sessionId,
 						costUsd: failed.costUsd,
+						...modelsOf(failed),
 						outcome: `${label}: failed: ${failed.why}`,
 						failure: 'passing'
 					}),
@@ -373,27 +386,28 @@ export class WorkflowRun {
 				ticket: after,
 				step: 'step' as const,
 				session: sessionId,
-				costUsd: got.costUsd
+				costUsd: got.costUsd,
+				...modelsOf(got)
 			};
 			switch (got.kind) {
 				case 'aborted':
-					run.log({ ...entry, outcome: `${label}: stopped by a person` });
+					log({ ...entry, outcome: `${label}: stopped by a person` });
 					await tree.revert(before);
 					return { kind: 'aborted' };
 				case 'paused':
 					await tree.revert(before);
-					run.log({ ...entry, outcome: `${label}: paused: ${got.why}` });
+					log({ ...entry, outcome: `${label}: paused: ${got.why}` });
 					return { kind: 'paused', why: got.why };
 				case 'failed':
-					run.log({ ...entry, outcome: `${label}: failed: ${got.why}`, failure: got.failure });
+					log({ ...entry, outcome: `${label}: failed: ${got.why}`, failure: got.failure });
 					return giveUp(got.why);
 				case 'blocked':
-					run.log({ ...entry, outcome: `${label}: blocked` });
+					log({ ...entry, outcome: `${label}: blocked` });
 					return giveUp(`it reported itself blocked${got.blocker ? `: ${got.blocker}` : ''}`);
 				case 'done':
 					break;
 			}
-			run.log({ ...entry, outcome: `${label}: round ${String(round)}` });
+			log({ ...entry, outcome: `${label}: round ${String(round)}` });
 			summaries.push(got.summary);
 			const checked = await run.fix({
 				ticket: after,
@@ -402,7 +416,8 @@ export class WorkflowRun {
 				cap,
 				spent,
 				check: await run.runCheck(setup.check, tree.at.folder, envOf(setup)),
-				of: { kind: 'step', step, extras }
+				of: { kind: 'step', step, extras },
+				stepRound
 			});
 			spent = checked.spent;
 			summaries.push(...checked.summaries);
