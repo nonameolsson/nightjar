@@ -17,7 +17,8 @@ import {
 	spends,
 	type Spent
 } from './ledger.js';
-import { lastWeek, type Week } from './last-week.js';
+import { lastWeek, type Week, type WeekSource } from './last-week.js';
+import { everyLogbook } from './logbook-reader.js';
 import { renderSession } from './session-render.js';
 import { featureStart, readStatus, statusPath, type Event, type Status } from './status.js';
 
@@ -115,6 +116,23 @@ function pullOf(done: readonly Done[], line: Spent): Done | undefined {
 	);
 }
 
+// How the Features ended and who was handed what, for the week: every Logbook's draft pull requests, faults and hand-overs to a person, which each keep a week and more, besides status.json's, which keep a fault that stopped the run before its Feature's Logbook could say so.
+function weekEnds(
+	root: string,
+	done: readonly Done[],
+	handedBack: WeekSource['handedBack']
+): Pick<WeekSource, 'outcomes' | 'handedBack'> {
+	const outcomes: WeekSource['outcomes'][number][] = [...done];
+	const handed = [...handedBack];
+	for (const entries of everyLogbook(root).values())
+		for (const e of entries) {
+			if (e.kind === 'pullOpened') outcomes.push({ feature: e.feature, kind: 'pull', at: e.at });
+			if (e.kind === 'fault') outcomes.push({ feature: e.feature, kind: 'failed', at: e.at });
+			if (e.kind === 'handed') handed.push({ feature: e.feature, at: e.at });
+		}
+	return { outcomes, handedBack: handed };
+}
+
 // What a view shows, read from the repo root's .factory/ and nothing else.
 export function readFactory(root: string, options: ReadOptions = {}): FactoryView {
 	const status = readStatus(statusPath(root));
@@ -145,7 +163,7 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 				}),
 		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), now),
-		week: lastWeek({ sessions: spent, outcomes: done, handedBack: status?.handedBack ?? [] }, now),
+		week: lastWeek({ sessions: spent, ...weekEnds(root, done, status?.handedBack ?? []) }, now),
 		stopped: status !== null && !alive(status.pid),
 		tail: sessionTail(root, status, options.tail ?? TAIL_LINES),
 		completed: done.map((event, i) => {

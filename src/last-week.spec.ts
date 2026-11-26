@@ -68,6 +68,24 @@ describe('the last seven days', () => {
 		expect(week.failed).toBe(2);
 	});
 
+	it('counts a Feature by its latest run in the week, whatever order the runs come in, and a run read twice once', () => {
+		const week = lastWeek(
+			source({
+				outcomes: [
+					// the Logbook's runs, then status.json's of the same Feature
+					{ feature: '1', kind: 'failed', at: local(28).toISOString() },
+					{ feature: '1', kind: 'pull', at: local(25).toISOString() },
+					{ feature: '1', kind: 'failed', at: local(28).toISOString() },
+					{ feature: '2', kind: 'pull', at: local(26).toISOString() },
+					{ feature: '2', kind: 'pull', at: local(26).toISOString() }
+				]
+			}),
+			now
+		);
+		expect(week.completed).toBe(1);
+		expect(week.failed).toBe(1);
+	});
+
 	it('counts the Features handed to a person, a Feature and its Tickets as one', () => {
 		const week = lastWeek(
 			source({
