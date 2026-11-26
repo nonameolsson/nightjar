@@ -125,5 +125,11 @@ export function decisionText(entry: LogbookEntry, signals: SignalNames): Decisio
 			return {
 				line: `Handed to a person with \`${signals[entry.to]}\`${why(entry.why)}`
 			};
+		case 'fault': {
+			const line = `Stopped on a fault ${entry.place}${why(entry.why)}${entry.passing ? ' (a passing fault)' : ''}`;
+			return entry.stack === undefined
+				? { line }
+				: { line, more: { label: 'Stack trace', text: entry.stack } };
+		}
 	}
 }

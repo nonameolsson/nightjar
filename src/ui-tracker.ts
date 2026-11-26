@@ -8,9 +8,11 @@ import type { Env } from './git.js';
 import { loadPersonConfig } from './person-config.js';
 import { buildOrder, NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { why } from './say.js';
-import type { FeaturePull, Queued, TicketCounts, WaitingItem } from './status-shape.js';
+import { waitingOfNote } from './status-note.js';
+import type { FeaturePull, HandBack, Queued, TicketCounts, WaitingItem } from './status-shape.js';
 import {
 	SHELF_MAX,
+	statusNoteOf,
 	type Feature,
 	type ItemId,
 	type Shelf,
@@ -24,10 +26,9 @@ import { BRANCH_PREFIX, TICKET_TRAILER, trailersOf } from './worktree.js';
 export const TRACKER_EVERY_MS = 60_000;
 
 // The Tracker as the page holds it: reads only, so the page can give no Signal, assign no one and write no comment (docs/adr/0003).
-export type ReadingTracker = Pick<
-	Tracker,
-	'assignedFeatures' | 'waitingOn' | 'ticketCounts' | 'shelf'
->;
+// `comments` and `me` are read to find a Waiting on you Feature's Status note; a Tracker without either leaves the note unread.
+type Lists = Pick<Tracker, 'assignedFeatures' | 'waitingOn' | 'ticketCounts' | 'shelf'>;
+export type ReadingTracker = Lists & Partial<Pick<Tracker, 'comments' | 'me'>>;
 
 // The reads the Feature detail panel makes of one Feature, when it opens.
 export type FeatureReader = Pick<Tracker, 'feature' | 'tickets' | 'reference'>;
@@ -90,7 +91,12 @@ export async function readUpcoming(page: PageTracker, now: () => Date): Promise<
 		tracker.shelf?.(person, SHELF_MAX),
 		pullsOf(page.codeHost)
 	]);
-	const waiting = (waitingOn ?? []).map(waitingItem);
+	const found = (waitingOn ?? []).map(waitingItem);
+	const notes = await notesOf(tracker, found);
+	const waiting = found.map((w): WaitingItem => {
+		const note = notes.get(w.id);
+		return note === undefined ? w : { ...w, note };
+	});
 	const queue = features.map((f): Queued => ({ id: f.id, title: f.title }));
 	const counts = await countsOf(tracker, [...queue, ...waiting]);
 	// left out when the Tracker cannot count, as the run writes it
@@ -108,6 +114,42 @@ export async function readUpcoming(page: PageTracker, now: () => Date): Promise<
 		person,
 		at: now().toISOString()
 	};
+}
+
+// What each waiting Feature's Status note says (docs/adr/0012): a read of its comments, so the card is right after a restart or on another machine. Like the counts, a nicety: a Feature with no note in the Waiting on you state, or whose comments cannot be read, is left out.
+async function notesOf(
+	tracker: ReadingTracker,
+	items: readonly WaitingItem[]
+): Promise<Map<ItemId, HandBack>> {
+	const notes = new Map<ItemId, HandBack>();
+	const { comments, me } = tracker;
+	if (comments === undefined || me === undefined || items.length === 0) return notes;
+	let who: string;
+	try {
+		who = await me.call(tracker);
+	} catch {
+		return notes;
+	}
+	await Promise.all(
+		items.map(async (item) => {
+			try {
+				const note = statusNoteOf(await comments.call(tracker, item.id), who);
+				const waiting = note === undefined ? null : waitingOfNote(note.body, note.at);
+				if (note !== undefined && waiting !== null) {
+					notes.set(item.id, {
+						feature: item.id,
+						ticket: null,
+						why: waiting.why,
+						...(waiting.next.length === 0 ? {} : { next: waiting.next }),
+						at: note.at
+					});
+				}
+			} catch {
+				// the note is a nicety: the card falls back to status.json
+			}
+		})
+	);
+	return notes;
 }
 
 // The Ticket count of each Feature, null for one that could not be read; null in all when the Tracker cannot count.

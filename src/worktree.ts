@@ -190,6 +190,16 @@ export function trailersOf(message: string): Map<string, string> {
 	return found;
 }
 
+// The Tickets a branch's commits built, from the trailers of their messages, for a pull request's commits as the Code host lists them.
+export function builtOn(commits: readonly { readonly message: string }[]): Set<string> {
+	const built = new Set<string>();
+	for (const { message } of commits) {
+		const ticket = trailersOf(message).get(TICKET_TRAILER);
+		if (ticket?.startsWith('#') === true) built.add(ticket.slice(1));
+	}
+	return built;
+}
+
 // What a push that failed turns out to be: the remote holds the commit after all, a person pushed to the branch, or anything else.
 export type PushOutcome = 'pushed' | 'diverged' | 'fault';
 

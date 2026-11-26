@@ -10,7 +10,8 @@ import {
 import type { PullChecks } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker, type NewItem } from './fakes/tracker.js';
-import { featureStopStep, nextStepText } from './next-step.js';
+import { BuildFault } from './fault.js';
+import { faultStep, nextStepText } from './next-step.js';
 import type { Waiting } from './plan.js';
 import {
 	buildNamed,
@@ -139,7 +140,12 @@ describe('queue --once', () => {
 		w.failWith(new Error('the network went away'));
 		expect(await queue(w.deps, true)).toBe(1);
 		expect(w.tracker.signalsOf('2')).toEqual(['needsInfo']);
-		expect(w.tracker.said('2')[0]).toMatch(/^Nightjar stopped on a fault: the network went away/);
+		expect(w.tracker.said('2')[0]).toMatch(
+			/^\*\*Waiting on you\*\*: Nightjar stopped on a fault: the network went away\./
+		);
+		expect(w.tracker.note('2')).toContain(
+			'**Waiting on you**: Nightjar stopped on a fault: the network went away.'
+		);
 		expect(w.happened).toEqual([
 			{
 				kind: 'failed',
@@ -155,9 +161,31 @@ describe('queue --once', () => {
 		const w = world();
 		w.failWith(new Error('the network went away'));
 		await queue({ ...w.deps, signals: DEFAULT_SIGNAL_NAMES }, true);
-		const next = featureStopStep(DEFAULT_SIGNAL_NAMES);
+		// the network is a passing fault, so there is nothing to fix before the Go
+		const next = faultStep(DEFAULT_SIGNAL_NAMES, { passing: true, pullFix: false });
 		expect(w.tracker.said('2')[0]).toContain(nextStepText(next));
+		expect(w.tracker.note('2')).toContain(nextStepText(next));
 		expect(w.happened[0]).toMatchObject({ kind: 'failed', next });
+	});
+
+	it('names where in the build the fault happened, from the BuildFault the build throws', async () => {
+		const w = world();
+		w.failWith(
+			new BuildFault(new Error('the disk is full'), {
+				place: { kind: 'review' },
+				tickets: [],
+				session: 'session-4',
+				pull: null
+			})
+		);
+		await queue({ ...w.deps, signals: DEFAULT_SIGNAL_NAMES }, true);
+		const [comment = ''] = w.tracker.said('2');
+		expect(comment).toContain(
+			'**Waiting on you**: Nightjar stopped on a fault in the Review: the disk is full.'
+		);
+		expect(comment).toContain('fix what it names before giving the Go again');
+		expect(comment).toContain('session session-4');
+		expect(w.tracker.said('2')).toHaveLength(1);
 	});
 });
 
@@ -210,9 +238,16 @@ describe('queue --watch', () => {
 			expect(w.built).toEqual(['2', '2']);
 		});
 
-		it('tells the Feature once why it paused, so a person can see it', async () => {
+		it("posts no comment on a Tracker that keeps a Status note, which the build's note says it on", async () => {
 			const w = world();
 			await queue(pausedPull(w), false);
+			expect(w.tracker.said('2')).toEqual([]);
+		});
+
+		it('tells a Tracker without a Status note once why it paused, so a person can see it', async () => {
+			const w = world();
+			const { statusNote: _gone, ...older } = w.tracker;
+			await queue({ ...pausedPull(w), tracker: older }, false);
 			const said = w.tracker.said('2').filter((c) => c.startsWith('Nightjar paused'));
 			expect(said).toHaveLength(1);
 			expect(said[0]).toContain('the plan usage limit was reached');
@@ -413,7 +448,7 @@ describe('queue --watch with the Pull-check pass', () => {
 		await queue(w.deps, false);
 		expect(w.tracker.signalsOf('20')).toEqual(['needsInfo']);
 		expect(w.tracker.said('20').at(-1)).toMatch(
-			/^Nightjar stopped on a fault: the connection was reset/
+			/^\*\*Waiting on you\*\*: Nightjar stopped on a fault: the connection was reset/
 		);
 		expect(w.built).toEqual(['2', '4']);
 	});
@@ -427,6 +462,23 @@ describe('queue --watch with the Pull-check pass', () => {
 		await queue(w.deps, false);
 		expect(w.built).toEqual(['2', '4']);
 		expect(w.lines.some((l) => l.includes('stopped on a fault: the network went away'))).toBe(true);
+	});
+
+	it('hands the Feature of a round that stops on a fault to a person, naming the Pull-check fix', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(() => Promise.reject(new Error('the disk is full')));
+		await queue({ ...w.deps, signals: DEFAULT_SIGNAL_NAMES }, false);
+		expect(w.tracker.signalsOf('20')).toEqual(['needsInfo']);
+		const [comment = ''] = w.tracker.said('20');
+		expect(comment).toContain(
+			'**Waiting on you**: Nightjar stopped on a fault in a Pull-check fix: the disk is full.'
+		);
+		expect(comment).toContain(`The pull request: ${pull.url}`);
+		expect(comment).toContain('Nightjar tries a Pull-check fix again');
+		expect(w.tracker.note('20')).toContain('in a Pull-check fix: the disk is full.');
 	});
 
 	it('goes on to the Queue when the Code host cannot list the drafts, saying so', async () => {

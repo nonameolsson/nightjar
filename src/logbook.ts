@@ -81,7 +81,15 @@ const DecisionSchema = z.discriminatedUnion('kind', [
 	// the Source assigned the Feature to `owner` and gave it the Go
 	z.object({ kind: z.literal('standingGo'), source: z.string(), owner: z.string() }),
 	// the Feature, or the entry's Ticket, handed to a person with needs info or needs a person
-	z.object({ kind: z.literal('handed'), to: z.enum(['needsInfo', 'human']), why: z.string() })
+	z.object({ kind: z.literal('handed'), to: z.enum(['needsInfo', 'human']), why: z.string() }),
+	// a fault stopped the build: where, as the comment says it, its message, whether it looks like one that goes away by itself, and its stack trace, which stays here and never goes to the Tracker
+	z.object({
+		kind: z.literal('fault'),
+		place: z.string(),
+		why: z.string(),
+		passing: z.boolean(),
+		stack: z.string().optional()
+	})
 ]);
 
 export type Decision = z.infer<typeof DecisionSchema>;

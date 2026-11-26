@@ -520,3 +520,34 @@ describe('makeAdapters and shelf', () => {
 		);
 	});
 });
+
+describe('makeAdapters and statusNote', () => {
+	it('keeps it on a Tracker whose references it rewrites for Azure Repos', async () => {
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		const adapters = await makeAdapters(
+			config({ tracker: boards('contoso'), codeHost: { ...repos, organization: 'other' } }),
+			dir,
+			env(),
+			{ request: ado.request }
+		);
+		signedInAz();
+		expect(typeof adapters.tracker.statusNote).toBe('function');
+	});
+
+	it('loads a module Tracker that lacks it, and leaves it off', async () => {
+		moduleFile('reads.mjs', `export const createTracker = () => (${trackerBody()});`);
+		const adapters = await makeAdapters(
+			config({ tracker: { type: 'module', path: './reads.mjs' }, codeHost: repos }),
+			dir,
+			env()
+		);
+		expect('statusNote' in adapters.tracker).toBe(false);
+	});
+
+	it('refuses a module whose statusNote is not a function', async () => {
+		moduleFile('bad.mjs', `export const createTracker = () => (${trackerBody('statusNote: 1,')});`);
+		expect(await refusal(config({ tracker: { type: 'module', path: './bad.mjs' } }))).toBe(
+			'factory.json: tracker: createTracker in ./bad.mjs returned a Tracker whose statusNote is not a function'
+		);
+	});
+});

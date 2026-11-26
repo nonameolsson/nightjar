@@ -4,6 +4,7 @@ import type { ChangeRequest, CodeHost, Feedback, OpenPull, Pull, PullCommit } fr
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
 import type { Note } from './logbook.js';
+import type { WaitingComment } from './status-note.js';
 import type { Allowance, Entry, LogEntry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
@@ -255,10 +256,16 @@ export function feedbackLine(u: Unanswered): string {
 // What a reply to answered feedback says; the Code host adds the footer.
 export const replyText = (commit: string, note: string) => `Answered in ${commit}: ${note}`;
 
-// The comment on a Feature whose round was thrown away: the pull request, why, and each piece left unanswered.
-export function thrownAwayComment(end: Extract<FeedbackRoundEnd, { kind: 'failed' }>): string {
-	const kept = end.side === null ? '' : `\n\nThe attempt is kept on branch \`${end.side}\`.`;
-	return `Nightjar could not answer the feedback on ${end.pull.url}: ${end.why}.\n\nLeft unanswered:\n\n${end.left.map(feedbackLine).join('\n')}${kept}`;
+// What a Feature whose round was thrown away tells a person: why, and each piece left unanswered. The pull request's Feedback section holds the rest.
+export function thrownAwayAsk(
+	end: Extract<FeedbackRoundEnd, { kind: 'failed' }>
+): Pick<WaitingComment, 'sentence' | 'cause' | 'pull'> {
+	const kept = end.side === null ? '' : ` The attempt is kept on branch \`${end.side}\`.`;
+	return {
+		sentence: 'Nightjar could not answer the feedback on its pull request.',
+		cause: `Its Feedback round was thrown away: ${end.why}.${kept}\n\nLeft unanswered:\n\n${end.left.map(feedbackLine).join('\n')}`,
+		pull: { url: end.pull.url, section: 'Feedback' }
+	};
 }
 
 // The Feedback rounds of a branch, from the ledger: one Session each, its fix rounds resuming it.

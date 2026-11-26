@@ -544,15 +544,11 @@ ${feature.body}
 ${list}${earlier}`;
 }
 
-export function questionsComment(questions: readonly Question[], round: number): string {
-	const asked = questions
+// The questions as a numbered list, each with the answer Nightjar recommends.
+export const questionList = (questions: readonly Question[]): string =>
+	questions
 		.map((q, i) => `${String(i + 1)}. ${q.question}\n   - Recommended: ${q.recommendation}`)
 		.join('\n');
-	return `${QUESTIONS_MARK}
-Nightjar stopped before building this Ticket: it needs answers (round ${String(round)}).
-
-${asked}`;
-}
 
 export const questionRounds = (comments: readonly Comment[]): number =>
 	comments.filter((c) => c.body.startsWith(QUESTIONS_MARK)).length;
