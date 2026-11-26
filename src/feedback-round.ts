@@ -152,8 +152,9 @@ export async function feedbackRound(ctx: FeedbackRoundContext): Promise<Feedback
 		return { kind: 'failed', pull, why, left, side };
 	};
 	const halted = async (halt: Halt): Promise<FeedbackRoundEnd> => {
-		await tree.discard(before, 'feedback');
+		const side = await tree.discard(before, 'feedback');
 		const why = halt.kind === 'paused' ? `paused: ${halt.why}` : 'stopped by a person';
+		if (side !== null) ctx.note({ kind: 'thrownAway', branch: side, why, session: got.sessionId });
 		record(halt.kind === 'paused' ? 'paused' : 'stopped', {
 			left: todo.map((f) => ({ feedback: f, why })),
 			why

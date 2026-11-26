@@ -1963,7 +1963,7 @@ async function fixRedDraft(
 	await signals.on('working');
 	let got: PullFixRound;
 	try {
-		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round });
+		got = await pullFixRound(deps, setup, { feature, note, tree, draft, session, round });
 		note({
 			kind: 'pullFix',
 			round,
@@ -2098,13 +2098,15 @@ async function pullFixRound(
 	setup: Setup,
 	o: {
 		feature: Feature;
+		// writes the Feature's Logbook
+		note: Note;
 		tree: Worktree;
 		draft: NightjarDraft;
 		session: PullFixSession;
 		round: number;
 	}
 ): Promise<PullFixRound> {
-	const { feature, tree, draft, round } = o;
+	const { feature, note, tree, draft, round } = o;
 	const session = o.session.id;
 	const { pull } = draft;
 	const show = buildingOf(feature, deps.now);
@@ -2137,15 +2139,21 @@ async function pullFixRound(
 	};
 	const name = `Pull-check fix ${String(round)}`;
 	const before = await tree.head();
-	const gaveUp = async (why: string, usd: number): Promise<PullFixRound> => {
+	// Takes the branch back to `before`; what the round left is kept on an attempt branch, which the Logbook names with `why`.
+	const throwAway = async (why: string): Promise<string | null> => {
 		const side = await tree.discard(before, `pull-fix-${String(round)}`);
+		if (side !== null) note({ kind: 'thrownAway', branch: side, why, session });
+		return side;
+	};
+	const gaveUp = async (why: string, usd: number): Promise<PullFixRound> => {
+		const side = await throwAway(why);
 		deps.say(
 			`${hash(feature.id)}: ${name} gave up: ${why}${side ? `; the attempt is kept on ${side}` : ''}`
 		);
 		return { kind: 'gaveUp', pull, round, why, usd };
 	};
 	const halted = async (halt: Halt): Promise<PullFixRound> => {
-		await tree.discard(before, `pull-fix-${String(round)}`);
+		await throwAway(haltWhy(halt));
 		return halt.kind === 'paused' ? { kind: 'paused', why: halt.why } : { kind: 'stopped' };
 	};
 
@@ -2200,7 +2208,7 @@ async function pullFixRound(
 			tree,
 			building,
 			log: (e) => log(e),
-			note: noteFor(deps.logbook, feature.id, deps.now)
+			note
 		},
 		{
 			ticket: null,
