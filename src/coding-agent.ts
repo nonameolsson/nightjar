@@ -5,6 +5,7 @@ import type { Feedback } from './code-host.js';
 import {
 	BUILD_SCHEMA,
 	FEEDBACK_SCHEMA,
+	RETRO_SCHEMA,
 	REVIEW_ROUND_SCHEMA,
 	REVIEW_SCHEMA,
 	STEP_SCHEMA,
@@ -15,14 +16,17 @@ import {
 	pullChecksPrompt,
 	readBuildAnswer,
 	readFeedbackAnswer,
+	readRetroAnswer,
 	readReview,
 	readReviewRoundAnswer,
 	readStepAnswer,
+	retroPrompt,
 	reviewPrompt,
 	reviewRoundPrompt,
 	stepPrompt,
 	stepRoundPrompt,
 	type FeedbackItem,
+	type RetroFailure,
 	type Question,
 	type Declined,
 	type Review
@@ -184,6 +188,21 @@ export interface ReviewRequest extends Work {
 	readonly declined: readonly Declined[];
 }
 
+// The Retro works on no Feature: it reads the main checkout and writes nothing.
+export interface RetroRequest {
+	readonly kind: 'retro';
+	readonly sessionId: string;
+	// the main checkout, whose .factory/logs/ holds the transcripts it reads
+	readonly folder: string;
+	readonly budgetUsd: number;
+	readonly minutes: number;
+	readonly days: number;
+	// oldest first
+	readonly failures: readonly RetroFailure[];
+	// how many more failed Sessions the window holds than `failures` lists
+	readonly more: number;
+}
+
 // How any Session can end besides its answer.
 export type Ended =
 	| { readonly kind: 'failed'; readonly why: string; readonly failure: Failure }
@@ -239,6 +258,12 @@ export type ReviewRoundOutcome = Outcome<
 
 export type ReviewOutcome = Outcome<{ readonly kind: 'reviewed'; readonly review: Review }>;
 
+export type RetroOutcome = Outcome<
+	// `featureFile`: the Feature file's text, not yet checked against the Feature file's shape
+	| { readonly kind: 'proposed'; readonly summary: string; readonly featureFile: string }
+	| { readonly kind: 'nothing'; readonly summary: string }
+>;
+
 export interface CodingAgent {
 	build(req: BuildRequest): Promise<BuildOutcome>;
 	fix(req: FixRequest): Promise<FixOutcome>;
@@ -246,6 +271,7 @@ export interface CodingAgent {
 	feedback(req: FeedbackRequest): Promise<FeedbackOutcome>;
 	review(req: ReviewRequest): Promise<ReviewOutcome>;
 	reviewRound(req: ReviewRoundRequest): Promise<ReviewRoundOutcome>;
+	retro(req: RetroRequest): Promise<RetroOutcome>;
 }
 
 const API_KEY_PAUSE =
@@ -269,7 +295,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 	});
 
 	const request = (
-		work: Work,
+		work: Pick<Work, 'budgetUsd'> & { readonly at: Pick<FeatureBranch, 'folder'> },
 		over: Pick<SessionRequest, 'prompt' | 'sessionId'> & Partial<SessionRequest>
 	): SessionRequest => ({
 		cwd: work.at.folder,
@@ -529,12 +555,42 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 			}
 		);
 
+	// The Retro reads as the review does, with its tools and settings: no Edit, no Write, and Bash only for git's read commands.
+	const retro = (req: RetroRequest) =>
+		outcomeOf(
+			request(
+				{ at: { folder: req.folder }, budgetUsd: req.budgetUsd },
+				{
+					prompt: retroPrompt({ days: req.days, failures: req.failures, more: req.more }),
+					sessionId: req.sessionId,
+					schema: RETRO_SCHEMA,
+					tools: REVIEW_TOOLS,
+					settings: reviewSettings(),
+					minutes: req.minutes,
+					plugins: [],
+					...pick()
+				}
+			),
+			(output) => {
+				const answer = readRetroAnswer(output);
+				if (answer === null) return null;
+				return answer.outcome === 'proposed'
+					? {
+							kind: 'proposed' as const,
+							summary: answer.summary,
+							featureFile: answer.featureFile
+						}
+					: { kind: 'nothing' as const, summary: answer.summary };
+			}
+		);
+
 	return {
 		build,
 		fix,
 		step,
 		feedback,
 		reviewRound,
+		retro,
 		review: (req) =>
 			outcomeOf(
 				request(req, {

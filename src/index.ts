@@ -26,6 +26,7 @@ export { nightjarDraftsContract } from './contract/nightjar-drafts.js';
 export { openPullsContract } from './contract/open-pulls.js';
 export { publishContract } from './contract/publish.js';
 export { botPullsContract } from './contract/bot-pulls.js';
+export { pullStateContract } from './contract/pull-state.js';
 export type {
 	BotPull,
 	ChangeRequest,
@@ -40,7 +41,8 @@ export type {
 	OpenPull,
 	Pull,
 	PullChecks,
-	PullCommit
+	PullCommit,
+	PullState
 } from './code-host.js';
 export { FOOTER } from './footer.js';
 export type { AdapterContext, CodeHostFactory, TrackerFactory } from './adapter-module.js';

@@ -7,6 +7,7 @@ import { nightjarDraftsContract } from './nightjar-drafts.js';
 import { openPullsContract } from './open-pulls.js';
 import { botPullsContract } from './bot-pulls.js';
 import { publishContract } from './publish.js';
+import { pullStateContract } from './pull-state.js';
 import { canCreate } from '../tracker.js';
 import { featureWriterContract } from './feature-writer.js';
 import { trackerContract, type TrackerHarness, type TrackerSubject } from './tracker.js';
@@ -109,7 +110,7 @@ async function optionalSuites(harness: TrackerHarness): Promise<{
 // Whether the Code host has `method`; a harness that cannot build one has failed every case already.
 async function hasMethod(
 	harness: CodeHostHarness,
-	method: 'nightjarDrafts' | 'publish' | 'botPulls'
+	method: 'nightjarDrafts' | 'publish' | 'botPulls' | 'pullState'
 ): Promise<boolean> {
 	let subject: CodeHostSubject;
 	try {
@@ -145,7 +146,7 @@ async function hasFeedback(
 	}
 }
 
-// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the shelf suite when it has shelf, the Status note suite when it has statusNote, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, the open pull requests suite when it has openPulls, and the publish suite when it has publish.
+// The creation suite runs too when the Tracker makes Features, the waitingOn suite when it has waitingOn, the sources suite when it has featuresFrom, the assign suite when it has assign, the ticket counts suite when it has ticketCounts, the shelf suite when it has shelf, the Status note suite when it has statusNote, the Nightjar drafts suite when the Code host has nightjarDrafts, the feedback suite when it has feedback and reply, the open pull requests suite when it has openPulls, the publish suite when it has publish, and the pull state suite when it has pullState.
 export async function runContract(exports: Record<string, unknown>): Promise<Report> {
 	const tracker = harnessOf(exports, 'trackerHarness');
 	const codeHost = harnessOf(exports, 'codeHostHarness');
@@ -201,6 +202,9 @@ export async function runContract(exports: Record<string, unknown>): Promise<Rep
 			suites.push(
 				await runSuite('Code host bot pull requests', botPullsContract, codeHost as never)
 			);
+		}
+		if (await hasMethod(codeHost as CodeHostHarness, 'pullState')) {
+			suites.push(await runSuite('Code host pull state', pullStateContract, codeHost as never));
 		}
 	}
 	const all = suites.flatMap((s) => s.results);

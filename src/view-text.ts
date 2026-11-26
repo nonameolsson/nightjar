@@ -33,7 +33,8 @@ export const KIND_TEXT: Readonly<Record<string, string>> = {
 	step: 'Step round',
 	review: 'Review',
 	pullChecks: 'Pull-check fix',
-	feedback: 'Feedback round'
+	feedback: 'Feedback round',
+	retro: 'Retro'
 };
 
 // The words for a Session tried again after a passing fault.

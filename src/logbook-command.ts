@@ -123,9 +123,13 @@ export function sessionPrint(view: SessionView, full: boolean): string[] {
 		const kind = KIND_TEXT[ran.kind] ?? ran.kind;
 		const ticket = ran.ticket === null ? 'the whole Feature' : `Ticket ${idText(ran.ticket)}`;
 		const took = ran.durationMs === undefined ? [] : [elapsed(ran.durationMs)];
-		lines.push(
-			`${stamp(ran.at)}  Feature ${idText(ran.feature)}: ${[kind, ticket, ran.outcome, dollars(ran.costUsd), ...took].join(', ')}`
-		);
+		const end = [ran.outcome, dollars(ran.costUsd), ...took];
+		// a Retro works on no Feature, so its line names none
+		const line =
+			ran.kind === 'retro'
+				? [kind, ...end].join(', ')
+				: `Feature ${idText(ran.feature)}: ${[kind, ticket, ...end].join(', ')}`;
+		lines.push(`${stamp(ran.at)}  ${line}`);
 	}
 	lines.push('');
 	const shown = view.lines.filter((l) => full || l.kind !== 'result');

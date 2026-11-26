@@ -54,7 +54,14 @@ const TRACKER_METHODS: Record<
 const CODE_HOST_METHODS: Record<
 	Exclude<
 		keyof CodeHost,
-		'nightjarDrafts' | 'feedback' | 'reply' | 'openPulls' | 'publish' | 'conflicts' | 'botPulls'
+		| 'nightjarDrafts'
+		| 'feedback'
+		| 'reply'
+		| 'openPulls'
+		| 'publish'
+		| 'conflicts'
+		| 'botPulls'
+		| 'pullState'
 	>,
 	true
 > = {
@@ -99,7 +106,7 @@ const CODE_HOST: Kind = {
 	noun: 'Code host',
 	factory: 'createCodeHost',
 	methods: Object.keys(CODE_HOST_METHODS),
-	lone: ['nightjarDrafts', 'openPulls', 'publish', 'conflicts']
+	lone: ['nightjarDrafts', 'openPulls', 'publish', 'conflicts', 'pullState']
 };
 
 export async function importModule(path: string, base: string): Promise<Record<string, unknown>> {

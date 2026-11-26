@@ -20,6 +20,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor [FEAT
        nightjar init [--yes] [--check CMD] ...   ask for the Tracker and Code host, write factory.json, create the Signal labels, check the logins; --yes asks nothing
        nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
        nightjar ui [--port PORT]  serve a read-only page about this repo's builds on http://127.0.0.1:4545 (127.0.0.1 only), read from .factory/
+       nightjar retro [--create]  read the Sessions of the last 30 days that failed or were handed back, and have one read-only Session (at most $3 and 10 minutes) propose changes to this repo's guidance as a Feature file in .factory/plans/; --create makes it on the Tracker, with no Signal
        nightjar logbook FEATURE   print that Feature's Logbook (its Sessions and Nightjar's decisions, in order, with each transcript's path), read from .factory/
        nightjar logbook --session ID [--full]  print one Session: the Coding agent's text and a line per tool call; --full adds each tool result
        nightjar intake [--port PORT] [--host HOST]  take the webhooks of factory.json's Sources on http://127.0.0.1:4546/sources/NAME and make each Feature on the Tracker; it builds nothing
@@ -60,8 +61,10 @@ export function parseIntakeArgs(argv: readonly string[]): IntakeArgs | string {
 }
 
 export interface Args {
-	readonly mode: 'watch' | 'once' | 'feature' | 'doctor';
+	readonly mode: 'watch' | 'once' | 'feature' | 'doctor' | 'retro';
 	readonly feature?: string;
+	// with retro only: make the Feature it proposes on the Tracker
+	readonly create?: boolean;
 	readonly useApiKey: boolean;
 	readonly profile?: string;
 	readonly model?: string;
@@ -85,6 +88,8 @@ export function parseArgs(argv: readonly string[]): Args | string {
 	let model: string | undefined;
 	let effort: string | undefined;
 	let poll: number | undefined;
+	let retro = false;
+	let create = false;
 	let parallel: number | undefined;
 	const pick = (m: 'watch' | 'once' | 'build' | 'doctor') => {
 		const clash = 'choose one of --watch, --once, a Feature and doctor';
@@ -104,6 +109,8 @@ export function parseArgs(argv: readonly string[]): Args | string {
 		if (a === '--watch') fault = pick('watch');
 		else if (a === '--once') fault = pick('once');
 		else if (a === 'doctor' || a === '--dry-run') fault = pick('doctor');
+		else if (a === 'retro') retro = true;
+		else if (a === '--create') create = true;
 		else if (a === '--use-api-key') useApiKey = true;
 		else if (a === '--model' || a === '--effort' || a === '--profile') {
 			const value = argv[i + 1];
@@ -131,6 +138,21 @@ export function parseArgs(argv: readonly string[]): Args | string {
 			feature = a.replace(/^#/, '');
 		} else return `unknown argument ${a}`;
 		if (fault) return fault;
+	}
+	if (create && !retro) return '--create goes with retro only';
+	if (retro) {
+		if (chosen.mode !== null || chosen.doctor)
+			return 'retro goes alone, with no --watch, --once, Feature or doctor';
+		if (poll !== undefined) return '--poll goes with --watch only';
+		if (parallel !== undefined) return '--parallel goes with --watch and --once only';
+		return {
+			mode: 'retro',
+			useApiKey,
+			...(create ? { create } : {}),
+			...(profile === undefined ? {} : { profile }),
+			...(model === undefined ? {} : { model }),
+			...(effort === undefined ? {} : { effort })
+		};
 	}
 	const mode: Args['mode'] | null = chosen.doctor
 		? 'doctor'

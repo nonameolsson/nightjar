@@ -32,7 +32,9 @@ const OWN: Readonly<Record<Exclude<Entry['step'], 'fix'>, Stage>> = {
 	review: 'review',
 	reviewRound: 'reviewRounds',
 	pullChecks: 'pullChecks',
-	feedback: 'feedback'
+	feedback: 'feedback',
+	// a Retro works on no Feature, so no build's lines hold one; the entry only keeps the table total
+	retro: 'tickets'
 };
 
 // The stage of each line, in order. A fix round belongs to the work whose Session it resumes; one whose Session the lines do not hold is a Ticket's, or with no Ticket a Step's after all Tickets.

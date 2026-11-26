@@ -14,7 +14,8 @@ import type {
 	OpenPull,
 	Pull,
 	PullChecks,
-	PullCommit
+	PullCommit,
+	PullState
 } from '../code-host.js';
 import { answerText, endsWithFooter, withFooter } from '../footer.js';
 import { pushFault, type Env, type Run } from '../git.js';
@@ -58,6 +59,8 @@ const PullSchema = z.looseObject({
 	artifactId: z.string().nullish(),
 	// notSet, queued, conflicts, succeeded, rejectedByPolicy or failure
 	mergeStatus: z.string().nullish(),
+	// active, abandoned or completed; a completed pull request was merged
+	status: z.string().nullish(),
 	repository: z.looseObject({
 		id: z.string(),
 		project: z.looseObject({ id: z.string() }).nullish()
@@ -519,6 +522,12 @@ export class AzureReposCodeHost implements CodeHost {
 		const { mergeStatus } = await this.read(pull);
 		if (mergeStatus === 'conflicts') return 'yes';
 		return mergeStatus === 'succeeded' ? 'no' : 'unknown';
+	}
+
+	// Azure Repos calls a merged pull request completed; an abandoned one was closed without merging.
+	async pullState(pull: Pull): Promise<PullState> {
+		const { status } = await this.read(pull);
+		return { merged: status === 'completed', commits: await this.commits(pull) };
 	}
 
 	async placeReferences(pull: Pull, references: readonly TicketReference[]): Promise<void> {

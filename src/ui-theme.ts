@@ -82,7 +82,7 @@ h1 { font-size: 16px; font-weight: 600; }
 header span { color: var(--muted); font-size: 12px; }
 header .state { background: var(--surface-3); border-radius: 9999px; color: var(--ink); font-size: 11.5px; font-weight: 500; padding: 1px 8px; }
 header .stale { color: var(--ask); }
-#cards { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 4px 20px; margin: 0; padding: 2px 0 10px; }
+#cards, #measures .stats { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 4px 20px; margin: 0; padding: 2px 0 10px; }
 .stat b { color: var(--ink); font-weight: 500; }
 .empty, small, .meta { color: var(--muted); }
 small { font-size: 12px; }
@@ -305,7 +305,7 @@ td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: 
 }
 @media (max-width: 760px) {
 	body { --gut: 12px; }
-	#cards { gap: 2px 14px; }
+	#cards, #measures .stats { gap: 2px 14px; }
 	.mark { display: none; }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }

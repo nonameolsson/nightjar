@@ -41,6 +41,7 @@ export function fakeCodeHostSubject(codeHost: FakeCodeHost): CodeHostSubject {
 			engage: (pull) => done(() => codeHost.engage(pull)),
 			ready: (pull) => done(() => codeHost.markReady(pull)),
 			closePull: (pull) => done(() => codeHost.close(pull)),
+			merge: (pull) => done(() => codeHost.merge(pull)),
 			fork: (pull) => done(() => codeHost.fork(pull))
 		},
 		base: 'main',

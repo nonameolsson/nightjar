@@ -35,6 +35,14 @@ import type {
 	WaitingOnYou
 } from './status-shape.js';
 import { featureStart } from './status.js';
+import type { Measures } from './measures.js';
+import {
+	measuresView,
+	NO_CODE_HOST,
+	watchMeasures,
+	type MeasuresView,
+	type PullStateReader
+} from './ui-measures.js';
 import type { ItemId, Shelf, ShelfFeature } from './tracker.js';
 import { FEATURE_DIALOG, FEATURE_PATH, FEATURE_SCRIPT, featureAnswer } from './ui-feature.js';
 import { PAPER_STYLE, THEME_SCRIPT, THEME_SWITCH, themeStyles } from './ui-theme.js';
@@ -83,6 +91,8 @@ export interface UiOptions {
 	readonly tracker?: () => Promise<Upcoming>;
 	// reads one Feature for its detail panel, when the panel opens; left out, no Feature opens one
 	readonly feature?: (id: ItemId) => Promise<FeatureDetail>;
+	// the Code host, asked for the Measures' pull states, at most once an hour; left out, or without `pullState`, the Measures show no Autonomy
+	readonly codeHost?: () => Promise<PullStateReader | undefined>;
 	// calls `read` every `ms` and gives back how to stop; setInterval unless a spec passes its own
 	readonly every?: (ms: number, read: () => void) => () => void;
 }
@@ -1225,6 +1235,37 @@ function titlesOf(view: FactoryView): ReadonlyMap<string, string> {
 
 const sessionsText = (n: number) => (n === 1 ? '1 Session' : `${String(n)} Sessions`);
 
+const share = (s: Extract<Measures['autonomy'], { kind: 'share' }>) =>
+	`<div class="stat"><span>autonomy</span> <b>${String(Math.round(s.share * 100))}%</b> <small>${String(s.autonomous)} of ${String(s.merged)} merged</small></div>`;
+
+// Autonomy is left out, with the reason in the note, when the Code host cannot say which pull requests merged.
+function autonomyStat(autonomy: Measures['autonomy']): string {
+	switch (autonomy.kind) {
+		case 'share':
+			return share(autonomy);
+		case 'none merged':
+			return '<div class="stat"><span>autonomy</span> <b>-</b> <small>none merged yet</small></div>';
+		case 'not read':
+			return '<div class="stat"><span>autonomy</span> <b>-</b> <small>not read yet</small></div>';
+		case 'unavailable':
+			return '';
+	}
+}
+
+// How well the factory worked over the last days: Autonomy, Time to pull request, Cost per pull request and the Sessions by outcome.
+function measuresPanel(view: MeasuresView): string {
+	const { measures: m, note } = view;
+	const time = m.timeToPullMs === null ? '-' : elapsed(m.timeToPullMs);
+	const cost = m.costPerPullUsd === null ? '-' : dollars(m.costPerPullUsd);
+	const stats = `${autonomyStat(m.autonomy)}<div class="stat"><span>time to pull request</span> <b>${time}</b> <small>median</small></div><div class="stat"><span>cost per pull request</span> <b>${cost}</b> <small>median</small></div><div class="stat"><span>pull requests</span> <b>${String(m.pulls)}</b></div>`;
+	const outcomes =
+		m.sessions.length === 0
+			? '<p class="empty">no Session recorded</p>'
+			: `<ul class="outcomes">${m.sessions.map((s) => `<li>${escape(s.outcome)} <b>${String(s.count)}</b></li>`).join('')}</ul>`;
+	const noted = note === null ? '' : `<p class="empty">${escape(note)}</p>`;
+	return `<section id="measures"><h2>Measures <small>last ${String(m.days)} days</small></h2><div class="stats">${stats}</div>${noted}<h3>Sessions by outcome</h3>${outcomes}</section>`;
+}
+
 // Every Feature with a Logbook or ledger lines, the one touched last first, so a Feature off the Board stays reachable.
 function allLogbooks(
 	found: readonly LogbookListing[],
@@ -1257,13 +1298,14 @@ const stampHtml = (iso: string) => {
 const MAIN = '<!--main-->';
 
 // The panels, which the page replaces whole each time an event brings new ones.
-// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel.
+// `tracker` is what the page read of the Tracker; left out, the page reads no Tracker. `opens`: a Feature on Waiting on you, the Queue or the Shelf opens its detail panel. `measures`: the Measures panel; left out, the page has none.
 export function renderPanels(
 	root: string,
 	view: FactoryView,
 	links: Links = NO_LINKS,
 	tracker?: TrackerLists,
-	opens = false
+	opens = false,
+	measures?: MeasuresView
 ): string {
 	const lists = listsOf(view, tracker, opens);
 	const overview = [
@@ -1273,6 +1315,7 @@ export function renderPanels(
 		shelf(view, lists, links),
 		waiting(view, lists, links),
 		completed(view, lists, links),
+		...(measures === undefined ? [] : [measuresPanel(measures)]),
 		allLogbooks(listLogbooks(root), titlesOf(view))
 	].join('\n');
 	return [
@@ -1588,7 +1631,7 @@ h1 { font: 700 1.6rem var(--mono); }
 header span { color: var(--muted); font-family: var(--mono); font-size: 0.85rem; }
 header .state { color: var(--teal); font-weight: 600; }
 header .stale { color: var(--amber); }
-#cards { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
+#cards, #measures .stats { color: var(--ink2); display: flex; flex-wrap: wrap; font: 0.85rem var(--mono); gap: 4px 26px; margin: 0; padding: 0 0 10px; }
 .stat b { color: var(--ink); }
 .empty, small, .meta { color: var(--muted); }
 .empty { margin: 10px 0; }
@@ -1864,7 +1907,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 @media (max-width: 760px) {
 	body { --gut: 12px; }
 	h1 { font-size: 1.2rem; }
-	#cards { font-size: 0.75rem; gap: 2px 14px; }
+	#cards, #measures .stats { font-size: 0.75rem; gap: 2px 14px; }
 	.mark { display: none; }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }
@@ -1933,16 +1976,23 @@ const sessionShell = (title: string, main: string, links: Links) =>
 // One ledger line of a Session: its Feature and Ticket, the kind of work, how it ended, what it cost and how long it ran.
 function sessionRun(run: SessionView['runs'][number], links: Links): string {
 	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
+	let about = '';
+	let book = '';
+	// a Retro works on no Feature, so it names none and has no Logbook to open
+	if (run.kind !== 'retro') {
+		const ticket = run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links);
+		about = field('Feature', idHtml(run.feature, links)) + field('Ticket', ticket);
+		book = `<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>`;
+	}
 	return (
 		'<section class="run"><dl>' +
-		field('Feature', idHtml(run.feature, links)) +
-		field('Ticket', run.ticket === null ? 'the whole Feature' : idHtml(run.ticket, links)) +
+		about +
 		field('Kind', escape(KIND_TEXT[run.kind] ?? run.kind)) +
 		field('Outcome', escape(run.outcome)) +
 		field('Cost', dollars(run.costUsd)) +
 		(run.durationMs === undefined ? '' : field('Duration', elapsed(run.durationMs))) +
 		'</dl>' +
-		`<p class="more"><a class="open" href="${featureHref(run.feature)}">Open the Logbook of ${escape(idText(run.feature))}</a></p>` +
+		book +
 		'</section>'
 	);
 }
@@ -2177,13 +2227,28 @@ export function startUi(o: UiOptions): Promise<Ui> {
 					...(o.every === undefined ? {} : { every: o.every }),
 					...(o.now === undefined ? {} : { now: o.now })
 				});
+	// The pull states are read from the Code host when an hour old, and looked at again every minute.
+	const codeHost = o.codeHost;
+	const pulls =
+		codeHost === undefined
+			? null
+			: watchMeasures({
+					root: o.root,
+					codeHost,
+					changed: () => refresh(),
+					...(o.every === undefined ? {} : { every: o.every }),
+					...(o.now === undefined ? {} : { now: o.now })
+				});
+	const measuresNow = () =>
+		measuresView(o.root, pulls?.known() ?? NO_CODE_HOST, (o.now ?? (() => new Date()))());
 	const panelsNow = () =>
 		renderPanels(
 			o.root,
 			factoryNow(),
 			linksFor(o.root, origin),
 			tracker?.lists(),
-			o.feature !== undefined
+			o.feature !== undefined,
+			measuresNow()
 		);
 	const logbookNow = (feature: string) =>
 		logbookMain(readLogbook(o.root, feature), factoryNow(), linksFor(o.root, origin));
@@ -2311,6 +2376,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 		// a port that is taken leaves nothing running behind it
 		server.once('error', (fault) => {
 			tracker?.stop();
+			pulls?.stop();
 			clearInterval(slow);
 			clearTimeout(timer);
 			watcher?.close();
@@ -2324,6 +2390,7 @@ export function startUi(o: UiOptions): Promise<Ui> {
 				close: () =>
 					new Promise<void>((ended) => {
 						tracker?.stop();
+						pulls?.stop();
 						clearInterval(slow);
 						clearTimeout(timer);
 						watcher?.close();

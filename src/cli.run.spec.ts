@@ -376,6 +376,154 @@ describe('nightjar --profile', () => {
 	}, 30_000);
 });
 
+describe('nightjar retro', () => {
+	// a ledger whose one line is a build of yesterday that failed, with its transcript, and the file the Retro writes today
+	function failedYesterday(root: string) {
+		const factory = join(root, '.factory');
+		mkdirSync(join(factory, 'logs'), { recursive: true });
+		const at = new Date(Date.now() - 86_400_000).toISOString();
+		const line = {
+			at,
+			repo: 'o/r',
+			feature: '1',
+			ticket: '2',
+			branch: 'factory/1-one-escape',
+			step: 'build',
+			session: 's-failed',
+			costUsd: 1.25,
+			outcome: 'failed: it ran past 60 minutes',
+			failure: 'budget'
+		};
+		writeFileSync(join(factory, 'runs.jsonl'), `${JSON.stringify(line)}\n`);
+		const text = { type: 'text', text: 'No check.' };
+		const said = { type: 'assistant', message: { content: [text] } };
+		writeFileSync(join(factory, 'logs', 's-failed.jsonl'), `${JSON.stringify(said)}\n`);
+		const now = new Date();
+		const pad = (n: number) => String(n).padStart(2, '0');
+		const day = `${String(now.getFullYear())}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+		return join('.factory', 'plans', `retro-${day}.md`);
+	}
+
+	function ledger(root: string) {
+		const lines = readFileSync(join(root, '.factory', 'runs.jsonl'), 'utf8')
+			.trim()
+			.split('\n');
+		return lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+	}
+
+	it('reads the failed Sessions in one read-only Session and writes a Feature file that nightjar create accepts', () => {
+		const { root, nightjar, sessions, calls } = world();
+		const file = failedYesterday(root);
+		const run = nightjar(['retro']);
+		expect(run.stderr).toBe('');
+		expect(run.status).toBe(0);
+		expect(run.stdout).toContain(`nightjar: wrote ${file}: Name the check in CLAUDE.md, 1 Ticket`);
+		const written = readFileSync(join(root, file), 'utf8');
+		expect(written).toContain('## Ticket 1: Name the check in CLAUDE.md');
+
+		// the one Session got the failure and its transcript's end, on the review's tools and settings, at $3
+		const retro = sessions();
+		expect(retro.match(/--session-id/g)).toHaveLength(1);
+		expect(retro).toContain('featureFile');
+		expect(retro).toContain('Session s-failed');
+		expect(retro).toContain('Outcome: failed: it ran past 60 minutes');
+		expect(retro).toContain('No check.');
+		expect(retro).toContain('--tools Read,Glob,Grep,Bash');
+		expect(retro).toContain('"deny":["Bash(git commit *)"');
+		expect(retro).toMatch(/"deny":\[[^\]]*"Edit","Write"\]/);
+		expect(retro).toContain('--max-budget-usd 3.00');
+
+		// its cost is a ledger line, so it counts against the day's limit
+		const last = ledger(root).at(-1);
+		expect(last).toMatchObject({ step: 'retro', feature: '', costUsd: 0.5, outcome: 'proposed' });
+		// nothing made on the Tracker without --create
+		expect(calls()).not.toMatch(/-X POST/);
+
+		const dry = nightjar(['create', '--dry-run', file]);
+		expect(dry.stderr).toBe('');
+		expect(dry.status).toBe(0);
+		expect(dry.stdout).toContain('nightjar: would make the Feature Name the check in CLAUDE.md');
+	}, 30_000);
+
+	it('with --create, makes the Feature on the Tracker and gives it no Signal', () => {
+		const { root, nightjar, calls } = world();
+		failedYesterday(root);
+		const run = nightjar(['retro', '--create']);
+		expect(run.stderr).toBe('');
+		expect(run.status).toBe(0);
+		expect(run.stdout).toContain('nightjar: made the Feature #7 Name the check in CLAUDE.md');
+		expect(run.stdout).toContain(
+			'nightjar: #7 carries no Signal: assign it to yourself and give it the Go (factory-go) to build it.'
+		);
+		expect(calls()).toMatch(/-X POST repos\/o\/r\/issues -f title=Name the check in CLAUDE.md/);
+		// the Tickets get the ready Signal; nothing gives the Go
+		expect(calls()).toMatch(/labels\[\]=ready-for-agent/);
+		expect(calls()).not.toMatch(/labels\[\]=factory-go/);
+	}, 30_000);
+
+	it('says so and starts no Session when nothing failed in the last 30 days', () => {
+		const { root, nightjar, sessions } = world();
+		mkdirSync(join(root, '.factory'), { recursive: true });
+		const old = {
+			at: new Date(Date.now() - 31 * 86_400_000).toISOString(),
+			repo: 'o/r',
+			feature: '1',
+			ticket: '2',
+			branch: 'b',
+			step: 'build',
+			session: 's-old',
+			costUsd: 1,
+			outcome: 'failed: it ran past 60 minutes'
+		};
+		writeFileSync(join(root, '.factory', 'runs.jsonl'), `${JSON.stringify(old)}\n`);
+		const run = nightjar(['retro']);
+		expect(run.status).toBe(0);
+		expect(run.stdout).toContain(
+			'nightjar: no Session failed or was handed back in the last 30 days, so the retro has nothing to read and started no Session'
+		);
+		expect(sessions()).not.toContain('--session-id');
+		expect(existsSync(join(root, '.factory', 'plans'))).toBe(false);
+	}, 30_000);
+
+	it('writes no file when the Session proposes nothing', () => {
+		const { root, nightjar } = world();
+		failedYesterday(root);
+		const run = nightjar(['retro'], { FAKE_CLAUDE_RETRO_NOTHING: '1' });
+		expect(run.status).toBe(0);
+		expect(run.stdout).toContain(
+			'nightjar: the retro proposes no change: Each failure was a network fault.'
+		);
+		expect(existsSync(join(root, '.factory', 'plans'))).toBe(false);
+		expect(ledger(root).at(-1)).toMatchObject({ step: 'retro', outcome: 'nothing to propose' });
+	}, 30_000);
+
+	it('starts no Session once the day has reached its limit', () => {
+		const { root, env, nightjar, sessions } = world();
+		failedYesterday(root);
+		const folder = join(env.HOME ?? '', '.config', 'nightjar');
+		mkdirSync(folder, { recursive: true });
+		writeFileSync(join(folder, 'config.json'), JSON.stringify({ dailyUsd: 1 }));
+		const spent = {
+			at: new Date().toISOString(),
+			repo: 'o/r',
+			feature: '3',
+			ticket: '4',
+			branch: 'b',
+			step: 'build',
+			session: 's-today',
+			costUsd: 1,
+			outcome: 'built'
+		};
+		writeFileSync(join(root, '.factory', 'runs.jsonl'), `${JSON.stringify(spent)}\n`, {
+			flag: 'a'
+		});
+		const run = nightjar(['retro']);
+		expect(run.status).toBe(1);
+		expect(run.stderr).toContain("nightjar: no retro: today's estimated spend, $1.00");
+		expect(sessions()).not.toContain('--session-id');
+	}, 30_000);
+});
+
 describe('nightjar doctor', () => {
 	it('names each check it passed, and what it would build', () => {
 		const { nightjar, calls } = world();
