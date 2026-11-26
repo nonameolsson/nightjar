@@ -77,4 +77,123 @@ describe.each(adapters)('the %s Spend', (_name, make) => {
 		expect(spend.allowance(15, 14.5)).toEqual({ usd: 0.5, enough: false });
 		expect(spend.allowance(15, 16)).toEqual({ usd: -1, enough: false });
 	});
+
+	describe('with Sessions running in other Slots', () => {
+		it('does not hold a second cap when the day cannot fit it beside the one running', () => {
+			const spend = make();
+			spend.record(entry(morning, 50));
+			spend.reserve(5);
+			expect(spend.hold(10, morning, 60)).toBe(
+				"today's estimated spend, $50.00, plus $5.00 held for the Sessions running in other Slots and $10.00 for this Session would pass the daily limit of $60.00"
+			);
+			// the work's own cap is not cut by the other Slots: its Session waits where it starts instead
+			expect(spend.allowance(10, 0)).toEqual({ usd: 10, enough: true });
+			// one that fits still starts
+			expect(typeof spend.hold(5, morning, 60)).toBe('object');
+		});
+
+		it('checks and holds in one step, so two Sessions cannot both start on the same dollars', () => {
+			const spend = make();
+			spend.record(entry(morning, 55));
+			const first = spend.hold(10, morning, 60);
+			expect(typeof first).toBe('object');
+			expect(spend.hold(10, morning, 60)).toBe(
+				"today's estimated spend, $55.00, plus $10.00 held for the Sessions running in other Slots, reached the daily limit of $60.00"
+			);
+			// once the first ends, the second may start
+			if (typeof first !== 'string') first.release();
+			expect(typeof spend.hold(10, morning, 60)).toBe('object');
+		});
+
+		it('counts every Session running', () => {
+			const spend = make();
+			spend.reserve(10);
+			spend.reserve(10);
+			expect(typeof spend.hold(10, morning, 30)).toBe('object');
+			expect(typeof spend.hold(10, morning, 39)).toBe('string');
+		});
+
+		it('does not call the day over for the caps held, only for what it spent', () => {
+			const spend = make();
+			spend.record(entry(morning, 50));
+			spend.reserve(10);
+			expect(spend.dayOver(morning, 60)).toBeNull();
+			spend.record(entry(morning, 10));
+			expect(spend.dayOver(morning, 60)).not.toBeNull();
+		});
+
+		it('gives the cap back when its Session ends, and counts what it spent in its place', () => {
+			const spend = make();
+			spend.record(entry(morning, 50));
+			const running = spend.reserve(5);
+			expect(typeof spend.hold(10, morning, 60)).toBe('string');
+			// the Session ends having spent $2, and its ledger line takes the cap's place
+			spend.record(entry(morning, 2));
+			running.release();
+			expect(spend.today(morning)).toBe(52);
+			const next = spend.hold(8, morning, 60);
+			expect(typeof next).toBe('object');
+			// a second release gives nothing back twice
+			running.release();
+			expect(typeof spend.hold(1, morning, 60)).toBe('string');
+			if (typeof next !== 'string') next.release();
+		});
+
+		it('holds what a Session spent in place of its cap until its ledger line is recorded', () => {
+			const spend = make();
+			spend.record(entry(morning, 40));
+			const other = spend.reserve(10);
+			const ended = spend.reserve(10);
+			// $40 + $10 + $10 = $60: nothing more fits
+			expect(typeof spend.hold(1, morning, 60)).toBe('string');
+			ended.settle('s-ended', 3);
+			// $40 + $10 + the $3 spent leaves $7
+			const fits = spend.hold(7, morning, 60);
+			expect(typeof fits).toBe('object');
+			if (typeof fits !== 'string') fits.release();
+			expect(typeof spend.hold(8, morning, 60)).toBe('string');
+			// its line lands: the $3 is counted once, in the ledger
+			spend.record(entry(morning, 3, { session: 's-ended' }));
+			const after = spend.hold(7, morning, 60);
+			expect(typeof after).toBe('object');
+			if (typeof after !== 'string') after.release();
+			// a second settle or release gives nothing back twice
+			ended.settle('s-ended', 3);
+			ended.release();
+			expect(typeof spend.hold(8, morning, 60)).toBe('string');
+			other.release();
+		});
+
+		it('wakes a Session waiting for room once a cap is given back, or when the run stops', async () => {
+			const spend = make();
+			// with nothing held there is nothing to wait for
+			await spend.freed();
+			const running = spend.reserve(5);
+			let woke = false;
+			const waiting = spend.freed().then(() => {
+				woke = true;
+			});
+			await Promise.resolve();
+			expect(woke).toBe(false);
+			running.release();
+			await waiting;
+			expect(woke).toBe(true);
+
+			spend.reserve(5);
+			const stop = new AbortController();
+			const stopped = spend.freed(stop.signal);
+			stop.abort();
+			await stopped;
+		});
+	});
+
+	it('holds a cap as it always did when no other Session is running', () => {
+		const spend = make();
+		spend.record(entry(morning, 59));
+		// a Session whose cap passes the limit still starts: only the spend so far counts, where the work starts
+		expect(spend.dayOver(morning, 60)).toBeNull();
+		spend.record(entry(morning, 2));
+		// and a Feature's fix rounds go on past the limit, as with one Slot
+		expect(typeof spend.hold(15, morning, 60)).toBe('object');
+	});
 });

@@ -52,32 +52,38 @@ export interface WaitingOnYou {
 	readonly trackerCannotList: boolean;
 }
 
+// One Slot's piece of work: a Feature's build, a Pull-check fix or a Feedback round.
+export interface Building {
+	readonly kind: 'building';
+	readonly feature: string;
+	// the Feature's title; older files lack it
+	readonly title?: string;
+	// null while the Feature is set up and reviewed, and during a Step that runs after all Tickets
+	readonly ticket: string | null;
+	readonly step:
+		'setup' | 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
+	// a build's question round or a fix round, of how many there may be; for a Pull-check fix, its round of the pull request's fix rounds; for a Review round, its round of the build's
+	readonly round: number | null;
+	readonly rounds: number | null;
+	readonly session: string | null;
+	// set while a Session is tried again after a passing fault: its try, of how many
+	readonly retry?: { readonly attempt: number; readonly of: number };
+	// when the step began
+	readonly startedAt: string;
+	// when the Feature's build began, which every step keeps; older files lack it
+	readonly featureStartedAt?: string;
+	// the Feature's open Tickets at planning plus those built on the branch; older files lack it
+	readonly tickets?: TicketProgress[];
+}
+
 export type Doing =
 	| { readonly kind: 'idle'; readonly nextPollAt: string }
-	| {
-			readonly kind: 'building';
-			readonly feature: string;
-			// the Feature's title; older files lack it
-			readonly title?: string;
-			// null while the Feature is set up and reviewed, and during a Step that runs after all Tickets
-			readonly ticket: string | null;
-			readonly step:
-				'setup' | 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
-			// a build's question round or a fix round, of how many there may be; for a Pull-check fix, its round of the pull request's fix rounds; for a Review round, its round of the build's
-			readonly round: number | null;
-			readonly rounds: number | null;
-			readonly session: string | null;
-			// set while a Session is tried again after a passing fault: its try, of how many
-			readonly retry?: { readonly attempt: number; readonly of: number };
-			// when the step began
-			readonly startedAt: string;
-			// when the Feature's build began, which every step keeps; older files lack it
-			readonly featureStartedAt?: string;
-			// the Feature's open Tickets at planning plus those built on the branch; older files lack it
-			readonly tickets?: TicketProgress[];
-	  }
+	| Building
 	| { readonly kind: 'paused'; readonly why: string; readonly until: string | null }
 	| { readonly kind: 'off' };
+
+// What the run as a whole is doing: `paused` holds while Sessions still run, `building` when at least one Slot is busy and the run is not paused.
+export type RunState = 'idle' | 'paused' | 'building' | 'off';
 
 export type Happened =
 	| { readonly kind: 'built'; readonly feature: string; readonly ticket: string }
@@ -131,7 +137,14 @@ export interface Status {
 	readonly pid: number;
 	readonly spentTodayUsd: number;
 	readonly dailyUsd: number;
+	// the oldest build when any Slot is busy, so a reader of an older file still reads a newer one; else the run's own state
 	readonly doing: Doing;
+	// the run's state; older files lack it
+	readonly run?: RunState;
+	// one entry per busy Slot, oldest first; older files lack it, and then `doing` is the one build
+	readonly builds?: Building[];
+	// why the run is paused and until when (null when the reset time is unknown), while `run` is `paused`; builds may still run
+	readonly pause?: { readonly why: string; readonly until: string | null };
 	// the last ten, oldest first; a reader toasts each seq it has not seen
 	readonly recent: Event[];
 	// the last hand-back of each Feature and Ticket, oldest first, kept after `recent` moves on; older files lack it

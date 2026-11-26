@@ -1,5 +1,6 @@
 // What the terminal view and the web page both say: clocks, money, ids and the run's state.
-import type { FactoryView } from './status-reader.js';
+import type { BuildView, FactoryView } from './status-reader.js';
+import { buildsOf } from './status.js';
 
 export const two = (n: number) => String(n).padStart(2, '0');
 
@@ -63,10 +64,35 @@ export const idText = (id: string) => (/^\d+$/.test(id) ? `#${id}` : id);
 
 export type RunState = 'off' | 'stopped' | 'idle' | 'watching' | 'paused';
 
+// The pause the run is under, which builds in other Slots may still run through; null when it is not paused.
+export function pauseOf(view: FactoryView): { why: string; until: string | null } | null {
+	const status = view.status;
+	if (status === null) return null;
+	if (status.pause !== undefined) return status.pause;
+	// an older file has no `pause`: its `doing` is the pause
+	return status.doing.kind === 'paused' ? status.doing : null;
+}
+
+// Every busy Slot's build, oldest first. A hand-made view without `builds` gets the one build `doing` holds, with the view's own tail and cost, as an older file's reader would.
+export function buildViews(view: FactoryView): readonly BuildView[] {
+	if (view.builds !== undefined) return view.builds;
+	const status = view.status;
+	return status === null
+		? []
+		: buildsOf(status).map((build, i) => ({
+				build,
+				tail: i === 0 ? view.tail : [],
+				costUsd: i === 0 ? view.featureCostUsd : 0,
+				...(i === 0 && view.featureCost !== undefined ? { cost: view.featureCost } : {}),
+				...(i === 0 && view.featureStages !== undefined ? { stages: view.featureStages } : {})
+			}));
+}
+
 // A dead pid is stopped, whatever status.json says.
 export function runState(view: FactoryView): RunState {
 	if (view.status === null) return 'off';
 	if (view.stopped) return 'stopped';
+	if (pauseOf(view) !== null) return 'paused';
 	switch (view.status.doing.kind) {
 		case 'off':
 			return 'off';
@@ -88,7 +114,10 @@ export const running = (view: FactoryView) => {
 // The Feature the next --watch poll waits for, or null when no Feature is being built under --watch.
 export function pollAfter(view: FactoryView): string | null {
 	const doing = view.status?.doing;
-	return view.status?.watching === true && doing?.kind === 'building' && running(view)
+	return view.status?.watching === true &&
+		doing?.kind === 'building' &&
+		running(view) &&
+		pauseOf(view) === null
 		? idText(doing.feature)
 		: null;
 }

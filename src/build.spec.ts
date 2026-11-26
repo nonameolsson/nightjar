@@ -448,6 +448,7 @@ function deps(world: World): Deps {
 		say: () => undefined,
 		status: {
 			doing: (d) => world.doing.push(d),
+			finished: () => undefined,
 			happened: (h) => world.happened.push(h),
 			codeMoved: () => undefined,
 			refreshed: () => undefined
@@ -1663,6 +1664,21 @@ describe('a Session that cannot go on', () => {
 		}
 	);
 
+	it('neither pauses nor skips a fix round when a Session in another Slot holds the room it needs', async () => {
+		const world = makeWorld();
+		world.checkOk = false;
+		world.settle = (req) => {
+			// another Slot starts a Session while this Ticket builds, and holds its cap; main.ts's heldSession makes this Slot's next Session wait for it
+			if (req.kind === 'build') world.spend.reserve(LIMITS.ticketUsd);
+			return undefined;
+		};
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: LIMITS.ticketUsd + 4 } });
+		const got = await buildFeature(deps(world), s, '1');
+
+		expect(world.asked.map((r) => r.kind).slice(0, 2)).toEqual(['build', 'fix']);
+		expect(got.kind).not.toBe('paused');
+	});
+
 	it.each(cases)('pauses the run when the review is %s', async (_name, why) => {
 		const world = makeWorld();
 		world.settle = (req) => (req.kind === 'review' ? paused(why) : undefined);
@@ -1691,6 +1707,37 @@ describe('a Session that cannot go on', () => {
 			expect(ledger(world).map((e) => [e.step, e.outcome])).toEqual([['build', `paused: ${why}`]]);
 		}
 	);
+
+	it('hands the run the time the limit resets, with a build paused on it', async () => {
+		const world = makeWorld();
+		world.settle = (req) =>
+			req.kind === 'build' ? { ...paused(LIMIT_WHY), resetsAt: 1793390400 } : undefined;
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got).toEqual({ kind: 'paused', why: LIMIT_WHY, resetsAt: 1793390400 });
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+	});
+
+	it('hands the run the pause with the pull request, when the review ends on the limit', async () => {
+		const world = makeWorld();
+		world.settle = (req) =>
+			req.kind === 'review' ? { ...paused(LIMIT_WHY), resetsAt: 1793390400 } : undefined;
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got).toMatchObject({
+			kind: 'pull',
+			pause: { why: LIMIT_WHY, resetsAt: 1793390400 }
+		});
+		expect(world.tracker.signalsOf('1')).toEqual(['go']);
+	});
+
+	it('hands the run no pause with a pull request that ended well', async () => {
+		const world = makeWorld();
+		const got = await buildFeature(deps(world), setup(world), '1');
+
+		expect(got.kind).toBe('pull');
+		expect(got).not.toHaveProperty('pause');
+	});
 
 	it('keeps the first reason when the review pauses a run that is paused already', async () => {
 		const world = makeWorld();
@@ -3026,6 +3073,28 @@ describe('the Pull-check pass in --watch', () => {
 		expect(got).toMatchObject({ kind: 'paused' });
 		expect(world.asked).toEqual([]);
 		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it('does not pause for the caps of the Sessions in other Slots: its Session waits for room where it starts instead', async () => {
+		const world = makeWorld();
+		const pull = await redDraft(world);
+		// room for the day's spend and one fix Session, but not with another Slot's $5 Session running
+		const spent = world.spend.today(new Date(2026, 9, 30, 9));
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: spent + LIMITS.pullFixUsd + 4 } });
+		const red = {
+			feature: '1',
+			draft: {
+				pull: { id: pull.id, url: pull.url },
+				branch: pull.head,
+				headCommit: '',
+				body: pull.body,
+				checks: pull.checks,
+				personEngaged: false
+			}
+		};
+		world.spend.reserve(5);
+		expect(await fixPullChecks(deps(world), s, red)).not.toMatchObject({ kind: 'paused' });
+		expect(world.asked).not.toEqual([]);
 	});
 });
 

@@ -985,6 +985,17 @@ describe.each(kinds)('how %s ends besides its answer', (_name, call, sessionId) 
 		expect(await ended({ kind: 'rate-limited', resetsAt: 1793390400 })).toEqual({
 			kind: 'paused',
 			why: "the plan's usage limit was reached; it resets at 2026-10-30T20:00:00.000Z",
+			resetsAt: 1793390400,
+			sessionId,
+			costUsd: 0
+		});
+	});
+
+	it('pauses on a Session the day had no room for beside the other Slots', async () => {
+		const why = 'the day is full';
+		expect(await ended({ kind: 'day-over', why })).toEqual({
+			kind: 'paused',
+			why,
 			sessionId,
 			costUsd: 0
 		});

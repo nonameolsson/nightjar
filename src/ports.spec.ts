@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { claimPorts, FIRST_PORT, portEnv } from './ports.js';
+import { claimPorts, FIRST_PORT, leasePorts, portEnv } from './ports.js';
 
 // no machine runs this many processes, so the pid is dead
 const DEAD = 99_999_999;
@@ -69,6 +69,34 @@ describe('claimPorts', () => {
 		expect(
 			await claimPorts({ count: COUNT, locks, free: () => Promise.resolve(false) })
 		).toBeNull();
+	});
+});
+
+describe('leasePorts', () => {
+	it('names the block in variables and for a line, and gives it back on release', async () => {
+		const lease = await leasePorts({ count: 2, names: ['WEB_PORT'], locks, free: allFree });
+		expect(lease?.env).toEqual({ WEB_PORT: String(FIRST_PORT) });
+		expect(lease?.ports).toBe(`${String(FIRST_PORT)} to ${String(FIRST_PORT + 1)}`);
+		lease?.release();
+		const again = await leasePorts({ count: 2, names: ['WEB_PORT'], locks, free: allFree });
+		expect(again?.env).toEqual({ WEB_PORT: String(FIRST_PORT) });
+	});
+
+	it('gives two leases in one process blocks that do not overlap', async () => {
+		const a = await leasePorts({ count: 2, names: ['A'], locks, free: allFree });
+		const b = await leasePorts({ count: 2, names: ['A'], locks, free: allFree });
+		expect(a?.env).toEqual({ A: String(FIRST_PORT) });
+		expect(b?.env).toEqual({ A: String(FIRST_PORT + 2) });
+	});
+
+	it('finds no lease when no block is free', async () => {
+		const none = await leasePorts({
+			count: 2,
+			names: ['A'],
+			locks,
+			free: () => Promise.resolve(false)
+		});
+		expect(none).toBeNull();
 	});
 });
 

@@ -29,6 +29,12 @@ function what(status: Status, nowMs: number): string | undefined {
 		const until = d.until ? ` until ${clock(d.until)}` : '';
 		return `nightjar: paused${until}: ${d.why} · ${today}`;
 	}
+	const builds = status.builds ?? [];
+	if (builds.length > 1) {
+		const ids = builds.map((b) => `#${b.feature}`).join(' ');
+		const dollars = (n: number) => `$${Number.isInteger(n) ? String(n) : n.toFixed(2)}`;
+		return `nightjar: building ${String(builds.length)} · ${ids} · ${dollars(spent)} of ${dollars(status.dailyUsd)} today`;
+	}
 	const where = d.ticket === null ? `#${d.feature}` : `#${d.feature} › #${d.ticket}`;
 	const round =
 		d.round !== null && d.rounds !== null && (d.step === 'fix' || d.round > 1)

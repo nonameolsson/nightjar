@@ -16,6 +16,7 @@ import { detailFrom, listsFrom } from '../src/ui-tracker.js';
 
 const SCENARIOS = [
 	'building',
+	'two-builds',
 	'review-round',
 	'idle',
 	'paused',
@@ -298,20 +299,27 @@ if (scenario === 'shelf') {
 	}
 }
 
-if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-round') {
-	const lines = [
+if (
+	scenario === 'building' ||
+	scenario === 'two-builds' ||
+	scenario === 'stopped' ||
+	scenario === 'review-round'
+) {
+	const log = (name: string, texts: readonly string[]) =>
+		writeFileSync(
+			join(root, '.factory', 'logs', `${name}.jsonl`),
+			texts
+				.map((text) =>
+					JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
+				)
+				.join('\n')
+		);
+	log('dev', [
 		'Reading src/views.ts',
 		'Edit src/views.ts',
 		'Bash npm test',
 		'The list renders; now the share links.'
-	].map((text) => ({
-		type: 'assistant',
-		message: { content: [{ type: 'text', text }] }
-	}));
-	writeFileSync(
-		join(root, '.factory', 'logs', 'dev.jsonl'),
-		lines.map((l) => JSON.stringify(l)).join('\n')
-	);
+	]);
 	// the build in flight writes its Logbook as it goes: open /features/272 to watch it
 	const building = (minutes: number, entry: Decision & Place) =>
 		logbook.write({ at: ago(minutes), feature: '272', ...entry });
@@ -345,6 +353,30 @@ if (scenario === 'building' || scenario === 'stopped' || scenario === 'review-ro
 					{ id: '4', title: 'Share links', state: 'waiting', why: 'waits for #3' }
 				]
 	});
+	if (scenario === 'two-builds') {
+		// the second Slot's build, newer than the first, with its own Session
+		log('dev-2', [
+			'Reading src/digest.ts',
+			'Bash npm run check',
+			'Lint is clean; now the digest model.'
+		]);
+		file.doing({
+			kind: 'building',
+			feature: '276',
+			title: 'Weekly digest',
+			ticket: '1',
+			step: 'build',
+			round: 1,
+			rounds: 3,
+			session: 'dev-2',
+			startedAt: ago(2),
+			featureStartedAt: ago(2),
+			tickets: [
+				{ id: '1', title: 'Digest model', state: 'building' },
+				{ id: '2', title: 'Digest email', state: 'waiting', why: 'waits for #1' }
+			]
+		});
+	}
 } else if (scenario === 'idle') {
 	file.doing({ kind: 'idle', nextPollAt: new Date(now.getTime() + 120_000).toISOString() });
 } else if (scenario === 'paused') {

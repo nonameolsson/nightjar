@@ -35,6 +35,26 @@ describe('the status line', () => {
 		expect(line(fix, NOW)).toBe('nightjar: #262 › #263 fix 2/3 · 14m · $0.40 today');
 	});
 
+	it('counts and names several builds against the day, and reads one build or an older file as before', () => {
+		const one = (feature: string) =>
+			({
+				kind: 'building',
+				feature,
+				ticket: null,
+				step: 'review',
+				round: null,
+				rounds: null,
+				session: 's',
+				startedAt: at(10, 30)
+			}) as const;
+		const base = { ...status(one('12')), spentTodayUsd: 14 };
+		const three = { ...base, builds: [one('12'), one('15'), one('20')] };
+		expect(line(three, NOW)).toBe('nightjar: building 3 · #12 #15 #20 · $14 of $60 today');
+		const single = { ...base, builds: [one('12')] };
+		expect(line(single, NOW)).toBe('nightjar: #12 review · 0m · $14.00 today');
+		expect(line(base, NOW)).toBe('nightjar: #12 review · 0m · $14.00 today');
+	});
+
 	it('says no round for a first build and no Ticket for a review', () => {
 		const build = {
 			kind: 'building',

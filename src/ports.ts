@@ -10,6 +10,9 @@ export const LAST_PORT = 5476;
 
 export const defaultLocks = () => join(tmpdir(), 'nightjar-ports');
 
+// The lock files this process holds right now, one claim per piece of work in a Slot: the pid in a lock cannot tell two of them apart.
+const heldHere = new Set<string>();
+
 const alive = (pid: number) => {
 	try {
 		process.kill(pid, 0);
@@ -56,6 +59,26 @@ export function portEnv(first: number, names: readonly string[]): Record<string,
 	return Object.fromEntries(names.map((name, i) => [name, String(first + i)]));
 }
 
+// A block of ports claimed for one piece of work in a Slot: the variables its Sessions and commands see, the ports said for a line, and the way to give the block back.
+export interface PortLease {
+	readonly env: Readonly<Record<string, string>>;
+	readonly ports: string;
+	release(): void;
+}
+
+// Claims a block for one piece of work, or null when none is free; `names` are the variables that carry the block's ports.
+export async function leasePorts(
+	options: ClaimOptions & { readonly names: readonly string[] }
+): Promise<PortLease | null> {
+	const claim = await claimPorts(options);
+	if (claim === null) return null;
+	return {
+		env: portEnv(claim.port, options.names),
+		ports: `${String(claim.port)} to ${String(claim.port + options.count - 1)}`,
+		release: () => claim.release()
+	};
+}
+
 // The first block of `count` ports that no live run holds and nothing listens on, or null.
 export async function claimPorts(options: ClaimOptions): Promise<PortClaim | null> {
 	const { count } = options;
@@ -84,8 +107,11 @@ export async function claimPorts(options: ClaimOptions): Promise<PortClaim | nul
 		for (let first = FIRST_PORT; first + count - 1 <= LAST_PORT; first += count) {
 			const ports = Array.from({ length: count }, (_, i) => first + i);
 			// a lock per port, so blocks of different counts on one machine never overlap
+			// a lock with this very pid is stale (a dead run's pid came round again) unless a claim of this process holds it, as a Slot's does
 			const taken = ports.some((port) => {
-				const held = holder(join(locks, String(port)));
+				const lock = join(locks, String(port));
+				if (heldHere.has(lock)) return true;
+				const held = holder(lock);
 				return held !== null && held !== pid && alive(held);
 			});
 			if (taken) continue;
@@ -95,14 +121,23 @@ export async function claimPorts(options: ClaimOptions): Promise<PortClaim | nul
 				if (!all) break;
 			}
 			if (!all) continue;
-			for (const port of ports) writeFileSync(join(locks, String(port)), String(pid));
+			for (const port of ports) {
+				const lock = join(locks, String(port));
+				writeFileSync(lock, String(pid));
+				heldHere.add(lock);
+			}
+			let released = false;
 			return {
 				port: first,
-				// removes a lock only while it is still this run's
+				// removes a lock only while it is still this run's, and gives the block back once however often it is called
 				release: () => {
+					if (released) return;
+					released = true;
 					for (const port of ports) {
 						const lock = join(locks, String(port));
-						if (holder(lock) === pid) rmSync(lock, { force: true });
+						if (holder(lock) !== pid) continue;
+						heldHere.delete(lock);
+						rmSync(lock, { force: true });
 					}
 				}
 			};

@@ -5,6 +5,7 @@ import {
 	handedOver,
 	noteTickets,
 	type FeatureOutcome,
+	type Pause,
 	type PullFixOutcome,
 	type RedDraft
 } from './build.js';
@@ -27,6 +28,7 @@ import {
 import type { ItemId, Tracker } from './tracker.js';
 import { why } from './say.js';
 import type { Newer } from './stale.js';
+import type { PortLease } from './ports.js';
 
 import { DEFAULT_POLL_SECONDS } from './person-config.js';
 
@@ -34,18 +36,28 @@ export const POLL_MS = DEFAULT_POLL_SECONDS * 1000;
 // how long --watch waits after a pause (the daily limit, the plan's usage limit) before it looks again
 export const PAUSE_MS = 30 * 60_000;
 
+export type Say = (line: string) => void;
+
+// The variables that hand a piece of work its block of ports.
+export type PortEnv = Readonly<Record<string, string>>;
+
 export interface QueueDeps {
 	readonly tracker: Tracker;
 	// whose Features to build
 	readonly person: string;
-	readonly build: (feature: Named) => Promise<FeatureOutcome>;
+	// `say` is the Slot's own, which marks each line with the Feature's id when the run holds several Slots; `portEnv` is the block of ports the Slot claimed for this work, when the repo reserves ports
+	readonly build: (feature: Named, say: Say, portEnv?: PortEnv) => Promise<FeatureOutcome>;
+	// Claims a block of ports for a Slot's work, or null when none is free; left out when the repo reserves none. The queue releases the lease when the work ends.
+	readonly claimPorts?: () => Promise<PortLease | null>;
 	readonly status: StatusReport;
 	readonly now: () => Date;
-	readonly say: (line: string) => void;
+	readonly say: Say;
 	readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	readonly signal?: AbortSignal;
 	// how long --watch waits when idle; POLL_MS when left out
 	readonly pollMs?: number;
+	// how many Slots the run holds (--parallel, else config.json's parallel); 1 when left out
+	readonly slots?: number;
 	// --watch only: newer Nightjar code than the one running, checked while idle
 	readonly newer?: Newer;
 	// factory.json's Signal names, for the Next step of a Feature handed back on a fault
@@ -85,7 +97,12 @@ export interface FeedbackPass {
 	// the open pull requests on Nightjar's branches
 	readonly pulls: () => Promise<OpenPull[]>;
 	// the Feature built with no Go, its Feedback round started by the request for changes `asked`
-	readonly answer: (feature: Named, asked: string) => Promise<FeatureOutcome>;
+	readonly answer: (
+		feature: Named,
+		asked: string,
+		say: Say,
+		portEnv?: PortEnv
+	) => Promise<FeatureOutcome>;
 }
 
 // Nightjar's open pull requests, or null when the Code host cannot list them or cannot answer their feedback.
@@ -110,7 +127,7 @@ export interface PullChecksPass {
 	// the Code host's open drafts on Nightjar's branches
 	readonly drafts: () => Promise<NightjarDraft[]>;
 	// one Pull-check fix round on a red draft
-	readonly fix: (red: RedDraft) => Promise<PullFixOutcome>;
+	readonly fix: (red: RedDraft, say: Say, portEnv?: PortEnv) => Promise<PullFixOutcome>;
 }
 
 // The revisit pass, or null when factory.json leaves it off or the Code host cannot list Nightjar's drafts.
@@ -209,7 +226,7 @@ export async function handBack(
 export async function buildOne(
 	deps: QueueDeps,
 	feature: Named,
-	build: QueueDeps['build'] = deps.build
+	build: (feature: Named) => Promise<FeatureOutcome> = (f) => deps.build(f, deps.say)
 ): Promise<FeatureOutcome | null> {
 	const startedAt = deps.now().toISOString();
 	try {
@@ -312,6 +329,8 @@ async function nextRedDraft(
 	deps: QueueDeps,
 	pass: PullChecksPass,
 	tried: ReadonlySet<string>,
+	// the Features in a Slot, which no other Slot takes
+	busy: ReadonlySet<ItemId>,
 	// `nightjar <id>`: only this Feature's draft
 	only?: ItemId
 ): Promise<RedDraft | null> {
@@ -324,6 +343,7 @@ async function nextRedDraft(
 		if (handedOver(draft.body)) continue;
 		const feature = featureOfBody(draft.body);
 		if (feature === undefined || (only !== undefined && feature !== only)) continue;
+		if (busy.has(feature)) continue;
 		try {
 			const { assignees, signals } = await deps.tracker.standing(feature);
 			if (!assignees.some((a) => samePerson(a, deps.person)) || signals.length > 0) continue;
@@ -336,23 +356,33 @@ async function nextRedDraft(
 	return null;
 }
 
-// One red draft's Pull-check fix round, or null when none waits; a fault is said, and the Queue goes on.
-async function revisit(
+// The red draft the revisit pass takes next, or null when none waits; a fault is said, and the Queue goes on.
+async function findRed(
 	deps: QueueDeps,
 	pass: PullChecksPass,
-	tried: Set<string>,
+	tried: ReadonlySet<string>,
+	busy: ReadonlySet<ItemId>,
 	only?: ItemId
-): Promise<PullFixOutcome | null> {
-	let red: RedDraft | null;
+): Promise<RedDraft | null> {
 	try {
-		red = await nextRedDraft(deps, pass, tried, only);
+		return await nextRedDraft(deps, pass, tried, busy, only);
 	} catch (fault) {
 		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
 		return null;
 	}
-	if (red === null) return null;
+}
+
+// One red draft's Pull-check fix round; a fault is said, and the round is skipped.
+async function fixRed(
+	deps: QueueDeps,
+	pass: PullChecksPass,
+	tried: Set<string>,
+	red: RedDraft,
+	say: Say,
+	portEnv?: PortEnv
+): Promise<PullFixOutcome> {
 	try {
-		const got = await pass.fix(red);
+		const got = await pass.fix(red, say, portEnv);
 		// the day's limit holds it back, so it is taken once the day is over
 		if (got.kind !== 'paused') tried.add(triedKey(red.draft));
 		// a fix whose push failed on a fault is handed back as a build is, so the Feature carries a Signal and a comment
@@ -363,7 +393,7 @@ async function revisit(
 	} catch (fault) {
 		tried.add(triedKey(red.draft));
 		const reason = why(fault);
-		deps.say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
+		say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
 		// a fault from before the round named itself is still the Pull-check fix's
 		const at =
 			fault instanceof BuildFault
@@ -381,6 +411,18 @@ async function revisit(
 		await handBack(deps, { id: red.feature, title }, at);
 		return { kind: 'skipped', why: reason };
 	}
+}
+
+// One red draft's Pull-check fix round, or null when none waits.
+async function revisit(
+	deps: QueueDeps,
+	pass: PullChecksPass,
+	tried: Set<string>,
+	only?: ItemId,
+	portEnv?: PortEnv
+): Promise<PullFixOutcome | null> {
+	const red = await findRed(deps, pass, tried, new Set(), only);
+	return red === null ? null : fixRed(deps, pass, tried, red, deps.say, portEnv);
 }
 
 // Whether a round did a piece of work; a skipped one left the pull request alone, so the Queue's next work is still due.
@@ -406,11 +448,15 @@ export function featureExit(got: FeatureOutcome | null): number {
 	return got !== null && FEATURE_GOOD_ENDS.includes(got.kind) ? 0 : 1;
 }
 
-// `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today.
-export async function fixNamed(deps: QueueDeps, id: ItemId): Promise<PullFixOutcome | null> {
+// `nightjar <id>`: the Feature's red draft fixed, or null when the pass is off or that Feature has none to fix, so the Feature is built as today. `portEnv` is the block of ports the caller claimed for it.
+export async function fixNamed(
+	deps: QueueDeps,
+	id: ItemId,
+	portEnv?: PortEnv
+): Promise<PullFixOutcome | null> {
 	const pass = deps.pullChecks;
 	if (pass === undefined) return null;
-	const got = await revisit(deps, pass, new Set(), id);
+	const got = await revisit(deps, pass, new Set(), id, portEnv);
 	if (got?.kind === 'paused') deps.say(got.why);
 	return didWork(got) ? got : null;
 }
@@ -455,6 +501,8 @@ async function askedFeatures(
 
 const atLimit = (a: AskedFeature) => a.rounds >= AUTOMATIC_ROUNDS;
 
+const askedKey = (a: AskedFeature) => `${String(a.open.pull.id)} ${a.request.id}`;
+
 const limitWhy = `its pull request has had its ${String(AUTOMATIC_ROUNDS)} automatic Feedback rounds`;
 
 // A request for changes past the limit starts no round: the Feature gets needs a person and a comment saying why, once; a Feature that carries needs a person already is left alone.
@@ -484,12 +532,13 @@ async function feedbackLimit(deps: QueueDeps, a: AskedFeature): Promise<void> {
 	}
 }
 
-// One Feedback round a trusted request for changes started, or null when none waits. A pull request is taken once per request in a run, so a round that lands no commit is not started again and again.
-async function answerAsked(
+// The Feature whose Feedback round a trusted request for changes starts next, or null when none waits. A pull request is taken once per request in a run, so a round that lands no commit is not started again and again.
+async function findAsked(
 	deps: QueueDeps,
 	pass: FeedbackPass,
-	tried: Set<string>
-): Promise<{ readonly feature: Named; readonly outcome: FeatureOutcome | null } | null> {
+	tried: Set<string>,
+	busy: ReadonlySet<ItemId>
+): Promise<AskedFeature | null> {
 	let found: AskedFeature[];
 	try {
 		found = await askedFeatures(deps, await pass.pulls());
@@ -498,16 +547,15 @@ async function answerAsked(
 		return null;
 	}
 	for (const a of found) {
-		const key = `${String(a.open.pull.id)} ${a.request.id}`;
+		if (busy.has(a.feature.id)) continue;
+		const key = askedKey(a);
 		if (tried.has(key)) continue;
 		if (atLimit(a)) {
 			await feedbackLimit(deps, a);
 			continue;
 		}
 		tried.add(key);
-		deps.say(`#${a.feature.id}: ${a.request.author} asked for changes on ${a.open.pull.url}`);
-		const outcome = await buildOne(deps, a.feature, (f) => pass.answer(f, a.request.id));
-		return { feature: a.feature, outcome };
+		return a;
 	}
 	return null;
 }
@@ -515,9 +563,57 @@ async function answerAsked(
 const none = (deps: Pick<QueueDeps, 'person'>) =>
 	`no Feature with the Go is assigned to ${deps.person}`;
 
-// The oldest Feature assigned to the person with the Go, then the next; 130 once stopped.
+// With several Slots, each line a Slot's work says starts with its Feature's id, so the lines of work running at once can be told apart.
+export function slotSay(id: ItemId, say: Say): Say {
+	const mark = `#${id}`;
+	const marked = (line: string) => line.startsWith(mark) && !/^\w/.test(line.slice(mark.length));
+	return (line) => say(marked(line) ? line : `${mark}: ${line}`);
+}
+
+// How a Slot's work ended: the exit code it gives --once, or null when it did no work, so the Slot takes the next; the pause it asks of the run; and the Feature it built, for Waiting on you.
+interface Ended {
+	readonly code: number | null;
+	readonly paused?: Pause;
+	readonly built?: { readonly feature: Named; readonly outcome: FeatureOutcome | null };
+}
+
+// A piece of work a free Slot takes: the Feature it holds the Slot for, and the work, which runs on the block of ports its Slot claimed. `untake` puts the work back, for a Slot that could not claim a block.
+interface Work {
+	readonly feature: ItemId;
+	readonly run: (say: Say, portEnv?: PortEnv) => Promise<Ended>;
+	readonly untake?: () => void;
+}
+
+const pauseOf = ({ why, resetsAt }: Pause): Pause => ({
+	why,
+	...(resetsAt === undefined ? {} : { resetsAt })
+});
+
+// A Feature that ended on a pause asks it of the run, even when its pull request was opened first.
+const builtPause = (outcome: FeatureOutcome | null): { readonly paused?: Pause } => {
+	if (outcome?.kind === 'paused') return { paused: pauseOf(outcome) };
+	if (outcome?.kind === 'pull' && outcome.pause !== undefined) {
+		return { paused: pauseOf(outcome.pause) };
+	}
+	return {};
+};
+
+const builtEnd = (feature: Named, outcome: FeatureOutcome | null): Ended => ({
+	code: outcome === null || outcome.kind === 'paused' ? 1 : 0,
+	...builtPause(outcome),
+	built: { feature, outcome }
+});
+
+const fixEnd = (got: PullFixOutcome): Ended =>
+	got.kind === 'skipped'
+		? { code: null }
+		: { code: pullFixExit(got), ...(got.kind === 'paused' ? { paused: pauseOf(got) } : {}) };
+
+// Up to `slots` pieces of work at once, one per Slot and a Feature in one Slot at most. A free Slot takes, in order, the oldest red draft, the oldest Feature assigned to the person with the Go, then a Feedback round; it looks on each tick and whenever another Slot frees up. --once takes up to `slots` and returns when they end; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const stop = deps.signal;
+	const slots = Math.max(1, deps.slots ?? 1);
+	const pollMs = deps.pollMs ?? POLL_MS;
 	const waiting = waitingOnYou(deps);
 	let told: string | null = null;
 	// once per version; Nightjar never restarts itself
@@ -531,41 +627,20 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		deps.status.happened({ kind: 'stale', commit: newer });
 		deps.status.codeMoved(newer);
 	};
+	// only with every Slot empty, so the newer-code check never runs beside a build
 	const idle = async () => {
 		await warnIfStale();
-		const pollMs = deps.pollMs ?? POLL_MS;
 		const nextPollAt = new Date(deps.now().getTime() + pollMs).toISOString();
 		deps.status.doing({ kind: 'idle', nextPollAt });
 		await deps.sleep(pollMs, stop);
 	};
-	// the Features told why they paused on this run, so a retry every PAUSE_MS does not comment each time; only a Tracker without a Status note is told in a comment, as the build's note says it on one that keeps one
-	const toldPaused = new Set<string>();
-	// Why a piece of work paused the run: a build that stopped before its pull request, or one that opened it and then paused.
-	const pausedBy = (outcome: FeatureOutcome | null) =>
-		outcome?.kind === 'paused'
-			? outcome.why
-			: outcome?.kind === 'pull'
-				? outcome.paused
-				: undefined;
-	const pauseFor = async (feature: Named, reason: string) => {
-		const key = `${feature.id} ${reason}`;
-		if (deps.tracker.statusNote === undefined && !toldPaused.has(key)) {
-			toldPaused.add(key);
-			try {
-				await deps.tracker.comment(
-					feature.id,
-					`Nightjar paused: ${reason}.\n\nNothing to do. Nightjar tries this Feature again in ${String(PAUSE_MS / 60_000)} minutes, and the Go stays on it.${FOOTER}`
-				);
-			} catch {
-				// the pause goes on without the comment
-			}
-		}
-		await pause(reason);
-	};
-	const pause = async (reason: string) => {
-		const until = new Date(deps.now().getTime() + PAUSE_MS).toISOString();
-		deps.status.doing({ kind: 'paused', why: reason, until });
-		await deps.sleep(PAUSE_MS, stop);
+	// Every Slot waits out one pause together: until the plan's reset time when the limit gave one still ahead, else PAUSE_MS.
+	const pause = async ({ why: reason, resetsAt }: Pause) => {
+		const now = deps.now().getTime();
+		const reset = resetsAt === undefined ? 0 : resetsAt * 1000 - now;
+		const ms = reset > 0 ? reset : PAUSE_MS;
+		deps.status.doing({ kind: 'paused', why: reason, until: new Date(now + ms).toISOString() });
+		await deps.sleep(ms, stop);
 	};
 	// the drafts the revisit pass took this run, at their head commit then
 	const tried = new Set<string>();
@@ -573,70 +648,238 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 	const asked = new Set<string>();
 	// the pull requests Publish failed on this run
 	const unpublished = new Set<number>();
-	while (stop?.aborted !== true) {
-		// a red draft is revisited before the next Feature is taken, and on each idle tick in --watch
+	// the Features in a Slot, each with a promise that settles once its work ended and was told
+	const running = new Map<ItemId, Promise<void>>();
+	// the Queue last read, less the Features in a Slot
+	let queued: Named[] = [];
+
+	// The next piece of work in today's order, skipping the Features in a Slot, or null when none waits. A Tracker fault is thrown.
+	const pick = async (): Promise<Work | null> => {
+		const busy = new Set(running.keys());
 		const pass = deps.pullChecks;
 		if (pass !== undefined) {
-			const got = await revisit(deps, pass, tried);
-			if (once) {
-				// --once is one piece of work: the oldest red draft, else the next Feature
-				if (got?.kind === 'paused') deps.say(got.why);
-				if (didWork(got)) return pullFixExit(got);
-			} else {
-				if (got?.kind === 'paused') await pause(got.why);
-				if (got !== null) continue;
+			const red = await findRed(deps, pass, tried, busy);
+			if (red !== null) {
+				return {
+					feature: red.feature,
+					run: async (say, portEnv) => {
+						const got = await fixRed(deps, pass, tried, red, say, portEnv);
+						if (once && got.kind === 'paused') say(got.why);
+						return fixEnd(got);
+					}
+				};
 			}
 		}
 		// --watch only: a draft that is ready is published before the next Feature is taken, and on each idle tick
 		if (!once && deps.publish !== undefined) {
-			if ((await publishNext(deps, deps.publish, unpublished)) !== null) continue;
-		}
-		let features;
-		try {
-			features = await deps.tracker.assignedFeatures(deps.person);
-		} catch (fault) {
-			if (once) throw fault;
-			deps.say(why(fault));
-			await idle();
-			continue;
-		}
-		const next = features[0];
-		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
-		const rest = features.slice(1).map(named);
-		await waiting.read(rest);
-		waiting.tell(rest);
-		if (next === undefined) {
-			// with no Feature with the Go, a trusted request for changes on one of Nightjar's pull requests is next
-			const answered =
-				deps.feedback === undefined ? null : await answerAsked(deps, deps.feedback, asked);
-			if (answered !== null) {
-				const { outcome } = answered;
-				waiting.tell(rest, outcome, answered.feature);
-				if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
-				const reason = pausedBy(outcome);
-				if (reason !== undefined) await pauseFor(answered.feature, reason);
-				continue;
+			while ((await publishNext(deps, deps.publish, unpublished)) !== null) {
+				// each ready draft, oldest first
 			}
 		}
-		if (next === undefined && once) {
-			deps.say(none(deps));
-			return 0;
+		const features = (await deps.tracker.assignedFeatures(deps.person)).filter(
+			(f) => !busy.has(f.id)
+		);
+		const next = features[0];
+		// the Feature about to build is current, so it is not in the Queue; nothing refreshes it mid-build
+		queued = features.slice(1).map(named);
+		await waiting.read(queued);
+		waiting.tell(queued);
+		if (next !== undefined) {
+			const feature = named(next);
+			return {
+				feature: feature.id,
+				run: async (say, portEnv) =>
+					builtEnd(
+						feature,
+						await buildOne({ ...deps, say }, feature, (f) => deps.build(f, say, portEnv))
+					)
+			};
 		}
-		if (next === undefined) {
+		// with no Feature with the Go, a trusted request for changes on one of Nightjar's pull requests is next
+		const feedback = deps.feedback;
+		const a = feedback === undefined ? null : await findAsked(deps, feedback, asked, busy);
+		if (feedback === undefined || a === null) return null;
+		return {
+			feature: a.feature.id,
+			// the request is taken once per run, so a Slot that finds no ports puts it back
+			untake: () => asked.delete(askedKey(a)),
+			run: async (say, portEnv) => {
+				say(`#${a.feature.id}: ${a.request.author} asked for changes on ${a.open.pull.url}`);
+				const answer = (f: Named) => feedback.answer(f, a.request.id, say, portEnv);
+				return builtEnd(a.feature, await buildOne({ ...deps, say }, a.feature, answer));
+			}
+		};
+	};
+
+	// what the Slots' work changes as it ends: the pause under way, in which no Slot takes work, and a fault the run ends on once its Slots are empty
+	const run: { pausing: Promise<void> | null; fault: { readonly error: unknown } | null } = {
+		pausing: null,
+		fault: null
+	};
+	// --once: the pieces of work taken, the exit code of those that ended, and whether it takes more
+	let taken = 0;
+	let code = 0;
+	let takesMore = true;
+
+	// the Features told why they paused on this run, so a retry after each pause does not comment each time
+	const toldPaused = new Set<string>();
+	const tellPaused = async (feature: ItemId, { why: reason }: Pause) => {
+		const key = `${feature} ${reason}`;
+		// a Tracker with a Status note says the pause there, as the build's note does
+		if (deps.tracker.statusNote !== undefined || toldPaused.has(key)) return;
+		toldPaused.add(key);
+		try {
+			await deps.tracker.comment(
+				feature,
+				`Nightjar paused: ${reason}.\n\nNothing to do. Nightjar tries this Feature again by itself when the pause ends, and the Go stays on it.${FOOTER}`
+			);
+		} catch {
+			// the pause goes on without the comment
+		}
+	};
+
+	const pauseAll = (why: Pause) => {
+		if (run.pausing !== null) return;
+		run.pausing = pause(why).then(() => {
+			run.pausing = null;
+		});
+	};
+
+	// the Features whose Slot found no block of ports, so the line saying why comes once, not on every tick
+	const portless = new Set<ItemId>();
+	// --once: whether a Slot found no block of ports, which ends a run that took nothing
+	const blocked = { ports: false };
+
+	const start = (work: Work, lease: PortLease | null) => {
+		taken += 1;
+		const say = slots > 1 ? slotSay(work.feature, deps.say) : deps.say;
+		if (lease !== null) say(`ports ${lease.ports}`);
+		// the block goes back once the work has ended, so the next work can claim it
+		const ended = work
+			.run(say, lease?.env)
+			.then(async (end) => {
+				running.delete(work.feature);
+				deps.status.finished(work.feature);
+				if (end.code === null) taken -= 1;
+				else code = Math.max(code, end.code);
+				if (end.paused !== undefined) {
+					// --once ends on a pause; --watch pauses every Slot, the running ones finishing
+					if (once) takesMore = false;
+					else {
+						await tellPaused(work.feature, end.paused);
+						pauseAll(end.paused);
+					}
+				}
+				if (end.built !== undefined) {
+					const rest = queued.filter((f) => !running.has(f.id));
+					waiting.tell(rest, end.built.outcome, end.built.feature);
+				}
+			})
+			.catch((error: unknown) => {
+				running.delete(work.feature);
+				deps.status.finished(work.feature);
+				run.fault ??= { error };
+			})
+			.finally(() => lease?.release());
+		running.set(work.feature, ended);
+	};
+
+	// The block of ports for the work a Slot is about to take: null with no claim when the repo reserves none, and `false` with the work put back and a line saying why when no block is free.
+	const claim = async (work: Work): Promise<PortLease | null | false> => {
+		if (deps.claimPorts === undefined) return null;
+		let lease: PortLease | null;
+		try {
+			lease = await deps.claimPorts();
+		} catch (error) {
+			work.untake?.();
+			throw error;
+		}
+		if (lease !== null) {
+			portless.delete(work.feature);
+			return lease;
+		}
+		work.untake?.();
+		blocked.ports = true;
+		if (!portless.has(work.feature)) {
+			portless.add(work.feature);
+			deps.say(
+				`#${work.feature} waits: no block of reserved ports is free; it starts once another Slot or run gives its block back (a lower ports.count in factory.json fits more blocks)`
+			);
+		}
+		return false;
+	};
+
+	const mayTake = () =>
+		running.size < slots &&
+		stop?.aborted !== true &&
+		run.fault === null &&
+		run.pausing === null &&
+		(!once || (takesMore && taken < slots));
+
+	// Free Slots take work until none waits. A Tracker fault ends --once, and --watch says it and looks again on the next tick.
+	const fill = async () => {
+		while (mayTake()) {
+			let work: Work | null;
+			try {
+				work = await pick();
+			} catch (error) {
+				if (once) run.fault = { error };
+				else deps.say(why(error));
+				return;
+			}
+			if (work === null) {
+				if (once) takesMore = false;
+				return;
+			}
+			let lease: PortLease | null | false;
+			try {
+				lease = await claim(work);
+			} catch (error) {
+				if (once) run.fault = { error };
+				else deps.say(why(error));
+				return;
+			}
+			// the Slot stays empty until the next tick, or until another Slot lets its block go
+			if (lease === false) return;
+			start(work, lease);
+		}
+	};
+
+	for (;;) {
+		await fill();
+		const stopped = stop?.aborted === true;
+		if (running.size === 0 && (run.pausing === null || stopped)) {
+			if (stopped || once || run.fault !== null) break;
 			await idle();
 			continue;
 		}
-		const outcome = await buildOne(deps, named(next));
-		waiting.tell(rest, outcome, next);
-		if (once) return outcome === null || outcome.kind === 'paused' ? 1 : 0;
-		const paused = pausedBy(outcome);
-		if (paused !== undefined) await pauseFor(named(next), paused);
+		const waits: Promise<void>[] = [...running.values()];
+		if (run.pausing !== null) waits.push(run.pausing);
+		// a free Slot looks again on the next tick, or as soon as another Slot frees up
+		const tick = new AbortController();
+		if (!once && mayTake()) {
+			const signal = stop === undefined ? tick.signal : AbortSignal.any([stop, tick.signal]);
+			waits.push(deps.sleep(pollMs, signal));
+		}
+		await Promise.race(waits);
+		tick.abort();
 	}
-	return 130;
+	if (run.fault !== null) throw run.fault.error;
+	if (!once) return 130;
+	if (taken > 0) return code;
+	if (stop?.aborted === true) return 130;
+	// the line saying why came when the Slot found no block; nothing was built
+	if (blocked.ports) return 2;
+	deps.say(none(deps));
+	return 0;
 }
 
-// `nightjar <id>`: the Queue and Waiting on you read once, then the one Feature built. A Tracker fault before the claim is thrown.
-export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOutcome | null> {
+// `nightjar <id>`: the Queue and Waiting on you read once, then the one Feature built, on the block of ports `portEnv` the caller claimed for it. A Tracker fault before the claim is thrown.
+export async function buildNamed(
+	deps: QueueDeps,
+	id: ItemId,
+	portEnv?: PortEnv
+): Promise<FeatureOutcome | null> {
 	const waiting = waitingOnYou(deps);
 	const { title } = await deps.tracker.feature(id);
 	const rest = (await deps.tracker.assignedFeatures(deps.person))
@@ -644,7 +887,8 @@ export async function buildNamed(deps: QueueDeps, id: ItemId): Promise<FeatureOu
 		.map(named);
 	await waiting.read(rest);
 	waiting.tell(rest);
-	const outcome = await buildOne(deps, { id, title });
+	const outcome = await buildOne(deps, { id, title }, (f) => deps.build(f, deps.say, portEnv));
+	deps.status.finished(id);
 	waiting.tell(rest, outcome, { id, title });
 	return outcome;
 }
