@@ -17,6 +17,7 @@ import {
 	buildNamed,
 	cannotClaim,
 	dryRun,
+	featureExit,
 	fixNamed,
 	publishPass,
 	pullChecksPass,
@@ -427,6 +428,29 @@ describe('queue --watch with the Pull-check pass', () => {
 		d.fixWith(() => Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1 }));
 		await queue(w.deps, false);
 		expect(work(w.trail)).toEqual(['fix 20', 'build 2', 'build 4']);
+	});
+
+	it('hands the Feature back with needs info when a round ends on a push that failed, and goes on to the Queue', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		d.done('20');
+		const pull = await d.open('20');
+		d.fixWith(() =>
+			Promise.resolve({
+				kind: 'faulted',
+				pull,
+				round: 1,
+				fault: new Error('the connection was reset'),
+				title: 'Done',
+				usd: 1
+			})
+		);
+		await queue(w.deps, false);
+		expect(w.tracker.signalsOf('20')).toEqual(['needsInfo']);
+		expect(w.tracker.said('20').at(-1)).toMatch(
+			/^\*\*Waiting on you\*\*: Nightjar stopped on a fault: the connection was reset/
+		);
+		expect(w.built).toEqual(['2', '4']);
 	});
 
 	it('goes on to the Queue when a round stops on a fault, saying so', async () => {
@@ -958,6 +982,36 @@ describe('nightjar <id>', () => {
 			why: 'boom',
 			startedAt: new Date(2026, 9, 30, 9).toISOString()
 		});
+	});
+});
+
+describe('the exit code of nightjar <id>', () => {
+	const pull = { id: 7, url: 'https://code.example/pull/7' };
+
+	it('is 0 for a Feature handed to a person after a push a person beat', () => {
+		expect(featureExit({ kind: 'diverged', side: 'factory/4-x-attempt-push' })).toBe(0);
+		expect(
+			pullFixExit({ kind: 'diverged', pull, round: 1, side: 'factory/4-x-attempt-push', usd: 1 })
+		).toBe(0);
+	});
+
+	it('is 0 for a pull request opened or nothing to build, and 1 for a run that went no further', () => {
+		expect(featureExit({ kind: 'nothing', waiting: [] })).toBe(0);
+		expect(featureExit({ kind: 'paused', why: 'the daily limit was reached' })).toBe(1);
+		expect(featureExit({ kind: 'stopped' })).toBe(1);
+		expect(featureExit(null)).toBe(1);
+	});
+
+	it('is 1 for a Pull-check fix whose push faulted', () => {
+		const faulted: PullFixOutcome = {
+			kind: 'faulted',
+			pull,
+			round: 1,
+			fault: new Error('x'),
+			title: 'T',
+			usd: 1
+		};
+		expect(pullFixExit(faulted)).toBe(1);
 	});
 });
 

@@ -170,6 +170,15 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .chips button { background: none; border: 1px solid var(--line); border-radius: 9999px; color: var(--muted); cursor: pointer; font: inherit; font-size: 12.5px; min-height: 24px; padding: 2px 12px; }
 .chips button:hover { background: var(--surface-2); }
 .chips button[data-on="true"] { background: var(--surface-3); border-color: var(--surface-3); color: var(--ink); font-weight: 500; }
+.filters { align-items: center; display: flex; flex-wrap: wrap; gap: 0 20px; }
+.chips-label { align-self: center; color: var(--muted); font-size: 12.5px; }
+[data-shown] { font-size: 12.5px; margin: 0 0 8px; }
+[data-shown]:empty { display: none; }
+.week { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 4px 0; }
+.week li { padding: 0; }
+.week b { color: var(--ink); font-size: 16px; font-weight: 600; margin-right: 4px; }
+a.count { align-items: center; color: var(--ink); display: inline-flex; min-height: 24px; text-decoration: none; }
+a.count:hover { text-decoration: underline; }
 .scroll { overflow-x: auto; }
 .sr, .skip:not(:focus) { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
 .skip { background: var(--bg); color: var(--accent); left: 8px; padding: 8px 12px; top: 8px; z-index: 4; }
@@ -245,6 +254,25 @@ button.close:hover { background: var(--surface-2); }
 #feature ul.faults { color: var(--fault); font-size: 12.5px; list-style: disc; margin: 2px 0 4px; padding-left: 1.4em; }
 .criteria summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
 .criteria summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cost summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
+.cost summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+td.cost summary { color: inherit; font-size: 13px; padding: 0; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+.entry > .cost { grid-column: 1 / -1; }
+.split { font-size: 12px; font-variant-numeric: tabular-nums; max-width: 40rem; padding: 2px 0; }
+.split-head { color: var(--muted); font-size: 12px; font-weight: 500; margin: 8px 0 2px; }
+.split dl { margin: 0; }
+.split dl div { border-top: 1px solid var(--line); display: grid; gap: 2px 12px; grid-template-columns: minmax(0, 10rem) minmax(0, 1fr); padding: 3px 0; }
+.split dt { overflow-wrap: anywhere; }
+.split dd { margin: 0; overflow-wrap: anywhere; }
+.split .empty { margin: 4px 0; }
+.stepsbar { display: flex; gap: 2px; list-style: none; margin: 6px 0 0; padding: 0; }
+.seg { border-radius: 2px; display: inline-block; flex: none; height: 8px; width: 18px; }
+.seg.passed { background: var(--built); }
+.seg.retried { background: repeating-linear-gradient(135deg, var(--built) 0 2px, transparent 2px 4px); border: 1px solid var(--built); }
+.seg.failed { background: linear-gradient(90deg, var(--fault) 0 40%, transparent 40% 60%, var(--fault) 60%); }
+.seg.running { background: linear-gradient(90deg, var(--blue) 0 50%, transparent 50%); border: 1px solid var(--blue); }
+.seg.notReached { border: 1px dashed var(--pending); }
+.seg.notNeeded { background: linear-gradient(var(--pending), var(--pending)) center / 100% 2px no-repeat; }
 @media (prefers-reduced-motion: reduce) { .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
@@ -255,7 +283,7 @@ button.close:hover { background: var(--surface-2); }
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .cost summary { min-height: 44px; }
 	#views button, #themes button, .chips button { padding-inline: 14px; }
 	.tab { height: 40px; }
 }
@@ -275,5 +303,6 @@ button.close:hover { background: var(--surface-2); }
 	.bar { flex-wrap: wrap; }
 	#panels { padding: 12px 12px 40px; }
 	.scroll table { min-width: 36rem; }
+	.split dl div { grid-template-columns: 1fr; }
 }
 `;

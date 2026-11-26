@@ -20,7 +20,21 @@ const EntrySchema = z.looseObject({
 	// only a failed session has it
 	failure: z.enum(['passing', 'budget', 'lasting']).optional(),
 	// older lines lack it
-	durationMs: z.number().optional()
+	durationMs: z.number().optional(),
+	// older lines lack it; one that is not in this shape is read as absent, so the line still counts
+	models: z
+		.array(
+			z.object({
+				model: z.string(),
+				inputTokens: z.number(),
+				outputTokens: z.number(),
+				cacheReadTokens: z.number(),
+				cacheWriteTokens: z.number(),
+				costUsd: z.number()
+			})
+		)
+		.optional()
+		.catch(undefined)
 });
 
 export function record(path: string, entry: Entry): void {
@@ -86,6 +100,14 @@ export interface Spent {
 	readonly built: boolean;
 	// how long the session ran; absent in an older line
 	readonly durationMs?: number;
+	// the kind of work and the Session, which the split by stage reads
+	readonly step: Entry['step'];
+	readonly session: string;
+	// the models the session ran on; absent in an older line
+	readonly models?: NonNullable<Entry['models']>;
+	// how the session ended, and why a failed one failed, which the stages of a build read
+	readonly outcome: string;
+	readonly failure?: Entry['failure'];
 }
 
 // The median time a built Ticket took, or null with none recorded: its build, fix and Step sessions,
@@ -131,8 +153,26 @@ export function spends(path: string): Spent[] {
 		at: Date.parse(e.at),
 		costUsd: e.costUsd,
 		built: e.step === 'build' && e.outcome === 'built',
-		...(e.durationMs === undefined ? {} : { durationMs: e.durationMs })
+		...(e.durationMs === undefined ? {} : { durationMs: e.durationMs }),
+		step: e.step,
+		session: e.session,
+		...(e.models === undefined ? {} : { models: e.models }),
+		outcome: e.outcome,
+		...(e.failure === undefined ? {} : { failure: e.failure })
 	}));
+}
+
+// A Feature's sessions after `after` (exclusive) and up to `until` (inclusive), either open: one build of it.
+export function linesOnFeature(
+	all: readonly Spent[],
+	feature: string,
+	after: number | null,
+	until: number | null
+): Spent[] {
+	return all.filter(
+		(s) =>
+			s.feature === feature && (after === null || s.at > after) && (until === null || s.at <= until)
+	);
 }
 
 // How many Tickets of a Feature were built after `after` (exclusive) and up to `until` (inclusive), either open.
@@ -148,19 +188,4 @@ export function builtOnFeature(
 		if ((after === null || s.at > after) && (until === null || s.at <= until)) n += 1;
 	}
 	return n;
-}
-
-// The dollars spent on a Feature after `after` (exclusive) and up to `until` (inclusive), either open.
-export function spentOnFeature(
-	all: readonly Spent[],
-	feature: string,
-	after: number | null,
-	until: number | null
-): number {
-	let sum = 0;
-	for (const s of all) {
-		if (s.feature !== feature) continue;
-		if ((after === null || s.at > after) && (until === null || s.at <= until)) sum += s.costUsd;
-	}
-	return sum;
 }

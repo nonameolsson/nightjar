@@ -22,6 +22,7 @@ import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
 import { BANNER } from './ui-banner.js';
 import { escapeHtml as escape } from './markdown.js';
 import { EXTERNAL, idHtml, linksFor, NO_LINKS, type Links } from './ui-links.js';
+import { NO_WEEK } from './last-week.js';
 import { readFactory, type Completed, type FactoryView } from './status-reader.js';
 import type {
 	Doing,
@@ -54,8 +55,11 @@ import {
 	retryText,
 	runState,
 	stepText,
+	tokensText,
 	two
 } from './view-text.js';
+import { STAGE_TEXT, type BuildCost } from './build-cost.js';
+import { STATE_TEXT, type BuildStage } from './build-stages.js';
 
 export const UI_PORT = 4545;
 const HOST = '127.0.0.1';
@@ -186,6 +190,30 @@ function cards(view: FactoryView, lists: Lists): string {
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
 	const waiting = lists.known ? lists.waitingOnYou?.items.length : undefined;
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
+}
+
+// What the Table can be filtered to, in the words of its buttons; the page script reads the keys from here
+const OUTCOMES = [
+	['any', 'Any'],
+	['completed', 'Completed'],
+	['failed', 'Failed'],
+	['waiting', 'Needs a person']
+] as const;
+
+// The last seven local days, which the Overview opens with. A count of Features is a link to the Table's outcome filter; the dollars are not, as no Feature is one.
+// The filter shows the Table's rows with that outcome, of any date (and those that need a person now), not the week's, so each link says so rather than promise the same number.
+function week(view: FactoryView): string {
+	const w = view.week ?? NO_WEEK;
+	const count = (n: number, pick: (typeof OUTCOMES)[number][0], what: string, shows: string) =>
+		`<li><a class="count" href="#panels" data-goto="${pick}"><b>${String(n)}</b> ${n === 1 ? 'Feature' : 'Features'} ${what}<span class="sr">, show ${shows} in the Table</span></a></li>`;
+	return (
+		'<section id="week"><h2>Last seven days</h2><ul class="week">' +
+		count(w.completed, 'completed', 'completed', 'every completed Feature') +
+		count(w.failed, 'failed', 'failed', 'every failed Feature') +
+		count(w.handed, 'waiting', 'handed to a person', 'the Features that need a person now') +
+		`<li><b>${dollars(w.spentUsd)}</b> spent</li></ul>` +
+		'<p class="meta">Features are counted from the recent events and hand-backs that status.json keeps, the dollars from the ledger, by local day. A count opens the Table filtered by its outcome, which shows every Feature the Table holds with that outcome, of any day; Needs a person shows those that wait on a person now.</p></section>'
+	);
 }
 
 function queue(lists: Lists, links: Links): string {
@@ -328,6 +356,8 @@ interface FeatureCard {
 	readonly earlier?: Earlier;
 	// its open pull request, whose branch holds Tickets the Tracker still shows open
 	readonly pull?: FeaturePull;
+	// how each stage of its own build went: the one in flight, or the run a Completed card shows
+	readonly stages?: readonly BuildStage[];
 }
 // how many finished runs a Feature had in status.json's recent events, and the latest of them
 interface Earlier {
@@ -451,6 +481,33 @@ function progressHtml(p: Progress | null, tickets?: readonly TicketProgress[]): 
 	return `<span class="eggs" role="img" aria-label="${progressText(p)}">${eggs}${more}</span><p class="meta progress">${progressText(p)}</p>`;
 }
 
+// What a Steps bar segment says, in its tooltip and to a screen reader: the stage, how it went, its Sessions and their cost
+function segmentText(s: BuildStage): string {
+	const spent = s.sessions === 0 ? 'no Session' : `${sessionsText(s.sessions)}, ${dollars(s.usd)}`;
+	return `${STAGE_TEXT[s.stage]}: ${STATE_TEXT[s.state]}, ${spent}`;
+}
+
+// The Steps bar: one segment per stage of the Feature's latest build, its own or, on a card that is active again, its last run's.
+// Nothing for a Feature with no build to show, or one whose build has no Session yet and nothing running.
+function stepsBar(card: FeatureCard): string {
+	const stages = card.stages ?? card.earlier?.done.stages;
+	if (stages?.some((s) => s.sessions > 0 || s.state === 'running') !== true) return '';
+	const of = card.stages === undefined ? 'its last run' : 'this build';
+	const segments = stages
+		.map((s) => {
+			const text = escape(segmentText(s));
+			return `<li class="seg ${s.state}" title="${text}"><span class="sr">${text}</span></li>`;
+		})
+		.join('');
+	return `<ol class="stepsbar" aria-label="Steps bar of ${of}">${segments}</ol>`;
+}
+
+const STEPS_LEGEND = `<p class="legend stepslegend"><span>Steps bar, one segment per stage:</span>${(
+	['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'] as const
+)
+	.map((s) => `<span><i class="seg ${s}"></i>${STATE_TEXT[s]}</span>`)
+	.join('')}</p>`;
+
 interface Features {
 	// each is undefined while the lists are not known or not read yet
 	readonly queue: readonly QueuedCard[] | undefined;
@@ -490,6 +547,7 @@ function features(view: FactoryView, lists: Lists): Features {
 									total: tickets.length,
 									counts: BUILT_NOW
 								},
+					...(view.featureStages === undefined ? {} : { stages: view.featureStages }),
 					doing
 				}
 			: null;
@@ -519,7 +577,8 @@ function features(view: FactoryView, lists: Lists): Features {
 			waitingTickets: [],
 			done,
 			runs,
-			progress
+			progress,
+			...(done.stages === undefined ? {} : { stages: done.stages })
 		};
 	};
 	// one card per Feature: its latest run, and how many runs it had
@@ -699,7 +758,7 @@ function nest(
 	meta: string,
 	beneath = ''
 ): string {
-	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
+	return `<article class="entry ${cls}"><div class="who">${feature(card, links)}${logbookLink(card.id)}</div><div class="eggcell">${eggs}${stepsBar(card)}</div><div class="now">${now}</div><div class="clock">${meta}</div>${beneath}</article>`;
 }
 
 function buildingCard(card: BuildingCard, links: Links): string {
@@ -727,6 +786,7 @@ function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 		`<h3>${feature(card, links)}</h3><p class="sub">${stepLine(doing)}</p>` +
 		(steps === '' ? '' : `<ol class="steps">${steps}</ol>`) +
 		`<div class="meters"><div><small>Elapsed</small><b><time data-since="${escape(featureStart(doing))}"></time></b></div><div><small>Cost</small><b>${dollars(view.featureCostUsd)}</b></div></div>` +
+		costFold(view.featureCost, foldKey('now', doing.feature, featureStart(doing)), SPLIT_SUMMARY) +
 		(tail === '' ? '' : `<pre>${tail}</pre>`) +
 		`<p class="more">${sessionLink(doing.session)}<a class="open" href="${featureHref(doing.feature)}">Open its Logbook</a></p>` +
 		'</aside>'
@@ -750,6 +810,36 @@ const logbookLink = (id: string) =>
 		? ''
 		: ` <a class="open book-link" href="${featureHref(id)}" aria-label="Logbook of ${escape(idText(id))}">Logbook</a>`;
 
+// A fold's key: its place on the page and its Feature's build, so a live swap keeps it open and the same Feature in another view keeps its own
+const foldKey = (place: string, id: string, at: string) => escape(`${place}:${id}:${at}`);
+
+// A build's cost by stage and by model, folded under `summary`; nothing for a build the ledger has no line of
+function costFold(cost: BuildCost | undefined, key: string, summary: string): string {
+	if (cost === undefined || cost.stages.length === 0) return '';
+	const row = (name: string, usd: number, note: string) =>
+		`<div><dt>${name}</dt><dd>${dollars(usd)} <small>${note}</small></dd></div>`;
+	const stages = cost.stages
+		.map((s) => row(STAGE_TEXT[s.stage], s.usd, sessionsText(s.sessions)))
+		.join('');
+	const models = cost.models
+		.map((m) => row(escape(m.model), m.costUsd, `tokens: ${tokensText(m)}`))
+		.join('');
+	const { unrecorded } = cost;
+	let note = '';
+	if (cost.models.length === 0)
+		note = '<p class="empty">Models were not recorded for these Sessions.</p>';
+	else if (unrecorded.sessions > 0)
+		note = `<p class="empty">Models were not recorded for ${sessionsText(unrecorded.sessions)}, ${dollars(unrecorded.usd)}.</p>`;
+	return (
+		`<details class="cost" data-key="${key}"><summary data-fold="${key}">${summary}</summary><div class="split">` +
+		`<p class="split-head">By stage</p><dl>${stages}</dl>` +
+		`<p class="split-head">By model</p>${models === '' ? '' : `<dl>${models}</dl>`}${note}` +
+		'</div></details>'
+	);
+}
+
+const SPLIT_SUMMARY = 'Cost by stage and model';
+
 // A Feature in the Queue: its Ticket count, `k of N` built (closed, or on its open pull request) and its eggs; "?" and no eggs when the count failed; nothing when the Tracker cannot count.
 function queuedCard(card: QueuedCard, links: Links): string {
 	const counts = card.ticketCounts;
@@ -769,7 +859,7 @@ function queuedCard(card: QueuedCard, links: Links): string {
 }
 
 function completedCard(card: CompletedCard, links: Links): string {
-	const { event, costUsd } = card.done;
+	const { event, costUsd, cost } = card.done;
 	const took = tookMs(event);
 	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
 	return nest(
@@ -778,7 +868,8 @@ function completedCard(card: CompletedCard, links: Links): string {
 		links,
 		progressHtml(card.progress),
 		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
-		`${duration}${dollars(costUsd)}`
+		`${duration}${dollars(costUsd)}`,
+		costFold(cost, foldKey('card', event.feature, event.at), SPLIT_SUMMARY)
 	);
 }
 
@@ -934,7 +1025,7 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 			: all.completed.map((c) => completedCard(c, links)).join('');
 	const side = all.building === null ? '' : detail(all.building, view, links);
 	return (
-		`<div class="board">${LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
+		`<div class="board">${LEGEND}${STEPS_LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
 		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
 		group('building', 'Building', on ? (all.building === null ? 0 : 1) : null, building) +
@@ -972,10 +1063,25 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		readonly time: number | null;
 		readonly timeText: string;
 		readonly cost: number | null;
+		// the cost by stage and by model, and where the build began, when the ledger has its lines
+		readonly split?: { readonly cost: BuildCost | undefined; readonly at: string };
 		readonly outcome: string;
 		readonly outcomeText: string;
 		readonly progress: Progress | null;
 	}
+	// the cell's dollars, opening into the split when there is one
+	const costCell = (r: Row) => {
+		if (r.cost === null) return '';
+		const fold =
+			r.split === undefined
+				? ''
+				: costFold(
+						r.split.cost,
+						foldKey('row', r.card.id, r.split.at),
+						`${dollars(r.cost)}<span class="sr">, ${SPLIT_SUMMARY.toLowerCase()}</span>`
+					);
+		return fold === '' ? dollars(r.cost) : fold;
+	};
 	const rows: Row[] = [];
 	for (const card of all.queue ?? [])
 		rows.push({
@@ -1000,6 +1106,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: null,
 			timeText: `<time data-since="${escape(featureStart(all.building.doing))}"></time>`,
 			cost: view.featureCostUsd,
+			split: { cost: view.featureCost, at: featureStart(all.building.doing) },
 			outcome: waits,
 			outcomeText: escape(waits) + earlierHtml(all.building),
 			progress: all.building.progress
@@ -1030,7 +1137,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			progress: null
 		});
 	for (const card of all.completed) {
-		const { event, costUsd } = card.done;
+		const { event, costUsd, cost } = card.done;
 		const took = tookMs(event);
 		rows.push({
 			card,
@@ -1038,6 +1145,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: took,
 			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
 			cost: costUsd,
+			split: { cost, at: event.at },
 			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
 			outcomeText: `${outcomeHtml(event)} <small>${runsText(card.runs)}</small>`,
 			progress: card.progress
@@ -1047,6 +1155,9 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 	const chips = STATES.map(
 		([s, name]) => `<button type="button" data-chip="${s}">${name}</button>`
 	).join('');
+	const outcomes = OUTCOMES.map(
+		([k, name]) => `<button type="button" data-pick="${k}">${name}</button>`
+	).join('');
 	const head = COLUMNS.map(
 		([k, name]) => `<th><button type="button" data-sort="${k}">${name}</button></th>`
 	).join('');
@@ -1054,7 +1165,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td>${r.cost === null ? '' : dollars(r.cost)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td class="cost">${costCell(r)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}${stepsBar(r.card)}</td></tr>`
 		)
 		.join('');
 	let note = '';
@@ -1064,7 +1175,7 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			note += '<p class="empty">Waiting on you is not available from this Tracker</p>';
 		if (all.shelfCannotList) note += `<p class="empty">${SHELF_CANNOT}</p>`;
 	}
-	return `<div class="table"><div class="chips">${chips}</div>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
+	return `<div class="table">${STEPS_LEGEND}<div class="filters"><div class="chips">${chips}</div><div class="chips" role="group" aria-label="Outcome"><span class="chips-label">Outcome</span>${outcomes}</div></div><p class="meta" data-shown></p>${note}<div class="scroll" tabindex="0" role="region" aria-label="Feature table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${rows.length === 0 ? '<p class="empty">no Features</p>' : ''}${shelfMore(all, lists, links)}</div>`;
 }
 
 // The titles the page knows, by Feature: from the build in flight, the Queue, Waiting on you and the recent events.
@@ -1126,6 +1237,7 @@ export function renderPanels(
 ): string {
 	const lists = listsOf(view, tracker, opens);
 	const overview = [
+		week(view),
 		current(view, links),
 		queue(lists, links),
 		shelf(view, lists, links),
@@ -1207,11 +1319,12 @@ const two = ${String(two)};
 const elapsed = ${String(elapsed)};
 const countdown = ${String(countdown)};
 const VIEWS = ['board', 'table', 'overview'];
-// the Table's sort and state filter, kept in local storage and applied again after each event
-let tableState = { sort: null, dir: 1, states: [] };
+const OUTCOMES = ${JSON.stringify(OUTCOMES.map(([k]) => k))};
+// the Table's sort, state filter and outcome filter, kept in local storage and applied again after each event
+let tableState = { sort: null, dir: 1, states: [], outcome: 'any' };
 try {
 	const kept = JSON.parse(localStorage.getItem('nightjar-table'));
-	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states };
+	if (kept && Array.isArray(kept.states)) tableState = { sort: kept.sort ?? null, dir: kept.dir === -1 ? -1 : 1, states: kept.states, outcome: OUTCOMES.includes(kept.outcome) ? kept.outcome : 'any' };
 } catch {}
 function saveTable() {
 	try { localStorage.setItem('nightjar-table', JSON.stringify(tableState)); } catch {}
@@ -1242,14 +1355,30 @@ function compareRows(a, b, sort, dir, now) {
 }
 // the page's own markup carries these; a stand-in element without them is left alone
 const attr = (el, name, value) => el && el.setAttribute && el.setAttribute(name, value);
+// whether a row's Feature ended as the outcome says; a failed row is a Completed one, so the two are told apart
+function outcomeOf(row, outcome) {
+	const d = row.dataset;
+	if (outcome === 'completed') return d.state === 'completed' && !d.failed;
+	if (outcome === 'failed') return !!d.failed;
+	if (outcome === 'waiting') return d.state === 'waiting';
+	return true;
+}
 function applyTable() {
 	const now = Date.now();
 	const rows = Array.from(document.querySelectorAll('tr[data-state]'));
 	const parent = rows[0] && rows[0].parentNode;
 	rows.sort((a, b) => compareRows(a, b, tableState.sort, tableState.dir, now));
+	let shown = 0;
 	for (const row of rows) {
-		row.hidden = tableState.states.length > 0 && !tableState.states.includes(row.dataset.state);
+		row.hidden = (tableState.states.length > 0 && !tableState.states.includes(row.dataset.state)) || !outcomeOf(row, tableState.outcome);
+		if (!row.hidden) shown += 1;
 		if (parent) parent.appendChild(row);
+	}
+	const filtered = tableState.states.length > 0 || tableState.outcome !== 'any';
+	for (const n of document.querySelectorAll('[data-shown]')) n.textContent = filtered ? 'Showing ' + shown + ' of ' + rows.length + ' Features' : '';
+	for (const b of document.querySelectorAll('button[data-pick]')) {
+		b.dataset.on = String(b.dataset.pick === tableState.outcome);
+		attr(b, 'aria-pressed', b.dataset.on);
 	}
 	for (const b of document.querySelectorAll('button[data-sort]')) {
 		b.dataset.on = String(b.dataset.sort === tableState.sort);
@@ -1281,6 +1410,8 @@ panels.onclick = (e) => {
 	const t = e.target && e.target.closest ? e.target : null;
 	const sorter = t && t.closest('[data-sort]');
 	const chip = t && t.closest('[data-chip]');
+	const pick = t && t.closest('[data-pick]');
+	const go = t && t.closest('[data-goto]');
 	const help = t && t.closest('[data-help]');
 	const copy = t && t.closest('[data-copy]');
 	if (help) {
@@ -1293,9 +1424,22 @@ panels.onclick = (e) => {
 		try { navigator.clipboard.writeText(copy.dataset.copy).then(() => copied(copy)); } catch {}
 		return;
 	}
+	if (go) {
+		// a count on the Overview: the Table, filtered to it, with focus on the filter so a keyboard follows
+		if (e.preventDefault) e.preventDefault();
+		tableState = { ...tableState, outcome: go.dataset.goto };
+		saveTable();
+		showView('table');
+		applyTable();
+		const on = Array.from(document.querySelectorAll('button[data-pick]')).find((b) => b.dataset.pick === go.dataset.goto);
+		if (on && on.focus) on.focus();
+		return;
+	}
 	if (sorter) {
 		const key = sorter.dataset.sort;
 		tableState = { ...tableState, sort: key, dir: tableState.sort === key ? -tableState.dir : 1 };
+	} else if (pick) {
+		tableState = { ...tableState, outcome: pick.dataset.pick };
 	} else if (chip) {
 		const s = chip.dataset.chip;
 		tableState = { ...tableState, states: tableState.states.includes(s) ? tableState.states.filter((x) => x !== s) : [...tableState.states, s] };
@@ -1311,14 +1455,15 @@ function show(view) {
 		attr(b, 'aria-pressed', b.dataset.on);
 	}
 }
+function showView(view) {
+	show(view);
+	try { localStorage.setItem('nightjar-view', view); } catch {}
+}
 let saved = null;
 try { saved = localStorage.getItem('nightjar-view'); } catch {}
 show(VIEWS.includes(saved) ? saved : 'board');
 for (const b of document.querySelectorAll('button[data-view]')) {
-	b.onclick = () => {
-		show(b.dataset.view);
-		try { localStorage.setItem('nightjar-view', b.dataset.view); } catch {}
-	};
+	b.onclick = () => showView(b.dataset.view);
 }
 // the status region speaks only when the count of Features waiting on a person, or failed, rises
 // inner scrollers a swap would reset, matched by position
@@ -1343,10 +1488,10 @@ function tick() {
 	for (const t of document.querySelectorAll('time[data-until]')) t.textContent = countdown(Date.parse(t.dataset.until) - now);
 }
 new EventSource('/events').onmessage = (e) => {
-	// a swap drops the focused sort header, chip, help, copy or Feature button or link; put focus back on its twin
+	// a swap drops the focused sort header, chip, help, copy or Feature button, fold or link; put focus back on its twin
 	const was = document.activeElement;
 	const data = (was && was.dataset) || {};
-	const key = ['sort', 'chip', 'help', 'copy', 'feature'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
+	const key = ['sort', 'chip', 'pick', 'help', 'copy', 'feature', 'fold'].find((k) => data[k]) || (was && was.tagName === 'A' && was.getAttribute('href') ? 'href' : null);
 	const value = key && (key === 'href' ? was.getAttribute('href') : data[key]);
 	// links can share an href, so remember which of them had focus
 	const pool = () => Array.from(document.querySelectorAll(key === 'href' ? 'a[href]' : '[data-' + key + ']')).filter((n) => (key === 'href' ? n.getAttribute('href') : n.dataset[key]) === value);
@@ -1355,9 +1500,13 @@ new EventSource('/events').onmessage = (e) => {
 	for (const sel of SCROLLERS) {
 		document.querySelectorAll(sel).forEach((n, i) => kept.push([sel, i, n.scrollTop, n.scrollLeft]));
 	}
+	// the folds the person opened, by key, open again after the swap
+	const foldOf = (d) => (d.dataset && d.dataset.key) || null;
+	const opened = Array.from(document.querySelectorAll('details[open][data-key]')).map(foldOf).filter(Boolean);
 	const [top, main] = JSON.parse(e.data).split(MAIN);
 	document.getElementById('top').innerHTML = top;
 	panels.innerHTML = main;
+	for (const d of document.querySelectorAll('details[data-key]')) if (opened.includes(foldOf(d))) d.open = true;
 	for (const [sel, i, top, left] of kept) {
 		const n = document.querySelectorAll(sel)[i];
 		if (n) { n.scrollTop = top; n.scrollLeft = left; }
@@ -1510,6 +1659,15 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
 .chips button { background: none; min-height: 24px; border: 1px solid var(--teal2); border-radius: 999px; color: var(--teal); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 3px 14px; }
 .chips button[data-on="true"] { background: var(--teal); border-color: var(--teal); color: var(--void); }
+.filters { align-items: center; display: flex; flex-wrap: wrap; gap: 0 24px; }
+.chips-label { align-self: center; color: var(--muted); font: 0.85rem var(--mono); }
+[data-shown] { font: 0.85rem var(--mono); margin: 0 0 8px; }
+[data-shown]:empty { display: none; }
+.week { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 8px 0; }
+.week li { padding: 0; }
+.week b { color: var(--ink); font: 700 1rem var(--mono); margin-right: 6px; }
+a.count { align-items: center; color: var(--ink2); display: inline-flex; min-height: 24px; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+a.count:hover { color: var(--teal); text-decoration-style: solid; }
 .scroll { overflow-x: auto; }
 .sr, .skip:not(:focus) { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
 .skip { background: var(--void); color: var(--teal); left: 8px; padding: 8px 12px; top: 8px; z-index: 4; }
@@ -1583,6 +1741,25 @@ a.book-link { font: 400 0.75rem var(--mono); margin-left: 10px; vertical-align: 
 .book summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding-top: 4px; }
 .book summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .book pre { max-height: 24rem; }
+.cost summary { color: var(--muted); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding-top: 4px; }
+.cost summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+td.cost summary { color: inherit; font-size: 0.85rem; padding-top: 0; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+.entry > .cost { grid-column: 1 / -1; }
+.split { font: 0.75rem var(--mono); max-width: 40rem; padding: 2px 0; }
+.split-head { color: var(--muted); font: 600 0.75rem var(--mono); margin: 8px 0 2px; }
+.split dl { margin: 0; }
+.split dl div { border-top: 1px dashed var(--line); display: grid; gap: 2px 12px; grid-template-columns: minmax(0, 10rem) minmax(0, 1fr); padding: 3px 0; }
+.split dt { color: var(--ink2); overflow-wrap: anywhere; }
+.split dd { margin: 0; overflow-wrap: anywhere; }
+.split .empty { margin: 4px 0; }
+.stepsbar { display: flex; gap: 3px; list-style: none; margin: 8px 0 0; padding: 0; }
+.seg { display: inline-block; flex: none; height: 0.5rem; width: 1.25rem; }
+.seg.passed { background: var(--teal2); }
+.seg.retried { background: repeating-linear-gradient(135deg, var(--teal2) 0 2px, transparent 2px 4px); border: 1px solid var(--teal2); }
+.seg.failed { background: linear-gradient(90deg, var(--err) 0 40%, transparent 40% 60%, var(--err) 60%); }
+.seg.running { animation: incubate 2.4s ease-in-out infinite; background: linear-gradient(90deg, var(--teal) 0 50%, transparent 50%); border: 1px solid var(--teal); outline: 1px solid var(--teal); outline-offset: 2px; }
+.seg.notReached { border: 1px dashed var(--socket-dash); }
+.seg.notNeeded { background: linear-gradient(var(--muted), var(--muted)) center / 100% 2px no-repeat; }
 button.open { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; min-height: 24px; padding: 0; text-align: left; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
 button.open:hover { color: var(--teal); text-decoration-style: solid; }
 #feature { background: linear-gradient(180deg, var(--teal-wash), transparent 40%), var(--panel-overlay-strong); border: 1px solid var(--teal2); color: var(--ink); height: 100%; inset: 0 0 0 auto; margin: 0; max-height: none; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 0; scrollbar-color: var(--teal2) var(--void); width: 640px; }
@@ -1627,7 +1804,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 .criteria summary { color: var(--teal); cursor: pointer; font: 0.75rem var(--mono); min-height: 24px; padding: 2px 0; }
 .criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .criteria .md { color: var(--ink2); }
-@media (prefers-reduced-motion: reduce) { .egg.building, .dk i { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .egg.building, .seg.running, .dk i { animation: none; } }
 @media (min-width: 1261px) and (max-width: 1400px) {
 	.cols.has-detail .entry { grid-template-columns: 1fr; }
 	.cols.has-detail .head { display: none; }
@@ -1637,7 +1814,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, button.open, button.close, .criteria summary, .log summary, .book summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .log summary, .book summary, .cost summary { min-height: 44px; }
 	#views button, .chips button { padding-inline: 20px; }
 }
 @media (max-height: 480px), (max-width: 400px) {
@@ -1661,6 +1838,7 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 	.tally { height: 1.9rem; width: 1.9rem; font-size: 0.85rem; }
 	.lines { padding: 4px 12px; }
 	.scroll table { min-width: 36rem; }
+	.split dl div { grid-template-columns: 1fr; }
 }
 `;
 

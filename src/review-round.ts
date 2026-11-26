@@ -3,7 +3,7 @@ import type { RunCheck } from './check.js';
 import { envOf, type CodingAgent } from './coding-agent.js';
 import type { Env } from './git.js';
 import type { Declined, Review } from './prompt.js';
-import type { Allowance, LogEntry } from './spend.js';
+import { modelsOf, type Allowance, type LogEntry } from './spend.js';
 import type { Feature } from './tracker.js';
 import { DIFF_CHARS, type FixEnd, type FixWork, type Halt } from './workflow.js';
 import type { Worktree } from './worktree.js';
@@ -75,6 +75,7 @@ export async function reviewRound(ctx: ReviewRoundContext): Promise<ReviewRoundE
 			step: 'reviewRound',
 			session: got.sessionId,
 			costUsd: got.costUsd,
+			...modelsOf(got),
 			outcome,
 			...extra
 		});

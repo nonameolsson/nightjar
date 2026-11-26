@@ -70,9 +70,10 @@ import { ticketFaults } from './ticket-contract.js';
 import { retryPassing, TRIES } from './retry.js';
 import { reviewRound } from './review-round.js';
 import { reviewSection, type ReviewSession } from './review-section.js';
-import type { Entry, LogEntry, Spend } from './spend.js';
+import { byModel } from './build-cost.js';
+import { modelsOf, type Entry, type LogEntry, type ModelUsage, type Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
-import { dollars } from './view-text.js';
+import { dollars, tokensText } from './view-text.js';
 import {
 	buildingSentence,
 	headline,
@@ -108,6 +109,7 @@ import {
 	type FixEnd,
 	type FixWork,
 	type Halt,
+	type StepRound,
 	type WorkflowConfig,
 	type WorkflowRun,
 	type WorkflowSettings
@@ -235,7 +237,7 @@ export type FeatureOutcome =
 	// the run stopped for a reason of the machine or the plan, not of the Feature; it goes on later
 	| { readonly kind: 'paused'; readonly why: string }
 	| { readonly kind: 'stopped' }
-	// a person pushed to the branch first: the build's work waits on the local branch `side`, and the Feature is the person's
+	// a person pushed to the branch first: the work waits on the local branch `side`, and the Feature is theirs
 	| { readonly kind: 'diverged'; readonly side: string };
 
 // A comment for a person: what happened, then what they do next.
@@ -251,6 +253,10 @@ interface Cost {
 	readonly ticket: ItemId | null;
 	readonly work: Work;
 	readonly usd: number;
+	// the Step and its round, for a Step's Session and its fix rounds
+	readonly stepRound?: StepRound;
+	// the models its Session ran on, when it said
+	readonly models?: readonly ModelUsage[];
 }
 
 const workOf = (step: Entry['step']): Work => (step === 'step' ? 'steps' : step);
@@ -836,7 +842,9 @@ class FeatureRun {
 			feature: this.feature,
 			tree: this.tree,
 			fix: (work) => this.fixUntilGreen(work),
-			log: (entry) => this.log(entry),
+			log: (entry, of) => {
+				this.log(entry, workOf(entry.step), of);
+			},
 			verdict: (report, session) =>
 				this.note({
 					kind: 'stepVerdict',
@@ -867,8 +875,14 @@ class FeatureRun {
 		return comments.filter((c) => c.trusted && !isStatusNote(c.body));
 	}
 
-	private log(entry: LogEntry, work: Work = workOf(entry.step)) {
-		this.costs.push({ ticket: entry.ticket, work, usd: entry.costUsd });
+	private log(entry: LogEntry, work: Work = workOf(entry.step), stepRound?: StepRound) {
+		this.costs.push({
+			ticket: entry.ticket,
+			work,
+			usd: entry.costUsd,
+			...(stepRound === undefined ? {} : { stepRound }),
+			...modelsOf(entry)
+		});
 		const at = this.deps.now();
 		this.deps.spend.record({
 			at: at.toISOString(),
@@ -1040,6 +1054,7 @@ class FeatureRun {
 					step: 'build',
 					session: failed.sessionId,
 					costUsd: failed.costUsd,
+					...modelsOf(failed),
 					outcome: `failed: ${failed.why}`,
 					failure: 'passing'
 				}),
@@ -1055,7 +1070,8 @@ class FeatureRun {
 			ticket: ticket.id,
 			step: 'build' as const,
 			session: sessionId,
-			costUsd: got.costUsd
+			costUsd: got.costUsd,
+			...modelsOf(got)
 		};
 
 		switch (got.kind) {
@@ -1218,7 +1234,9 @@ class FeatureRun {
 				tree: this.tree,
 				building: (ticket, session, rounds, attempt) =>
 					this.building(ticket, 'fix', session, rounds, attempt),
-				log: (entry, work) => this.log(entry, work),
+				log: (entry, work) => {
+					this.log(entry, work, o.stepRound);
+				},
 				note: this.note
 			},
 			o
@@ -1317,12 +1335,15 @@ class FeatureRun {
 			}
 		}
 		this.place = { kind: 'pull' };
-		const pushed = await pushBranch(this.deps, this.setup, this.tree, id);
+		const carries = this.answered === null ? 'build' : 'feedbackRound';
+		const of = { feature: id, note: this.note, signals: this.signals };
+		const pushed = await pushBranch(this.deps, this.setup, this.tree, of, carries);
 		if (pushed.kind === 'diverged') {
 			// a pause put the Go back, and the Feature is now with a person
 			await tracker.removeSignal(id, 'go');
 			return { kind: 'diverged', side: pushed.side };
 		}
+		if (pushed.kind === 'fault') throw pushed.fault;
 		const complete = left.length === 0 && red === null && paused === null;
 		const ids = done.map((t) => t.id);
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;
@@ -1790,6 +1811,7 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 						step: 'fix',
 						session: o.sessionId,
 						costUsd: failed.costUsd,
+						...modelsOf(failed),
 						outcome: `failed: ${failed.why}`,
 						failure: 'passing'
 					},
@@ -1801,9 +1823,15 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 				)
 		});
 		spent += got.costUsd + earlierUsd;
-		const entry = { ticket: o.ticket, step: 'fix' as const, session: o.sessionId };
+		const entry = {
+			ticket: o.ticket,
+			step: 'fix' as const,
+			session: o.sessionId,
+			costUsd: got.costUsd,
+			...modelsOf(got)
+		};
 		if (got.kind === 'paused') {
-			ctx.log({ ...entry, costUsd: got.costUsd, outcome: `paused: ${got.why}` }, work);
+			ctx.log({ ...entry, outcome: `paused: ${got.why}` }, work);
 			return { check, spent, summaries, halt: { kind: 'paused', why: got.why } };
 		}
 		// the ledger names a fix round that failed or was stopped as one that gave up
@@ -1811,7 +1839,6 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 		ctx.log(
 			{
 				...entry,
-				costUsd: got.costUsd,
 				outcome: `round ${String(round)}${gaveUp ? ' gave up' : ''}`,
 				...(got.kind === 'failed' ? { failure: got.failure } : {})
 			},
@@ -1859,12 +1886,21 @@ export type PullFixOutcome =
 	  }
 	// the pull request has had its `rounds` fix rounds: no Session, and the Feature is handed to a person
 	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
-	// a green fix whose push was rejected because a person pushed to the branch: it is kept on `side`, and the Feature is handed to a person
+	// a green fix whose push was rejected because a person pushed to the branch: it waits on `side`, and the Feature is handed to a person
 	| {
 			readonly kind: 'diverged';
 			readonly pull: Pull;
 			readonly round: number;
 			readonly side: string;
+			readonly usd: number;
+	  }
+	// a green fix whose push failed on a fault: the queue hands the Feature back with needs info
+	| {
+			readonly kind: 'faulted';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly fault: unknown;
+			readonly title: string;
 			readonly usd: number;
 	  }
 	// the pull request is not Nightjar's to fix after all; nothing was done
@@ -1963,7 +1999,7 @@ async function fixRedDraft(
 	await signals.on('working');
 	let got: PullFixRound;
 	try {
-		got = await pullFixRound(deps, setup, { feature, note, tree, draft, session, round });
+		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round, note, signals });
 		note({
 			kind: 'pullFix',
 			round,
@@ -1974,8 +2010,11 @@ async function fixRedDraft(
 			...(got.kind === 'diverged'
 				? { why: `a person pushed to the branch first; the fix is kept on ${got.side}` }
 				: {}),
+			...(got.kind === 'faulted' ? { why: why(got.fault) } : {}),
 			session: session.id
 		});
+		// a push that faulted ends the round as any fault does: in the Logbook with its stack, naming the round for the hand-back
+		if (got.kind === 'faulted') got = { ...got, fault: faultAt(got.fault, where.run, note) };
 		// every round that ran says so in the body, the one that gave up too
 		const ran = (r: Pick<PullRound, 'outcome' | 'summary' | 'usd'>) =>
 			withPullRound(draft.body, { round, failed: draft.checks.failed, ...r });
@@ -2014,6 +2053,8 @@ function pullFixEnd(got: PullFixRound) {
 			return 'stopped';
 		case 'diverged':
 			return 'diverged';
+		case 'faulted':
+			return 'faulted';
 	}
 }
 
@@ -2098,12 +2139,12 @@ async function pullFixRound(
 	setup: Setup,
 	o: {
 		feature: Feature;
-		// writes the Feature's Logbook
-		note: Note;
 		tree: Worktree;
 		draft: NightjarDraft;
 		session: PullFixSession;
 		round: number;
+		note: Note;
+		signals: FeatureSignals;
 	}
 ): Promise<PullFixRound> {
 	const { feature, note, tree, draft, round } = o;
@@ -2179,7 +2220,13 @@ async function pullFixRound(
 		budgetUsd: cap,
 		minutes
 	});
-	const entry = { ticket: null, step: 'pullChecks' as const, session, costUsd: got.costUsd };
+	const entry = {
+		ticket: null,
+		step: 'pullChecks' as const,
+		session,
+		costUsd: got.costUsd,
+		...modelsOf(got)
+	};
 	switch (got.kind) {
 		case 'paused':
 			log({ ...entry, outcome: `paused: ${got.why}` });
@@ -2227,46 +2274,86 @@ async function pullFixRound(
 	if (!(await tree.commitPullFix(round, summary, session))) {
 		return gaveUp('the Session changed no file', fixed.spent);
 	}
-	const pushed = await pushBranch(deps, setup, tree, feature.id);
+	const of = { feature: feature.id, note: o.note, signals: o.signals };
+	const pushed = await pushBranch(deps, setup, tree, of, 'pullFix');
 	if (pushed.kind === 'diverged') {
 		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
+	}
+	if (pushed.kind === 'fault') {
+		return {
+			kind: 'faulted',
+			pull,
+			round,
+			fault: pushed.fault,
+			title: feature.title,
+			usd: fixed.spent
+		};
 	}
 	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
 	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
 }
 
-// How a push of a Feature's branch ended: on the Code host, or set aside on `side` because a person pushed to the branch first.
+// How a push ended: on the Code host; set aside on `side` because a person pushed first; or failed on a fault.
 export type PushEnd =
-	{ readonly kind: 'pushed' } | { readonly kind: 'diverged'; readonly side: string };
+	| { readonly kind: 'pushed' }
+	| { readonly kind: 'diverged'; readonly side: string }
+	| { readonly kind: 'fault'; readonly fault: unknown };
 
-// Every push of a Feature's branch. One that fails is sorted by git, never by what the push said (ADR 0010): a branch a person pushed to hands the Feature to them, and any other failure is thrown.
+// What a push carries: on a fault a Pull-check fix is set aside, and a Feedback round's commit too unless an unpushed Ticket's commit lies under it.
+type Carries = 'build' | 'feedbackRound' | 'pullFix';
+
+// Every push of a Feature's branch; a failure is sorted by git, never by the message (ADR 0010).
 async function pushBranch(
 	deps: Deps,
 	setup: Setup,
 	tree: Worktree,
-	feature: ItemId
+	of: { readonly feature: ItemId; readonly note: Note; readonly signals: FeatureSignals },
+	carries: Carries
 ): Promise<PushEnd> {
+	const { feature, note, signals } = of;
 	const { branch } = tree.at;
 	try {
 		await deps.codeHost.push(tree.at.folder, branch);
 		return { kind: 'pushed' };
 	} catch (fault) {
 		const outcome = await tree.pushOutcome();
-		if (outcome === 'fault') throw fault;
 		if (outcome === 'pushed') {
 			deps.say(
 				`${hash(feature)}: the push of ${branch} failed, yet the Code host holds it: ${why(fault)}`
 			);
 			return { kind: 'pushed' };
 		}
+		if (outcome === 'fault') {
+			return { kind: 'fault', fault: await setAsideOnFault(tree, note, carries, fault) };
+		}
 		const side = await tree.setAsidePush();
-		await deps.tracker.addSignal(feature, 'human');
+		// a branch that diverged has a remote head, so none to go back to is a fault like any other
+		if (side === null) return { kind: 'fault', fault };
+		const moved = `${branch} moved on the Code host`;
+		note({ kind: 'thrownAway', branch: side, why: moved });
+		note({ kind: 'handed', to: 'human', why: moved });
+		await signals.on('human');
 		await deps.tracker.comment(feature, branchMovedComment(setup.signals, branch, side));
 		deps.say(
 			`${hash(feature)}: handed to a person, ${branch} moved on the Code host; the work is kept on ${side}`
 		);
 		return { kind: 'diverged', side };
 	}
+}
+
+// The fault a push ended on, naming the side branch when the work was set aside so that no unpushed commit counts as done or holds a pass back.
+async function setAsideOnFault(
+	tree: Worktree,
+	note: Note,
+	carries: Carries,
+	fault: unknown
+): Promise<unknown> {
+	const keeps =
+		carries === 'build' || (carries === 'feedbackRound' && (await tree.holdsUnpushedTicket()));
+	const side = keeps ? null : await tree.setAsidePush();
+	if (side === null) return fault;
+	note({ kind: 'thrownAway', branch: side, why: `its push failed: ${why(fault)}` });
+	return new Error(`${why(fault)}; the work is kept on ${side}`);
 }
 
 async function reviewFeature(
@@ -2318,6 +2405,7 @@ async function reviewFeature(
 				step: 'review',
 				session: failed.sessionId,
 				costUsd: failed.costUsd,
+				...modelsOf(failed),
 				outcome: `failed: ${failed.why}`,
 				failure: 'passing'
 			}),
@@ -2330,7 +2418,8 @@ async function reviewFeature(
 		ticket: null,
 		step: 'review' as const,
 		session: got.sessionId,
-		costUsd: got.costUsd
+		costUsd: got.costUsd,
+		...modelsOf(got)
 	};
 	const unfinished = () =>
 		note({
@@ -2466,7 +2555,37 @@ export function featureOfBody(body: string): string | undefined {
 	return MARKER.exec(body)?.[1];
 }
 
-// The total, then what each Ticket cost by kind of work, the Steps after all Tickets, the Feedback round, the review and its rounds; a kind with no Session is left out.
+// Each Step after all Tickets on a line of its own, in the order they ran: `- w/polish: $9.80 (3 rounds: $4.10, $3.20, $2.50)`; a round's fix rounds count in it.
+function stepLines(costs: readonly Cost[]): string[] {
+	const after = costs.filter((c) => c.ticket === null && c.work === 'steps');
+	const nameOf = (c: Cost) => c.stepRound?.name ?? 'Steps after all Tickets';
+	return [...new Set(after.map(nameOf))].map((name) => {
+		const own = after.filter((c) => nameOf(c) === name);
+		const rounds = new Map<number, number>();
+		for (const c of own) {
+			const round = c.stepRound?.round ?? 1;
+			rounds.set(round, (rounds.get(round) ?? 0) + c.usd);
+		}
+		const total = own.reduce((n, c) => n + c.usd, 0);
+		const each = [...rounds].sort(([a], [b]) => a - b).map(([, usd]) => dollars(usd));
+		const split = each.length > 1 ? ` (${String(each.length)} rounds: ${each.join(', ')})` : '';
+		return `- ${name}: ${dollars(total)}${split}`;
+	});
+}
+
+// Each model's dollars and tokens over the run's Sessions, and what the Sessions that named none cost; null when none did.
+function modelLines(costs: readonly Cost[]): string | null {
+	const models = byModel(costs);
+	if (models.length === 0) return null;
+	const line = (m: ModelUsage) => `- ${m.model}: ${dollars(m.costUsd)}; tokens: ${tokensText(m)}`;
+	const lines = models.map(line);
+	const bare = costs.filter((c) => c.models === undefined);
+	if (bare.length > 0)
+		lines.push(`- models not recorded: ${dollars(bare.reduce((n, c) => n + c.usd, 0))}`);
+	return `### By model\n\n${lines.join('\n')}`;
+}
+
+// The total, then what each Ticket cost by kind of work, each Step after all Tickets with its rounds, the Feedback round, the review and its rounds, and then each model; a kind with no Session is left out.
 function costSection(
 	spent: number,
 	costs: readonly Cost[],
@@ -2491,12 +2610,13 @@ function costSection(
 		const title = titleOf(id);
 		return `- ${ref(id)}${title === undefined ? '' : ` ${title}`}: ${parts.join(', ')}`;
 	});
-	if (has(null, 'steps')) lines.push(`- Steps after all Tickets: ${dollars(sum(null, 'steps'))}`);
+	lines.push(...stepLines(costs));
 	if (has(null, 'feedback')) lines.push(`- Feedback round: ${dollars(sum(null, 'feedback'))}`);
 	if (has(null, 'review')) lines.push(`- Review: ${dollars(sum(null, 'review'))}`);
 	if (has(null, 'reviewRound')) lines.push(`- Review rounds: ${dollars(sum(null, 'reviewRound'))}`);
 	const head = `## Cost\n\nEstimated cost of this run: ${dollars(spent)}.`;
-	return lines.length === 0 ? head : `${head}\n\n${lines.join('\n')}`;
+	const models = modelLines(costs);
+	return [head, lines.join('\n'), models ?? ''].filter((part) => part !== '').join('\n\n');
 }
 
 const issueLines = (issues: Review['issues']) => issues.map(issueLine).join('\n');
@@ -2524,7 +2644,7 @@ function reviewOpenCause(open: ReviewLeftOpen, review: Review): string {
 // What a Feature is told when a push of its branch is rejected because a person pushed to it, whatever the push followed.
 export function branchMovedComment(n: SignalNames, branch: string, side: string): string {
 	return withNext(
-		`Nightjar could not push to \`${branch}\`: the branch moved on the Code host while Nightjar worked, so a person has pushed to it. Nightjar set its own work aside on the local branch \`${side}\`, put \`${branch}\` back at the Code host's head, and will not push to this draft pull request again on its own.`,
+		`Nightjar could not push to \`${branch}\`: the branch moved on the Code host while Nightjar worked, so a person has pushed to it. Nightjar set its own work aside on the local branch \`${side}\`, put \`${branch}\` back at the Code host's head, and will not push to it again on its own.`,
 		pushRejectedStep(n, side)
 	);
 }

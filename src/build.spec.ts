@@ -58,7 +58,7 @@ import {
 import { untilText } from './status-note.js';
 import { QUESTIONS_MARK, type Review } from './prompt.js';
 import { markPublished, publishMarkOf, publishedByNightjar } from './publish.js';
-import type { Spend } from './spend.js';
+import type { ModelUsage, Spend } from './spend.js';
 import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
@@ -142,6 +142,8 @@ interface World {
 	tests: Record<string, string>;
 	// an end to give a piece of work in place of the scripted agent's answer
 	settle: (req: Work) => Ending | undefined;
+	// what every Session reports of the models it ran on, when set
+	models: readonly ModelUsage[] | undefined;
 	checkOk: boolean;
 	setupOk: boolean;
 	// the Sessions this machine has not got, as a Session made on another machine is
@@ -312,6 +314,7 @@ function worldOf(o: {
 		tries: {},
 		tests: {},
 		settle: () => undefined,
+		models: undefined,
 		checkOk: true,
 		setupOk: true,
 		goneSessions: new Set(),
@@ -327,7 +330,10 @@ function deps(world: World): Deps {
 	let id = 0;
 	const answer = <T>(req: Work, got: () => T): Promise<T | Ending> => {
 		world.asked.push(req);
-		return Promise.resolve(world.settle(req) ?? got());
+		const outcome = world.settle(req) ?? got();
+		return Promise.resolve(
+			world.models === undefined ? outcome : { ...outcome, models: world.models }
+		);
 	};
 	return {
 		tracker: world.tracker,
@@ -613,6 +619,53 @@ describe('reserved ports', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.checkEnvs.length).toBeGreaterThan(0);
 		for (const e of world.checkEnvs) expect(e).toEqual(world.env);
+	});
+});
+
+describe('the ledger and the models', () => {
+	const models: readonly ModelUsage[] = [
+		{
+			model: 'model-a',
+			inputTokens: 120,
+			outputTokens: 40,
+			cacheReadTokens: 900,
+			cacheWriteTokens: 300,
+			costUsd: 0.4
+		}
+	];
+
+	it('gives every line the models its Session ran on: build, fix and Review', async () => {
+		const world = makeWorld();
+		world.models = models;
+		world.checkOk = false;
+		await buildFeature(deps(world), setup(world), '1');
+		const lines = ledger(world);
+		expect(new Set(lines.map((e) => e.step))).toEqual(new Set(['build', 'fix', 'review']));
+		for (const line of lines) expect(line.models).toEqual(models);
+	});
+
+	it('gives every line the models its Session ran on: Step and Review round', async () => {
+		const world = makeWorld();
+		world.models = models;
+		world.reviewAgent = (req) => reviewed(req, 'changes');
+		const feature = world.tracker.items.get('1');
+		if (feature) world.tracker.items.set('1', { ...feature, body: '**Workflow:** w' });
+		const flow: WorkflowConfig = {
+			steps: [{ name: 'critique', prompt: '/critique', point: 'afterAllTickets' }]
+		};
+		await buildFeature(deps(world), setup(world, { workflows: { w: flow } }), '1');
+		const lines = ledger(world);
+		expect(new Set(lines.map((e) => e.step))).toEqual(
+			new Set(['build', 'step', 'review', 'reviewRound'])
+		);
+		for (const line of lines) expect(line.models).toEqual(models);
+	});
+
+	it('writes no models for a Session that reported none', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(ledger(world).length).toBeGreaterThan(0);
+		for (const line of ledger(world)) expect(line).not.toHaveProperty('models');
 	});
 });
 
@@ -2140,10 +2193,113 @@ describe('the cost split in the pull request', () => {
 				'',
 				'- #2 Share the function: build $3.00, Steps $2.00',
 				'- #3 Use it in marks: build $3.00, Steps $1.00',
-				'- Steps after all Tickets: $2.00',
+				'- w/critique: $2.00',
 				'- Review: $0.50'
 			].join('\n')
 		);
+	});
+
+	it('gives each Step after all Tickets a line of its own, with its rounds and their fix rounds', async () => {
+		const world = makeWorld();
+		const polish = {
+			name: 'polish',
+			prompt: 'polish it',
+			point: 'afterAllTickets',
+			until: 'it shines',
+			maxRounds: 3
+		} as const;
+		const critique = { name: 'critique', prompt: 'look', point: 'afterAllTickets' } as const;
+		feature(world, '**Workflow:** ui');
+		// polish holds after its third round; its second breaks the check, which a fix round puts right
+		world.stepAgent = (req) => {
+			if (req.step.name !== 'polish') return stepDone(req);
+			world.checkOk = req.round !== 2;
+			const costUsd = [4, 2, 2.5][req.round - 1] ?? 0;
+			return stepDone(req, { untilHolds: req.round === 3, costUsd });
+		};
+		world.fixAgent = (req) => {
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'fixed', sessionId: req.resume, costUsd: 1.2 };
+		};
+		await buildFeature(
+			deps(world),
+			setup(world, { workflows: { ui: { steps: [polish, critique] } } }),
+			'1'
+		);
+
+		expect(body(world)).toContain(
+			[
+				'- #3 Use it in marks: build $3.00',
+				'- ui/polish: $9.70 (3 rounds: $4.00, $3.20, $2.50)',
+				'- ui/critique: $1.00',
+				'- Review: $0.50'
+			].join('\n')
+		);
+	});
+
+	it('lists each model with its dollars and tokens, summed over the run', async () => {
+		const world = makeWorld();
+		world.models = [
+			{
+				model: 'model-a',
+				inputTokens: 1200,
+				outputTokens: 40,
+				cacheReadTokens: 2_500_000,
+				cacheWriteTokens: 300,
+				costUsd: 1.5
+			},
+			{
+				model: 'model-b',
+				inputTokens: 10,
+				outputTokens: 5,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				costUsd: 0.25
+			}
+		];
+		await buildFeature(deps(world), setup(world), '1');
+
+		// two builds and a Review, each on both models
+		expect(body(world)).toContain(
+			[
+				'- Review: $0.50',
+				'',
+				'### By model',
+				'',
+				'- model-a: $4.50; tokens: 3.6k in, 120 out, 7.5M cache read, 900 cache write',
+				'- model-b: $0.75; tokens: 30 in, 15 out, 0 cache read, 0 cache write',
+				'',
+				'<!--'
+			].join('\n')
+		);
+	});
+
+	it('leaves the models out when no Session named them', async () => {
+		const world = makeWorld();
+		await buildFeature(deps(world), setup(world), '1');
+		expect(body(world)).not.toContain('By model');
+	});
+
+	it('says what the Sessions that named no model cost, beside the models', async () => {
+		const world = makeWorld();
+		world.models = [
+			{
+				model: 'model-a',
+				inputTokens: 1,
+				outputTokens: 1,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				costUsd: 3
+			}
+		];
+		// the builds say which models they ran on; the Review, last, says none
+		world.reviewAgent = (req) => {
+			world.models = undefined;
+			return reviewed(req, 'approve');
+		};
+		await buildFeature(deps(world), setup(world), '1');
+		expect(body(world)).toContain('- model-a: $6.00;');
+		expect(body(world)).toContain('- models not recorded: $0.50');
 	});
 
 	it('leaves the review out when it is off', async () => {
@@ -2722,7 +2878,7 @@ describe('the Pull-check pass in --watch', () => {
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toContain('factory/1-one-escape');
 			expect(comments[0]).toContain(`\`${SIDE}\``);
-			expect(comments[0]).toContain('will not push to this draft pull request again');
+			expect(comments[0]).toContain('will not push to it again');
 			expect(comments[0]).toContain('**Next step**');
 			expect(comments[0]?.endsWith(FOOTER)).toBe(true);
 			// the fix is kept aside, and the branch here is the person's
@@ -2758,6 +2914,77 @@ describe('the Pull-check pass in --watch', () => {
 			expect(world.trees.subjects(tree())[0]).toBe('Fix the Pull checks, round 1');
 			expect(world.trees.sides.has(SIDE)).toBe(false);
 			expect(world.host.pulls[0]?.body).toContain('Set TZ in the test job.');
+		});
+	});
+
+	describe('a fix whose push failed for another reason', () => {
+		const SIDE = 'factory/1-one-escape-attempt-push';
+
+		it('sets the fix aside and hands the Feature back with needs info and the fault comment', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			const before = world.trees.messages(tree());
+			const said = world.tracker.said('1').length;
+			world.host.failPushes = { why: 'the connection was reset', lands: false };
+			await queue(watch(world), false);
+
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			const comments = world.tracker.said('1').slice(said);
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toMatch(
+				/^\*\*Waiting on you\*\*: Nightjar stopped on a fault in Pull-check fix 1: the connection was reset/
+			);
+			// the Status note's headline is its second line
+			expect(world.tracker.note('1')?.split('\n')[1]).toBe(
+				`**Waiting on you**: Nightjar stopped on a fault in Pull-check fix 1: the connection was reset; the work is kept on ${SIDE}.`
+			);
+			expect(world.logbook.read('1')?.find((e) => e.kind === 'fault')).toMatchObject({
+				place: 'in Pull-check fix 1',
+				why: `the connection was reset; the work is kept on ${SIDE}`
+			});
+			expect(comments[0]).toContain(`the work is kept on ${SIDE}`);
+			expect(comments[0]?.endsWith(FOOTER)).toBe(true);
+			// the fix is kept aside, and the branch here is the Code host's again
+			expect(world.trees.sides.get(SIDE)).toEqual(['ci.txt']);
+			expect(world.trees.messages(tree())).toEqual(before);
+		});
+
+		it('still hands the Feature back when the branch has no Code host head to go back to', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			const fix = world.fixAgent;
+			// the fetch after the failed push finds no remote branch
+			world.fixAgent = (req) => {
+				world.host.branchMessages = () => null;
+				return fix(req);
+			};
+			const said = world.tracker.said('1').length;
+			world.host.failPushes = { why: 'the connection was reset', lands: false };
+			await queue(watch(world), false);
+
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			const comments = world.tracker.said('1').slice(said);
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toMatch(
+				/^\*\*Waiting on you\*\*: Nightjar stopped on a fault in Pull-check fix 1: the connection was reset/
+			);
+			expect(world.trees.sides.has(SIDE)).toBe(false);
+		});
+
+		it('does not hold the next pass back with a commit the Code host lacks', async () => {
+			const world = makeWorld();
+			await redDraft(world);
+			world.host.failPushes = { why: 'the connection was reset', lands: false };
+			await queue(watch(world), false);
+			world.host.failPushes = null;
+			await world.tracker.removeSignal('1', 'needsInfo');
+			world.asked.length = 0;
+			await queue(watch(world), false);
+
+			expect(askedOf(world, 'fix').map((f) => f.round)).toEqual([1]);
+			expect(world.host.branchMessages('factory/1-one-escape')?.at(-1)).toContain(
+				'Fix the Pull checks, round 1'
+			);
 		});
 	});
 
@@ -4024,7 +4251,7 @@ describe('a push of the build that a person beat', () => {
 		const comments = world.tracker.said('1').slice(said);
 		expect(comments).toHaveLength(1);
 		expect(comments[0]).toContain(`\`${SIDE}\``);
-		expect(comments[0]).toContain('will not push to this draft pull request again');
+		expect(comments[0]).toContain('will not push to it again');
 		expect(comments[0]?.endsWith(FOOTER)).toBe(true);
 		expect(world.host.threads).toEqual([]);
 		expect(world.host.pulls[0]?.body).toBe(bodyBefore);
@@ -4045,6 +4272,20 @@ describe('a push of the build that a person beat', () => {
 		expect(world.host.threads.map((t) => t.id)).toEqual([id]);
 	});
 
+	it('writes the set-aside and the hand-over in the Logbook', async () => {
+		const world = makeWorld();
+		beatenDuring(world, 'build', '3');
+
+		await buildFeature(deps(world), setup(world), '1');
+		const thrown = loggedOf(world, 'thrownAway').find((e) => e.branch === SIDE);
+		expect(thrown?.why).toBe(`${BRANCH} moved on the Code host`);
+		const handed = loggedOf(world, 'handed').find((e) => e.to === 'human');
+		expect(handed?.why).toBe(`${BRANCH} moved on the Code host`);
+		expect(loggedOf(world, 'signal')).toContainEqual(
+			expect.objectContaining({ signal: 'human', on: true })
+		);
+	});
+
 	describe('a build with Ticket commits', () => {
 		it('sets its work aside, hands the Feature to a person with the Go off, and opens no draft', async () => {
 			const world = makeWorld();
@@ -4057,6 +4298,9 @@ describe('a push of the build that a person beat', () => {
 			expect(comments).toHaveLength(1);
 			expect(comments[0]).toContain(`\`${SIDE}\``);
 			expect(comments[0]).not.toContain('rejected');
+			// no draft was opened, so the comment speaks of none
+			expect(comments[0]).not.toContain('draft');
+			expect(comments[0]).toContain('will not push to it again');
 			expect(world.host.pulls).toEqual([]);
 			expect(world.trees.sides.get(SIDE)).toEqual(['ticket-2.txt', 'ticket-3.txt']);
 			expect(subjects(world)).toEqual(['Fix a typo']);
@@ -4089,6 +4333,121 @@ describe('a push of the build that a person beat', () => {
 			]);
 			expect(world.host.branchMessages(BRANCH)?.[0]).toBe('Fix a typo');
 			expect(world.host.pulls).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+	});
+
+	describe('a push that failed for another reason', () => {
+		const FAULT = { why: 'the connection was reset', lands: false } as const;
+
+		// a run of the Queue that builds the Feature with the Go and ends on its first idle tick
+		function run(world: World, d: Deps) {
+			const stop = new AbortController();
+			return queue(
+				{
+					tracker: world.tracker,
+					person: 'ann',
+					build: ({ id }) => buildFeature(d, setup(world), id),
+					status: d.status,
+					now: d.now,
+					say: () => undefined,
+					sleep: () => {
+						stop.abort();
+						return Promise.resolve();
+					},
+					signal: stop.signal
+				},
+				false
+			);
+		}
+
+		const goAgain = async (world: World) => {
+			await world.tracker.removeSignal('1', 'needsInfo');
+			await world.tracker.addSignal('1', 'go');
+		};
+
+		it("sets a Feedback-only build's commit aside and hands the Feature back, its Feedback unanswered", async () => {
+			const world = makeWorld();
+			const { d, pull } = await opened(world);
+			const id = feedbackOn(world, pull);
+			const before = subjects(world);
+			const said = world.tracker.said('1').length;
+			world.host.failPushes = FAULT;
+			await world.tracker.addSignal('1', 'go');
+
+			await run(world, d);
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			const comments = world.tracker.said('1').slice(said);
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toMatch(
+				/^\*\*Waiting on you\*\*: Nightjar stopped on a fault while pushing the branch and opening the draft pull request: the connection was reset/
+			);
+			expect(world.host.threads).toEqual([]);
+			expect(world.trees.sides.has(SIDE)).toBe(true);
+			expect(subjects(world)).toEqual(before);
+
+			// the Feedback is unanswered, so the next build answers it
+			world.host.failPushes = null;
+			await goAgain(world);
+			world.asked.length = 0;
+			await run(world, d);
+			expect(askedOf(world, 'feedback').flatMap((r) => r.feedback.map((f) => f.id))).toEqual([id]);
+			expect(subjects(world)[0]).toBe('Answer feedback on the pull request');
+			expect(world.host.threads.map((t) => t.id)).toEqual([id]);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+
+		it('keeps the Ticket commits on the branch, hands the Feature back, and pushes them on the next Go', async () => {
+			const world = makeWorld();
+			const d = deps(world);
+			const said = world.tracker.said('1').length;
+			world.host.failPushes = FAULT;
+
+			await run(world, d);
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			const comments = world.tracker.said('1').slice(said);
+			expect(comments).toHaveLength(1);
+			expect(comments[0]).toMatch(
+				/^\*\*Waiting on you\*\*: Nightjar stopped on a fault while pushing the branch and opening the draft pull request: the connection was reset/
+			);
+			expect(world.host.pulls).toEqual([]);
+			expect(world.trees.sides.has(SIDE)).toBe(false);
+			expect(subjects(world)).toEqual(['Use it in marks (#3)', 'Share the function (#2)']);
+
+			world.host.failPushes = null;
+			await goAgain(world);
+			await run(world, d);
+			expect(world.host.branchMessages(BRANCH)).toHaveLength(2);
+			expect(world.host.pulls).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+
+		it("keeps the Ticket commits an earlier faulted run left, when a later run's Feedback commit sits on top", async () => {
+			const world = makeWorld();
+			const { d, pull } = await opened(world);
+			world.tracker.add({ id: '4', title: 'Mark the rest', signals: ['ready'] });
+			const item = world.tracker.items.get('1');
+			if (item) world.tracker.items.set('1', { ...item, children: ['3', '2', '4'] });
+			feedbackOn(world, pull);
+			world.host.failPushes = FAULT;
+			await world.tracker.addSignal('1', 'go');
+			await run(world, d);
+
+			// the second run builds no Ticket, but answers new Feedback over the first's unpushed Ticket commit
+			feedbackOn(world, pull);
+			await goAgain(world);
+			await run(world, d);
+			expect(world.tracker.signalsOf('1')).toEqual(['needsInfo']);
+			expect(world.trees.sides.has(SIDE)).toBe(false);
+			expect(subjects(world)).toContain('Mark the rest (#4)');
+
+			world.host.failPushes = null;
+			await goAgain(world);
+			await run(world, d);
+			expect(world.host.branchMessages(BRANCH)?.some((m) => m.includes('Mark the rest (#4)'))).toBe(
+				true
+			);
+			expect(askedOf(world, 'build').filter((r) => r.ticket.id === '4')).toHaveLength(1);
 			expect(world.tracker.signalsOf('1')).toEqual([]);
 		});
 	});
