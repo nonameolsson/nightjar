@@ -10,6 +10,7 @@ const featureAfterRunStep = (n: SignalNames, why: { waiting: boolean; red: boole
 	text(next.featureAfterRunStep(n, why));
 const stoppedStep = (n: SignalNames) => text(next.stoppedStep(n));
 const pullChecksStep = (n: SignalNames) => text(next.pullChecksStep(n));
+const pushRejectedStep = (n: SignalNames, side: string) => text(next.pushRejectedStep(n, side));
 
 const names = DEFAULT_SIGNAL_NAMES;
 const renamed: SignalNames = { ...names, go: 'run-it', ready: 'build-me', needsInfo: 'stuck' };
@@ -171,5 +172,13 @@ describe('next steps', () => {
 		expect(got).toContain('2. Then hand it back: to have Nightjar build the Feature');
 		expect(got).toContain('remove `ready-for-human` and add `run-it` on this Feature');
 		expect(got).toContain('still count');
+	});
+
+	it('points a person at the side branch, and says the Go builds on top of their commits', () => {
+		const got = pushRejectedStep(renamed, 'factory/4-x-attempt-push');
+		expect(got).toMatch(/^\*\*Next step\*\*/);
+		expect(got).toContain('1. Look at `factory/4-x-attempt-push`');
+		expect(got).toContain('remove `ready-for-human` and add `run-it` on this Feature');
+		expect(got).not.toContain('factory-go');
 	});
 });

@@ -36,6 +36,7 @@ import { claimPorts, portEnv } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
+	featureExit,
 	feedbackPass,
 	fixNamed,
 	handBack,
@@ -346,9 +347,7 @@ export async function runNightjar(
 				console.error(`nightjar: ${why(fault)}`);
 				return 2;
 			}
-			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' || outcome?.kind === 'diverged'
-				? 0
-				: 1;
+			return featureExit(outcome);
 		}
 		return await queue(queueDeps, args.mode === 'once');
 	} finally {

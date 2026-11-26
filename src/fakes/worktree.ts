@@ -213,8 +213,15 @@ class MemoryWorktree implements Worktree {
 		return Promise.resolve(got.same === got.theirs.length ? 'fault' : 'diverged');
 	};
 
+	holdsUnpushedTicket = () => {
+		if (this.remote === undefined) return Promise.resolve(false);
+		const same = this.fetched()?.same ?? 0;
+		return Promise.resolve(this.folder.commits.slice(same).some((c) => c.ticket !== undefined));
+	};
+
 	setAsidePush = () => {
-		const got = this.fetched() ?? { theirs: [], same: 0 };
+		const got = this.fetched();
+		if (got === null) return Promise.resolve(null);
 		const side = pushAttemptBranch(this.at.branch);
 		this.sides.set(
 			side,

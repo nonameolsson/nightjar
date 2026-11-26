@@ -110,6 +110,18 @@ describe('decisionText', () => {
 				'1 failing Pull check: ci / test / npm test'
 			],
 			[
+				{
+					kind: 'pullFix',
+					round: 1,
+					rounds: 2,
+					failing: [{ check: 'ci', job: 'test', step: 'npm test' }],
+					end: 'faulted',
+					why: 'auth failed; the work is kept on nightjar/1-push-1'
+				},
+				'Pull-check fix round 1 of 2 could not push: auth failed; the work is kept on nightjar/1-push-1',
+				'1 failing Pull check: ci / test / npm test'
+			],
+			[
 				{ kind: 'madeBySource', source: 'sentry', key: 'ISSUE-1' },
 				'Made by the Source sentry for ISSUE-1'
 			],
