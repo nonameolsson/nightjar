@@ -1053,7 +1053,7 @@ describe('nightjar ui board', () => {
 			'Facets <small>needs info</small> <span class="reason">it asked 1 question, round 1</span>'
 		);
 		expect(card).toContain(
-			'<p>Next step</p><ol><li>Answer in a comment here.</li><li>On this Ticket, remove <code>needs-info</code> and add <code>ready-for-agent</code>.</li>'
+			'<p>Next step</p><ol><li>Answer the questions above in a comment here.</li><li>Then hand it back: on this Ticket, remove <code>needs-info</code> and add <code>ready-for-agent</code>;'
 		);
 		// the Feature's own Next step comes after the Tickets it speaks of
 		const deal = card.indexOf('<li>Deal with the waiting Tickets above');

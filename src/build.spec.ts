@@ -2362,7 +2362,7 @@ describe('the next step in each comment', () => {
 		await buildFeature(deps(world), setup(world), '1');
 		expect(said(world, '2')).toContain('**Next step**');
 		expect(said(world, '2')).toContain('add `ready-for-agent`');
-		expect(said(world, '2')).toContain('On its Feature, remove `needs-info` and add `factory-go`');
+		expect(said(world, '2')).toContain('on its Feature, remove `needs-info` and add `factory-go`');
 		expect(said(world, '2')).toMatch(/\n\n---\n_Built by Nightjar\._$/);
 	});
 
@@ -2395,7 +2395,7 @@ describe('the next step in each comment', () => {
 		const world = makeWorld();
 		world.setupOk = false;
 		await buildFeature(deps(world), setup(world, { setupCommand: 'make deps' }), '1');
-		expect(said(world, '1')).toContain('On this Feature, remove `needs-info` and add `factory-go`');
+		expect(said(world, '1')).toContain('on this Feature, remove `needs-info` and add `factory-go`');
 	});
 
 	it('sends a person from a Feature that built nothing to its waiting Tickets', async () => {
