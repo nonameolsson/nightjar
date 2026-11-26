@@ -1660,8 +1660,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .legend .egg.need::after { right: -0.5rem; }
 .cols { display: block; }
 .cols.has-detail { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) 340px; }
-.left { min-width: 0; }
-.head { background: var(--void); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; color: var(--muted); display: grid; font-size: 0.75rem; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; letter-spacing: 0.18em; margin: 0 0 14px 88px; padding: 6px 18px; text-transform: uppercase; }
+.left { container: board / inline-size; min-width: 0; }
+.head { background: var(--void); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; color: var(--muted); display: none; font-size: 0.75rem; gap: 6px 20px; grid-template-columns: minmax(0, 1.1fr) 12rem minmax(0, 1fr) 7.5rem; letter-spacing: 0.18em; margin: 0 0 14px 88px; padding: 6px 18px; text-transform: uppercase; }
 .head span:last-child { text-align: right; white-space: nowrap; }
 .mat { --h: var(--teal); background: linear-gradient(90deg, color-mix(in srgb, var(--h) 12%, transparent), transparent 45%), var(--panel-overlay); border: 1px solid var(--line); display: grid; grid-template-columns: 88px minmax(0, 1fr); margin-bottom: 16px; position: relative; }
 .mat::before, .mat::after { border: 2px solid var(--h); content: ""; height: 16px; pointer-events: none; position: absolute; right: -1px; width: 16px; }
@@ -1675,14 +1675,29 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
 .tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
 .lines { padding: 4px 18px; }
-.entry { align-items: baseline; border-top: 1px dashed var(--line); display: grid; gap: 6px 20px; grid-template-columns: minmax(0, 1fr) 13rem 10.5rem 6.5rem; overflow-wrap: anywhere; padding: 14px 0; }
+.entry { --title-in: calc(2.8rem + 10px); align-items: first baseline; border-top: 1px dashed var(--line); display: grid; gap: 8px 20px; grid-template-areas: "who clock" "eggs eggs" "now now"; grid-template-columns: minmax(0, 1fr) auto; overflow-wrap: anywhere; padding: 14px 0; }
 .lines > .entry:first-child { border-top: 0; }
 .lines > .empty { padding: 10px 0; }
 .more { border-top: 1px dashed var(--line); font: 0.85rem var(--mono); margin: 0; padding: 12px 0 8px; }
 .table .more { border: 0; padding: 12px 12px 0; }
 .entry p { margin: 0; }
-.who { font-size: 1.05rem; font-weight: 600; }
-.who b { color: var(--ink2); font: 500 0.85rem var(--mono); margin-right: 10px; }
+.who { grid-area: who; }
+.eggcell { grid-area: eggs; }
+.now { grid-area: now; }
+.clock { grid-area: clock; }
+.entry:has(> .under) { grid-template-areas: "who clock" "eggs eggs" "now now" "under under"; }
+@container board (min-width: 724px) {
+	.entry { grid-template-areas: "who now clock" "eggs now clock"; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 7.5rem; }
+	.entry:has(> .under) { grid-template-areas: "who now clock" "eggs now clock" "under under under"; }
+}
+@container board (min-width: 1040px) {
+	.entry { grid-template-areas: "who eggs now clock"; grid-template-columns: minmax(0, 1.1fr) 12rem minmax(0, 1fr) 7.5rem; }
+	.entry:has(> .under) { grid-template-areas: "who eggs now clock" "under eggs now clock"; }
+	.head { display: grid; }
+}
+.who { font-size: 1.05rem; font-weight: 600; padding-left: var(--title-in); text-indent: calc(-1 * var(--title-in)); }
+.who > * { text-indent: 0; }
+.who b { color: var(--ink2); display: inline-block; font: 500 0.85rem var(--mono); margin-right: 10px; min-width: 2.8rem; }
 .eggcell .meta { font: 0.75rem var(--mono); margin-top: 6px; }
 .now .label { align-items: center; color: var(--ink2); display: flex; font: 700 0.75rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .now .label .egg { height: 1rem; margin: 0 0.85rem 0 0.6rem; width: 0.85rem; }
@@ -1691,8 +1706,7 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .now .label .egg.need::after { right: -0.5rem; }
 .now p:not(.label) { color: var(--ink2); font-size: 0.85rem; }
 .clock { color: var(--muted); font: 0.85rem var(--mono); text-align: right; }
-.entry:has(> .under) > :is(.eggcell, .now, .clock) { grid-row: span 2; }
-.under { grid-column: 1; }
+.under { grid-area: under; padding-left: var(--title-in); }
 .under > p { color: var(--ink2); font-size: 0.85rem; margin-top: 6px; }
 .next { color: var(--ink2); font: 0.85rem/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 2px 0 0; }
 .next p { color: var(--muted); margin: 6px 0 2px; }
@@ -1881,11 +1895,6 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 .criteria summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .criteria .md { color: var(--ink2); }
 @media (prefers-reduced-motion: reduce) { .egg.building, .seg.running, .dk i { animation: none; } }
-@media (min-width: 1261px) and (max-width: 1400px) {
-	.cols.has-detail .entry { grid-template-columns: 1fr; }
-	.cols.has-detail .entry > * { grid-row: auto; }
-	.cols.has-detail .head { display: none; }
-}
 @media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
 	.details { order: -1; position: static; }
@@ -1897,12 +1906,6 @@ button.close:hover { background: color-mix(in srgb, var(--teal) 12%, transparent
 @media (max-height: 480px), (max-width: 400px) {
 	body { height: auto; overflow: visible; }
 	#scroll { overflow: visible; }
-}
-@media (max-width: 900px) {
-	.entry { grid-template-columns: 1fr; }
-	.entry > * { grid-row: auto; }
-	.head { display: none; }
-	.clock { text-align: left; }
 }
 @media (max-width: 760px) {
 	body { --gut: 12px; }
