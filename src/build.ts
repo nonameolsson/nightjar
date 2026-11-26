@@ -24,7 +24,7 @@ import { baseOf, botPullOf } from './base-line.js';
 import type { Env } from './git.js';
 import { noteFor, type Logbook, type Note } from './logbook.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
-import { nextTicket, progress, waiting, type Waiting } from './plan.js';
+import { buildOrder, nextTicket, progress, waiting, type Waiting } from './plan.js';
 import { conflicts, withConflicts, withoutConflicts } from './conflicts-section.js';
 import { why } from './say.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
@@ -62,7 +62,7 @@ import { reviewSection, type ReviewSession } from './review-section.js';
 import type { Entry, LogEntry, Spend } from './spend.js';
 import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
-import { statusNoteText, type StatusNote } from './status-note.js';
+import { buildingSentence, statusNoteText, type StatusNote } from './status-note.js';
 import {
 	isStatusNote,
 	type Comment,
@@ -402,9 +402,13 @@ async function writeStatusNote(
 	}
 }
 
-// A Lone issue is its own Ticket, so its note lists none.
-const noteTickets = (feature: Feature, tickets: readonly Ticket[], built: ReadonlySet<ItemId>) =>
-	feature.lone === true ? [] : progress(tickets, built, null);
+// A Lone issue is its own Ticket, so its note lists none. The others are listed in Build order, `current` the one being built.
+const noteTickets = (
+	feature: Feature,
+	tickets: readonly Ticket[],
+	built: ReadonlySet<ItemId>,
+	current: ItemId | null = null
+) => (feature.lone === true ? [] : progress(buildOrder(tickets), built, current));
 
 // The Signal calls on a Feature and its Tickets, each written to the Feature's Logbook once the Tracker has it; with `ticket`, the Signal is that Ticket's.
 interface FeatureSignals {
@@ -707,11 +711,32 @@ class FeatureRun {
 		return { kind: 'repeated', why: failed, tickets: this.streak.map((f) => f.ticket) };
 	}
 
+	// The Status note while `ticket` builds: Building, which Ticket of the Feature's it is, and the Tickets with their states. It rewrites the note and posts no comment.
+	private async noteBuilding(
+		ticket: Ticket,
+		at: Omit<Parameters<typeof buildingSentence>[0], 'ticket'> = {}
+	): Promise<void> {
+		const listed = noteTickets(this.feature, this.tickets, this.built, ticket.id);
+		const place = listed.findIndex((t) => t.id === ticket.id) + 1;
+		const listing = place > 0 ? { place, of: listed.length, title: ticket.title } : null;
+		await writeStatusNote(this.deps, this.feature, {
+			state: 'building',
+			sentence: buildingSentence({ ticket: listing, ...at }),
+			tickets: listed,
+			pull: null,
+			next: null,
+			earlier: [],
+			session: this.session
+		});
+	}
+
 	// The Ticket carries the working Signal from just before its build Session starts until it ends any way: built, handed back, paused or stopped.
 	private async buildTicket(ticket: Ticket): Promise<Step> {
 		this.note({ kind: 'ticketStarted', ticket: ticket.id });
 		const before = await this.tree.head();
 		const faults = ticketFaults(ticket.body);
+		// a Ticket that fails its contract starts no Session, so it is not shown as building
+		if (faults.length === 0) await this.noteBuilding(ticket);
 		if (faults.length === 0) await this.signals.on('working', ticket.id);
 		try {
 			return await this.buildWorking(ticket, before, faults);
@@ -776,10 +801,12 @@ class FeatureRun {
 					outcome: `failed: ${failed.why}`,
 					failure: 'passing'
 				}),
-			retrying: (attempt, why) =>
+			retrying: async (attempt, why) => {
 				this.deps.say(
 					`${hash(ticket.id)}: ${why}; retrying after a passing fault, try ${String(attempt)} of ${String(TRIES)}`
-				)
+				);
+				await this.noteBuilding(ticket, { retry: { attempt, of: TRIES } });
+			}
 		});
 		const sessionId = got.sessionId;
 		const entry = {
@@ -906,6 +933,7 @@ class FeatureRun {
 			});
 		}
 		this.deps.status.happened({ kind: 'built', feature: this.feature.id, ticket: ticket.id });
+		await this.noteBuilding(ticket, { built: true });
 		// later Tickets would build on red, so the run stops here and a person looks
 		if (!check.ok) return { kind: 'red', tail: check.tail };
 		return this.steps === null ? NEXT : this.steps.runAt('afterEachTicket', ticket);

@@ -5203,16 +5203,15 @@ describe('the Status note', () => {
 
 		expect(seen.length).toBeGreaterThan(0);
 		for (const note of seen) {
-			expect(note).toContain('**Building**: Nightjar picked this Feature up and is building it.');
+			expect(note?.startsWith('<!-- nightjar:status -->\n**Building**: ')).toBe(true);
 		}
-		expect(seen[0]).toContain('- #2 Share the function: waiting, not reached');
 		const note = world.tracker.note('1') ?? '';
 		const url = world.host.pulls[0]?.url ?? 'no draft';
 		expect(note.startsWith('<!-- nightjar:status -->\n**Draft PR open**: ')).toBe(true);
 		expect(note).toContain('Nightjar built 2 of 2 Tickets into a draft pull request.');
 		expect(note).toContain(`**Pull request**: ${url}`);
-		// in the Feature's own order, as the page lists them
-		expect(note).toContain('- #3 Use it in marks: built\n- #2 Share the function: built');
+		// in Build order: #3 waits for #2, though the Feature lists it first
+		expect(note).toContain('- #2 Share the function: built\n- #3 Use it in marks: built');
 		expect(note).toContain(`1. Review the draft pull request ${url}.`);
 		// the last Session that built
 		expect(note).toContain(
@@ -5314,10 +5313,132 @@ describe('the Status note', () => {
 		const got = await buildFeature({ ...deps(world), tracker, say }, setup(world), '1');
 		expect(got.kind).toBe('pull');
 		const failed = said.filter((l) => l.includes('could not write its Status note'));
-		expect(failed).toEqual([
-			'#1: could not write its Status note: the Tracker is down',
-			'#1: could not write its Status note: the Tracker is down'
-		]);
+		// the start, each Ticket's start and end, and the pull request
+		expect(failed).toHaveLength(6);
+		expect(new Set(failed)).toEqual(
+			new Set(['#1: could not write its Status note: the Tracker is down'])
+		);
 		expect(world.tracker.note('1')).toBeUndefined();
+	});
+
+	describe('while the Feature builds', () => {
+		// every write of the Feature's note, in order
+		const writes = (world: World): string[] => {
+			const seen: string[] = [];
+			const write = world.tracker.statusNote;
+			world.tracker.statusNote = (id, body) => {
+				seen.push(body);
+				return write(id, body);
+			};
+			return seen;
+		};
+
+		// the line a note opens with, under its marker
+		const headlineOf = (note: string) => note.split('\n')[1] ?? '';
+
+		// three Tickets, #3 waiting for #2, so the Build order is 2, 3, 4
+		const threeTickets = (world: World) => {
+			world.tracker.add({ id: '4', title: 'Name it', signals: ['ready'] });
+			world.tracker.add({
+				id: '1',
+				title: 'One escape',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['3', '2', '4']
+			});
+		};
+
+		it('rewrites the one note as each Ticket starts and ends, naming the Ticket', async () => {
+			const world = makeWorld();
+			threeTickets(world);
+			const seen = writes(world);
+			await buildFeature(deps(world), setup(world), '1');
+
+			expect(seen.map(headlineOf)).toEqual([
+				'**Building**: Nightjar picked this Feature up and is building it.',
+				'**Building**: Ticket 1 of 3: Share the function',
+				'**Building**: Ticket 1 of 3 built: Share the function',
+				'**Building**: Ticket 2 of 3: Use it in marks',
+				'**Building**: Ticket 2 of 3 built: Use it in marks',
+				'**Building**: Ticket 3 of 3: Name it',
+				'**Building**: Ticket 3 of 3 built: Name it',
+				expect.stringContaining('**Draft PR open**: ')
+			]);
+			// never a comment of its own: the note is the Feature's only comment
+			expect(all(world, '1')).toEqual([world.tracker.note('1')]);
+			expect(world.tracker.said('1')).toEqual([]);
+		});
+
+		it('lists every Ticket with its state, in Build order, at each update', async () => {
+			const world = makeWorld();
+			threeTickets(world);
+			const seen = writes(world);
+			await buildFeature(deps(world), setup(world), '1');
+
+			const list = (n: number) => /\*\*Tickets\*\*\n\n([\s\S]*?)\n\n/.exec(seen[n] ?? '')?.[1];
+			expect(list(0)).toBe(
+				'- #2 Share the function: waiting, not reached\n- #3 Use it in marks: waiting, blocked by #2\n- #4 Name it: waiting, not reached'
+			);
+			expect(list(1)).toBe(
+				'- #2 Share the function: building\n- #3 Use it in marks: waiting, blocked by #2\n- #4 Name it: waiting, not reached'
+			);
+			expect(list(2)).toBe(
+				'- #2 Share the function: built\n- #3 Use it in marks: waiting, not reached\n- #4 Name it: waiting, not reached'
+			);
+			expect(list(3)).toBe(
+				'- #2 Share the function: built\n- #3 Use it in marks: building\n- #4 Name it: waiting, not reached'
+			);
+			expect(list(5)).toBe(
+				'- #2 Share the function: built\n- #3 Use it in marks: built\n- #4 Name it: building'
+			);
+			expect(list(7)).toBe(
+				'- #2 Share the function: built\n- #3 Use it in marks: built\n- #4 Name it: built'
+			);
+		});
+
+		it('shows a Ticket that needs a person among the Tickets of the next update', async () => {
+			const world = makeWorld();
+			threeTickets(world);
+			world.acts['2'] = 'ask';
+			const seen = writes(world);
+			await buildFeature(deps(world), setup(world), '1');
+
+			// #3 waits for #2, so #4 is the Ticket built next
+			const later = seen.find((n) => headlineOf(n).includes('Ticket 3 of 3: Name it')) ?? '';
+			expect(later).toContain('- #2 Share the function: waiting, needs info');
+			expect(later).toContain('- #4 Name it: building');
+		});
+
+		it('says in the headline that the Session is tried again after a passing fault, and which try', async () => {
+			const world = makeWorld();
+			world.acts['2'] = 'down';
+			const seen = writes(world);
+			await buildFeature(deps(world), setup(world), '1');
+
+			expect(world.waits).toEqual([30_000, 120_000]);
+			expect(seen.map(headlineOf).slice(0, 4)).toEqual([
+				'**Building**: Nightjar picked this Feature up and is building it.',
+				'**Building**: Ticket 1 of 2: Share the function',
+				'**Building**: Ticket 1 of 2: Share the function, retrying after a fault (try 2 of 3)',
+				'**Building**: Ticket 1 of 2: Share the function, retrying after a fault (try 3 of 3)'
+			]);
+			// the retries post nothing: the Feature's one comment is the end of the run, built nothing
+			expect(world.tracker.said('1')).toHaveLength(1);
+		});
+
+		it('names no Ticket of a Lone issue, which is its own', async () => {
+			const world = makeWorld();
+			world.tracker.add({ id: '9', title: 'Fix the typo', assignees: ['ann'], signals: ['go'] });
+			world.acts['9'] = 'flaky';
+			const seen = writes(world);
+			await buildFeature(deps(world), setup(world), '9');
+
+			expect(seen.map(headlineOf).slice(1, 3)).toEqual([
+				'**Building**: Nightjar is building this issue.',
+				'**Building**: Nightjar is building this issue, retrying after a fault (try 2 of 3).'
+			]);
+			for (const note of seen) expect(note).not.toContain('**Tickets**');
+			expect(all(world, '9')).toEqual([world.tracker.note('9')]);
+		});
 	});
 });

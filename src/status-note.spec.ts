@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { endsWithFooter } from './footer.js';
 import {
 	STATE_WORDS,
+	buildingSentence,
 	headline,
 	logbookLine,
 	statusNoteText,
@@ -21,6 +22,33 @@ const BARE: StatusNote = {
 };
 
 const text = (more: Partial<StatusNote>) => statusNoteText({ ...BARE, ...more });
+
+describe('buildingSentence', () => {
+	const ticket = { place: 3, of: 5, title: 'Share the function' };
+
+	it('names the Ticket and its place in the Feature', () => {
+		expect(buildingSentence({ ticket })).toBe('Ticket 3 of 5: Share the function');
+	});
+
+	it('says a try after a passing fault, and which', () => {
+		expect(buildingSentence({ ticket, retry: { attempt: 2, of: 3 } })).toBe(
+			'Ticket 3 of 5: Share the function, retrying after a fault (try 2 of 3)'
+		);
+	});
+
+	it('says the Ticket is built', () => {
+		expect(buildingSentence({ ticket, built: true })).toBe(
+			'Ticket 3 of 5 built: Share the function'
+		);
+	});
+
+	it('names no Ticket of a Lone issue', () => {
+		expect(buildingSentence({ ticket: null })).toBe('Nightjar is building this issue.');
+		expect(buildingSentence({ ticket: null, retry: { attempt: 3, of: 3 } })).toBe(
+			'Nightjar is building this issue, retrying after a fault (try 3 of 3).'
+		);
+	});
+});
 
 describe('statusNoteText', () => {
 	it('opens with the hidden marker, then the state word and the sentence', () => {

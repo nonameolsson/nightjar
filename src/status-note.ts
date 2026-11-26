@@ -54,6 +54,23 @@ export interface StatusNote {
 export const headline = (state: NoteState, sentence: string): string =>
 	`**${STATE_WORDS[state]}**: ${sentence}`;
 
+// The Building sentence: which Ticket the run is on, as "Ticket 3 of 5: <title>", and the try when a passing fault has the Session run again. `ticket` is null for a Lone issue, which is its own Ticket and has no place in a list.
+export function buildingSentence(at: {
+	readonly ticket: { readonly place: number; readonly of: number; readonly title: string } | null;
+	// the Ticket's build ended and its commit is on the branch
+	readonly built?: boolean;
+	readonly retry?: { readonly attempt: number; readonly of: number };
+}): string {
+	const retry =
+		at.retry === undefined
+			? ''
+			: `, retrying after a fault (try ${String(at.retry.attempt)} of ${String(at.retry.of)})`;
+	if (at.ticket === null) return `Nightjar is building this issue${retry}.`;
+	const { place, of, title } = at.ticket;
+	const which = `Ticket ${String(place)} of ${String(of)}`;
+	return at.built === true ? `${which} built: ${title}` : `${which}: ${title}${retry}`;
+}
+
 export function logbookLine({ feature, session }: LogbookPointer): string {
 	const where = session === null ? '' : ` · session ${session}`;
 	return `Logbook: nightjar ui → #${feature}${where} (on the machine that ran it)`;

@@ -40,7 +40,9 @@ function bench(
 				return Promise.resolve(got);
 			},
 			record: (f, attempt) => recorded.push(`${String(attempt)}:${f.why}`),
-			retrying: (attempt) => retrying.push(attempt)
+			retrying: (attempt) => {
+				retrying.push(attempt);
+			}
 		});
 	return { run, waits, resets, recorded, budgets, retrying };
 }
