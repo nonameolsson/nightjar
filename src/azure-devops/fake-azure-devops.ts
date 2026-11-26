@@ -587,6 +587,13 @@ export class FakeAzureDevOps {
 			if (call.method === 'GET') return this.comments(id, url.searchParams);
 			if (call.method === 'POST') return this.addComment(id, url.searchParams, body);
 		}
+		const edited = new RegExp(`^${project}/_apis/wit/workItems/(\\d+)/comments/(\\d+)$`).exec(path);
+		if (edited && call.method === 'PATCH') {
+			const id = Number(edited[1]);
+			if (!this.items.has(id))
+				return refusal(404, `TF401232: Work item ${String(id)} does not exist.`);
+			return this.editComment(id, Number(edited[2]), url.searchParams, body);
+		}
 		const repos = this.reposAnswer(url, call, body, project);
 		if (repos !== null) return repos;
 		if (call.method === 'GET' && path === `${project}/_apis/policy/evaluations`) {
@@ -1227,6 +1234,33 @@ export class FakeAzureDevOps {
 		const made = list[list.length - 1];
 		if (made === undefined) throw fault('the comment was not kept');
 		return json(200, this.renderComment(id, made));
+	}
+
+	// Azure DevOps lets a person update only their own comment; it keeps when the comment was made.
+	private editComment(
+		id: number,
+		commentId: number,
+		search: URLSearchParams,
+		body: unknown
+	): AzureDevOpsReply {
+		const url = new URL(`https://dev.azure.com/?${search.toString()}`);
+		this.query(url, { 'api-version': COMMENTS_API }, ['format']);
+		const text = (body as { text?: unknown } | null)?.text;
+		if (typeof text !== 'string') throw fault('a comment carries { text }');
+		const list = this.discussion.get(id) ?? [];
+		const at = list.findIndex((c) => c.id === commentId);
+		const found = list[at];
+		if (found === undefined) {
+			return refusal(404, `TF401321: Comment ${String(commentId)} does not exist.`);
+		}
+		if (found.author.id !== this.who(this.person).id) {
+			return refusal(403, 'TF401322: Only the author of a comment may update it.');
+		}
+		const html = search.get('format') !== 'markdown';
+		const changed = { ...found, text: html ? text : storedMarkdown(text), markdown: !html };
+		this.discussion.set(id, list.with(at, changed));
+		this.touch(id);
+		return json(200, this.renderComment(id, changed));
 	}
 
 	// Three reads of the identity host: a person by sign-in name, the project's Contributors group by name, and a person by id with every group above them.

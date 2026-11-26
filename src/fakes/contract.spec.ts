@@ -11,6 +11,7 @@ import {
 	sourcesContract,
 	feedbackContract,
 	shelfContract,
+	statusNoteContract,
 	ticketCountsContract,
 	trackerContract,
 	waitingOnContract
@@ -45,7 +46,11 @@ describe('FakeTracker meets the shelf contract', () => {
 	for (const c of shelfContract) it(c.name, () => c.run(fakeTrackerHarness));
 });
 
-describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom, assign, ticketCounts and shelf contracts', () => {
+describe('FakeTracker meets the statusNote contract', () => {
+	for (const c of statusNoteContract) it(c.name, () => c.run(fakeTrackerHarness));
+});
+
+describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, featuresFrom, assign, ticketCounts, shelf and statusNote contracts', () => {
 	const keyed = keyedTrackerHarness('PROJ-');
 	for (const c of [
 		...trackerContract,
@@ -54,7 +59,8 @@ describe('FakeTracker keyed as PROJ-N meets the Tracker, creation, waitingOn, fe
 		...sourcesContract,
 		...assignContract,
 		...ticketCountsContract,
-		...shelfContract
+		...shelfContract,
+		...statusNoteContract
 	]) {
 		it(c.name, () => c.run(keyed));
 	}

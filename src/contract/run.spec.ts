@@ -18,10 +18,12 @@ import { featureWriterContract } from './feature-writer.js';
 import { trackerContract } from './tracker.js';
 import { shelfContract } from './shelf.js';
 import { sourcesContract } from './sources.js';
+import { statusNoteContract } from './status-note.js';
 import { ticketCountsContract } from './ticket-counts.js';
 import { waitingOnContract } from './waiting-on.js';
 import type { TrackerHarness } from './tracker.js';
 import type { FakeTracker } from '../fakes/tracker.js';
+import { isStatusNote } from '../tracker.js';
 
 // A Tracker that never knows who is signed in.
 const forgetful: TrackerHarness = async (world) => {
@@ -43,6 +45,7 @@ describe('runContract', () => {
 			'Tracker assign',
 			'Tracker ticket counts',
 			'Tracker shelf',
+			'Tracker Status note',
 			'Code host',
 			'Code host Nightjar drafts',
 			'Code host feedback',
@@ -68,21 +71,24 @@ describe('runContract', () => {
 		);
 		expect(report.suites[6]?.results.map((r) => r.name)).toEqual(shelfContract.map((c) => c.name));
 		expect(report.suites[7]?.results.map((r) => r.name)).toEqual(
-			codeHostContract.map((c) => c.name)
+			statusNoteContract.map((c) => c.name)
 		);
 		expect(report.suites[8]?.results.map((r) => r.name)).toEqual(
-			nightjarDraftsContract.map((c) => c.name)
+			codeHostContract.map((c) => c.name)
 		);
 		expect(report.suites[9]?.results.map((r) => r.name)).toEqual(
-			feedbackContract.map((c) => c.name)
+			nightjarDraftsContract.map((c) => c.name)
 		);
 		expect(report.suites[10]?.results.map((r) => r.name)).toEqual(
-			openPullsContract.map((c) => c.name)
+			feedbackContract.map((c) => c.name)
 		);
 		expect(report.suites[11]?.results.map((r) => r.name)).toEqual(
-			publishContract.map((c) => c.name)
+			openPullsContract.map((c) => c.name)
 		);
 		expect(report.suites[12]?.results.map((r) => r.name)).toEqual(
+			publishContract.map((c) => c.name)
+		);
+		expect(report.suites[13]?.results.map((r) => r.name)).toEqual(
 			botPullsContract.map((c) => c.name)
 		);
 		expect(report.failed).toBe(0);
@@ -227,6 +233,7 @@ describe('runContract', () => {
 				trusts: _g,
 				ticketCounts: _h,
 				shelf: _i,
+				statusNote: _j,
 				...only
 			} = asFakeTracker(tracker);
 			return { ...rest, tracker: only };
@@ -249,7 +256,8 @@ describe('runContract', () => {
 			'Tracker sources',
 			'Tracker assign',
 			'Tracker ticket counts',
-			'Tracker shelf'
+			'Tracker shelf',
+			'Tracker Status note'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -267,9 +275,51 @@ describe('runContract', () => {
 			'Tracker waiting on',
 			'Tracker sources',
 			'Tracker assign',
-			'Tracker ticket counts'
+			'Tracker ticket counts',
+			'Tracker Status note'
 		]);
 		expect(report.failed).toBe(0);
+	});
+
+	it('runs no Status note suite over a Tracker without statusNote, as a module written before it', async () => {
+		const lacks: TrackerHarness = async (world) => {
+			const { tracker, ...rest } = await fakeTrackerHarness(world);
+			const { statusNote: _gone, ...without } = asFakeTracker(tracker);
+			return { ...rest, tracker: without };
+		};
+		const report = await runContract({ trackerHarness: lacks });
+		expect(report.suites.map((s) => s.title)).not.toContain('Tracker Status note');
+		expect(report.failed).toBe(0);
+	});
+
+	it('names a statusNote that adds a new comment each time, or edits a comment that is not its own', async () => {
+		const changed =
+			(wrong: (fake: FakeTracker) => FakeTracker['statusNote']): TrackerHarness =>
+			async (world) => {
+				const subject = await fakeTrackerHarness(world);
+				const fake = asFakeTracker(subject.tracker);
+				return { ...subject, tracker: Object.assign(fake, { statusNote: wrong(fake) }) };
+			};
+		const failing = async (harness: TrackerHarness) => {
+			const report = await runContract({ trackerHarness: harness });
+			const suite = report.suites.find((s) => s.title === 'Tracker Status note')?.results ?? [];
+			expect(suite).toHaveLength(statusNoteContract.length);
+			return suite.filter((r) => !r.ok).map((r) => r.name);
+		};
+		const appends = changed((fake) => (id, body) => fake.comment(id, body).then(() => undefined));
+		expect(await failing(appends)).toEqual(statusNoteContract.slice(1).map((c) => c.name));
+		// the first marked comment, whoever wrote it
+		const anyone = changed((fake) => (id, body) => {
+			const item = fake.items.get(id);
+			const at = item?.comments.findIndex((c) => isStatusNote(c.body)) ?? -1;
+			const found = item?.comments[at];
+			if (item === undefined || found === undefined) {
+				return fake.comment(id, body).then(() => undefined);
+			}
+			fake.items.set(id, { ...item, comments: item.comments.with(at, { ...found, body }) });
+			return Promise.resolve();
+		});
+		expect(await failing(anyone)).toEqual([statusNoteContract[3]?.name]);
 	});
 
 	it('names a shelf that lists the oldest first, counts only those listed, or lists nothing', async () => {
@@ -317,7 +367,8 @@ describe('runContract', () => {
 			'Tracker waiting on',
 			'Tracker assign',
 			'Tracker ticket counts',
-			'Tracker shelf'
+			'Tracker shelf',
+			'Tracker Status note'
 		]);
 		expect(report.failed).toBe(0);
 	});
@@ -448,7 +499,8 @@ describe('runContract', () => {
 				sourcesContract.length +
 				assignContract.length +
 				ticketCountsContract.length +
-				shelfContract.length
+				shelfContract.length +
+				statusNoteContract.length
 		);
 		const text = formatReport(report);
 		expect(text).toContain('FAIL  names the signed-in person');

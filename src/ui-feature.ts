@@ -98,8 +98,8 @@ function ticketHtml(
 	);
 }
 
-// The panel for a Feature read well: its spec, then its Tickets in Build order.
-export function featurePanel(detail: FeatureDetail, links: Links): string {
+// The panel for a Feature read well: its spec, then its Tickets in Build order, then its Logbook (`logbook`, the section's markup, which the page reads from .factory/ and never from the Tracker).
+export function featurePanel(detail: FeatureDetail, links: Links, logbook = ''): string {
 	const { feature, tickets, checks } = detail;
 	const lone = feature.lone === true;
 	const own = new Set(tickets.map((t) => t.id));
@@ -117,16 +117,18 @@ export function featurePanel(detail: FeatureDetail, links: Links): string {
 		contractHtml(checks) +
 		onTracker(feature.id, links) +
 		`<section class="spec"><h3>Spec</h3>${spec}</section>` +
-		`<section class="build"><h3>Tickets in Build order</h3>${list}</section>`
+		`<section class="build"><h3>Tickets in Build order</h3>${list}</section>` +
+		logbook
 	);
 }
 
-// The panel for a Feature the Tracker could not give: why, and where to read it instead.
-export function featureFault(id: ItemId, fault: unknown, links: Links): string {
+// The panel for a Feature the Tracker could not give: why, and where to read it instead. Its Logbook is on this machine, so it shows all the same.
+export function featureFault(id: ItemId, fault: unknown, links: Links, logbook = ''): string {
 	return (
 		title(id, '', links) +
 		`<p class="fault" role="alert">could not read ${escape(idText(id))} from the Tracker: ${escape(why(fault))}</p>` +
-		onTracker(id, links)
+		onTracker(id, links) +
+		logbook
 	);
 }
 
@@ -198,15 +200,17 @@ dialog.addEventListener('close', () => {
 export async function featureAnswer(
 	search: URLSearchParams,
 	read: (id: ItemId) => Promise<FeatureDetail>,
-	links: Links
+	links: Links,
+	// the Feature's Logbook section, read from .factory/ as the panel opens; left out, the panel has none
+	logbook: (id: ItemId) => string = () => ''
 ): Promise<Answer> {
 	const id = search.get('id') ?? '';
 	if (id === '' || id.length > ID_MAX) {
 		return { status: 400, body: '<p class="fault" role="alert">no Feature named</p>' };
 	}
 	try {
-		return { status: 200, body: featurePanel(await read(id), links) };
+		return { status: 200, body: featurePanel(await read(id), links, logbook(id)) };
 	} catch (fault) {
-		return { status: 502, body: featureFault(id, fault, links) };
+		return { status: 502, body: featureFault(id, fault, links, logbook(id)) };
 	}
 }

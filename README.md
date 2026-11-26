@@ -449,7 +449,7 @@ Intake answers a delivery only after the Tracker has:
 | Answer | When |
 | ------ | ---- |
 | 201    | the Feature was made |
-| 200    | a Feature with the same key is open, or the Source has made `maxPerDay` Features today; nothing is made. On the open Feature, intake comments "happened again" at most once a day. |
+| 200    | a Feature with the same key is open, or the Source has made `maxPerDay` Features today; nothing is made. On the open Feature, intake writes "happened again" (how many times, since when) into the history of its Status note, and posts no comment; on a Tracker without a Status note it comments at most once a day. |
 | 401    | the signature is wrong, or its timestamp is more than 5 minutes off |
 | 413    | the body is over 256 KB |
 | 429    | the Source has had 20 bad signatures in the last minute |
@@ -467,7 +467,7 @@ Intake answers a delivery only after the Tracker has:
 }
 ```
 
-Intake checks `Sentry-Hook-Signature`, the HMAC SHA-256 of the raw body with the client secret, and answers 401 when it is wrong. It takes `event_alert` deliveries only (the `triggered` alert): a delivery of any other `Sentry-Hook-Resource` that Sentry sends to the same URL gets 200 and makes nothing. The key is the Sentry issue id, so while the Feature of an issue is open, a new alert for it makes no second Feature and only comments "happened again", at most once a day. The shipped `sentry` template fills the Feature from the alert (`data.event.title`, `culprit`, `level`, `web_url` and `data.triggered_rule`) with one Ticket: reproduce the error in a spec, then fix it so the spec passes.
+Intake checks `Sentry-Hook-Signature`, the HMAC SHA-256 of the raw body with the client secret, and answers 401 when it is wrong. It takes `event_alert` deliveries only (the `triggered` alert): a delivery of any other `Sentry-Hook-Resource` that Sentry sends to the same URL gets 200 and makes nothing. The key is the Sentry issue id, so while the Feature of an issue is open, a new alert for it makes no second Feature and only says "happened again" in the Feature's Status note (a comment, at most once a day, on a Tracker without one). The shipped `sentry` template fills the Feature from the alert (`data.event.title`, `culprit`, `level`, `web_url` and `data.triggered_rule`) with one Ticket: reproduce the error in a spec, then fix it so the spec passes.
 
 **Shipped templates.** Name one in a Source's `template`. `sentry` is the one above. `weekly-deps` has one Ticket, to update the dependencies the repo's check command still passes with, and goes with a schedule:
 
@@ -584,7 +584,7 @@ Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again qu
 
 ## The Logbook
 
-A Feature's **Logbook** is every session Nightjar spent on it and each decision it made between them, in order: each red check with the gate report its fix round was handed, work thrown away and why, each Step's verdict, the Review's issues, each Feedback round, the Signals it put on or took off, the draft pull request, a pause or a hand-over to a person. It stays on your machine: nothing of it is posted to the pull request or the Tracker. `nightjar ui` shows it at `/features/<id>`, from each Feature's card on the Board and from the list of all Logbooks.
+A Feature's **Logbook** is every session Nightjar spent on it and each decision it made between them, in order: each red check with the gate report its fix round was handed, work thrown away and why, each Step's verdict, the Review's issues, each Feedback round, the Signals it put on or took off, the draft pull request, a pause or a hand-over to a person, and a fault that stopped the build with where it happened and its stack trace. It stays on your machine: nothing of it is posted to the pull request or the Tracker. `nightjar ui` shows it at `/features/<id>`, from each Feature's card on the Board and from the list of all Logbooks.
 
 On a terminal, from anywhere inside the repo, with no login (it reads `.factory/` and calls neither the Tracker nor the Code host):
 

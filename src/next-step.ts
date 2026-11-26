@@ -10,41 +10,41 @@ export const nextStepText = (lines: NextStep) =>
 
 const KEEP = '(keep it assigned to you)';
 
+// A Next step that hands a Feature or Ticket back to Nightjar puts the person's task first and ends with this step: the Signal changes come last.
+export const HAND_BACK = 'Then hand it back:';
+
 // A handed-back Ticket leaves its Feature carrying needs-info, which only a person takes off.
 const giveGo = (n: SignalNames) =>
-	`On its Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}. Nightjar goes on from the branch.`;
+	`on its Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}. Nightjar goes on from the branch.`;
 
 const handBack = (n: SignalNames, from: string) =>
-	`On this Ticket, remove ${tag(from)} and add ${tag(n.ready)}.`;
+	`${HAND_BACK} on this Ticket, remove ${tag(from)} and add ${tag(n.ready)}; then ${giveGo(n)}`;
 
 export type TicketHandBack = 'answer' | 'retry' | 'human';
 
 export function ticketStep(n: SignalNames, kind: TicketHandBack): NextStep {
 	switch (kind) {
 		case 'answer':
-			return ['Answer in a comment here.', handBack(n, n.needsInfo), giveGo(n)];
+			return ['Answer the questions above in a comment here.', handBack(n, n.needsInfo)];
 		case 'retry':
 			return [
 				'Read the reason above and fix what it names, or edit the Ticket.',
-				handBack(n, n.needsInfo),
-				giveGo(n)
+				handBack(n, n.needsInfo)
 			];
 		case 'human':
 			return [
 				'Build it yourself, or answer the questions above and make the Ticket clear.',
-				`To hand it back to Nightjar, remove ${tag(n.human)} and add ${tag(n.ready)} on this Ticket.`,
-				giveGo(n)
+				handBack(n, n.human)
 			];
 	}
 }
 
 const featureGo = (n: SignalNames) =>
-	`On this Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}.`;
+	`on this Feature, remove ${tag(n.needsInfo)} and add ${tag(n.go)} ${KEEP}.`;
 
 export const featureStopStep = (n: SignalNames): NextStep => [
 	'Fix the cause named above.',
-	featureGo(n),
-	'Nightjar builds the Feature again.'
+	`${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again.`
 ];
 
 export function featureAfterRunStep(
@@ -62,8 +62,13 @@ export function featureAfterRunStep(
 	if (todo.length === 0) {
 		return ['Add a Ticket to the Feature, or close the Feature if it is done.'];
 	}
-	return [...todo, featureGo(n), 'Nightjar goes on from the branch.'];
+	return [...todo, `${HAND_BACK} ${featureGo(n)} Nightjar goes on from the branch.`];
 }
+
+// A draft pull request that asks nothing more of Nightjar: it is the person's to review.
+export const draftStep = (url: string): NextStep => [
+	`Review the draft pull request ${url}. When it is right, mark it ready for review and merge it.`
+];
 
 // A Feature whose Workflow has `output: "note"` ends with the note in a draft pull request, for a person to read and act on.
 export const noteStep = (url: string): NextStep => [
@@ -75,34 +80,56 @@ export const noteStep = (url: string): NextStep => [
 // A draft pull request whose Pull checks Nightjar could not make green: the person's now, and its fix rounds still count.
 export const pullChecksStep = (n: SignalNames): NextStep => [
 	'Read the failing Pull checks above and fix them on the branch, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.',
-	`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
+	`${HAND_BACK} to have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
 ];
 
 // A Feature whose Review still asks for changes after Nightjar's Review rounds: the issues are the person's now.
 export const reviewStep = (n: SignalNames): NextStep => [
 	"Read the issues above and fix the ones that are right on the branch, or review the pull request: the Review is Nightjar's own and can be wrong.",
-	`To have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. A new build gets its Review rounds again.`
+	`${HAND_BACK} to have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. A new build gets its Review rounds again.`
 ];
 
 // A Feedback round that was thrown away: its feedback stays unanswered, so the next Go starts a round on it again.
 export const feedbackStep = (n: SignalNames): NextStep => [
 	'Read why above: answer the feedback yourself on the pull request, or make it clear enough to act on there.',
-	featureGo(n),
-	'Nightjar goes on from the branch, and answers the feedback no commit has answered yet.'
+	`${HAND_BACK} ${featureGo(n)} Nightjar goes on from the branch, and answers the feedback no commit has answered yet.`
 ];
 
 // A pull request that has had its automatic Feedback rounds: a request for changes starts no more, and only a Go starts another round.
 export const feedbackLimitStep = (n: SignalNames): NextStep => [
 	'Answer the requests for changes on the pull request yourself, on its branch.',
-	`To have Nightjar answer them, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Only a Go starts another Feedback round on this pull request.`
+	`${HAND_BACK} to have Nightjar answer them, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Only a Go starts another Feedback round on this pull request.`
 ];
 
 // A push the Code host rejected because a person pushed to the branch: the draft is theirs, and Nightjar's work waits on a local side branch.
 export const pushRejectedStep = (n: SignalNames, side: string): NextStep => [
 	`Look at ${tag(side)}, a local branch in the checkout Nightjar runs in, and cherry-pick from it what you want.`,
-	`To have Nightjar build on top of your commits, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Or carry on by hand.`
+	`${HAND_BACK} to have Nightjar build on top of your commits, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. Or carry on by hand.`
 ];
 
+// A run that paused for a reason of the machine or the plan: the Go stays on the Feature, so the person has nothing to do. `retries` when the run tries the Feature again on its own, at the time the Status note gives.
+export const pausedStep = (retries: boolean): NextStep => [
+	retries
+		? 'Nothing to do: the Go stays on this Feature, and Nightjar tries it again then, going on from the branch.'
+		: 'Nothing to do now: the Go stays on this Feature, and Nightjar goes on from the branch the next time it runs.'
+];
+
+// A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix is handed back by taking needs-info off alone, as no Go starts that pass.
+export function faultStep(
+	n: SignalNames,
+	o: { readonly passing: boolean; readonly pullFix: boolean }
+): NextStep {
+	const task = o.passing
+		? 'Nothing to fix first: this kind of fault usually goes away by itself.'
+		: 'Fix what the fault above names first: in the repo, in its setup, or on the machine that ran Nightjar.';
+	const back = o.pullFix
+		? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries a Pull-check fix again the next time it runs.`
+		: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
+	return [task, back];
+}
+
+// A person stopped the run: whatever made them stop is theirs to settle before the Go.
 export const stoppedStep = (n: SignalNames): NextStep => [
-	`To run this Feature again, add ${tag(n.go)} to it ${KEEP}. Nightjar goes on from the branch.`
+	'Settle whatever made you stop the run, on the branch or in the Tickets.',
+	`${HAND_BACK} add ${tag(n.go)} to this Feature ${KEEP}. Nightjar goes on from the branch.`
 ];

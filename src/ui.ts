@@ -597,7 +597,8 @@ function features(view: FactoryView, lists: Lists): Features {
 		waiting = found.items
 			.filter((i) => i.kind === 'feature')
 			.map((i): WaitingCard => {
-				const handBack = backOf(i.id);
+				// the Status note on the Tracker first, then what this run wrote to status.json
+				const handBack = i.note ?? backOf(i.id);
 				return {
 					state: 'waiting',
 					id: i.id,
@@ -793,9 +794,11 @@ function detail(card: BuildingCard, view: FactoryView, links: Links): string {
 }
 
 // A link to a Session's own page; nothing for a build that has no Session yet
-function sessionLink(session: string | null, text = 'Open this Session'): string {
+// `apart`: it opens in a tab of its own, as from the Feature detail panel, which a click on a link would otherwise leave
+function sessionLink(session: string | null, text = 'Open this Session', apart = false): string {
 	if (session === null || !isSessionId(session)) return '';
-	return `<a class="open" href="/sessions/${session}">${text}</a>`;
+	const tab = apart ? ' target="_blank" rel="noopener"' : '';
+	return `<a class="open" href="/sessions/${session}"${tab}>${text}</a>`;
 }
 
 // A Feature's Logbook page, its id made safe as one part of the path
@@ -1952,21 +1955,24 @@ const fold = (key: string, label: string, body: string) =>
 
 const linesText = (n: number) => (n === 1 ? '1 line' : `${String(n)} lines`);
 
-// One Session in a Logbook: its kind, Ticket, outcome, cost and duration, a link to its page, and its summary folded.
+// One Session in a Logbook: its kind, Ticket, outcome, cost and duration, a link to its page, and its summary folded. `summary` null is the Feature detail panel's entry, which holds no summary: the link to the whole transcript, in a tab of its own, is how it opens.
 function logbookSession(
 	session: LoggedSession,
 	key: string,
 	links: Links,
-	summary: SessionView['lines']
+	summary: SessionView['lines'] | null
 ): string {
 	const field = (name: string, value: string) => `<div><dt>${name}</dt><dd>${value}</dd></div>`;
 	const kind = escape(KIND_TEXT[session.kind] ?? session.kind);
-	const open = sessionLink(session.id, `Open the ${kind} Session`);
-	const label = `Summary <small>${linesText(summary.length)}</small>`;
-	const shown =
-		summary.length === 0
-			? '<p class="empty">No transcript of this Session on this machine.</p>'
-			: fold(key, label, transcriptHtml(summary));
+	const open = sessionLink(session.id, `Open the ${kind} Session`, summary === null);
+	let shown = '';
+	if (summary !== null) {
+		const label = `Summary <small>${linesText(summary.length)}</small>`;
+		shown =
+			summary.length === 0
+				? '<p class="empty">No transcript of this Session on this machine.</p>'
+				: fold(key, label, transcriptHtml(summary));
+	}
 	return (
 		`<li class="session"><section class="run" aria-label="${kind} Session">` +
 		`<p class="when">${stampHtml(session.at)} ${open}</p><dl>` +
@@ -2034,6 +2040,31 @@ export function logbookMain(
 		`<header><h1>Logbook</h1> <span>${idHtml(book.feature, links)}${title === undefined ? '' : ` ${escape(title)}`}</span></header>` +
 		`<p class="meta">${sessionsText(sessions.length)}, ${dollars(cost)}</p>${note}` +
 		(list === '' ? '' : `<ol class="book" aria-label="Logbook">${list}</ol>`)
+	);
+}
+
+// The Logbook section of the Feature detail panel, read when the panel opens: each Session and each decision of Nightjar's, in order, and a link to the Logbook's own page. It is built from .factory/ alone, so it shows for a Feature whose build has ended, and never goes to the Tracker.
+export function logbookSection(book: LogbookView, links: Links = NO_LINKS): string {
+	const sessions = book.items.flatMap((i) => (i.kind === 'session' ? [i.session] : []));
+	const cost = sessions.reduce((sum, s) => sum + s.costUsd, 0);
+	const head = '<h3>Logbook</h3>';
+	if (book.items.length === 0) {
+		return `<section class="logbook">${head}<p class="empty">Nightjar has recorded nothing for this Feature on this machine.</p></section>`;
+	}
+	const note = book.recorded
+		? ''
+		: `<p class="empty note">Builds before the Logbook did not record Nightjar's decisions, so this shows the Feature's Sessions only.</p>`;
+	const items = book.items
+		.map((item, i) =>
+			item.kind === 'session'
+				? logbookSession(item.session, `p${String(i)}`, links, null)
+				: logbookDecision(item.entry, `p${String(i)}`, links)
+		)
+		.join('');
+	return (
+		`<section class="logbook">${head}<p class="meta">${sessionsText(sessions.length)}, ${dollars(cost)}</p>${note}` +
+		`<ol class="book" aria-label="Logbook">${items}</ol>` +
+		`<p class="more"><a class="open" href="${featureHref(book.feature)}" target="_blank" rel="noopener">Open the Logbook page</a></p></section>`
 	);
 }
 
@@ -2169,7 +2200,10 @@ export function startUi(o: UiOptions): Promise<Ui> {
 			listen(res, '/', panelsNow);
 		} else if (o.feature !== undefined && pathOf(req.url) === FEATURE_PATH) {
 			// read from the Tracker as the panel opens; the read gives no Signal and writes nothing
-			const answered = featureAnswer(searchOf(req.url), o.feature, linksFor(o.root, origin));
+			const links = linksFor(o.root, origin);
+			const answered = featureAnswer(searchOf(req.url), o.feature, links, (id) =>
+				logbookSection(readLogbook(o.root, id), links)
+			);
 			void answered.then(({ status, body }) => {
 				res.writeHead(status, {
 					'content-type': 'text/html; charset=utf-8',
