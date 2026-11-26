@@ -1,11 +1,12 @@
 // The `nightjar` command's arguments.
 import type { Env } from './git.js';
-import { MIN_POLL_SECONDS } from './person-config.js';
+import { MAX_PARALLEL, MIN_POLL_SECONDS } from './person-config.js';
 
-export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor [FEATURE]> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL] [--poll SECONDS]
+export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor [FEATURE]> [--use-api-key] [--profile NAME] [--model M] [--effort LEVEL] [--poll SECONDS] [--parallel N]
 
   --watch        build the Features assigned to you with the Go, oldest first, and look again every 2 minutes (pollSeconds in config.json)
   --poll SECONDS with --watch only: look again after this many seconds (at least 30), over config.json's pollSeconds
+  --parallel N   with --watch or --once only: hold N Slots, so N Features build at once (1 to 8), over config.json's parallel
   --once         build the oldest Feature assigned to you with the Go, then exit
   FEATURE        build that Feature, by its id (42, #42, PROJ-123), now
   doctor         check this machine and list the Features it would build, building nothing (--dry-run is the old name)
@@ -70,6 +71,8 @@ export interface Args {
 	readonly effort?: string;
 	// seconds between --watch polls, over config.json's pollSeconds
 	readonly poll?: number;
+	// Slots for --watch and --once, over config.json's parallel
+	readonly parallel?: number;
 }
 
 // The arguments, or the line that says what is wrong with them.
@@ -87,6 +90,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 	let poll: number | undefined;
 	let retro = false;
 	let create = false;
+	let parallel: number | undefined;
 	const pick = (m: 'watch' | 'once' | 'build' | 'doctor') => {
 		const clash = 'choose one of --watch, --once, a Feature and doctor';
 		if (m === 'doctor') {
@@ -122,6 +126,13 @@ export function parseArgs(argv: readonly string[]): Args | string {
 				return `--poll needs a whole number of seconds, at least ${String(MIN_POLL_SECONDS)}`;
 			poll = Number(value);
 			i += 1;
+		} else if (a === '--parallel') {
+			const value = argv[i + 1];
+			if (value === undefined || value.startsWith('--')) return '--parallel needs a value';
+			if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > MAX_PARALLEL)
+				return `--parallel needs a whole number from 1 to ${String(MAX_PARALLEL)}`;
+			parallel = Number(value);
+			i += 1;
 		} else if (/^#?[A-Za-z0-9][\w.-]*$/.test(a)) {
 			fault = pick('build');
 			feature = a.replace(/^#/, '');
@@ -133,6 +144,7 @@ export function parseArgs(argv: readonly string[]): Args | string {
 		if (chosen.mode !== null || chosen.doctor)
 			return 'retro goes alone, with no --watch, --once, Feature or doctor';
 		if (poll !== undefined) return '--poll goes with --watch only';
+		if (parallel !== undefined) return '--parallel goes with --watch and --once only';
 		return {
 			mode: 'retro',
 			useApiKey,
@@ -149,8 +161,11 @@ export function parseArgs(argv: readonly string[]): Args | string {
 			: chosen.mode;
 	if (mode === null) return 'say what to build';
 	if (poll !== undefined && mode !== 'watch') return '--poll goes with --watch only';
+	if (parallel !== undefined && mode !== 'watch' && mode !== 'once')
+		return '--parallel goes with --watch and --once only';
 	return {
 		...(poll === undefined ? {} : { poll }),
+		...(parallel === undefined ? {} : { parallel }),
 		mode,
 		useApiKey,
 		...(feature === undefined ? {} : { feature }),

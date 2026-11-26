@@ -14,11 +14,11 @@ export interface Week {
 
 export const NO_WEEK: Week = { completed: 0, failed: 0, handed: 0, spentUsd: 0 };
 
-// What the week is counted from. Each `at` is a moment; the Feature outcomes and hand-backs are those status.json still holds.
+// What the week is counted from. Each `at` is a moment; the Feature outcomes and hand-backs are the Logbooks' and those status.json still holds, so one may come twice.
 export interface WeekSource {
 	// the Sessions in the ledger
 	readonly sessions: readonly { readonly at: number; readonly costUsd: number }[];
-	// each Feature's finished runs, oldest first
+	// each Feature's finished runs, in any order
 	readonly outcomes: readonly {
 		readonly feature: string;
 		readonly kind: 'pull' | 'failed';
@@ -42,17 +42,18 @@ export function lastWeek(source: WeekSource, now: Date): Week {
 	let spentUsd = 0;
 	for (const s of source.sessions) if (inWeek(s.at)) spentUsd += s.costUsd;
 	// a Feature counts by how it last ended in the week, so a failure that a later run mended is a completion only
-	const latest = new Map<string, 'pull' | 'failed'>();
+	// at the same moment the one listed later wins
+	const latest = new Map<string, { readonly at: number; readonly kind: 'pull' | 'failed' }>();
 	for (const o of source.outcomes) {
 		const at = Date.parse(o.at);
 		if (!inWeek(at)) continue;
-		latest.set(o.feature, o.kind);
+		if (at >= (latest.get(o.feature)?.at ?? -Infinity)) latest.set(o.feature, { at, kind: o.kind });
 	}
-	const kinds = [...latest.values()];
+	const kinds = [...latest.values()].map((o) => o.kind);
 	// a failed Feature is handed back too; it counts as failed alone
 	const handed = new Set<string>();
 	for (const h of source.handedBack)
-		if (inWeek(Date.parse(h.at)) && latest.get(h.feature) !== 'failed') handed.add(h.feature);
+		if (inWeek(Date.parse(h.at)) && latest.get(h.feature)?.kind !== 'failed') handed.add(h.feature);
 	return {
 		completed: kinds.filter((k) => k === 'pull').length,
 		failed: kinds.filter((k) => k === 'failed').length,

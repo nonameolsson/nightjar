@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError } from './config.js';
-import { loadPersonConfig, personConfigPath } from './person-config.js';
+import { loadPersonConfig, personConfigPath, slotsFor } from './person-config.js';
 
 let dir: string;
 beforeEach(() => {
@@ -27,7 +27,22 @@ describe('personConfigPath', () => {
 
 describe('loadPersonConfig', () => {
 	it('gives the defaults when there is no file: $60 a day, the signed-in person', () => {
-		expect(loadPersonConfig({ HOME: dir })).toEqual({ dailyUsd: 60, pollSeconds: 120 });
+		expect(loadPersonConfig({ HOME: dir })).toEqual({
+			dailyUsd: 60,
+			pollSeconds: 120,
+			parallel: 1
+		});
+	});
+
+	it('gives 1 Slot when parallel is left out, reads one from 1 to 8, and refuses the rest naming the field', () => {
+		write(join(dir, '.config'), { dailyUsd: 10 });
+		expect(loadPersonConfig({ HOME: dir }).parallel).toBe(1);
+		write(join(dir, '.config'), { parallel: 8 });
+		expect(loadPersonConfig({ HOME: dir }).parallel).toBe(8);
+		for (const bad of [0, 9, 1.5]) {
+			write(join(dir, '.config'), { parallel: bad });
+			expect(() => loadPersonConfig({ HOME: dir })).toThrow(/parallel: /);
+		}
 	});
 
 	it('reads the daily spend cap and whose Features to build', () => {
@@ -35,6 +50,7 @@ describe('loadPersonConfig', () => {
 		expect(loadPersonConfig({ HOME: dir })).toEqual({
 			dailyUsd: 25,
 			pollSeconds: 120,
+			parallel: 1,
 			assignee: 'zed'
 		});
 	});
@@ -44,6 +60,7 @@ describe('loadPersonConfig', () => {
 		expect(loadPersonConfig({ HOME: dir })).toEqual({
 			dailyUsd: 60,
 			pollSeconds: 120,
+			parallel: 1,
 			profile: 'work'
 		});
 	});
@@ -59,7 +76,8 @@ describe('loadPersonConfig', () => {
 		write(join(dir, 'xdg'), { dailyUsd: 10 });
 		expect(loadPersonConfig({ HOME: dir, XDG_CONFIG_HOME: join(dir, 'xdg') })).toEqual({
 			dailyUsd: 10,
-			pollSeconds: 120
+			pollSeconds: 120,
+			parallel: 1
 		});
 	});
 
@@ -82,5 +100,14 @@ describe('loadPersonConfig', () => {
 		mkdirSync(join(dir, '.config', 'nightjar'), { recursive: true });
 		writeFileSync(join(dir, '.config', 'nightjar', 'config.json'), '{ dailyUsd: 5');
 		expect(() => loadPersonConfig({ HOME: dir })).toThrow(/config\.json is not JSON/);
+	});
+});
+
+describe('slotsFor', () => {
+	it("takes --parallel over config.json's parallel, and the config's when the flag is left out", () => {
+		write(join(dir, '.config'), { parallel: 2 });
+		const person = loadPersonConfig({ HOME: dir });
+		expect(slotsFor(3, person)).toBe(3);
+		expect(slotsFor(undefined, person)).toBe(2);
 	});
 });

@@ -76,7 +76,7 @@ export interface OpenedPull {
 	readonly costUsd: number;
 }
 
-// Every Logbook, by its Feature: what `readEveryLogbook` reads.
+// Every Logbook, by its Feature: what `everyLogbook` reads.
 export type Logbooks = ReadonlyMap<ItemId, readonly LogbookEntry[]>;
 
 const timeOf = (at: string): number | null => {

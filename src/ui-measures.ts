@@ -1,7 +1,7 @@
 // The Measures panel's data for `nightjar ui`: the ledger, the Logbooks and the pull states cached under .factory/, and the watch that keeps those pull states read, an hour apart at the most.
 import type { CodeHost } from './code-host.js';
 import { ledgerPath, readEntries } from './ledger.js';
-import { readEveryLogbook } from './logbook-reader.js';
+import { everyLogbook } from './logbook-reader.js';
 import { measures, openedPulls, withinWindow, type Measures, type PullStates } from './measures.js';
 import { measuresPath, readPullStates, refreshPullStates } from './measures-cache.js';
 import { why } from './say.js';
@@ -42,7 +42,7 @@ export function measuresView(root: string, known: CodeHostKnown, now: Date): Mea
 			: new Map(Object.entries(cache?.states ?? {}));
 	const result = measures({
 		entries: readEntries(ledgerPath(root)),
-		logbooks: readEveryLogbook(root),
+		logbooks: everyLogbook(root),
 		pullStates,
 		now
 	});
@@ -107,7 +107,7 @@ export function watchMeasures(o: MeasuresWatchOptions): MeasuresWatch {
 		}
 		known = { reader: 'has', fault: null };
 		const at = now();
-		const opened = openedPulls(readEntries(ledgerPath(o.root)), readEveryLogbook(o.root));
+		const opened = openedPulls(readEntries(ledgerPath(o.root)), everyLogbook(o.root));
 		const urls = withinWindow(opened, at).map((p) => p.url);
 		try {
 			await refreshPullStates({

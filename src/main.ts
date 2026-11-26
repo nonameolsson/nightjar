@@ -32,7 +32,7 @@ import { ConfigError } from './config.js';
 import type { Env } from './git.js';
 import { fileSpend, ledgerPath } from './ledger.js';
 import { fileLogbook } from './logbook.js';
-import { claimPorts, portEnv } from './ports.js';
+import { leasePorts, type PortLease } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
@@ -45,9 +45,12 @@ import {
 	pullChecksPass,
 	pullFixExit,
 	queue,
-	type QueueDeps
+	type PortEnv,
+	type QueueDeps,
+	type Say
 } from './queue.js';
-import { runSession, sessionExists } from './session.js';
+import { slotsFor } from './person-config.js';
+import { heldSession, runSession, sessionExists, type Session } from './session.js';
 import { runLogbookCommand } from './logbook-command.js';
 import { runRetroCommand } from './retro.js';
 import { runUiCommand } from './ui-command.js';
@@ -201,18 +204,28 @@ export async function runNightjar(
 		pid: process.pid,
 		dailyUsd: ready.person.dailyUsd
 	});
-	// the reserved ports are held until the process ends, whatever ends it
-	const claim = config.ports === undefined ? null : await claimPorts({ count: config.ports.count });
-	if (config.ports !== undefined) {
-		if (claim === null) {
-			console.error(
-				`nightjar: no ${String(config.ports.count)} free, unclaimed ports to reserve; stop another run or lower ports.count in factory.json.`
-			);
-			return 2;
-		}
-		process.once('exit', () => claim.release());
-		say(`ports ${String(claim.port)} to ${String(claim.port + config.ports.count - 1)}`);
-	}
+	// Each Slot claims its own block of ports when it takes work and gives it back when the work ends. The blocks held now are also given back when the process ends, whatever ends it.
+	const held = new Set<PortLease>();
+	const reserved = config.ports;
+	const claimBlock =
+		reserved === undefined
+			? undefined
+			: async (): Promise<PortLease | null> => {
+					const lease = await leasePorts({ count: reserved.count, names: reserved.env });
+					if (lease === null) return null;
+					const own: PortLease = {
+						...lease,
+						release: () => {
+							held.delete(own);
+							lease.release();
+						}
+					};
+					held.add(own);
+					return own;
+				};
+	process.once('exit', () => {
+		for (const lease of [...held]) lease.release();
+	});
 	const stop = new AbortController();
 	// on a terminal the block redraws in place and the lines the command says go to it and to .factory/nightjar.log
 	const live = process.stdout.isTTY
@@ -236,9 +249,6 @@ export async function runNightjar(
 		...(config.workflows === undefined ? {} : { workflows: config.workflows }),
 		...(config.defaultWorkflow === undefined ? {} : { defaultWorkflow: config.defaultWorkflow }),
 		brokenWorkflows: ready.workflowProblems,
-		...(config.ports === undefined || claim === null
-			? {}
-			: { portEnv: portEnv(claim.port, config.ports.env) }),
 		allowApiKey: args.useApiKey,
 		env: ready.env,
 		...(args.model === undefined ? {} : { model: args.model }),
@@ -250,10 +260,17 @@ export async function runNightjar(
 		},
 		signal: stop.signal
 	};
+	// A Session's cap counts as spent against dailyUsd from its start until it ends, so the Sessions in the other Slots cannot together pass the day's limit; one that does not fit beside them waits until one of them ends.
+	const session: Session = heldSession(
+		(req) => runSession(req),
+		spend,
+		() => new Date(),
+		setup.limits.dailyUsd
+	);
 	const deps: Deps = {
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
-		codingAgent: codingAgent(setup, (req) => runSession(req)),
+		codingAgent: codingAgent(setup, session),
 		runCheck: (command, cwd, env) => runCheck(command, cwd, env, config.gate ?? {}),
 		runSetup: runCheck,
 		serve: startServe,
@@ -270,26 +287,42 @@ export async function runNightjar(
 		// --watch tries a paused Feature again after PAUSE_MS, which its Status note gives as the time it is paused until
 		...(args.mode === 'watch' ? { pauseMs: PAUSE_MS } : {})
 	};
-	// the Feature being built, so a fault that escapes every catch can still hand it back
-	let building: Named | null = null;
-	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
-		fixPullChecks(deps, setup, red)
-	);
+	// the Features being built, so a fault that escapes every catch can still hand them back
+	const building = new Set<Named>();
+	// a Slot's work speaks through the Slot's own say
+	const slotDeps = (say: Say): Deps => (say === deps.say ? deps : { ...deps, say });
+	// What one Slot's work runs on: its own say, and the block of ports the Slot claimed, which its Sessions and commands see. With no ports, the run's own setup and Coding agent.
+	const workOf = (say: Say, portEnv?: PortEnv): { deps: Deps; setup: Setup } => {
+		if (portEnv === undefined) return { deps: slotDeps(say), setup };
+		const own: Setup = { ...setup, portEnv };
+		return {
+			deps: { ...slotDeps(say), codingAgent: codingAgent(own, session) },
+			setup: own
+		};
+	};
+	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red, say, portEnv) => {
+		const work = workOf(say, portEnv);
+		return fixPullChecks(work.deps, work.setup, red);
+	});
 	const publish = publishPass(config.publish, adapters.codeHost);
 	// the build of one Feature, with the request for changes that started it when it has no Go
-	const build = async (feature: Named, started?: Asked) => {
-		building = feature;
+	const build = async (feature: Named, say: Say, portEnv?: PortEnv, started?: Asked) => {
+		building.add(feature);
 		try {
-			return await buildFeature(deps, setup, feature.id, started);
+			const work = workOf(say, portEnv);
+			return await buildFeature(work.deps, work.setup, feature.id, started);
 		} finally {
-			building = null;
+			building.delete(feature);
 		}
 	};
-	const feedback = feedbackPass(adapters.codeHost, (feature, asked) => build(feature, { asked }));
+	const feedback = feedbackPass(adapters.codeHost, (feature, asked, say, portEnv) =>
+		build(feature, say, portEnv, { asked })
+	);
 	const queueDeps: QueueDeps = {
 		tracker: adapters.tracker,
 		person: ready.assignee,
-		build: (feature) => build(feature),
+		build: (feature, say, portEnv) => build(feature, say, portEnv),
+		...(claimBlock === undefined ? {} : { claimPorts: claimBlock }),
 		...(feedback === null ? {} : { feedback }),
 		status,
 		now: () => new Date(),
@@ -300,6 +333,7 @@ export async function runNightjar(
 		...(pullChecks === null ? {} : { pullChecks }),
 		...(publish === null ? {} : { publish }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
+		slots: slotsFor(args.parallel, ready.person),
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})
 	};
 
@@ -319,37 +353,51 @@ export async function runNightjar(
 	});
 	process.once('SIGTERM', () => stop.abort());
 	process.once('uncaughtException', (fault) => {
-		const now = building;
-		void (now === null ? Promise.resolve() : handBack(queueDeps, now, fault)).finally(() =>
-			process.exit(1)
-		);
+		const now = [...building].map((f) => handBack(queueDeps, f, fault));
+		void Promise.all(now).finally(() => process.exit(1));
 	});
 
 	try {
 		if (args.mode === 'feature' && args.feature !== undefined) {
-			// a Feature with a red draft is fixed, not built: it holds no Go by now
-			const fixed = await fixNamed(queueDeps, args.feature);
-			if (fixed !== null) return pullFixExit(fixed);
-			let refusal: string | null;
+			// the one Feature holds one block of ports, as a Slot's work does
+			const lease = (await claimBlock?.()) ?? null;
+			if (reserved !== undefined) {
+				if (lease === null) {
+					live?.stop();
+					console.error(
+						`nightjar: no ${String(reserved.count)} free, unclaimed ports to reserve; stop another run or lower ports.count in factory.json.`
+					);
+					return 2;
+				}
+				runSay(`ports ${lease.ports}`);
+			}
 			try {
-				refusal = await cannotClaim(queueDeps, args.feature);
-			} catch (fault) {
-				refusal = why(fault);
+				// a Feature with a red draft is fixed, not built: it holds no Go by now
+				const fixed = await fixNamed(queueDeps, args.feature, lease?.env);
+				if (fixed !== null) return pullFixExit(fixed);
+				let refusal: string | null;
+				try {
+					refusal = await cannotClaim(queueDeps, args.feature);
+				} catch (fault) {
+					refusal = why(fault);
+				}
+				if (refusal !== null) {
+					live?.stop();
+					console.error(`nightjar: ${refusal}`);
+					return 2;
+				}
+				let outcome;
+				try {
+					outcome = await buildNamed(queueDeps, args.feature, lease?.env);
+				} catch (fault) {
+					live?.stop();
+					console.error(`nightjar: ${why(fault)}`);
+					return 2;
+				}
+				return featureExit(outcome);
+			} finally {
+				lease?.release();
 			}
-			if (refusal !== null) {
-				live?.stop();
-				console.error(`nightjar: ${refusal}`);
-				return 2;
-			}
-			let outcome;
-			try {
-				outcome = await buildNamed(queueDeps, args.feature);
-			} catch (fault) {
-				live?.stop();
-				console.error(`nightjar: ${why(fault)}`);
-				return 2;
-			}
-			return featureExit(outcome);
 		}
 		return await queue(queueDeps, args.mode === 'once');
 	} finally {

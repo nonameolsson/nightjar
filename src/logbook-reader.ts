@@ -143,8 +143,8 @@ export interface LogbookListing {
 	readonly recorded: boolean;
 }
 
-// Every Logbook file's entries, by its Feature, each oldest first; a file whose name does not decode is skipped.
-export function readEveryLogbook(root: string): Map<ItemId, readonly LogbookEntry[]> {
+// Every Logbook file under .factory/logbook/, by Feature: its entries, oldest first. A file whose name does not decode is skipped.
+export function everyLogbook(root: string): Map<ItemId, readonly LogbookEntry[]> {
 	const books = new Map<ItemId, readonly LogbookEntry[]>();
 	let files: string[];
 	try {
@@ -170,7 +170,7 @@ export function readEveryLogbook(root: string): Map<ItemId, readonly LogbookEntr
 export function listLogbooks(root: string): LogbookListing[] {
 	const found = new Map<ItemId, Omit<LogbookListing, 'feature'>>();
 	const later = (a: string, b: string) => (Date.parse(b) > Date.parse(a) ? b : a);
-	for (const [feature, entries] of readEveryLogbook(root)) {
+	for (const [feature, entries] of everyLogbook(root)) {
 		const last = entries.reduce((a, e) => later(a, e.at), entries[0]?.at ?? '');
 		if (last === '') continue;
 		found.set(feature, { lastAt: last, sessions: 0, costUsd: 0, recorded: true });

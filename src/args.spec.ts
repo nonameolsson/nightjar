@@ -68,6 +68,19 @@ describe('parseArgs', () => {
 		expect(parseArgs(['--once', '--create'])).toBe('--create goes with retro only');
 	});
 
+	it('reads --parallel with --watch or --once, and refuses it elsewhere or out of range', () => {
+		expect(parseArgs(['--watch', '--parallel', '3'])).toMatchObject({ mode: 'watch', parallel: 3 });
+		expect(parseArgs(['--parallel', '8', '--once'])).toMatchObject({ mode: 'once', parallel: 8 });
+		expect(parseArgs(['--watch'])).not.toHaveProperty('parallel');
+		const only = '--parallel goes with --watch and --once only';
+		expect(parseArgs(['42', '--parallel', '2'])).toBe(only);
+		expect(parseArgs(['doctor', '--parallel', '2'])).toBe(only);
+		expect(parseArgs(['doctor', '42', '--parallel', '2'])).toBe(only);
+		for (const bad of ['0', '9', '1.5', 'many'])
+			expect(parseArgs(['--watch', '--parallel', bad])).toMatch(/from 1 to 8/);
+		expect(parseArgs(['--watch', '--parallel'])).toBe('--parallel needs a value');
+	});
+
 	it('reads --profile with its name', () => {
 		expect(parseArgs(['--once', '--profile', 'work'])).toEqual({
 			mode: 'once',

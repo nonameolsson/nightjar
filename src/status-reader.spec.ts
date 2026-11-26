@@ -68,6 +68,7 @@ describe('readFactory', () => {
 			stopped: false,
 			tail: [],
 			completed: [],
+			builds: [],
 			featureCostUsd: 0,
 			builtToday: 0,
 			week: { completed: 0, failed: 0, handed: 0, spentUsd: 0 },
@@ -118,6 +119,60 @@ describe('readFactory', () => {
 		});
 	});
 
+	it('counts every Feature that ended in the week, past the ten events status.json keeps', () => {
+		const now = new Date(2026, 9, 30, 9, 0);
+		const at = (day: number) => new Date(2026, 9, day, 12);
+		const statusAt = (when: Date) =>
+			new StatusFile({
+				path: join(root, '.factory', 'status.json'),
+				spend: fileSpend(join(root, '.factory', 'runs.jsonl')),
+				now: () => when,
+				pid: 1,
+				dailyUsd: 8
+			});
+		const logbook = fileLogbook(root);
+		// three Features of four Tickets each, every one a draft pull request, as a run records them: fifteen events in all
+		for (const [feature, day] of [
+			['7', 25],
+			['8', 26],
+			['9', 27]
+		] as const) {
+			for (const ticket of ['1', '2', '3', '4'])
+				statusAt(at(day)).happened({ kind: 'built', feature, ticket });
+			statusAt(at(day)).happened({ kind: 'pull', feature, url: `https://x.test/${feature}` });
+			logbook.write({
+				kind: 'pullOpened',
+				url: `https://x.test/${feature}`,
+				created: true,
+				feature,
+				at: at(day).toISOString()
+			});
+		}
+		// a Feature that failed and one handed to a person, early in the week, with their events long gone from status.json
+		logbook.write({
+			kind: 'fault',
+			place: 'in the Review',
+			why: 'gh failed',
+			passing: false,
+			feature: '10',
+			at: at(24).toISOString()
+		});
+		logbook.write({
+			kind: 'handed',
+			to: 'needsInfo',
+			why: 'needs info',
+			feature: '11',
+			ticket: '12',
+			at: at(24).toISOString()
+		});
+		expect(readFactory(root, { alive: live, now: () => now }).week).toEqual({
+			completed: 3,
+			failed: 1,
+			handed: 1,
+			spentUsd: 0
+		});
+	});
+
 	it("adds up the current Feature's cost and the Tickets built today, from the ledger", () => {
 		ledger('1', 1.5);
 		ledger('1', 0.25);
@@ -128,6 +183,34 @@ describe('readFactory', () => {
 		expect(view.builtToday).toBe(3);
 		status().doing({ kind: 'off' });
 		expect(readFactory(root, { alive: live, now: () => at }).featureCostUsd).toBe(0);
+	});
+
+	it("gives each busy Slot's build its own Session tail and cost, oldest first", () => {
+		ledger('1', 1.5);
+		ledger('3', 0.5);
+		log('one', [assistant({ type: 'text', text: 'from one' })]);
+		log('three', [assistant({ type: 'text', text: 'from three' })]);
+		const file = status();
+		file.doing(building('one'));
+		file.doing({ ...building('three'), feature: '3' });
+		const view = readFactory(root, { alive: live, now: () => at });
+		expect(view.builds?.map((b) => [b.build.feature, b.tail, b.costUsd])).toEqual([
+			['1', ['from one'], 1.5],
+			['3', ['from three'], 0.5]
+		]);
+		// the single-build fields follow the oldest, for an older reader
+		expect(view.tail).toEqual(['from one']);
+		expect(view.featureCostUsd).toBe(1.5);
+	});
+
+	it('reads the one build of an older file, which has no builds, as one entry', () => {
+		log('old', [assistant({ type: 'text', text: 'from old' })]);
+		writeFileSync(
+			join(root, '.factory', 'status.json'),
+			JSON.stringify({ pid: 42, recent: [], doing: building('old') })
+		);
+		const view = readFactory(root, { alive: live, now: () => at });
+		expect(view.builds?.map((b) => b.tail)).toEqual([['from old']]);
 	});
 
 	it('carries the title of a pull or failed event to Completed', () => {
@@ -182,6 +265,32 @@ describe('readFactory', () => {
 		expect(view.status?.waitingOnYou).toBeUndefined();
 		expect(view.completed).toEqual([]);
 		expect(view.tail).toEqual([]);
+	});
+
+	it("reads an older file with only `doing` as one build, and follows the oldest build of a newer file's `builds`", () => {
+		const old = {
+			at: at.toISOString(),
+			pid: 42,
+			spentTodayUsd: 1,
+			dailyUsd: 8,
+			doing: building('s1'),
+			recent: []
+		};
+		ledger('1', 1.5);
+		ledger('7', 4);
+		log('s1', [assistant({ type: 'text', text: 'from doing' })]);
+		log('s7', [assistant({ type: 'text', text: 'from the newer build' })]);
+		const path = join(root, '.factory', 'status.json');
+		writeFileSync(path, JSON.stringify(old));
+		let view = readFactory(root, { alive: live, now: () => at });
+		expect(view.tail).toEqual(['from doing']);
+		expect(view.featureCostUsd).toBe(1.5);
+		// a newer file: `builds` is read, whatever `doing` says
+		const other = { ...building('s7'), feature: '7' };
+		writeFileSync(path, JSON.stringify({ ...old, doing: building(null), builds: [other] }));
+		view = readFactory(root, { alive: live, now: () => at });
+		expect(view.tail).toEqual(['from the newer build']);
+		expect(view.featureCostUsd).toBe(4);
 	});
 
 	it('tails the session: assistant text, and each tool call by its command or file, without results', () => {
