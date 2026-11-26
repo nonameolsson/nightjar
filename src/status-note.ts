@@ -220,6 +220,17 @@ export function readStatusNote(body: string, fallbackAt: string): NoteRead {
 	return { current, earlier };
 }
 
+// A pull request body whose first line is `line`, a headline: the one it opens with is replaced, and a body written before bodies opened with one gets it ahead of what it said. The rest of the body is as it was.
+export function withHeadline(body: string, line: string): string {
+	const [first = '', ...rest] = body.split('\n');
+	const cr = first.endsWith('\r') ? '\r' : '';
+	const match = HEADLINE.exec(first.slice(0, first.length - cr.length));
+	if (match !== null && stateOf(match[1] ?? '') !== undefined) {
+		return [`${line}${cr}`, ...rest].join('\n');
+	}
+	return `${line}\n\n${body}`;
+}
+
 // The note's text with its Earlier runs set to `earlier`, the rest as it was; for a change that is not a build's, such as a Source saying it happened again.
 export function withEarlier(body: string, earlier: readonly EarlierRun[]): string {
 	const section = earlierSection(earlier);

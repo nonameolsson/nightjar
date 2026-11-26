@@ -75,10 +75,12 @@ import type { Doing, StatusReport, TicketProgress } from './status.js';
 import { dollars } from './view-text.js';
 import {
 	buildingSentence,
+	headline,
 	NOT_BUILT,
 	readStatusNote,
 	statusNoteText,
 	waitingCommentText,
+	withHeadline,
 	type NoteTicket,
 	type StatusNote,
 	type WaitingComment
@@ -1326,7 +1328,19 @@ class FeatureRun {
 		const workflow = this.steps?.section(ids, (n) => tracker.reference(n).text) ?? null;
 		// every round the branch had, from the ledger, so a run without one still shows the earlier ones
 		const rounds = feedbackRounds(this.deps.spend.entries(), this.setup.repo, this.tree.at.branch);
+		const pausedUntil = paused === null ? undefined : this.pausedUntil();
 		const body = pullBody({
+			// the line the Status note opens with at the end of this run
+			headline: this.pullHeadline({
+				left,
+				red,
+				repeated,
+				paused,
+				pausedUntil,
+				complete,
+				handsReview: open !== null && review !== null && review !== 'off',
+				handsNote: complete && this.workflow?.workflow.output === 'note'
+			}),
 			tracker,
 			feature: this.feature,
 			check: this.setup.check,
@@ -1388,7 +1402,7 @@ class FeatureRun {
 			await this.signals.on('needsInfo');
 			const failing = red ? `The check fails after ${hash(red.ticket)}.\n\n` : '';
 			ask = {
-				sentence: 'Nightjar opened a draft pull request, and this Feature still needs a person.',
+				sentence: STILL_NEEDS_A_PERSON,
 				cause: `${repeated}${failing}${waitingList(left)}`,
 				// the pull request body holds the check's output, or the list of waiting Tickets
 				pull: { url: pull.url, section: red ? 'The check fails' : 'Waiting' },
@@ -1412,17 +1426,11 @@ class FeatureRun {
 			});
 		} else if (paused !== null) {
 			// the Go is back on the Feature, so it reads Paused, now with its pull request
-			await this.notePaused(paused);
+			await this.notePaused(paused, pausedUntil);
 		} else {
-			const lone = this.feature.lone === true;
-			const total = this.tickets.length;
-			const builtHere = this.tickets.filter((t) => this.built.has(t.id)).length;
-			const of = `${String(builtHere)} of ${String(total)} Ticket${total === 1 ? '' : 's'}`;
 			await writeStatusNote(this.deps, this.feature, {
 				state: 'pull',
-				sentence: lone
-					? 'Nightjar built this issue into a draft pull request.'
-					: `Nightjar built ${of} into a draft pull request.`,
+				sentence: this.builtSentence(),
 				tickets: this.listed(),
 				pull: { url: pull.url },
 				next: draftStep(pull.url),
@@ -1460,15 +1468,46 @@ class FeatureRun {
 		return { kind: 'stopped' };
 	}
 
-	// The Status note of a paused run: Paused, until the run tries the Feature again when it does so on its own, and why. It notifies no one.
-	private notePaused(why: string): Promise<void> {
+	// When a paused run tries the Feature again, as an ISO date; nothing when nothing does so on its own.
+	private pausedUntil(): string | undefined {
 		const { pauseMs, now } = this.deps;
-		const until =
-			pauseMs === undefined ? undefined : new Date(now().getTime() + pauseMs).toISOString();
+		return pauseMs === undefined ? undefined : new Date(now().getTime() + pauseMs).toISOString();
+	}
+
+	// What the Status note says of a Feature built into a draft pull request.
+	private builtSentence(): string {
+		if (this.feature.lone === true) return 'Nightjar built this issue into a draft pull request.';
+		const total = this.tickets.length;
+		const builtHere = this.tickets.filter((t) => this.built.has(t.id)).length;
+		return `Nightjar built ${String(builtHere)} of ${String(total)} Ticket${total === 1 ? '' : 's'} into a draft pull request.`;
+	}
+
+	// The line the pull request body opens with: the one the Status note opens with when this run ends, from the same wording function. It follows the order `finish` chooses what the run ends in.
+	private pullHeadline(o: {
+		readonly left: readonly Waiting[];
+		readonly red: object | null;
+		readonly repeated: string;
+		readonly paused: string | null;
+		readonly pausedUntil: string | undefined;
+		readonly complete: boolean;
+		readonly handsReview: boolean;
+		readonly handsNote: boolean;
+	}): string {
+		const asks = !o.paused && (o.left.length > 0 || o.red !== null || o.repeated !== '');
+		if (asks) return headline('waiting', STILL_NEEDS_A_PERSON);
+		if (o.handsReview) return headline('waiting', REVIEW_ASKS);
+		if (o.handsNote) return headline('waiting', NOTE_WAITS);
+		if (this.feedbackAsk !== null) return headline('waiting', this.feedbackAsk.sentence);
+		if (o.paused !== null) return headline('paused', pausedSentence(o.paused), o.pausedUntil);
+		return headline('pull', this.builtSentence());
+	}
+
+	// The Status note of a paused run: Paused, until the run tries the Feature again when it does so on its own, and why. It notifies no one.
+	private notePaused(why: string, until: string | undefined = this.pausedUntil()): Promise<void> {
 		return writeStatusNote(this.deps, this.feature, {
 			state: 'paused',
 			...(until === undefined ? {} : { until }),
-			sentence: `${why.charAt(0).toUpperCase()}${why.slice(1)}.`,
+			sentence: pausedSentence(why),
 			tickets: this.listed(),
 			pull: this.pullUrl === null ? null : { url: this.pullUrl },
 			next: pausedStep(until !== undefined),
@@ -1606,7 +1645,7 @@ class FeatureRun {
 		this.note({ kind: 'handed', to: 'human', why });
 		await this.signals.on('human');
 		return {
-			sentence: 'Nightjar opened a draft pull request, and its Review still asks for changes.',
+			sentence: REVIEW_ASKS,
 			cause: reviewOpenCause(open, review),
 			// the pull request body holds the issues the Review found
 			pull: { url: pull.url, section: 'Review' },
@@ -1623,7 +1662,7 @@ class FeatureRun {
 		this.note({ kind: 'handed', to: 'human', why });
 		await this.signals.on('human');
 		return {
-			sentence: 'Nightjar wrote a note for this Feature, and it waits for a person to read it.',
+			sentence: NOTE_WAITS,
 			cause: `The note is under \`${NOTES_FOLDER}/\` in ${pull.url}. It holds findings, not code.`,
 			pull: { url: pull.url },
 			next
@@ -2031,9 +2070,10 @@ async function handOver(
 	await signals.on('human');
 	const failing = draft.checks.failed.map(failingLine);
 	const tickets = await deps.tracker.tickets(feature.id);
+	const sentence = `Nightjar could not make the Pull checks of its pull request green: ${why}.`;
 	await askAPerson(deps, feature, {
 		ask: {
-			sentence: `Nightjar could not make the Pull checks of its pull request green: ${why}.`,
+			sentence,
 			cause: `Failing Pull checks:\n\n${failing.join('\n')}`,
 			// the pull request body holds each round and the checks it left failing
 			pull: { url: pull.url, section: 'Pull checks' },
@@ -2042,7 +2082,11 @@ async function handOver(
 		tickets: noteTickets(feature, tickets, of.built),
 		session: of.session
 	});
-	await deps.codeHost.editBody(pull, markHandedOver(body));
+	// the body says what the Status note now says
+	await deps.codeHost.editBody(
+		pull,
+		withHeadline(markHandedOver(body), headline('waiting', sentence))
+	);
 	deps.say(`${hash(feature.id)}: handed to a person, ${why}`);
 }
 
@@ -2316,6 +2360,14 @@ async function reviewFeature(
 	}
 }
 
+// The sentences a Feature with a draft pull request is handed to a person in, said by both the new comment and the headlines of the Status note and the pull request body.
+const STILL_NEEDS_A_PERSON =
+	'Nightjar opened a draft pull request, and this Feature still needs a person.';
+const REVIEW_ASKS = 'Nightjar opened a draft pull request, and its Review still asks for changes.';
+const NOTE_WAITS = 'Nightjar wrote a note for this Feature, and it waits for a person to read it.';
+
+const pausedSentence = (why: string) => `${why.charAt(0).toUpperCase()}${why.slice(1)}.`;
+
 const BLOCKED_FROM_OUTSIDE =
 	", a Ticket outside this Feature: it closes when its Feature's pull request merges. Merge that, then give the Go again.";
 
@@ -2328,6 +2380,8 @@ function waitingList(left: readonly Waiting[], name: (id: ItemId) => string = ha
 }
 
 function pullBody(p: {
+	// the state word and sentence the body opens with, which the Status note opens with too
+	headline: string;
 	tracker: Tracker;
 	feature: Feature;
 	check: string;
@@ -2355,6 +2409,7 @@ function pullBody(p: {
 }): string {
 	const ref = (id: ItemId) => p.tracker.reference(id).text;
 	const parts = [
+		p.headline,
 		`Nightjar built ${p.complete ? 'all of' : 'part of'} ${ref(p.feature.id)} ${p.feature.title}.`,
 		`## Built\n\n${p.done.map((t) => `- ${ref(t.id)} ${t.title}`).join('\n')}`
 	];

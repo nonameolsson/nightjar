@@ -3311,6 +3311,11 @@ describe('what a person sees of a Pull-check fix round', () => {
 			);
 			expect(body(world)).toContain('- `CI / lint`: job lint, step Run eslint');
 			expect(handedOver(body(world))).toBe(true);
+			// the body says what the Status note now says
+			const headline = world.tracker.note('1')?.split('\n')[1];
+			expect(headline).toMatch(/^\*\*Waiting on you\*\*: Nightjar could not make the Pull/);
+			expect(body(world).split('\n')[0]).toBe(headline);
+			expect(body(world).match(/^\*\*(Waiting on you|Draft PR open)\*\*/gm)).toHaveLength(1);
 		});
 
 		it('writes no round when none ran: a pause leaves the body as it was', async () => {
@@ -5556,6 +5561,71 @@ describe('the Status note', () => {
 		);
 		expect(note).not.toContain('**Tickets**');
 		expect(all(world, '9')).toEqual([note]);
+	});
+
+	describe('the pull request body opens with the note’s headline', () => {
+		const firstLine = (text: string | undefined) => text?.split('\n')[0] ?? '';
+		const noteHeadline = (world: World, id: string) => world.tracker.note(id)?.split('\n')[1];
+
+		it('says Draft PR open, as the note does', async () => {
+			const world = makeWorld();
+			await buildFeature(deps(world), setup(world), '1');
+			expect(firstLine(world.host.pulls[0]?.body)).toBe(
+				'**Draft PR open**: Nightjar built 2 of 2 Tickets into a draft pull request.'
+			);
+			expect(firstLine(world.host.pulls[0]?.body)).toBe(noteHeadline(world, '1'));
+		});
+
+		it('says it for a Lone issue too', async () => {
+			const world = makeWorld();
+			world.tracker.add({ id: '9', title: 'Fix the typo', assignees: ['ann'], signals: ['go'] });
+			await buildFeature(deps(world), setup(world), '9');
+			const body = world.host.pulls.at(-1)?.body;
+			expect(firstLine(body)).toBe(
+				'**Draft PR open**: Nightjar built this issue into a draft pull request.'
+			);
+			expect(firstLine(body)).toBe(noteHeadline(world, '9'));
+		});
+
+		it('says Waiting on you when a Ticket waits', async () => {
+			const world = makeWorld();
+			world.acts['3'] = 'ask';
+			await buildFeature(deps(world), setup(world), '1');
+			expect(firstLine(world.host.pulls[0]?.body)).toBe(
+				'**Waiting on you**: Nightjar opened a draft pull request, and this Feature still needs a person.'
+			);
+			expect(firstLine(world.host.pulls[0]?.body)).toBe(noteHeadline(world, '1'));
+		});
+
+		it('keeps the headline current when the Feature is built again', async () => {
+			const world = makeWorld();
+			world.acts['3'] = 'ask';
+			await buildFeature(deps(world), setup(world), '1');
+			expect(firstLine(world.host.pulls[0]?.body)).toMatch(/^\*\*Waiting on you\*\*: /);
+
+			world.acts['3'] = 'build';
+			await world.tracker.removeSignal('3', 'needsInfo');
+			await world.tracker.addSignal('3', 'ready');
+			await world.tracker.removeSignal('1', 'needsInfo');
+			await world.tracker.addSignal('1', 'go');
+			await buildFeature(deps(world), setup(world), '1');
+
+			const body = world.host.pulls[0]?.body;
+			expect(firstLine(body)).toMatch(/^\*\*Draft PR open\*\*: /);
+			expect(firstLine(body)).toBe(noteHeadline(world, '1'));
+			expect(body?.match(/^\*\*(Waiting on you|Draft PR open)\*\*/gm)).toHaveLength(1);
+		});
+
+		it('says Paused, until when, as the note does', async () => {
+			const world = makeWorld();
+			const why = 'the usage limit was reached';
+			world.settle = (req) =>
+				req.kind === 'review' ? { kind: 'paused', why, sessionId: 's', costUsd: 0 } : undefined;
+			await buildFeature({ ...deps(world), pauseMs: 30 * 60_000 }, setup(world), '1');
+			const body = world.host.pulls[0]?.body;
+			expect(firstLine(body)).toMatch(/^\*\*Paused\*\* until \S+ \d\d:\d\d UTC: The usage limit/);
+			expect(firstLine(body)).toBe(noteHeadline(world, '1'));
+		});
 	});
 
 	it('never hands the note to the Coding agent as a Trusted comment', async () => {

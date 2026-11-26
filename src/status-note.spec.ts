@@ -14,6 +14,7 @@ import {
 	withEarlier,
 	untilText,
 	waitingCommentText,
+	withHeadline,
 	type NoteState,
 	type StatusNote,
 	type WaitingComment
@@ -31,6 +32,39 @@ const BARE: StatusNote = {
 };
 
 const text = (more: Partial<StatusNote>) => statusNoteText({ ...BARE, ...more });
+
+describe('withHeadline', () => {
+	const draft = headline('pull', 'Nightjar built 2 of 2 Tickets into a draft pull request.');
+	const waiting = headline('waiting', 'Nightjar could not make the Pull checks green.');
+
+	it('opens a body that has no headline with it, the rest kept', () => {
+		expect(withHeadline('Nightjar built all of #1 One.\n\n## Built', draft)).toBe(
+			`${draft}\n\nNightjar built all of #1 One.\n\n## Built`
+		);
+	});
+
+	it('swaps the headline a body opens with, and only that line', () => {
+		const body = `${draft}\n\nNightjar built all of #1 One.\n\n## Built`;
+		expect(withHeadline(body, waiting)).toBe(
+			`${waiting}\n\nNightjar built all of #1 One.\n\n## Built`
+		);
+	});
+
+	it('swaps a paused headline, its time too', () => {
+		const paused = headline('paused', 'The usage limit was reached.', '2026-10-30T09:30:00.000Z');
+		expect(withHeadline(`${paused}\n\nrest`, draft)).toBe(`${draft}\n\nrest`);
+	});
+
+	it('swaps the headline of a body with Windows line ends', () => {
+		expect(withHeadline(`${draft}\r\n\r\nrest`, waiting)).toBe(`${waiting}\r\n\r\nrest`);
+	});
+
+	it('does not take bold text that is no state word for a headline', () => {
+		expect(withHeadline('**Note**: read it.\n\nrest', draft)).toBe(
+			`${draft}\n\n**Note**: read it.\n\nrest`
+		);
+	});
+});
 
 describe('buildingSentence', () => {
 	const ticket = { place: 3, of: 5, title: 'Share the function' };
