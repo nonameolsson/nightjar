@@ -815,6 +815,170 @@ describe('nightjar init with --yes and flags', () => {
 	});
 });
 
+describe('nightjar init --dry-run', () => {
+	const OPENING =
+		'nightjar: dry run, so nothing is written or created; this is what init would do:';
+	const expectNothingMade = () => {
+		expect(asked).toEqual([]);
+		expect(existsSync(written())).toBe(false);
+		expect(existsSync(join(m.root, '.gitignore'))).toBe(false);
+		expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+		expect(out.join('\n')).not.toContain('running the check');
+		expect(out.join('\n')).not.toContain('From here on');
+	};
+
+	it('prints the summary and the preview, asks nothing and writes nothing', async () => {
+		writeFileSync(join(m.root, 'Makefile'), 'check:\n\techo ok\n');
+		expect(await init([], {}, ['init', '--dry-run'])).toBe(0);
+		expect(err).toEqual([]);
+		expect(out).toEqual([
+			'nightjar: detected `make check` from Makefile "check"',
+			OPENING,
+			'  GitHub Issues + GitHub, repo o/r',
+			'  check: make check',
+			'  commands the Coding agent may run: make check',
+			'  write:',
+			'    factory.json:',
+			'      {',
+			'      \t"$schema": "https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json",',
+			'      \t"tracker": {',
+			'      \t\t"type": "github"',
+			'      \t},',
+			'      \t"codeHost": {',
+			'      \t\t"type": "github"',
+			'      \t},',
+			'      \t"check": "make check",',
+			'      \t"allowedCommands": [',
+			'      \t\t"make check"',
+			'      \t]',
+			'      }',
+			'  create the Signal labels on o/r: factory-go, ready-for-agent, agent-working, needs-info, ready-for-human',
+			'  logins checked:',
+			'    GitHub CLI for the Tracker, on o/r',
+			'    GitHub CLI for the Code host, on o/r',
+			'    claude, signed in to your Claude plan',
+			'nightjar: add `.factory/` to .gitignore: Nightjar keeps its status and logs there'
+		]);
+		expectNothingMade();
+	});
+
+	it('shows the values its flags set, under --yes', async () => {
+		const argv = [
+			'init',
+			'--dry-run',
+			'--yes',
+			'--check',
+			'make verify',
+			'--allowed-commands',
+			'make verify, make lint *',
+			'--tracker',
+			'azure-devops',
+			'--tracker-organization',
+			'contoso',
+			'--tracker-project',
+			'Fabrikam',
+			'--tracker-feature-type',
+			'Epic',
+			'--tracker-ticket-type',
+			'Issue',
+			'--code-host-repo',
+			'fabrikam-app'
+		];
+		expect(await init([], {}, argv)).toBe(0);
+		expect(err).toEqual([]);
+		const shown = out.join('\n');
+		expect(shown).toContain(
+			'  Azure DevOps Boards + Azure Repos, repo contoso/Fabrikam/fabrikam-app'
+		);
+		expect(shown).toContain('  check: make verify');
+		expect(shown).toContain('  commands the Coding agent may run: make verify, make lint *');
+		expect(shown).toContain('"featureType": "Epic"');
+		expect(shown).toContain('"ticketType": "Issue"');
+		expect(shown).toContain('create no Signal labels');
+		expect(shown).toContain('  logins checked:');
+		expect(shown).not.toContain('<missing>');
+		expectNothingMade();
+	});
+
+	it('names each value that has no default and no flag, and shows the rest', async () => {
+		const argv = ['init', '--dry-run', '--tracker', 'azure-devops'];
+		expect(await init([], {}, [...argv, '--tracker-organization', 'contoso'])).toBe(0);
+		expect(err).toEqual([]);
+		const shown = out.join('\n');
+		expect(shown).toContain(
+			'  Azure DevOps Boards + Azure Repos, repo contoso/<missing>/<missing>'
+		);
+		expect(shown).toContain('  check: <missing>');
+		expect(shown).toContain('"featureType": "Feature"');
+		expect(shown).toContain(
+			'logins (only claude is checked until the Tracker and Code host lack no value):'
+		);
+		expect(out.filter((l) => l.includes('found no default for'))).toEqual([
+			'nightjar: --yes found no default for: Project that holds the Features; pass --tracker-project',
+			'nightjar: --yes found no default for: Git repo on Azure Repos, by name; pass --code-host-repo',
+			'nightjar: --yes found no default for: Command that checks the work, run after each Ticket; pass --check'
+		]);
+		expect(out.at(-1)).toBe(
+			'nightjar: `init --yes` would write nothing until each of these is given'
+		);
+		expectNothingMade();
+	});
+
+	it('goes on past a GitHub repo that origin does not name', async () => {
+		spawnSync('git', ['remote', 'set-url', 'origin', 'https://example.com/o/app.git'], {
+			cwd: m.root,
+			env: m.env
+		});
+		expect(await init([], {}, ['init', '--dry-run', '--check', 'make check'])).toBe(0);
+		expect(out).toContain('  GitHub Issues + GitHub, repo <missing>');
+		expect(out.filter((l) => l.includes('pass --tracker-repo'))).toHaveLength(1);
+		expect(out.filter((l) => l.includes('pass --code-host-repo'))).toHaveLength(1);
+		expectNothingMade();
+	});
+
+	it('refuses a flag whose value the schema does not take, as --yes does', async () => {
+		const argv = ['init', '--dry-run', '--tracker-repo', 'nope', '--check', 'make check'];
+		expect(await init([], {}, argv)).toBe(2);
+		expect(err.join('\n')).toContain('--tracker-repo nope: must be owner/name');
+		expectNothingMade();
+	});
+
+	it('exits 2 and lists the failures of the machine check', async () => {
+		github.signOut();
+		const env = { FAKE_CLAUDE_SIGNED_OUT: '1' };
+		expect(await init([], env, ['init', '--dry-run'])).toBe(2);
+		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*run `gh auth login`/);
+		expect(err.join('\n')).toMatch(/FAIL {2}claude: .*not signed in/);
+		expect(err.at(-1)).toContain('3 problems above, and nothing was written');
+		expect(out.join('\n')).not.toContain(OPENING);
+		expectNothingMade();
+	});
+
+	it('shows a factory.json that is there, with its Signal names, and creates no label', async () => {
+		m.writeConfig({
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: [],
+			signals: { go: 'build-me' }
+		});
+		const before = readFileSync(written(), 'utf8');
+		expect(await init([], {}, ['init', '--dry-run'])).toBe(0);
+		expect(out).toContain('nightjar: factory.json is there already; init would keep it');
+		expect(out).toContain('  commands the Coding agent may run: none');
+		expect(out.join('\n')).toContain('create the Signal labels on o/r: build-me, ');
+		expect(out).not.toContain('  write:');
+		expect(out.join('\n')).not.toContain('From here on');
+		expect(readFileSync(written(), 'utf8')).toBe(before);
+		expect(github.repoLabelNames()).toEqual([]);
+	});
+
+	it('is listed in the usage, with --no-tour', async () => {
+		expect(await init([], {}, ['init', 'now'])).toBe(2);
+		expect(err.join('\n')).toContain('usage: nightjar init [--yes] [--dry-run] [--no-tour]');
+	});
+});
+
 describe('nightjar init on a terminal', () => {
 	type Picks = (string | string[] | boolean | null)[];
 	const SUMMARY_QUESTION = 'Set up Nightjar like this?';
@@ -1085,6 +1249,22 @@ describe('nightjar init on a terminal', () => {
 		expect(offered).toEqual([]);
 		expect(existsSync(gitignore())).toBe(false);
 		expect(out.at(-1)).toBe(markdownRecap());
+	});
+
+	it.each([
+		['the .gitignore line the tour would write', ['init', '--dry-run'], true],
+		['no .gitignore write under --yes, which makes none', ['init', '--dry-run', '--yes'], false]
+	])('shows %s in a dry run, prompting for nothing', async (_what, argv, writes) => {
+		twoChecks();
+		expect(await initUi([], argv)).toBe(0);
+		expect(offered).toEqual([]);
+		expect(out).toContain(
+			'nightjar: detected several check commands; taking the first, `make test`'
+		);
+		expect(out.includes('    .gitignore, adding the line .factory/')).toBe(writes);
+		expect(out.some((l) => l.startsWith('nightjar: add `.factory/`'))).toBe(!writes);
+		expect(existsSync(written())).toBe(false);
+		expect(existsSync(gitignore())).toBe(false);
 	});
 
 	it('takes a picked check and the ticked allowed commands', async () => {

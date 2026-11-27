@@ -16,7 +16,7 @@ export const USAGE = `usage: nightjar <--watch | --once | FEATURE | doctor [FEAT
   --effort LEVEL the effort of every session, over a Ticket's own line and factory.json
   --version, -v  print the installed version
 
-       nightjar init [--yes] [--check CMD] ...   write factory.json, create the Signal labels, check the logins; asks for the Tracker and Code host, or on a terminal confirms what it guessed; --yes asks nothing
+       nightjar init [--yes] [--dry-run] [--no-tour] [--check CMD] ...   write factory.json, create the Signal labels, check the logins; asks for the Tracker and Code host, or on a terminal confirms what it guessed; --yes asks nothing; --dry-run only shows what it would do
        nightjar create [--dry-run] FILE   make a Feature and its Tickets on the Tracker from a Feature file
        nightjar ui [--port PORT]  serve a read-only page about this repo's builds on http://127.0.0.1:4545 (127.0.0.1 only), read from .factory/
        nightjar logbook FEATURE   print that Feature's Logbook (its Sessions and Nightjar's decisions, in order, with each transcript's path), read from .factory/

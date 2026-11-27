@@ -1,4 +1,4 @@
-// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for.
+// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for. Under --dry-run it stops once that is shown.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -32,6 +32,8 @@ interface Answering {
 	readonly yes: boolean;
 	// each flag's value, by its name without the dashes, such as `check` or `tracker-repo`
 	readonly flags: ReadonlyMap<string, string>;
+	// a dry run's: told of each value --yes would refuse at for want of a default, so the rest is still answered
+	readonly missing?: (line: string) => void;
 }
 
 export interface InitOptions extends Answering {
@@ -39,10 +41,14 @@ export interface InitOptions extends Answering {
 	readonly env: Env;
 	readonly os: Os;
 	readonly useApiKey: boolean;
+	readonly dryRun: boolean;
 	readonly profile?: string;
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
 }
+
+// stands in a dry run for a value nothing gives; the schema takes it as an organization or project, which the Code host takes from the Tracker
+const MISSING = '<missing>';
 
 // the published schema, so a repo that is no npm project gets editor completion too
 const SCHEMA_URL = 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json';
@@ -85,8 +91,12 @@ async function answer(
 		return text;
 	}
 	if (o.yes) {
-		if (fallback === undefined)
-			throw new Refusal(`--yes found no default for: ${question}; pass --${flag}`);
+		if (fallback === undefined) {
+			const lacking = `--yes found no default for: ${question}; pass --${flag}`;
+			if (o.missing === undefined) throw new Refusal(lacking);
+			o.missing(lacking);
+			return MISSING;
+		}
 		const problem = accept(fallback);
 		if (problem !== null) throw new Refusal(`--yes: ${fallback} will not do: ${problem}`);
 		return fallback;
@@ -477,14 +487,17 @@ const suggestedCommands = (root: string, check: string) => [
 
 type Pair = Awaited<ReturnType<typeof askPair>>;
 
+// factory.json as the answers write it
+const factoryJson = (pair: Pair, check: string, allowedCommands: readonly string[]) => ({
+	$schema: SCHEMA_URL,
+	...pair,
+	check,
+	allowedCommands
+});
+
 // The answers put together as factory.json, refused when the schema does not take them.
 function answersFrom(pair: Pair, check: string, allowedCommands: readonly string[]): Answers {
-	const config = {
-		$schema: SCHEMA_URL,
-		...pair,
-		check,
-		allowedCommands
-	};
+	const config = factoryJson(pair, check, allowedCommands);
 	const checked = ConfigSchema.safeParse(config);
 	if (!checked.success) {
 		throw new ConfigError(
@@ -496,15 +509,22 @@ function answersFrom(pair: Pair, check: string, allowedCommands: readonly string
 	return { written: config, parsed: checked.data };
 }
 
+// Every question in turn: the pair, the check, then the commands the Coding agent may run.
+async function askAll(o: InitOptions, fromOrigin: string | null, guessedCheck?: string) {
+	const pair = await askPair(o, fromOrigin);
+	const check = await askCheck(o, guessedCheck);
+	warnIfNeverFails(check);
+	const allowed = await askAllowed(o, suggestedCommands(o.root, check));
+	return { pair, check, allowed };
+}
+
 async function interview(
 	o: InitOptions,
 	fromOrigin: string | null,
 	guessedCheck?: string
 ): Promise<Answers> {
-	const pair = await askPair(o, fromOrigin);
-	const check = await askCheck(o, guessedCheck);
-	warnIfNeverFails(check);
-	return answersFrom(pair, check, await askAllowed(o, suggestedCommands(o.root, check)));
+	const { pair, check, allowed } = await askAll(o, fromOrigin, guessedCheck);
+	return answersFrom(pair, check, allowed);
 }
 
 // The setup taken from origin and the repo's files, asking for the check alone, and only when the repo names none or several.
@@ -533,10 +553,15 @@ const LOGIN_TOOL: Record<Kind, string> = {
 	module: 'the module'
 };
 
+type Chosen = Pick<Config, 'tracker' | 'codeHost'>;
+
+// What a summary shows of a setup; one that lacks a value has not been through the schema, so it names no Signals.
+type Shown = Chosen & Pick<Config, 'check' | 'allowedCommands'> & Partial<Pick<Config, 'signals'>>;
+
 // What becomes of the Signal labels on the Tracker the answers chose.
-function labelsLine({ tracker }: Config, fromOrigin: string | null): string {
+function labelsLine({ tracker, signals }: Shown, fromOrigin: string | null): string {
 	if (tracker.type === 'github') {
-		const names = SIGNALS.map((s) => DEFAULT_SIGNAL_NAMES[s]).join(', ');
+		const names = SIGNALS.map((s) => (signals ?? DEFAULT_SIGNAL_NAMES)[s]).join(', ');
 		return `create the Signal labels on ${place(tracker, fromOrigin)}: ${names}`;
 	}
 	if (tracker.type === 'azure-devops')
@@ -544,7 +569,7 @@ function labelsLine({ tracker }: Config, fromOrigin: string | null): string {
 	return `create no Signal labels: ${tracker.path} shows Signals its own way`;
 }
 
-function loginLines(o: InitOptions, config: Config, fromOrigin: string | null): string[] {
+function loginLines(o: InitOptions, config: Chosen, fromOrigin: string | null): string[] {
 	const { tracker, codeHost } = config;
 	const profile = o.profile === undefined ? '' : ` under the profile ${o.profile}`;
 	return [
@@ -558,16 +583,19 @@ function loginLines(o: InitOptions, config: Config, fromOrigin: string | null): 
 
 const SUMMARY_OPENING = 'this is what init will do:';
 
+const jsonLines = (value: unknown) => JSON.stringify(value, null, '\t').split('\n');
+
 // What init is about to do with the answers: the file it writes, the labels it creates, the logins it checks.
 function printSummary(o: InitOptions, answers: Answers, fromOrigin: string | null): void {
 	say(SUMMARY_OPENING);
 	console.log(`  write ${CONFIG_FILE}:`);
-	for (const line of JSON.stringify(answers.written, null, '\t').split('\n'))
-		console.log(`    ${line}`);
+	for (const line of jsonLines(answers.written)) console.log(`    ${line}`);
 	console.log(`  ${labelsLine(answers.parsed, fromOrigin)}`);
 	console.log('  check the logins:');
 	for (const line of loginLines(o, answers.parsed, fromOrigin)) console.log(`    ${line}`);
 }
+
+const GITIGNORE_WRITE = '.gitignore, adding the line .factory/';
 
 const serviceName = (
 	section: Config['tracker'] | Config['codeHost'],
@@ -581,7 +609,7 @@ const serviceName = (
 			: `the module ${section.path}`;
 
 // The pair and where it is, as one line: `GitHub Issues + GitHub, repo o/app`. A module is named by its path alone.
-function pairLine({ tracker, codeHost }: Config, fromOrigin: string | null): string {
+function pairLine({ tracker, codeHost }: Chosen, fromOrigin: string | null): string {
 	const issues = place(tracker, fromOrigin);
 	const repo = place(codeHost, fromOrigin);
 	// the repo's place says where the Tracker is too, when that is the same or holds it
@@ -594,21 +622,30 @@ function pairLine({ tracker, codeHost }: Config, fromOrigin: string | null): str
 	].join(', ');
 }
 
-// The summary a person at a terminal says yes or no to.
-function printTerminalSummary(o: InitOptions, answers: Answers, fromOrigin: string | null): void {
-	const { parsed } = answers;
-	say(SUMMARY_OPENING);
-	console.log(`  ${pairLine(parsed, fromOrigin)}`);
-	console.log(`  check: ${parsed.check}`);
-	console.log(
-		`  commands the Coding agent may run: ${parsed.allowedCommands.join(', ') || 'none'}`
-	);
-	console.log('  write:');
-	console.log(`    ${CONFIG_FILE}`);
-	if (!ignoresFactory(o.root)) console.log('    .gitignore, adding the line .factory/');
-	console.log(`  ${labelsLine(parsed, fromOrigin)}`);
-	console.log('  logins checked:');
-	for (const line of loginLines(o, parsed, fromOrigin)) console.log(`    ${line}`);
+// How one summary differs from another: its first line, the lines of what it writes, and what it says of the logins.
+interface Wording {
+	readonly opening: string;
+	// none leaves the writes out
+	readonly writes: readonly string[];
+	readonly logins: string;
+}
+
+// The summary a person at a terminal says yes or no to, which a dry run shows too.
+function printTerminalSummary(
+	o: InitOptions,
+	shown: Shown,
+	fromOrigin: string | null,
+	{ opening, writes, logins }: Wording
+): void {
+	say(opening);
+	console.log(`  ${pairLine(shown, fromOrigin)}`);
+	console.log(`  check: ${shown.check}`);
+	console.log(`  commands the Coding agent may run: ${shown.allowedCommands.join(', ') || 'none'}`);
+	if (writes.length > 0) console.log('  write:');
+	for (const line of writes) console.log(`    ${line}`);
+	console.log(`  ${labelsLine(shown, fromOrigin)}`);
+	console.log(`  ${logins}`);
+	for (const line of loginLines(o, shown, fromOrigin)) console.log(`    ${line}`);
 }
 
 const yesOrNo = (text: string): string | null =>
@@ -631,6 +668,8 @@ function ignoresFactory(root: string): boolean {
 		return false;
 	}
 }
+
+const ADD_FACTORY = 'add `.factory/` to .gitignore: Nightjar keeps its status and logs there';
 
 function ignoreFactory(root: string): void {
 	const file = join(root, '.gitignore');
@@ -699,7 +738,11 @@ async function settleAtTerminal(
 ): Promise<Settled> {
 	const propose = async (answers: Answers, onNo: string) => {
 		if (stopsAt(await checkLogins(checkOptions(o), answers.parsed))) return 2;
-		printTerminalSummary(o, answers, fromOrigin);
+		printTerminalSummary(o, answers.parsed, fromOrigin, {
+			opening: SUMMARY_OPENING,
+			writes: [CONFIG_FILE, ...(ignoresFactory(o.root) ? [] : [GITIGNORE_WRITE])],
+			logins: 'logins checked:'
+		});
 		prompter.note(`${onNo} Any answer can be edited later in ${CONFIG_FILE}.`);
 		const question = 'Set up Nightjar like this?';
 		return orCancel(await prompter.confirm(question, true), question) ? answers : 'no';
@@ -715,12 +758,57 @@ async function settleAtTerminal(
 	return got === 'no' ? declined() : got;
 }
 
+// What this run would do without --dry-run, each answer taken as --yes takes it: nothing is asked, written or created. `known` is the pair whose logins were checked.
+async function showDryRun(
+	o: InitOptions,
+	fromOrigin: string | null,
+	wrote: boolean,
+	known: Config | null
+): Promise<number> {
+	// only a run at a terminal writes .gitignore
+	const gitignore = wrote && !o.yes && o.prompter !== undefined && !ignoresFactory(o.root);
+	const missing: string[] = [];
+	let shown: Shown;
+	let writes: string[] = [];
+	if (wrote) {
+		const asking = { ...o, yes: true, missing: (line: string) => void missing.push(line) };
+		const { pair, check, allowed } = await askAll(asking, fromOrigin);
+		const written = factoryJson(pair, check, allowed);
+		// the schema judges a setup only once it lacks nothing
+		shown =
+			missing.length === 0
+				? answersFrom(pair, check, allowed).parsed
+				: ({ ...pair, check, allowedCommands: allowed } as Shown);
+		writes = [
+			`${CONFIG_FILE}:`,
+			...jsonLines(written).map((line) => `  ${line}`),
+			...(gitignore ? [GITIGNORE_WRITE] : [])
+		];
+	} else {
+		say(`${CONFIG_FILE} is there already; init would keep it`);
+		shown = loadConfig(o.root);
+	}
+	printTerminalSummary(o, shown, fromOrigin, {
+		opening: 'dry run, so nothing is written or created; this is what init would do:',
+		writes,
+		logins:
+			!wrote || known !== null
+				? 'logins checked:'
+				: 'logins (only claude is checked until the Tracker and Code host lack no value):'
+	});
+	if (!gitignore && !ignoresFactory(o.root)) say(ADD_FACTORY);
+	for (const line of missing) say(line);
+	if (missing.length > 0) say('`init --yes` would write nothing until each of these is given');
+	return 0;
+}
+
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
 	const wrote = !existsSync(file);
 	const fromOrigin = await origin(o.root, o.env);
 	const known = wrote ? await knownPair(o, fromOrigin) : null;
 	if (stopsAt(await checkPrerequisites(checkOptions(o), wrote ? known : CONFIG_FILE))) return 2;
+	if (o.dryRun) return showDryRun(o, fromOrigin, wrote, known);
 	// a person at a terminal, as against piped answers and --yes
 	const terminal = o.yes ? undefined : o.prompter;
 	if (!wrote) {
@@ -739,8 +827,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 		}
 		say(OPTIONAL_SETTINGS);
 	}
-	if (!ignoresFactory(o.root))
-		say('add `.factory/` to .gitignore: Nightjar keeps its status and logs there');
+	if (!ignoresFactory(o.root)) say(ADD_FACTORY);
 
 	const checked = await checkMachine({ ...checkOptions(o), failFast: false });
 	printLines(checked.lines);
@@ -782,14 +869,16 @@ export interface InitHost {
 	readonly prompter?: Prompter;
 }
 
-const INIT_USAGE = `usage: nightjar init [--yes] [--no-tour] [--use-api-key] [--profile NAME] [--check CMD]
-                     [--allowed-commands LIST]
+const INIT_USAGE = `usage: nightjar init [--yes] [--dry-run] [--no-tour] [--use-api-key] [--profile NAME]
+                     [--check CMD] [--allowed-commands LIST]
                      [--tracker TYPE] [--tracker-repo R] [--tracker-organization O] [--tracker-project P]
                      [--tracker-feature-type T] [--tracker-ticket-type T] [--tracker-path PATH]
                      [--code-host TYPE] [--code-host-repo R] [--code-host-organization O]
                      [--code-host-project P] [--code-host-path PATH]
 
   --yes, -y  take every default and ask nothing; a value with no default must be given by its flag
+  --dry-run  check the machine, show what init would write and create, taking each answer as --yes does,
+             and name each value that lacks a flag; asks, writes and creates nothing
   --no-tour  stop once factory.json and .gitignore are written, with the recap of how to go on
   a flag sets its answer and skips its question; --allowed-commands is comma separated, or none`;
 
@@ -814,6 +903,7 @@ const VALUE_FLAGS = new Set([
 
 interface InitArgs {
 	readonly yes: boolean;
+	readonly dryRun: boolean;
 	readonly useApiKey: boolean;
 	readonly flags: ReadonlyMap<string, string>;
 }
@@ -821,12 +911,14 @@ interface InitArgs {
 // The arguments of `init`, or the line that says what is wrong with them.
 function parseInitArgs(argv: readonly string[]): InitArgs | string {
 	let yes = false;
+	let dryRun = false;
 	let useApiKey = false;
 	const flags = new Map<string, string>();
 	for (let i = 0; i < argv.length; i += 1) {
 		const a = argv[i] ?? '';
 		const name = a.replace(/^--/, '');
 		if (a === '--yes' || a === '-y') yes = true;
+		else if (a === '--dry-run') dryRun = true;
 		else if (a === '--use-api-key') useApiKey = true;
 		// every run ends once the files are written, which is all this flag asks for
 		else if (a === '--no-tour') continue;
@@ -837,7 +929,7 @@ function parseInitArgs(argv: readonly string[]): InitArgs | string {
 			i += 1;
 		} else return `unknown argument ${a}`;
 	}
-	return { yes, useApiKey, flags };
+	return { yes, dryRun, useApiKey, flags };
 }
 
 // The `init` command: its arguments, the checkout it is run in, and a refusal said as it is.
@@ -847,7 +939,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 		console.error(`nightjar: ${parsed}\n\n${INIT_USAGE}`);
 		return 2;
 	}
-	const { flags, yes } = parsed;
+	const { flags, yes, dryRun } = parsed;
 	const profile = flags.get('profile');
 	const env: Env = { ...host.env, GIT_TERMINAL_PROMPT: '0' };
 	// --yes asks nothing, so it leaves standard input alone
@@ -856,7 +948,8 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 		(host.ask === undefined && !yes && process.stdin.isTTY && process.stdout.isTTY
 			? clackPrompter()
 			: undefined);
-	const asker = host.ask === undefined && !yes && prompter === undefined ? askOnStdin() : null;
+	const asks = !yes && !dryRun;
+	const asker = host.ask === undefined && asks && prompter === undefined ? askOnStdin() : null;
 	try {
 		const top = await run('git', ['rev-parse', '--show-toplevel'], host.cwd, env);
 		return await runInit({
@@ -865,6 +958,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			env,
 			os: host.os,
 			useApiKey: parsed.useApiKey,
+			dryRun,
 			...(profile === undefined ? {} : { profile }),
 			yes,
 			flags,

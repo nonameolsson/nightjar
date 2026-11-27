@@ -13,8 +13,8 @@ let m: Machine;
 afterEach(() => m.remove());
 
 // node is started by its full path, since the PATH holds the stand-ins alone
-const nightjar = (input: string) =>
-	spawnSync(process.execPath, [TSX, CLI, 'init'], {
+const nightjar = (input: string, ...flags: string[]) =>
+	spawnSync(process.execPath, [TSX, CLI, 'init', ...flags], {
 		cwd: m.root,
 		env: m.env,
 		input,
@@ -34,6 +34,17 @@ describe('nightjar init with answers on standard input', () => {
 		expect(m.readConfig()).toMatchObject({ check: 'make check', allowedCommands: ['make check'] });
 		expect(m.calls('gh')).toContain('-X POST repos/o/r/labels -f name=factory-go ');
 		expect(run.stdout).toContain('nightjar: created the label factory-go');
+	}, 30_000);
+
+	it('writes nothing under --dry-run, and exits 0', () => {
+		m = machine();
+		const run = nightjar('', '--dry-run', '--check', 'make check');
+		expect(run.stderr).toBe('');
+		expect(run.status).toBe(0);
+		expect(run.stdout).toContain('check: make check');
+		expect(existsSync(join(m.root, 'factory.json'))).toBe(false);
+		expect(existsSync(join(m.root, '.gitignore'))).toBe(false);
+		expect(m.calls('gh')).not.toContain('-X POST');
 	}, 30_000);
 
 	it('stops without writing when the input ends before the check command', () => {
