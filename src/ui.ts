@@ -1949,7 +1949,7 @@ new EventSource(panels.dataset.events).onmessage = (e) => {
 };
 `;
 
-// A page of its own: the bar with a way back, the banner, and what the page shows. `events` is where a live page gets its content again.
+// A page of its own, in the Board's default stylesheet: the bar with a way back, and what the page shows. `events` is where a live page gets its content again.
 function shell(
 	title: string,
 	region: string,
@@ -1963,12 +1963,12 @@ function shell(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escape(title)}</title>
-<style>${STYLE}.banner { background-image: url(${BANNER}); }</style>
+<style>${PAPER_STYLE}</style>
 </head>
 <body>
 <a class="skip" href="#panels">Skip to the ${region}</a>
 <div class="bar"><p class="mark">nightjar</p><nav aria-label="Pages"><a class="open" href="/">Back to the Board</a></nav>${elsewhere(links)}</div>
-<div id="scroll" role="region" aria-label="${region}" tabindex="0"><div class="banner" aria-hidden="true"></div><main id="panels" tabindex="-1"${events === null ? '' : ` data-events="${events}"`}>${main}</main></div>
+<div id="scroll" role="region" aria-label="${region}" tabindex="0"><main id="panels" tabindex="-1"${events === null ? '' : ` data-events="${events}"`}>${main}</main></div>
 <script>
 const scroller = document.getElementById('scroll');
 const flow = matchMedia('(max-height: 480px), (max-width: 400px)');
@@ -1976,8 +1976,7 @@ const place = () => { scroller.tabIndex = flow.matches ? -1 : 0; };
 place();
 flow.addEventListener('change', place);
 </script>
-${events === null ? '' : `<script>${LOGBOOK_SCRIPT}</script>\n`}<script>${PARALLAX}</script>
-</body>
+${events === null ? '' : `<script>${LOGBOOK_SCRIPT}</script>\n`}</body>
 </html>
 `;
 }

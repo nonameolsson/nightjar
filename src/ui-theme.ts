@@ -51,6 +51,7 @@ addEventListener('DOMContentLoaded', () => {
 // Paper: a Board of cards under each state, a Table of one line per Feature, a 13px platform face with tabular figures, warm paper greys and one hairline for every rule.
 // Hue lives in small objects (a status icon, a group's dot, a state's words), never in a field; one blue for focus and selection.
 // Every colour is a token on :root, light first and dark second, so a line outside :root holds no literal.
+// It is the Session and Logbook pages' only stylesheet: a Logbook's entries sit on hairlines, each with a small mark whose shape tells its kind.
 export const PAPER_STYLE = `
 :root { color-scheme: light; --bg: #ffffff; --surface-2: #f7f7f5; --surface-3: #efeeec; --ink: #37352f; --muted: #66655f; --line: #e9e9e7; --accent: #1d76cf; --built: #1d7f52; --fault: #c93a3f; --ask: #956a0a; --pending: #a3a29e; --blue: #337ea9; --blue-ink: #306e92; --purple: #9065b0; --gray: #787774; --on-fill: #ffffff; --tint: 8%; --scrim: rgba(15, 15, 15, 0.25); --shadow-pop: 0 0 0 1px rgba(15, 15, 15, 0.05), 0 3px 6px rgba(15, 15, 15, 0.1), 0 9px 24px rgba(15, 15, 15, 0.2); --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 @media (prefers-color-scheme: dark) {
@@ -87,6 +88,7 @@ header .stale { color: var(--ask); }
 .empty, small, .meta { color: var(--muted); }
 small { font-size: 12px; }
 .empty { margin: 8px 0; }
+.note { font-size: 12.5px; }
 ul, ol { list-style: none; margin: 4px 0; padding: 0; }
 pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 12px/1.5 var(--mono); margin: 8px 0 0; max-height: 14rem; overflow: auto; padding: 8px 10px; white-space: pre-wrap; }
 #panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
@@ -308,13 +310,45 @@ td.cost .split { text-align: left; white-space: normal; width: 22rem; }
 .seg.running { background: linear-gradient(90deg, var(--blue) 0 50%, transparent 50%); border: 1px solid var(--blue); }
 .seg.notReached { border: 1px dashed var(--pending); }
 .seg.notNeeded { background: linear-gradient(var(--pending), var(--pending)) center / 100% 2px no-repeat; }
+.bar a.open { border-radius: 6px; color: var(--muted); font-size: 12.5px; height: 28px; padding: 0 10px; text-decoration: none; }
+.bar a.open:hover { background: var(--surface-2); color: var(--ink); }
+.part { border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 500; margin: 20px 0 4px; padding-top: 10px; }
+.run { border: 1px solid var(--line); border-radius: 6px; margin: 12px 0; padding: 10px 14px; }
+.run dl { display: grid; gap: 6px 20px; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin: 0; }
+.run dt { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.run dd { margin: 0; overflow-wrap: anywhere; }
+.run .more { margin: 8px 0 0; padding: 0; }
+.log { margin: 8px 0 0; }
+.log li { overflow-wrap: anywhere; padding: 4px 0; }
+.log p { margin: 0; }
+.log .tool { background: var(--surface-2); border-radius: 6px; color: var(--muted); font: 12px/1.5 var(--mono); padding: 3px 10px; }
+.log .result { padding-left: 10px; }
+.log summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
+.log summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.log pre { max-height: 24rem; }
+.book { margin: 12px 0 0; }
+.book > li { border-top: 1px solid var(--line); overflow-wrap: anywhere; padding: 8px 0 8px 24px; position: relative; }
+.book > li:first-child { border-top: 0; }
+.book > li::before { background: var(--gray); border-radius: 50%; box-sizing: border-box; content: ""; height: 6px; left: 4px; position: absolute; top: 14px; width: 6px; }
+.book > li.session::before { background: none; border: 1.5px solid var(--gray); height: 10px; left: 2px; top: 15px; width: 10px; }
+.book > li.handed::before { background: linear-gradient(var(--on-fill), var(--on-fill)) 6px 3px / 2px 5px no-repeat, linear-gradient(var(--on-fill), var(--on-fill)) 6px 9px / 2px 2px no-repeat, var(--ask); height: 14px; left: 0; top: 10px; width: 14px; }
+.book > li.live::before { background: conic-gradient(var(--blue) 0 50%, transparent 0); border: 1.5px solid var(--blue); box-shadow: inset 0 0 0 1.5px var(--bg); height: 14px; left: 0; top: 13px; width: 14px; }
+.book > li > p { font-size: 12.5px; margin: 0; }
+.book time { color: var(--muted); font-size: 12px; margin-right: 8px; }
+.book .when { margin: 0 0 6px; }
+.book .run { border: 0; border-radius: 0; margin: 0; padding: 0; }
+#feature .book .run { border-top: 0; margin-top: 0; padding-top: 0; }
+.book .label { color: var(--blue-ink); font-weight: 600; margin-right: 6px; }
+.book summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 4px 0 2px; }
+.book summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.book pre { max-height: 24rem; }
 @media (prefers-reduced-motion: reduce) { .dk i { animation: none; } }
 @media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .cost summary { min-height: 44px; }
+	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .cost summary, .log summary, .book summary { min-height: 44px; }
 	#views button, #themes button, .chips button { padding-inline: 14px; }
 	.tab { height: 40px; }
 }

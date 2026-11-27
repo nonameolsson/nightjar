@@ -2230,13 +2230,6 @@ describe('nightjar ui audit fixes', () => {
 			expect(coarse).toContain('min-height: 44px');
 		}
 	);
-	it("gives the Session page's folded results the same hit area in the Nightjar stylesheet", async () => {
-		const { style } = await css('nightjar');
-		expect(rule(style, '.log summary')).toContain('min-height: 24px');
-		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-		expect(coarse).toContain('.log summary');
-	});
-
 	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
 		const { style } = await css();
 		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(rem|px)/g)].map((m) =>
@@ -3103,6 +3096,228 @@ describe('nightjar ui Logbook page', () => {
 	});
 });
 
+describe("nightjar ui Session and Logbook pages in the Board's stylesheet", () => {
+	const styleOf = (page: string) => page.split('<style>')[1]?.split('</style>')[0] ?? '';
+	const rule = (style: string, selector: string) =>
+		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
+
+	// a Session with a folded result, and a Logbook with a decision, a Session, a hand-over and its build in flight
+	const seed = () => {
+		const logs = join(root, '.factory', 'logs');
+		mkdirSync(logs, { recursive: true });
+		const lines = [
+			{ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading' }] } },
+			{
+				type: 'assistant',
+				message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] }
+			},
+			{
+				type: 'user',
+				message: { content: [{ type: 'tool_result', tool_use_id: 't', content: '3 passed' }] }
+			}
+		];
+		writeFileSync(join(logs, 'sess-1.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n'));
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/app',
+			feature: '261',
+			ticket: '266',
+			branch: 'factory/261-logbook',
+			step: 'build',
+			session: 'sess-1',
+			costUsd: 1.5,
+			outcome: 'built',
+			durationMs: 125_000
+		});
+		const book = fileLogbook(root);
+		book.write({ at: at.toISOString(), feature: '261', kind: 'ticketStarted', ticket: '266' });
+		book.write({
+			at: at.toISOString(),
+			feature: '261',
+			kind: 'handed',
+			to: 'needsInfo',
+			why: 'the check stayed red',
+			ticket: '266'
+		});
+		status().doing({
+			kind: 'building',
+			feature: '261',
+			title: 'Logbook',
+			ticket: '267',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: 'sess-1',
+			startedAt: at.toISOString(),
+			tickets: [{ id: '267', title: 'Logbook page', state: 'building' }]
+		});
+	};
+	// the pages as the server answers them, drawn in this process
+	const pages = () => {
+		seed();
+		const session = readSession(root, 'sess-1');
+		if (session === null) throw new Error('no transcript for sess-1');
+		return {
+			found: {
+				session: sessionPage(session),
+				logbook: logbookPage(readLogbook(root, '261'), readFactory(root, { alive: () => true }))
+			}
+		};
+	};
+
+	it("serves both pages in the Board's default stylesheet, one of it, and nothing of the banner", async () => {
+		seed();
+		await open();
+		const served = (await get('/')).text;
+		const board = served.split('<style data-theme="paper">')[1]?.split('</style>')[0];
+		expect(board).toBe(PAPER_STYLE);
+		const found = {
+			session: (await get('/sessions/sess-1')).text,
+			logbook: (await get('/features/261')).text
+		};
+		expect(found.session).toContain('<li class="result"><details>');
+		expect(found.logbook).toContain('<li class="decision handed">');
+		expect(found.logbook).toContain('<li class="live">');
+		for (const page of Object.values(found)) {
+			expect(page.match(/<style[\s>]/g)).toHaveLength(1);
+			expect(styleOf(page)).toBe(board);
+			expect(page).not.toContain('class="banner"');
+			expect(page).not.toContain('data:image/webp');
+			expect(page).not.toContain('--void');
+			expect(page).not.toContain('--drift');
+		}
+	});
+
+	it('has a rule for each class the pages draw, but those their list or parent draws', () => {
+		const { found } = pages();
+		// a transcript's text and a decision are drawn by their list's rules, and of a decision's kinds only a hand-over has a mark of its own
+		const byParent = ['text', 'decision'];
+		for (const page of Object.values(found)) {
+			const body = page.split('<body>')[1] ?? '';
+			const classes = new Set(
+				[...body.matchAll(/class="([^"]+)"/g)].flatMap((m) => {
+					const names = (m[1] ?? '').split(' ');
+					return names[0] === 'decision' ? names.filter((n) => n === 'handed') : names;
+				})
+			);
+			expect(classes).toContain(page === found.logbook ? 'handed' : 'result');
+			for (const c of classes) {
+				if (byParent.includes(c)) continue;
+				expect(styleOf(page), c).toMatch(new RegExp(`\\.${c}(?![\\w-])`));
+			}
+		}
+	});
+
+	const TARGETS = [
+		'a.open',
+		'a.act',
+		'button.copy',
+		'button.open',
+		'.log summary',
+		'.book summary',
+		'.cost summary',
+		'.criteria summary'
+	];
+	it('gives links, folds and copy buttons a 24px hit area, 44px on touch', () => {
+		const { found } = pages();
+		for (const page of Object.values(found)) {
+			const style = styleOf(page);
+			for (const s of TARGETS) expect(rule(style, s), s).toContain('min-height: 24px');
+			const coarse = style.split('@media (pointer: coarse) {')[1]?.split('\n}')[0] ?? '';
+			expect(coarse).toContain('min-height: 44px');
+			for (const s of TARGETS) expect(coarse, s).toContain(s);
+		}
+	});
+
+	it('draws colours from tokens and keeps font sizes on the 11.5px to 16px ramp', () => {
+		const { found } = pages();
+		for (const page of Object.values(found)) {
+			const style = styleOf(page);
+			const rest = style
+				.split('\n')
+				.filter((l) => !l.startsWith(':root'))
+				.join('\n');
+			expect(rest).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+			expect(rest).not.toContain('rgba(');
+			const fonts = style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(px|rem|em)\b/g);
+			const sizes = [...fonts].map((m) => `${m[1] ?? ''}${m[2] ?? ''}`);
+			// 1em is the headings' reset to their parent's size, which the ramp then sets
+			const ramp = ['11.5px', '12px', '12.5px', '13px', '13.5px', '14px', '16px', '1em'];
+			expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
+		}
+	});
+
+	it('tells a Session, a decision, a hand-over and the build in flight apart by the shape of their mark, not a coloured rule', () => {
+		const { found } = pages();
+		const style = styleOf(found.logbook);
+		const mark = (s: string) => rule(style, `.book > li${s}::before`);
+		const marks = ['', '.session', '.handed', '.live'].map(mark);
+		for (const m of marks) {
+			expect(m).toMatch(/var\(--/);
+			expect(m).not.toMatch(/#[0-9a-f]{3,8}\b|rgba\(/i);
+		}
+		const forms = marks.map((r) => r.replace(/var\(--[a-z0-9-]+\)/g, 'C'));
+		expect(new Set(forms).size).toBe(marks.length);
+		// the hand-over a filled mark with a bar and a dot, the build in flight half filled, as the Board's eggs are
+		expect(marks[2]).toContain('var(--ask)');
+		expect(marks[3]).toContain('conic-gradient(var(--blue) 0 50%');
+		expect(style).not.toMatch(/^\.book[^\n]*border-left/m);
+		// and in words
+		expect(found.logbook).toContain('Handed to a person');
+		expect(found.logbook).toContain('<span class="label">Building now</span>');
+	});
+
+	it('meets WCAG AA contrast for text and marks in the light and the dark scheme', () => {
+		const { found } = pages();
+		const style = styleOf(found.logbook);
+		const schemes = ['light', 'dark'].map((scheme) => {
+			const head = `:root { color-scheme: ${scheme};`;
+			const line = style.split('\n').find((l) => l.startsWith(head));
+			const tokens: Record<string, string> = {};
+			for (const m of (line ?? '').matchAll(/--([a-z0-9-]+): (#[0-9a-f]{6});/gi))
+				tokens[m[1] ?? ''] = m[2] ?? '';
+			return tokens;
+		});
+		const lum = (hex: string) => {
+			const [r = 0, g = 0, b = 0] = [1, 3, 5].map((i) => {
+				const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+				return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+			});
+			return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		};
+		const ratio = (a = '', b = '') => {
+			const [hi = 0, lo = 0] = [lum(a), lum(b)].sort((x, y) => y - x);
+			return (hi + 0.05) / (lo + 0.05);
+		};
+		for (const t of schemes) {
+			expect(Object.keys(t).length).toBeGreaterThan(10);
+			for (const ink of ['ink', 'muted', 'ask', 'blue-ink', 'built', 'fault'])
+				expect(ratio(t[ink], t.bg), ink).toBeGreaterThanOrEqual(4.5);
+			for (const ink of ['ink', 'muted'])
+				expect(ratio(t[ink], t['surface-2']), ink).toBeGreaterThanOrEqual(4.5);
+			for (const mark of ['gray', 'blue', 'ask'])
+				expect(ratio(t[mark], t.bg), mark).toBeGreaterThanOrEqual(3);
+			expect(ratio(t['on-fill'], t.ask), 'the hand-over mark').toBeGreaterThanOrEqual(3);
+		}
+	});
+
+	it('stops any motion under prefers-reduced-motion and carries no scroll drift', () => {
+		const { found } = pages();
+		for (const page of Object.values(found)) {
+			const style = styleOf(page);
+			const moving = style
+				.split('\n')
+				.filter((l) => /animation: (?!none)/.test(l) && !l.startsWith('@'))
+				.map((l) => l.split(' {')[0] ?? '');
+			expect(moving.length).toBeGreaterThan(0);
+			const reduce = '@media (prefers-reduced-motion: reduce)';
+			const still = style.split(reduce)[1]?.split('\n')[0] ?? '';
+			for (const s of moving) expect(still, s).toContain(`${s} { animation: none`);
+			expect(page).not.toContain('scrollTop || scrollY');
+		}
+	});
+});
+
 describe('nightjar ui cost by stage and model', () => {
 	const models = [
 		{
@@ -3397,15 +3612,24 @@ describe('nightjar ui Steps bar', () => {
 		expect(boardOf(page).split(legend)).toHaveLength(2);
 	});
 
-	it.each(THEMES)(
+	const styleOf = (page: string) => page.split('<style>')[1]?.split('</style>')[0] ?? '';
+	it.each(['paper', 'nightjar', 'Logbook page', 'Session page'])(
 		'draws each state from tokens, each with its own shape as well as its hue (%s)',
-		(theme) => {
-			const style =
-				theme === 'paper'
-					? PAPER_STYLE
-					: (logbookPage(readLogbook(root, '7'), readFactory(root, { alive: () => true }))
-							.split('<style>')[1]
-							?.split('</style>')[0] ?? '');
+		async (on) => {
+			let style: string;
+			if (on === 'paper') {
+				style = PAPER_STYLE;
+			} else if (on === 'Logbook page') {
+				const view = readFactory(root, { alive: () => true });
+				style = styleOf(logbookPage(readLogbook(root, '7'), view));
+			} else if (on === 'Session page') {
+				style = styleOf(sessionPage({ id: 's', runs: [], lines: [] }));
+			} else {
+				await open();
+				const served = (await get('/')).text;
+				const theme = new RegExp(`<style data-theme="${on}"[^>]*>`);
+				style = served.split(theme)[1]?.split('</style>')[0] ?? '';
+			}
 			const rules = ['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'].map(
 				(s) => style.split('\n').find((l) => l.startsWith(`.seg.${s} {`)) ?? ''
 			);
