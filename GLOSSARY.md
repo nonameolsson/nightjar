@@ -77,11 +77,11 @@ Where a Feature stands in its life, as the page works it out from its Signals, i
 _Avoid_: status, stage, phase, column, state
 
 **Mat**:
-One Standing's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), with a label tab and a tally of its Features.
+One Standing's group of Features on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), under its name and a count.
 _Avoid_: column, swimlane
 
 **Egg**:
-One Ticket's mark on the Board: built, building, needs a person, or waiting. It rests in a round nest socket in its Feature's row.
+One Ticket's status mark on the Board: built, building, needs a person, or waiting.
 _Avoid_: dot, pip, bar
 
 **Steps bar**:

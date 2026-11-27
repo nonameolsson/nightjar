@@ -1109,6 +1109,8 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		readonly split?: { readonly cost: BuildCost | undefined; readonly at: string };
 		readonly outcome: string;
 		readonly outcomeText: string;
+		// the step the person can take on the Tracker, kept beside the outcome so a cut-off outcome never hides it
+		readonly action?: string;
 		readonly progress: Progress | null;
 	}
 	// the cell's dollars, opening into the split when there is one
@@ -1161,7 +1163,8 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			timeText: '',
 			cost: null,
 			outcome,
-			outcomeText: `${escape(outcome)} ${actionLink(unblock(card, links), links)}${earlierHtml(card)}`,
+			outcomeText: `${escape(outcome)}${earlierHtml(card)}`,
+			action: actionLink(unblock(card, links), links),
 			progress: card.progress
 		});
 	}
@@ -1187,7 +1190,12 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			cost: costUsd,
 			split: { cost, at: event.at },
 			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
-			outcomeText: `${outcomeHtml(event)} <small>${runsText(card.runs)}</small>`,
+			// a draft pull request is the row's action, kept in view as a waiting row's Answer is
+			outcomeText:
+				event.kind === 'pull'
+					? `<small>${runsText(card.runs)}</small>`
+					: `${outcomeHtml(event)} <small>${runsText(card.runs)}</small>`,
+			...(event.kind === 'pull' ? { action: outcomeHtml(event) } : {}),
 			progress: card.progress
 		});
 	}
@@ -1199,13 +1207,14 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 		([k, name]) => `<button type="button" data-pick="${k}">${name}</button>`
 	).join('');
 	const head = COLUMNS.map(
-		([k, name]) => `<th><button type="button" data-sort="${k}">${name}</button></th>`
+		([k, name]) =>
+			`<th class="col-${k}"><button type="button" data-sort="${k}">${name}</button></th>`
 	).join('');
 	const body = rows
 		.map(
 			(r, i) =>
 				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td>${cardTitle(r.card)}${logbookLink(r.card.id)}</td><td>${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td>${r.timeText}</td><td class="cost">${costCell(r)}</td><td>${r.outcomeText}</td><td class="progress">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}${stepsBar(r.card)}</td></tr>`
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td class="col-title"><div class="cell"><span class="clip" title="${escape(r.card.title ?? '')}">${cardTitle(r.card)}</span>${logbookLink(r.card.id)}</div></td><td class="col-state">${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td class="col-time">${r.timeText}</td><td class="cost">${costCell(r)}</td><td class="col-outcome"><div class="cell"><span class="clip" title="${escape(r.outcome)}">${r.outcomeText}</span>${r.action === undefined || r.action === '' ? '' : ` ${r.action}`}</div></td><td class="progress"><div class="cell">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}${stepsBar(r.card)}</div></td></tr>`
 		)
 		.join('');
 	let note = '';
