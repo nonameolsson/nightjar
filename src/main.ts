@@ -13,6 +13,7 @@ import {
 	pullFixLimits,
 	type Asked,
 	type Deps,
+	type FeatureOutcome,
 	type Setup
 } from './build.js';
 import { runCheck } from './check.js';
@@ -24,7 +25,7 @@ import type { Ask } from './ask.js';
 import type { Prompter } from './prompter.js';
 import { runDoctor } from './doctor.js';
 import { runFeatureDoctor } from './doctor-feature.js';
-import { runInitCommand } from './init.js';
+import { runInitCommand, type TourBuild } from './init.js';
 import { runContractCommand } from './contract/command.js';
 import { runCreateCommand } from './create.js';
 import { runIntakeCommand } from './intake.js';
@@ -120,8 +121,10 @@ export interface Host {
 	readonly ask?: Ask;
 	// select and multi-select prompts for init; a terminal gets them unless a spec passes its own
 	readonly prompter?: Prompter;
-	// ends `nightjar ui` and `nightjar intake`; Ctrl-C or SIGTERM unless a spec passes its own
+	// ends `nightjar ui`, `nightjar intake` and init's wait for the Go; Ctrl-C or SIGTERM unless a spec passes its own
 	readonly stop?: AbortSignal;
+	// what init's tour waits between two reads of the first Feature; a few seconds unless a spec passes its own
+	readonly tourPoll?: (stop: AbortSignal) => Promise<void>;
 }
 
 export async function runNightjar(
@@ -146,7 +149,15 @@ export async function runNightjar(
 		console.log(packageVersion());
 		return 0;
 	}
-	if (argv[0] === 'init') return runInitCommand(argv.slice(1), host);
+	if (argv[0] === 'init') {
+		// the tour builds its first Feature as `nightjar <id>` builds one
+		const build: TourBuild = (feature, how) =>
+			runBuilds({ mode: 'feature', feature, ...how }, host, {
+				...host.env,
+				GIT_TERMINAL_PROMPT: '0'
+			});
+		return runInitCommand(argv.slice(1), { ...host, build });
+	}
 	if (argv[0] === 'contract') return runContractCommand(argv.slice(1));
 	if (argv[0] === 'create') return runCreateCommand(argv.slice(1));
 	if (argv[0] === 'ui') return runUiCommand(argv.slice(1), host);
@@ -179,13 +190,26 @@ export async function runNightjar(
 			...(gh ? { gh } : {})
 		});
 	}
+	return (await runBuilds(args, host, env)).code;
+}
+
+// What a build came to: the exit code, and how the Feature `nightjar <id>` named ended; null for --once and --watch, and where nothing was built or a fault ended it.
+interface Built {
+	readonly code: number;
+	readonly outcome: FeatureOutcome | null;
+}
+
+const ended = (code: number): Built => ({ code, outcome: null });
+
+// --once, --watch and `nightjar <id>`, from the machine's checks to the end of the run.
+async function runBuilds(args: Args, host: Host, env: Env): Promise<Built> {
 	let ready: Ready;
 	try {
 		ready = await preflight(args, { ...host, env });
 	} catch (fault) {
 		if (!(fault instanceof Refusal) && !(fault instanceof ConfigError)) throw fault;
 		console.error(`nightjar: ${fault.message}`);
-		return 2;
+		return ended(2);
 	}
 	const { root, config, adapters } = ready;
 
@@ -204,7 +228,7 @@ export async function runNightjar(
 			console.error(
 				`nightjar: no ${String(config.ports.count)} free, unclaimed ports to reserve; stop another run or lower ports.count in factory.json.`
 			);
-			return 2;
+			return ended(2);
 		}
 		process.once('exit', () => claim.release());
 		say(`ports ${String(claim.port)} to ${String(claim.port + config.ports.count - 1)}`);
@@ -219,7 +243,8 @@ export async function runNightjar(
 	const setup: Setup = {
 		root,
 		repo: adapters.repo,
-		worktrees: worktreesFor(homedir(), root),
+		// the HOME the command is given, as the Claude login and config.json are read under it
+		worktrees: worktreesFor(env.HOME ?? homedir(), root),
 		baseBranch: ready.baseBranch,
 		check: config.check,
 		allowedCommands: config.allowedCommands,
@@ -323,7 +348,7 @@ export async function runNightjar(
 		if (args.mode === 'feature' && args.feature !== undefined) {
 			// a Feature with a red draft is fixed, not built: it holds no Go by now
 			const fixed = await fixNamed(queueDeps, args.feature);
-			if (fixed !== null) return pullFixExit(fixed);
+			if (fixed !== null) return ended(pullFixExit(fixed));
 			let refusal: string | null;
 			try {
 				refusal = await cannotClaim(queueDeps, args.feature);
@@ -333,7 +358,7 @@ export async function runNightjar(
 			if (refusal !== null) {
 				live?.stop();
 				console.error(`nightjar: ${refusal}`);
-				return 2;
+				return ended(2);
 			}
 			let outcome;
 			try {
@@ -341,13 +366,13 @@ export async function runNightjar(
 			} catch (fault) {
 				live?.stop();
 				console.error(`nightjar: ${why(fault)}`);
-				return 2;
+				return ended(2);
 			}
-			return outcome?.kind === 'pull' || outcome?.kind === 'nothing' || outcome?.kind === 'diverged'
-				? 0
-				: 1;
+			const good =
+				outcome?.kind === 'pull' || outcome?.kind === 'nothing' || outcome?.kind === 'diverged';
+			return { code: good ? 0 : 1, outcome };
 		}
-		return await queue(queueDeps, args.mode === 'once');
+		return ended(await queue(queueDeps, args.mode === 'once'));
 	} finally {
 		// the redraws would keep the process alive; the block ends on "stopped"
 		status.doing({ kind: 'off' });

@@ -47,7 +47,7 @@ echo '{"accessToken":"fake-azure-devops"}'`;
 // does, and each call notes the CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN it ran with.
 // A headless session prints its init line with the skills of FAKE_CLAUDE_SKILLS (comma separated).
 // A session Nightjar starts for a Ticket (it has a session id) writes built.txt, port.txt and login.txt in its
-// folder and answers built, at a cost of $0.50; the review session approves. A Feedback round's session (its schema
+// folder and answers built, at a cost of $0.50, or with FAKE_CLAUDE_QUESTIONS asks one question and builds nothing; the review session approves. A Feedback round's session (its schema
 // asks for a feedbackId) writes answered.txt and answers the first feedback id its prompt names, as do its fix rounds.
 const CLAUDE = String.raw`#!/bin/bash
 echo "$* [dir=$CLAUDE_CONFIG_DIR token=$CLAUDE_CODE_OAUTH_TOKEN]" >> "$FAKE_CLAUDE_CALLS"
@@ -70,6 +70,10 @@ case "$*" in
             out="{\"outcome\":\"answered\",\"summary\":\"Answered it.\",\"items\":[{\"feedbackId\":\"$id\",\"answered\":true,\"note\":\"Changed it.\"}],\"blocker\":\"\"}" ;;
           *verdict*) out='{"verdict":"approve","summary":"Reads well.","issues":[]}' ;;
           *)
+            if [ -n "$FAKE_CLAUDE_QUESTIONS" ]; then
+              echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.5,\"structured_output\":{\"outcome\":\"questions\",\"summary\":\"\",\"questions\":[{\"question\":\"Which README?\",\"recommendation\":\"README.md\"}]}}"
+              exit 0
+            fi
             echo work > built.txt
             echo "@{WEB_PORT:-none}" > port.txt
             echo "@{CLAUDE_CONFIG_DIR:-none} @{CLAUDE_CODE_OAUTH_TOKEN:-notoken}" > login.txt

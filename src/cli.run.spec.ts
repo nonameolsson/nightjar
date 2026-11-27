@@ -318,9 +318,13 @@ describe('nightjar FEATURE with a setup command and reserved ports', () => {
 		const { env, nightjar } = world(true, config);
 		const run = nightjar(['1']);
 		expect(run.status).toBe(0);
-		expect(run.stdout).toContain('nightjar: ports 4477 to 4479');
+		// the first free block from 4477 on: a port something else on the machine listens on is passed over
+		const block = /nightjar: ports (\d+) to (\d+)/.exec(run.stdout);
+		const first = Number(block?.[1]);
+		expect(first).toBeGreaterThanOrEqual(4477);
+		expect(Number(block?.[2])).toBe(first + 2);
 		expect(readFileSync(join(tree(env), 'setup.txt'), 'utf8')).toBe('ready\n');
-		expect(readFileSync(join(tree(env), 'port.txt'), 'utf8')).toBe('4477\n');
+		expect(readFileSync(join(tree(env), 'port.txt'), 'utf8')).toBe(`${String(first)}\n`);
 		// the locks are given back when the run ends
 		expect(readdirSync(join(env.TMPDIR ?? '', 'nightjar-ports'))).toEqual([]);
 	}, 30_000);

@@ -1,4 +1,4 @@
-// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for. Under --dry-run it stops once that is shown. On a terminal, a new setup goes on to a tour that makes the first Feature, unless --no-tour.
+// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for. Under --dry-run it stops once that is shown. On a terminal, a new setup goes on to a tour that makes the first Feature, waits for the person to give it the Go, and builds it as `nightjar <id>` does, unless --no-tour.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -21,7 +21,7 @@ import {
 	type Line
 } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
-import { makeFeature } from './create.js';
+import { makeFeature, type Made } from './create.js';
 import { detectChecks, detectTools, type Detected } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
 import { firstFeature, sentenceProblem, shownFeature, suggestedSentence } from './first-feature.js';
@@ -32,7 +32,10 @@ import type { Os } from './sandbox.js';
 import { clackPrompter, type Prompter } from './prompter.js';
 import { recap } from './recap.js';
 import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
-import type { FeatureWriter, Tracker } from './tracker.js';
+import type { FeatureWriter, ItemId, Tracker } from './tracker.js';
+import type { FeatureOutcome } from './build.js';
+import { endsWithFooter, FOOTER } from './footer.js';
+import { linksFor } from './ui-links.js';
 
 // How each question is answered: by its flag, else by its default under --yes, else by asking.
 interface Answering {
@@ -60,7 +63,19 @@ export interface InitOptions extends Answering {
 	readonly azure?: AzureRepo;
 	// set when that origin sets up Boards and Azure Repos: the Tracker project's types, null where its process names none
 	readonly process?: { readonly types: WorkItemTypes | null };
+	// builds the tour's first Feature as `nightjar <id>` does; left out, the tour ends once the Feature is made
+	readonly build?: TourBuild;
+	// waited between two reads of the first Feature; a few seconds unless a spec passes its own
+	readonly tourPoll?: (stop: AbortSignal) => Promise<void>;
+	// ends the wait for the Go; Ctrl-C unless a spec passes its own
+	readonly stop?: AbortSignal;
 }
+
+// A build of one Feature, as `nightjar <id>` runs it: its exit code, and how the Feature ended, null when nothing was built or a fault ended it.
+export type TourBuild = (
+	feature: ItemId,
+	how: { readonly useApiKey: boolean; readonly profile?: string }
+) => Promise<{ readonly code: number; readonly outcome: FeatureOutcome | null }>;
 
 // stands in a dry run for a value nothing gives; the schema takes it as an organization or project, which the Code host takes from the Tracker
 const MISSING = '<missing>';
@@ -914,15 +929,15 @@ async function showDryRun(
 const SENTENCE_QUESTION = 'What should your first Feature do, in one sentence?';
 const MAKE_QUESTION = 'Make this Feature and its Ticket on the Tracker?';
 
-// The tour's first Feature: shown as it will be made, and made on a yes as `nightjar create` makes one. 1 when the Tracker failed part way.
+// The tour's first Feature: shown as it will be made, and made on a yes as `nightjar create` makes one. What was made, null when nothing was, or 1 when the Tracker failed part way.
 async function makeFirstFeature(
 	o: InitOptions,
 	prompter: Prompter,
 	writer: (Tracker & FeatureWriter) | string
-): Promise<number> {
+): Promise<Made | null | 1> {
 	if (typeof writer === 'string') {
 		say(`no first Feature made: ${writer}`);
-		return 0;
+		return null;
 	}
 	const suggested = suggestedSentence(o.root);
 	prompter.note('Now your first Feature. Press Enter to take the suggested sentence.');
@@ -935,15 +950,180 @@ async function makeFirstFeature(
 	for (const line of shownFeature(plan)) console.log(line);
 	if (!orCancel(await prompter.confirm(MAKE_QUESTION, true), MAKE_QUESTION)) {
 		say('made nothing on the Tracker');
-		return 0;
+		return null;
 	}
 	try {
-		await makeFeature(writer, plan, say);
-		return 0;
+		return await makeFeature(writer, plan, say);
 	} catch (fault) {
 		console.error(`nightjar: ${why(fault)}`);
 		return 1;
 	}
+}
+
+// how long the tour waits between two reads of the first Feature
+const TOUR_POLL_MS = 5000;
+
+const pause = (stop: AbortSignal) =>
+	new Promise<void>((done) => {
+		if (stop.aborted) {
+			done();
+			return;
+		}
+		const timer = setTimeout(done, TOUR_POLL_MS);
+		stop.addEventListener(
+			'abort',
+			() => {
+				clearTimeout(timer);
+				done();
+			},
+			{ once: true }
+		);
+	});
+
+const samePerson = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+// What the tour knows of the first Feature while it waits and builds.
+interface FirstFeature {
+	readonly made: Made;
+	readonly tracker: Tracker;
+	readonly signals: Config['signals'];
+	// whose Features a run builds, and whether that is the signed-in person
+	readonly person: string;
+	readonly me: boolean;
+}
+
+const refOf = ({ tracker }: FirstFeature, id: ItemId) => tracker.reference(id).text;
+
+// Reads the Feature until it is assigned to the person a run builds for and carries the Go, saying once each of the ways it is given wrong; false when the person stops the wait. It never writes to the Tracker: the Go is the person's.
+async function waitForGo(
+	first: FirstFeature,
+	poll: (stop: AbortSignal) => Promise<void>,
+	stop: AbortSignal
+): Promise<boolean> {
+	const { made, tracker, person } = first;
+	const ref = refOf(first, made.feature);
+	const who = first.me ? 'you' : person;
+	const said = new Set<string>();
+	const once = (line: string) => {
+		if (said.has(line)) return;
+		said.add(line);
+		say(line);
+	};
+	for (;;) {
+		if (stop.aborted) return false;
+		try {
+			const { assignees, signals } = await tracker.standing(made.feature);
+			const go = signals.includes('go');
+			if (go && assignees.some((a) => samePerson(a, person))) return true;
+			if (go) once(`${ref} carries the Go but is not assigned to ${who}; assign it to ${who}`);
+			for (const ticket of await tracker.tickets(made.feature)) {
+				if (ticket.id === made.feature || !ticket.signals.includes('go')) continue;
+				const on = refOf(first, ticket.id);
+				once(
+					`the Go is on the Ticket ${on}, not on the Feature; take it off ${on} and add it to ${ref}`
+				);
+			}
+		} catch (fault) {
+			once(`could not read ${ref}, still waiting: ${why(fault)}`);
+		}
+		await poll(stop);
+	}
+}
+
+// Ctrl-C, for as long as the wait lasts; given, a spec's own.
+function waitStop(given: AbortSignal | undefined): { signal: AbortSignal; end: () => void } {
+	if (given !== undefined) return { signal: given, end: () => undefined };
+	const stop = new AbortController();
+	const abort = () => stop.abort();
+	process.once('SIGINT', abort);
+	return { signal: stop.signal, end: () => process.removeListener('SIGINT', abort) };
+}
+
+const NEXT_STEP = '**Next step**';
+const SIGNATURE = FOOTER.trim();
+
+// The last comment Nightjar posted on the item with a Next step, without its signature; null when there is none.
+async function lastStep(tracker: Tracker, id: ItemId): Promise<string | null> {
+	const comments = await tracker.comments(id);
+	const step = comments.findLast((c) => c.body.includes(NEXT_STEP) && endsWithFooter(c.body));
+	if (step === undefined) return null;
+	const body = step.body.replace(/\r\n/g, '\n').trimEnd();
+	return body.slice(0, -SIGNATURE.length).trimEnd();
+}
+
+// After a build that opened no pull request: the Next step Nightjar posted on each Ticket it handed back, else on the Feature, and how to give the Go again.
+async function printHandedBack(first: FirstFeature): Promise<void> {
+	const { made, tracker, signals } = first;
+	const ref = refOf(first, made.feature);
+	const steps: { on: ItemId; text: string }[] = [];
+	try {
+		for (const ticket of made.tickets) {
+			const { signals: on } = await tracker.standing(ticket);
+			if (!on.includes('needsInfo') && !on.includes('human')) continue;
+			const text = await lastStep(tracker, ticket);
+			if (text !== null) steps.push({ on: ticket, text });
+		}
+		if (steps.length === 0) {
+			const text = await lastStep(tracker, made.feature);
+			if (text !== null) steps.push({ on: made.feature, text });
+		}
+	} catch (fault) {
+		say(`could not read what Nightjar said on ${ref}: ${why(fault)}`);
+	}
+	if (steps.length === 0) say(`the build of ${ref} opened no draft pull request; see why above`);
+	for (const { on, text } of steps) {
+		const what = on === made.feature ? 'the Feature' : 'the Ticket';
+		say(`Nightjar handed back ${what} ${refOf(first, on)}, and said on it:`);
+		for (const line of text.split('\n')) console.log(line === '' ? '' : `  ${line}`);
+	}
+	say(
+		`to build it again, give the Go again: on ${ref}, remove \`${signals.needsInfo}\` and add \`${signals.go}\` (keep it assigned to ${first.me ? 'you' : first.person}), then run \`nightjar --once\``
+	);
+}
+
+// The tour's end: wait for the person to give the first Feature the Go, build it as `nightjar <id>` does, then the recap with its pull request, or the Next step of what was handed back.
+async function buildFirstFeature(
+	o: InitOptions,
+	build: TourBuild,
+	first: FirstFeature,
+	origin: string | null,
+	recapOf: (pullRequest?: string) => string
+): Promise<number> {
+	const { made, signals } = first;
+	const ref = refOf(first, made.feature);
+	const link = linksFor(o.root, origin).issue(made.feature);
+	const who = first.me ? 'yourself' : first.person;
+	say(`your first Feature: ${link ?? ref}`);
+	say(`to build it, assign it to ${who} and add \`${signals.go}\` on the Tracker`);
+	say(
+		`the build takes a few minutes and bills ${o.useApiKey ? 'ANTHROPIC_API_KEY' : 'your Claude plan'}`
+	);
+	say('it works in a worktree of its own, outside this checkout, which it leaves as it is');
+	say(`waiting for the Go on ${ref} (Ctrl-C to stop; nothing is lost)`);
+	const stop = waitStop(o.stop);
+	let go: boolean;
+	try {
+		go = await waitForGo(first, o.tourPoll ?? pause, stop.signal);
+	} finally {
+		stop.end();
+	}
+	if (!go) {
+		console.log(recapOf());
+		say(`your Feature ${ref} is ready; add the Go and run \`nightjar --once\``);
+		return 0;
+	}
+	say(`${ref} is assigned and carries the Go: building it`);
+	const { code, outcome } = await build(made.feature, {
+		useApiKey: o.useApiKey,
+		...(o.profile === undefined ? {} : { profile: o.profile })
+	});
+	if (outcome?.kind === 'pull') {
+		console.log(recapOf(outcome.pull.url));
+		return code;
+	}
+	console.log(recapOf());
+	await printHandedBack(first);
+	return code;
 }
 
 export async function runInit(given: InitOptions): Promise<number> {
@@ -1004,15 +1184,29 @@ export async function runInit(given: InitOptions): Promise<number> {
 		);
 		return 2;
 	}
-	// the tour: a person at a terminal, in a repo this run set up
-	if (wrote && terminal !== undefined && !o.noTour && checked.adapters !== null) {
-		const code = await makeFirstFeature(o, terminal, checked.adapters.writer);
-		if (code !== 0) return code;
-	}
 	// a terminal shows bold itself; elsewhere the output is read as Markdown, as Claude Code does
 	const bold = (words: string) =>
 		terminal === undefined ? `**${words}**` : `\x1b[1m${words}\x1b[22m`;
-	console.log(recap({ go: loadConfig(o.root).signals.go, bold }));
+	const { signals } = loadConfig(o.root);
+	const recapOf = (pullRequest?: string) =>
+		recap({ go: signals.go, bold, ...(pullRequest === undefined ? {} : { pullRequest }) });
+	// the tour: a person at a terminal, in a repo this run set up
+	if (wrote && terminal !== undefined && !o.noTour && checked.adapters !== null) {
+		const made = await makeFirstFeature(o, terminal, checked.adapters.writer);
+		if (made === 1) return 1;
+		const { ready } = checked;
+		if (made !== null && ready !== null && o.build !== undefined) {
+			const first: FirstFeature = {
+				made,
+				tracker: ready.adapters.tracker,
+				signals,
+				person: ready.assignee,
+				me: samePerson(ready.assignee, ready.me)
+			};
+			return buildFirstFeature(o, o.build, first, url, recapOf);
+		}
+	}
+	console.log(recapOf());
 	return 0;
 }
 
@@ -1024,6 +1218,9 @@ export interface InitHost {
 	readonly gh?: GhRunner;
 	readonly ask?: Ask;
 	readonly prompter?: Prompter;
+	readonly build?: TourBuild;
+	readonly tourPoll?: (stop: AbortSignal) => Promise<void>;
+	readonly stop?: AbortSignal;
 }
 
 const INIT_USAGE = `usage: nightjar init [--yes] [--dry-run] [--no-tour] [--use-api-key] [--profile NAME]
@@ -1125,7 +1322,10 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			ask: host.ask ?? asker?.ask ?? (() => Promise.resolve(null)),
 			...(prompter === undefined ? {} : { prompter }),
 			...(host.request === undefined ? {} : { request: host.request }),
-			...(host.gh === undefined ? {} : { gh: host.gh })
+			...(host.gh === undefined ? {} : { gh: host.gh }),
+			...(host.build === undefined ? {} : { build: host.build }),
+			...(host.tourPoll === undefined ? {} : { tourPoll: host.tourPoll }),
+			...(host.stop === undefined ? {} : { stop: host.stop })
 		});
 	} catch (fault) {
 		if (!(fault instanceof Refusal) && !(fault instanceof ConfigError)) throw fault;

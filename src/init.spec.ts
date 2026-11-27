@@ -1,7 +1,7 @@
 // `nightjar init` over a machine of stand-ins and scripted answers, so it needs no terminal.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AzureDevOpsApi } from './azure-devops/api.js';
 import { FakeAzureDevOps, type FakeProcess } from './azure-devops/fake-azure-devops.js';
@@ -10,9 +10,10 @@ import { loadConfig } from './config.js';
 import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
 import type { GhRunner } from './github/api.js';
+import type { GhCall } from './github/fake-gh.js';
 import { FakeGitHub } from './github/fake-github.js';
 import { GitHubTracker } from './github/tracker.js';
-import { runNightjar } from './main.js';
+import { runNightjar, type Host } from './main.js';
 import type { Prompter } from './prompter.js';
 import { recap } from './recap.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
@@ -1025,11 +1026,13 @@ describe('nightjar init on a terminal', () => {
 			note: (text) => void transcript.push(text)
 		};
 	}
+	// the wait for the Go is stopped at once, as by Ctrl-C, unless `wait` waits its own way
 	const tourUi = (
 		picks: Picks,
 		argv: string[] = ['init'],
 		prompter = withUi(picks),
-		ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com')
+		ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com'),
+		wait: Partial<Pick<Host, 'stop' | 'tourPoll' | 'env'>> = {}
 	) => {
 		return runNightjar(argv, {
 			os: { platform: 'linux', kernel: '' },
@@ -1037,7 +1040,9 @@ describe('nightjar init on a terminal', () => {
 			env: m.env,
 			gh: github.gh,
 			request: ado.request,
-			prompter
+			prompter,
+			stop: AbortSignal.abort(),
+			...wait
 		});
 	};
 	// the setup alone, which stops before the tour's first Feature; that has specs of its own
@@ -1481,7 +1486,7 @@ describe('nightjar init on a terminal', () => {
 			]);
 			expect(out).toContain(`nightjar: made the Feature #1 ${sentence}`);
 			expect(out).toContain(`nightjar: made Ticket 1 as #2 ${sentence}, ready`);
-			expect(out.at(-1)).toBe(ansiRecap());
+			expect(out.at(-2)).toBe(ansiRecap());
 
 			out.length = 0;
 			expect(await doctor()).toBe(0);
@@ -1605,6 +1610,180 @@ describe('nightjar init on a terminal', () => {
 			expect(offered).toEqual([]);
 			expect(out.at(-1)).toBe(ansiRecap());
 		});
+	});
+
+	describe('the tour waits for the Go, then builds the first Feature', () => {
+		const SENTENCE = 'Say hello in the README';
+		const BRANCH = 'factory/1-say-hello-in-the-readme';
+		const tracked = () => new GitHubTracker('o/r', github.gh, DEFAULT_SIGNAL_NAMES);
+		let env: Record<string, string>;
+		let origin: string;
+		const git = (cwd: string, ...args: string[]) =>
+			spawnSync('git', args, { cwd, env, encoding: 'utf8' }).stdout.trim();
+		// the calls the person made on the Tracker between two polls, as against init's own
+		let byPerson: Set<GhCall>;
+		const asPerson = async (act: () => Promise<void>) => {
+			const before = github.calls.length;
+			await act();
+			for (const call of github.calls.slice(before)) byPerson.add(call);
+		};
+		const initCalls = () => github.calls.filter((c) => !byPerson.has(c));
+		const pullsOpened = () =>
+			initCalls().filter((c) => c.method === 'POST' && c.path === 'repos/o/r/pulls');
+		const assign = () => asPerson(() => tracked().assign('1', 'ann'));
+		const giveGo = (id = '1') => asPerson(() => tracked().addSignal(id, 'go'));
+		// each poll does what the person does by then, the first poll's at [0]
+		const polls = (...steps: ((() => Promise<void>) | null)[]) => {
+			let n = 0;
+			const stop = new AbortController();
+			return {
+				count: () => n,
+				stop,
+				tourPoll: async () => {
+					n += 1;
+					const step = steps[n - 1];
+					if (step === undefined) stop.abort();
+					else if (step !== null) await step();
+				}
+			};
+		};
+		const tour = (wait: ReturnType<typeof polls>, extra: Record<string, string> = {}) =>
+			tourUi([true, SENTENCE, true], ['init'], undefined, undefined, {
+				env: { ...env, ...extra },
+				tourPoll: wait.tourPoll,
+				stop: wait.stop.signal
+			});
+		const goLine = 'nightjar: #1 is assigned and carries the Go: building it';
+		const readyLine = 'nightjar: your Feature #1 is ready; add the Go and run `nightjar --once`';
+
+		beforeEach(() => {
+			github = new FakeGitHub('o/r', 'ann');
+			byPerson = new Set();
+			env = {
+				...m.env,
+				// the stand-ins first; the real PATH after them holds make, which the check runs
+				PATH: `${m.env.PATH ?? ''}:${process.env.PATH ?? ''}`,
+				GIT_AUTHOR_NAME: 'Test',
+				GIT_AUTHOR_EMAIL: 'test@example.com',
+				GIT_COMMITTER_NAME: 'Test',
+				GIT_COMMITTER_EMAIL: 'test@example.com'
+			};
+			// a bare origin on a path that names github.com/o/r, so init guesses the repo and the build pushes there
+			origin = join(m.base, 'github.com', 'o', 'r.git');
+			mkdirSync(dirname(origin), { recursive: true });
+			git(m.base, 'init', '-q', '--bare', '-b', 'main', origin);
+			git(m.root, 'remote', 'set-url', 'origin', origin);
+			makefile('check');
+			writeFileSync(join(m.root, 'README.md'), 'hello\n');
+			git(m.root, 'add', '.');
+			git(m.root, 'commit', '-q', '-m', 'first');
+			git(m.root, 'push', '-q', 'origin', 'main');
+			git(m.root, 'remote', 'set-head', 'origin', 'main');
+		});
+
+		it('builds the Feature once it is assigned and carries the Go, and the recap opens with the draft pull request', async () => {
+			const wait = polls(null, assign, giveGo);
+			expect(await tour(wait)).toBe(0);
+			expect(err).toEqual([]);
+			expect(wait.count()).toBe(3);
+			expect(out).toContain('nightjar: your first Feature: https://github.com/o/r/issues/1');
+			expect(out).toContain(
+				'nightjar: to build it, assign it to yourself and add `factory-go` on the Tracker'
+			);
+			expect(out).toContain('nightjar: the build takes a few minutes and bills your Claude plan');
+			expect(out).toContain(
+				'nightjar: it works in a worktree of its own, outside this checkout, which it leaves as it is'
+			);
+			expect(out.indexOf(goLine)).toBeGreaterThan(-1);
+			const [opening] = (out.at(-1) ?? '').split('\n');
+			expect(opening).toMatch(/^Your draft pull request: https:\/\/github\.com\/o\/r\/pull\/\d+$/);
+			const pull = opening?.replace('Your draft pull request: ', '') ?? '';
+			expect(out.at(-1)).toBe(
+				recap({ go: 'factory-go', pullRequest: pull, bold: (w) => `\x1b[1m${w}\x1b[22m` })
+			);
+
+			// the build `nightjar 1` makes: its branch and commit, its pull request, its records
+			expect(git(origin, 'log', '--format=%s', BRANCH)).toContain(`${SENTENCE} (#2)`);
+			expect(pullsOpened()).toHaveLength(1);
+			expect(out).toContain(`nightjar: #1: draft pull request ${pull}`);
+			const factory = join(m.root, '.factory');
+			const ledger = readFileSync(join(factory, 'runs.jsonl'), 'utf8');
+			expect(ledger.trim().split('\n')).toHaveLength(2);
+			const logbook = readFileSync(join(factory, 'logbook', '1.jsonl'), 'utf8')
+				.trim()
+				.split('\n')
+				.map((l) => (JSON.parse(l) as { kind: string }).kind);
+			expect(logbook[0]).toBe('buildStarted');
+			expect(logbook).toContain('pullOpened');
+			const status = JSON.parse(readFileSync(join(factory, 'status.json'), 'utf8')) as {
+				doing: unknown;
+				recent: unknown[];
+			};
+			expect(status.doing).toEqual({ kind: 'off' });
+			expect(status.recent).toMatchObject([
+				{ kind: 'built', feature: '1', ticket: '2' },
+				{ kind: 'pull', feature: '1', url: pull }
+			]);
+			// the checkout holds only what init wrote; the work is on the branch
+			expect(git(m.root, 'status', '--porcelain')).toBe('?? .gitignore\n?? factory.json');
+		}, 30_000);
+
+		it('never gives the Go or assigns the Feature itself', async () => {
+			expect(await tour(polls(assign, giveGo))).toBe(0);
+			// creating the Signal labels on the repo is no Go given to an issue
+			const onIssues = initCalls().filter(
+				(c) => c.method !== 'GET' && /^repos\/o\/r\/issues\/\d+\//.test(c.path)
+			);
+			expect(onIssues.length).toBeGreaterThan(0);
+			const given = onIssues.filter(
+				(c) => c.path.endsWith('/assignees') || JSON.stringify(c.fields).includes('factory-go')
+			);
+			expect(given).toEqual([]);
+		}, 30_000);
+
+		it('says once each that the Go lacks the assignment and that it is on the Ticket, and waits on', async () => {
+			const wait = polls(() => giveGo('2'), null, giveGo, null, null);
+			expect(await tour(wait)).toBe(0);
+			expect(wait.count()).toBe(6);
+			const onTicket =
+				'nightjar: the Go is on the Ticket #2, not on the Feature; take it off #2 and add it to #1';
+			const unassigned = 'nightjar: #1 carries the Go but is not assigned to you; assign it to you';
+			expect(out.filter((l) => l === onTicket)).toHaveLength(1);
+			expect(out.filter((l) => l === unassigned)).toHaveLength(1);
+			expect(out.indexOf(onTicket)).toBeLessThan(out.indexOf(unassigned));
+			expect(out).not.toContain(goLine);
+			expect(out.at(-1)).toBe(readyLine);
+		});
+
+		it('ends on Ctrl-C with exit 0, naming the Feature and `nightjar --once`, and builds nothing', async () => {
+			const wait = polls(assign);
+			expect(await tour(wait)).toBe(0);
+			expect(err).toEqual([]);
+			expect(out.at(-2)).toBe(ansiRecap());
+			expect(out.at(-1)).toBe(readyLine);
+			expect(m.calls('claude')).not.toContain('--session-id');
+			expect(git(origin, 'branch', '--list', BRANCH)).toBe('');
+			expect(pullsOpened()).toEqual([]);
+			expect((await tracked().standing('1')).signals).toEqual([]);
+		});
+
+		it('ends with the Next step of a Ticket handed back, and how to give the Go again', async () => {
+			// `nightjar 1` exits 0 on a Feature that built nothing, and so does the tour
+			expect(await tour(polls(assign, giveGo), { FAKE_CLAUDE_QUESTIONS: '1' })).toBe(0);
+			expect((await tracked().standing('2')).signals).toContain('needsInfo');
+			const said = github.said(2).at(-1) ?? '';
+			const step = said.slice(0, said.indexOf('\n\n---\n_Built by Nightjar._'));
+			expect(step).toContain('**Next step**');
+			const at = out.indexOf('nightjar: Nightjar handed back the Ticket #2, and said on it:');
+			expect(at).toBeGreaterThan(out.indexOf(ansiRecap()));
+			expect(out.slice(at + 1, -1)).toEqual(
+				step.split('\n').map((line) => (line === '' ? '' : `  ${line}`))
+			);
+			expect(out.at(-1)).toBe(
+				'nightjar: to build it again, give the Go again: on #1, remove `needs-info` and add `factory-go` (keep it assigned to you), then run `nightjar --once`'
+			);
+			expect(out.join('\n')).not.toContain('Your draft pull request');
+		}, 30_000);
 	});
 });
 
