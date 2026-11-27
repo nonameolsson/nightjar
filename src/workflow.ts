@@ -68,8 +68,7 @@ export function chooseWorkflow(settings: WorkflowSettings, body: string): Chosen
 export const stepKey = (workflow: string, step: string, ticket: ItemId | null) =>
 	`${workflow}/${step}${ticket === null ? '' : ` #${ticket}`}`;
 
-// The skills a Step's prompt names with a slash, such as `/some-skill args`.
-// The text of a Step's prompt: the prompt itself, or the file an @path names in the worktree; null with the path when the file is missing.
+// One place decides what a Step's prompt says, so a Step and `doctor` agree on when an @file is missing; that is the `missing` path.
 export async function promptOf(
 	prompt: string,
 	read: (path: string) => Promise<string | null>
@@ -80,6 +79,7 @@ export async function promptOf(
 	return text === null ? { missing: path } : { text };
 }
 
+// The skills a Step's prompt names with a slash, such as `/some-skill args`.
 export function skillsNamed(prompt: string): string[] {
 	const names = [
 		...prompt.matchAll(/(?<![\w/.:~-])\/([a-z][a-z0-9_-]*(?::[a-z][a-z0-9_-]*)?)(?![\w/.-])/g)

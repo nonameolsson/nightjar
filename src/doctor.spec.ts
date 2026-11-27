@@ -1,5 +1,6 @@
 // `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { oneEscape } from './fakes/github.js';
@@ -690,6 +691,24 @@ describe('nightjar doctor over Workflows', () => {
 			expect(err.join('\n')).toMatch(/FAIL {2}Workflow filed: step critique names \/design-critic/);
 			expect(err.join('\n')).not.toContain('prompt file');
 			expect(out.join('\n')).toContain('  ok    Workflow quick:');
+		});
+
+		it('reports a prompt path that is a folder, or a link out of the checkout, as missing', async () => {
+			const env = setup();
+			mkdirSync(join(m.root, 'factory/steps/x.md'), { recursive: true });
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/step critique's prompt file factory\/steps\/x.md is missing/);
+		});
+
+		it('reports a prompt file that is a symlink out of the checkout as missing', async () => {
+			const env = setup();
+			const outside = mkdtempSync(join(tmpdir(), 'outside-'));
+			writeFileSync(join(outside, 'x.md'), 'Run /design-critic.\n');
+			mkdirSync(join(m.root, 'factory/steps'), { recursive: true });
+			symlinkSync(join(outside, 'x.md'), join(m.root, 'factory/steps/x.md'));
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/step critique's prompt file factory\/steps\/x.md is missing/);
+			rmSync(outside, { recursive: true, force: true });
 		});
 
 		it('passes when the file is there and names a skill that is loaded', async () => {

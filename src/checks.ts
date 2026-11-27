@@ -1,12 +1,11 @@
 // `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeAdapters, type Adapters } from './adapters.js';
 import { accountLine, parseAccount, profileEnv } from './account.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
-import { loadConfig, loadRules, promptFileOf, type Config } from './config.js';
+import { loadConfig, loadRules, type Config } from './config.js';
 import { installs } from './install-commands.js';
 import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
@@ -17,8 +16,8 @@ import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
 import { sandboxFinding, type Os, type SandboxFinding } from './sandbox.js';
-import { skillsNamed } from './workflow.js';
-import { defaultBranch, signing } from './worktree.js';
+import { promptOf, skillsNamed } from './workflow.js';
+import { defaultBranch, readInside, signing } from './worktree.js';
 import { why } from './say.js';
 
 export type { Line } from './check-runner.js';
@@ -401,25 +400,24 @@ const workflowsCheck = check({
 	name: 'Workflows',
 	needs: ['root', 'claude'],
 	run: async ({ root, loaded, sandbox }, o) => {
-		const named = Object.entries(loaded?.config.workflows ?? {}).map(([name, w]) => ({
-			name,
-			localNetwork: w.localNetwork === true,
-			note: w.output === 'note',
-			steps: w.steps.map((s) => {
-				const file = promptFileOf(s.prompt);
-				if (file === null)
-					return { step: s.name, skills: skillsNamed(s.prompt), file: null, gone: false };
-				const path = join(root, file);
+		const named = await Promise.all(
+			Object.entries(loaded?.config.workflows ?? {}).map(async ([name, w]) => ({
+				name,
+				localNetwork: w.localNetwork === true,
+				note: w.output === 'note',
 				// the file is read from the checkout; a Feature's own branch may hold another
-				const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
-				return {
-					step: s.name,
-					skills: text === null ? [] : skillsNamed(text),
-					file,
-					gone: text === null
-				};
-			})
-		}));
+				steps: await Promise.all(
+					w.steps.map(async (s) => {
+						const prompt = await promptOf(s.prompt, (file) =>
+							Promise.resolve(readInside(root, file))
+						);
+						return 'missing' in prompt
+							? { step: s.name, skills: [], missing: prompt.missing }
+							: { step: s.name, skills: skillsNamed(prompt.text), missing: null };
+					})
+				)
+			}))
+		);
 		if (named.length === 0) return { found: { workflowProblems: {} } };
 		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
 		const skills = wanted
@@ -446,7 +444,9 @@ const workflowsCheck = check({
 			);
 			const used = [...new Set(w.steps.flatMap((s) => s.skills))];
 			const faults: string[] = w.steps.flatMap((s) =>
-				s.gone ? [`step ${s.step}'s prompt file ${s.file ?? ''} is missing from the checkout`] : []
+				s.missing === null
+					? []
+					: [`step ${s.step}'s prompt file ${s.missing} is missing from the checkout`]
 			);
 			if (skills === null && used.length > 0) {
 				faults.push(

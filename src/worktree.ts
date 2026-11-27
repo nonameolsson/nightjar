@@ -1,7 +1,14 @@
 // Only Nightjar commits in the worktree or saves a failed attempt; the Code host pushes.
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { firstLine, run, type Env } from './git.js';
 
 // A git command Nightjar cannot go on without.
@@ -285,11 +292,7 @@ export class GitWorktree implements Worktree {
 	}
 
 	read(path: string): Promise<string | null> {
-		try {
-			return Promise.resolve(readFileSync(resolve(this.at.folder, path), 'utf8'));
-		} catch {
-			return Promise.resolve(null);
-		}
+		return Promise.resolve(readInside(this.at.folder, path));
 	}
 
 	// The Steps the branch's own commits hold, as their trailers name them.
@@ -495,6 +498,17 @@ export class GitWorktree implements Worktree {
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
 		await this.git(['commit', '-q', '-m', reviewCommitMessage(round, summary, session)]);
 		return true;
+	}
+}
+
+// A file under `root`, or null when it is missing, unreadable, or a link leads out of `root`: a Step's prompt file is the repo's, not the machine's.
+export function readInside(root: string, path: string): string | null {
+	try {
+		const base = realpathSync(root);
+		const real = realpathSync(resolve(base, path));
+		return real.startsWith(base + sep) ? readFileSync(real, 'utf8') : null;
+	} catch {
+		return null;
 	}
 }
 
