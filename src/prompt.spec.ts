@@ -116,6 +116,12 @@ describe('buildPrompt', () => {
 		expect(rules).toContain('`make check`');
 	});
 
+	it('says the check may fail in the sandbox where it passes for Nightjar, and leaves the whole check to Nightjar', () => {
+		const rules = prompt.slice(0, prompt.indexOf(feature.body));
+		expect(rules).toMatch(/sandbox with no network[^\n]*`make check` may fail here/);
+		expect(rules).toMatch(/leave the whole check to Nightjar/);
+	});
+
 	it('assumes no language or toolchain', () => {
 		expect(prompt).not.toMatch(/\b(npm|npx|vitest|playwright|eslint|prettier|e2e)\b/i);
 	});

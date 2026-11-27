@@ -12,7 +12,7 @@ Words: `GLOSSARY.md`. Use its terms exactly. Decisions: `docs/adr/`. Judgement c
 
 Node 24, TypeScript, npm. `mise.toml` pins Node 24 (`mise trust`, then `mise install`).
 
-- `npm run check`: typecheck, lint, format check, every spec, then the build. Run it before a commit.
+- `npm run check`: typecheck, lint, format check, every spec, then the build. Run it before a commit, except in a Nightjar Session: there the sandbox refuses the ports `ui`, `intake`, `serve` and the CLI specs open (EPERM), so run only the specs for the files you change, and Nightjar runs the whole check outside the sandbox after you.
 - `npm test`: every spec (Vitest). One file: `npx vitest run src/build.spec.ts`; one test: `npx vitest run src/build.spec.ts -t 'hands back a Ticket'`.
 - `npm run build`: compiles `src/` to `dist/`; `dist/cli.js` is the `nightjar` bin.
 - `npm run lint`, `npm run format`, `npm run typecheck`.
