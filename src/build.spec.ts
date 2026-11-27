@@ -18,6 +18,7 @@ import {
 	featureOfBody,
 	fixConflicts,
 	fixPullChecks,
+	conflictsHandedOver,
 	handedOver,
 	LIMITS,
 	pullFixLimits,
@@ -3840,6 +3841,7 @@ describe('the Conflict fix in --watch', () => {
 
 	const pushesOf = (world: World) => world.host.pushes.filter((p) => p.branch === BRANCH).length;
 	const body = (world: World) => world.host.pulls[0]?.body ?? '';
+	const lastSaid = (world: World) => world.tracker.said('1').at(-1) ?? '';
 	const conflictsLines = (world: World) =>
 		ledger(world)
 			.filter((e) => e.step === 'conflicts')
@@ -3968,7 +3970,35 @@ describe('the Conflict fix in --watch', () => {
 			expect(subjects(world)).toEqual(before);
 			expect(left(world)).toEqual([]);
 			expect(pushesOf(world)).toBe(1);
-			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+
+		it('hands the Feature to a person: needs a person, a comment saying why, and the give-up mark in the body', async () => {
+			const world = makeWorld();
+			const pull = await conflictingDraft(world);
+			const before = world.tracker.said('1').length;
+			world.checkOk = false;
+			// room for every fix round, so the check alone is why it gave up
+			await queue(watch(world, { setup: { limits: { ...LIMITS, conflictsUsd: 50 } } }), false);
+
+			expect(world.tracker.signalsOf('1')).toEqual(['human']);
+			expect(world.tracker.said('1')).toHaveLength(before + 1);
+			const comment = lastSaid(world);
+			expect(comment).toMatch(
+				/^\*\*Waiting on you\*\*: Nightjar could not resolve the conflicts of its pull request with `origin\/main`/
+			);
+			expect(comment).toContain(
+				'Conflict fix 1 gave up: `make check` still fails after the fix rounds.'
+			);
+			expect(comment).toContain('`ticket-2.txt`');
+			expect(comment).toContain(`\`${SIDE}\``);
+			expect(comment).toContain(pull.url);
+			expect(comment).toContain('**Next step**');
+			expect(comment).toContain('remove `ready-for-human` and add `factory-go`');
+			expect(world.tracker.note('1')).toMatch(/^<!-- nightjar:status -->\n\*\*Waiting on you\*\*:/);
+			expect(body(world)).toContain('Nightjar built all of #1 One escape.');
+			expect(conflictsHandedOver(body(world))).toBe(true);
+			// the mark is the Conflict fix's own: the Pull-check pass still takes the draft
+			expect(handedOver(body(world))).toBe(false);
 		});
 	});
 
@@ -3989,6 +4019,53 @@ describe('the Conflict fix in --watch', () => {
 		expect(subjects(world)).toEqual(before);
 		expect(pushesOf(world)).toBe(1);
 		expect(conflictsLines(world)).toEqual([[expect.any(String), 1, 'conflicts 1 blocked']]);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain(
+			'Conflict fix 1 gave up: the Session is blocked: Both sides renamed it.'
+		);
+		expect(conflictsHandedOver(body(world))).toBe(true);
+	});
+
+	it('gives up on a resolution that leaves conflict markers in a file, and runs no check on it', async () => {
+		const world = makeWorld();
+		await conflictingDraft(world);
+		const before = subjects(world);
+		const { conflictsAgent } = world;
+		world.conflictsAgent = (req) => {
+			world.trees.write(
+				req.at.folder,
+				'ticket-2.txt',
+				'<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> origin/main\n'
+			);
+			return conflictsAgent(req);
+		};
+		await queue(watch(world), false);
+
+		expect(world.checks.filter((c) => c.cwd === tree())).toEqual([]);
+		expect(world.trees.sides.get(SIDE)?.sort()).toEqual(['base.txt', 'ticket-2.txt']);
+		expect(subjects(world)).toEqual(before);
+		expect(pushesOf(world)).toBe(1);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain(
+			'Conflict fix 1 gave up: it left conflict markers in `ticket-2.txt`.'
+		);
+	});
+
+	it('gives up on a Session that says it resolved no file', async () => {
+		const world = makeWorld();
+		await conflictingDraft(world);
+		world.conflictsAgent = (req) => ({
+			kind: 'resolved',
+			summary: 'Nothing to do.',
+			files: [],
+			sessionId: req.sessionId,
+			costUsd: 1
+		});
+		await queue(watch(world), false);
+
+		expect(pushesOf(world)).toBe(1);
+		expect(world.tracker.signalsOf('1')).toEqual(['human']);
+		expect(lastSaid(world)).toContain('Conflict fix 1 gave up: the Session resolved no file.');
 	});
 
 	describe('leaves the draft alone, as a Pull-check fix does', () => {
@@ -4019,6 +4096,209 @@ describe('the Conflict fix in --watch', () => {
 				"https://code.example/pull/100: left alone, its head commit is not Nightjar's"
 			);
 			expect(world.tracker.signalsOf('1')).toEqual([]);
+		});
+	});
+
+	describe('a Conflict fix a person stops, or that pauses', () => {
+		const why = "today's estimated spend reached the daily limit";
+		for (const [name, outcome] of [
+			['pauses', { kind: 'paused', why }],
+			['a person stops', { kind: 'aborted' }]
+		] as const) {
+			it(`is thrown away when it ${name}, and the pull request is left as it was`, async () => {
+				const world = makeWorld();
+				await conflictingDraft(world);
+				const before = subjects(world);
+				const was = body(world);
+				world.conflictsAgent = (req) => ({ ...outcome, sessionId: req.sessionId, costUsd: 0 });
+				await queue(watch(world), false);
+
+				expect(world.trees.sides.get(SIDE)?.sort()).toEqual(['base.txt', 'ticket-2.txt']);
+				expect(subjects(world)).toEqual(before);
+				expect(left(world)).toEqual([]);
+				expect(pushesOf(world)).toBe(1);
+				expect(body(world)).toBe(was);
+				expect(world.tracker.signalsOf('1')).not.toContain('human');
+			});
+		}
+	});
+
+	it('pauses before it starts on a day over the daily limit, as any Session does', async () => {
+		const world = makeWorld();
+		await conflictingDraft(world);
+		const was = body(world);
+		const q = watch(world, { setup: { limits: { ...LIMITS, dailyUsd: 1 } } });
+		const sleeps: number[] = [];
+		await queue(
+			{
+				...q,
+				sleep: (ms, signal) => {
+					sleeps.push(ms);
+					return q.sleep(ms, signal);
+				}
+			},
+			false
+		);
+
+		expect(askedOf(world, 'conflicts')).toEqual([]);
+		expect(pushesOf(world)).toBe(1);
+		expect(body(world)).toBe(was);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(sleeps).toEqual([30 * 60_000]);
+	});
+
+	describe('the limits of a pull request', () => {
+		const limits = { ...LIMITS, ...conflictsLimits({ fixRounds: 1 }) };
+		// the base wrote Ticket 2's file again, after a Conflict fix merged it
+		const conflictAgain = (world: World) =>
+			world.trees.moveBase('main', 'ticket-2.txt', 'from the base, again\n');
+
+		it('counts the Conflict fixes from the branch across runs, and gives a pull request that has used fixRounds no further Session', async () => {
+			const world = makeWorld();
+			await conflictingDraft(world);
+			await queue(watch(world, { setup: { limits } }), false);
+			expect(world.trees.messages(tree())[0]).toContain('Factory-Conflicts: 1');
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+
+			conflictAgain(world);
+			const before = world.tracker.said('1').length;
+			await queue(watch(world, { setup: { limits } }), false);
+
+			expect(askedOf(world, 'conflicts')).toHaveLength(1);
+			expect(pushesOf(world)).toBe(2);
+			expect(world.tracker.signalsOf('1')).toEqual(['human']);
+			expect(world.tracker.said('1')).toHaveLength(before + 1);
+			expect(lastSaid(world)).toContain(
+				'Nightjar could not resolve the conflicts of its pull request with `origin/main`: it has had its 1 Conflict fix.'
+			);
+			expect(conflictsHandedOver(body(world))).toBe(true);
+		});
+
+		it('gives no further round once needs a person comes off: its count is kept', async () => {
+			const world = makeWorld();
+			await conflictingDraft(world);
+			await queue(watch(world, { setup: { limits } }), false);
+			conflictAgain(world);
+			await queue(watch(world, { setup: { limits } }), false);
+			const said = world.tracker.said('1').length;
+
+			await world.tracker.removeSignal('1', 'human');
+			await queue(watch(world, { setup: { limits } }), false);
+			expect(askedOf(world, 'conflicts')).toHaveLength(1);
+			expect(world.tracker.signalsOf('1')).toEqual([]);
+			expect(world.tracker.said('1')).toHaveLength(said);
+		});
+
+		it('says the default count of Conflict fixes in the plural', async () => {
+			const world = makeWorld();
+			await conflictingDraft(world);
+			await queue(watch(world), false);
+			conflictAgain(world);
+			await queue(watch(world), false);
+			world.trees.moveBase('main', 'ticket-2.txt', 'from the base, a third time\n');
+			await queue(watch(world), false);
+			expect(askedOf(world, 'conflicts')).toHaveLength(LIMITS.conflictsRounds);
+			expect(lastSaid(world)).toContain(
+				`it has had its ${String(LIMITS.conflictsRounds)} Conflict fixes.`
+			);
+		});
+	});
+
+	it('takes a given-up pull request no more once needs a person comes off, though rounds are left', async () => {
+		const world = makeWorld();
+		await conflictingDraft(world);
+		world.conflictsAgent = (req) => ({
+			kind: 'blocked',
+			blocker: 'Both sides renamed it.',
+			sessionId: req.sessionId,
+			costUsd: 1
+		});
+		await queue(watch(world), false);
+		const said = world.tracker.said('1').length;
+
+		await world.tracker.removeSignal('1', 'human');
+		await queue(watch(world), false);
+		expect(askedOf(world, 'conflicts')).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(world.tracker.said('1')).toHaveLength(said);
+	});
+
+	it('stops at its fixUsd cap, its check fix rounds counted, and gives up', async () => {
+		const world = makeWorld();
+		await conflictingDraft(world);
+		world.checkOk = false;
+		const limits = { ...LIMITS, ...conflictsLimits({ fixUsd: 2.5 }) };
+		await queue(watch(world, { setup: { limits } }), false);
+
+		// the Session cost $2, and the $0.50 left buys no fix round of the check
+		expect(askedOf(world, 'conflicts').map((r) => r.budgetUsd)).toEqual([2.5]);
+		expect(askedOf(world, 'fix').filter((r) => r.at.branch === BRANCH)).toEqual([]);
+		expect(pushesOf(world)).toBe(1);
+		expect(world.trees.sides.get(SIDE)?.sort()).toEqual(['base.txt', 'ticket-2.txt']);
+		expect(lastSaid(world)).toContain('Conflict fix 1 gave up: it reached its cap of $2.50.');
+	});
+
+	it('gives each Session what is left of fixMinutes, and stops a fix that runs past them as given up', async () => {
+		const world = makeWorld();
+		await conflictingDraft(world);
+		world.checkOk = false;
+		let clock = new Date(2026, 9, 30, 9).getTime();
+		const { conflictsAgent, fixAgent } = world;
+		// the Conflict fix's Session takes 10 minutes, the check's first fix round 25
+		world.conflictsAgent = (req) => {
+			clock += 10 * 60_000;
+			return conflictsAgent(req);
+		};
+		world.fixAgent = (req) => {
+			clock += 25 * 60_000;
+			return fixAgent(req);
+		};
+		const limits = { ...LIMITS, conflictsUsd: 50 };
+		await queue(watch(world, { deps: { now: () => new Date(clock) }, setup: { limits } }), false);
+
+		expect(askedOf(world, 'conflicts').map((r) => r.minutes)).toEqual([30]);
+		const onIt = askedOf(world, 'fix').filter((r) => r.at.branch === BRANCH);
+		expect(onIt.map((r) => r.minutes)).toEqual([20]);
+		expect(pushesOf(world)).toBe(1);
+		expect(lastSaid(world)).toContain('Conflict fix 1 gave up: it ran past its 30 minutes.');
+	});
+
+	describe('a draft the Code host said conflicts that now merges clean', () => {
+		// the base moved on with a file of its own alone, and the Code host's word is stale
+		async function staleDraft(world: World) {
+			await buildFeature(deps(world), setup(world), '1');
+			const pull = world.host.pulls[0];
+			if (pull === undefined) throw new Error('no draft was opened');
+			world.trees.moveBase('main', 'base.txt', 'from the base\n');
+			world.host.setConflict(pull, 'yes');
+			world.checks.length = 0;
+			return pull;
+		}
+
+		it('goes through the check, then is pushed as a Conflict fix with no Session', async () => {
+			const world = makeWorld();
+			await staleDraft(world);
+			await queue(watch(world), false);
+
+			expect(askedOf(world, 'conflicts')).toEqual([]);
+			expect(world.checks.filter((c) => c.cwd === tree())).toHaveLength(1);
+			expect(pushesOf(world)).toBe(2);
+			expect(world.host.branchMessages(BRANCH)?.at(-1)).toContain('Factory-Conflicts: 1');
+		});
+
+		it('is pushed not at all when the check fails, and the Feature goes to a person', async () => {
+			const world = makeWorld();
+			await staleDraft(world);
+			world.checkOk = false;
+			await queue(watch(world), false);
+
+			expect(pushesOf(world)).toBe(1);
+			expect(world.trees.sides.get(SIDE)).toEqual(['base.txt']);
+			expect(world.tracker.signalsOf('1')).toEqual(['human']);
+			expect(lastSaid(world)).toContain(
+				'Conflict fix 1 gave up: `make check` fails after the merge, which had no conflict to resolve.'
+			);
+			expect(lastSaid(world)).toContain('The merge of `origin/main` had no conflict to resolve.');
 		});
 	});
 

@@ -50,6 +50,7 @@ import type { Serve } from './serve.js';
 import type { Failure } from './session.js';
 import { NOTES_FOLDER } from './settings.js';
 import {
+	conflictsStep,
 	draftStep,
 	featureAfterRunStep,
 	featureStopStep,
@@ -2005,7 +2006,7 @@ async function fixRedDraft(
 	if (used >= rounds) {
 		const why = `it has had its ${String(rounds)} Pull-check fix round${rounds === 1 ? '' : 's'}`;
 		deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, and ${why}`);
-		await handOver(
+		await handOverPullChecks(
 			deps,
 			setup,
 			{ feature, note, signals, built: await tree.built(), session: headSession ?? null },
@@ -2057,7 +2058,7 @@ async function fixRedDraft(
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
-			await handOver(
+			await handOverPullChecks(
 				deps,
 				setup,
 				{ feature, note, signals, built: await tree.built(), session: session.id },
@@ -2119,48 +2120,127 @@ export function markHandedOver(body: string): string {
 	return handedOver(body) ? body : `${body}\n\n${HANDED_OVER}`;
 }
 
-// The Feature is a person's now: needs a person on it, a comment naming the pull request and its failing Pull checks, the Status note saying Waiting on you, and a mark in the body so the pass leaves it alone once the Signal comes off.
+const CONFLICTS_HANDED_OVER = '<!-- nightjar-conflicts: handed to a person -->';
+
+// Whether the Conflict fix pass handed this pull request to a person, which keeps that pass off it; the Pull-check pass reads its own mark. A normal build rewrites the body, and so takes the mark off.
+export function conflictsHandedOver(body: string): boolean {
+	return body.includes(CONFLICTS_HANDED_OVER);
+}
+
+// The body with the hidden mark that the Conflict fix pass handed the pull request to a person.
+export function markConflictsHandedOver(body: string): string {
+	return conflictsHandedOver(body) ? body : `${body}\n\n${CONFLICTS_HANDED_OVER}`;
+}
+
+// A Feature a revisit pass hands to a person, and what its Status note shows.
+interface HandingOver {
+	readonly feature: Feature;
+	readonly note: Note;
+	readonly signals: FeatureSignals;
+	// the Tickets the branch built
+	readonly built: ReadonlySet<ItemId>;
+	// the Session the round ran in, when one did
+	readonly session: string | null;
+}
+
+// What a person handed a pull request is told: `why` is what the Logbook and the run say; the comment pointing at the pull request, and at its `section` when one holds the full report.
+interface HandOverAsk {
+	readonly why: string;
+	readonly sentence: string;
+	readonly cause: string;
+	readonly section?: string;
+	readonly next: NextStep;
+}
+
+// The Feature is a person's now: needs a person on it, a comment saying why and naming the pull request, the Status note saying Waiting on you, and the body as given, which carries the pass's mark so it leaves the pull request alone once the Signal comes off, under the same headline.
 async function handOver(
 	deps: Deps,
-	setup: Setup,
-	of: {
-		readonly feature: Feature;
-		readonly note: Note;
-		readonly signals: FeatureSignals;
-		// the Tickets the branch built
-		readonly built: ReadonlySet<ItemId>;
-		// the Session the round ran in, when one did
-		readonly session: string | null;
-	},
-	draft: NightjarDraft,
-	why: string,
-	// the pull request body as it is to stay, before the mark
+	of: HandingOver,
+	pull: Pull,
+	ask: HandOverAsk,
+	// the pull request body as it is to stay, its mark in it
 	body: string
 ): Promise<void> {
 	const { feature, note, signals } = of;
-	const { pull } = draft;
+	const { why, sentence, cause, section, next } = ask;
 	note({ kind: 'handed', to: 'human', why });
 	await signals.on('human');
-	const failing = draft.checks.failed.map(failingLine);
 	const tickets = await deps.tracker.tickets(feature.id);
-	const sentence = `Nightjar could not make the Pull checks of its pull request green: ${why}.`;
 	await askAPerson(deps, feature, {
 		ask: {
 			sentence,
-			cause: `Failing Pull checks:\n\n${failing.join('\n')}`,
-			// the pull request body holds each round and the checks it left failing
-			pull: { url: pull.url, section: 'Pull checks' },
-			next: pullChecksStep(setup.signals)
+			cause,
+			pull: section === undefined ? { url: pull.url } : { url: pull.url, section },
+			next
 		},
 		tickets: noteTickets(feature, tickets, of.built),
 		session: of.session
 	});
 	// the body says what the Status note now says
-	await deps.codeHost.editBody(
-		pull,
-		withHeadline(markHandedOver(body), headline('waiting', sentence))
-	);
+	await deps.codeHost.editBody(pull, withHeadline(body, headline('waiting', sentence)));
 	deps.say(`${hash(feature.id)}: handed to a person, ${why}`);
+}
+
+// A red draft handed to a person: the comment names its failing Pull checks, and the body holds each round in its Pull checks section.
+function handOverPullChecks(
+	deps: Deps,
+	setup: Setup,
+	of: HandingOver,
+	draft: NightjarDraft,
+	why: string,
+	// the pull request body as it is to stay, before the mark
+	body: string
+): Promise<void> {
+	const failing = draft.checks.failed.map(failingLine);
+	return handOver(
+		deps,
+		of,
+		draft.pull,
+		{
+			why,
+			sentence: `Nightjar could not make the Pull checks of its pull request green: ${why}.`,
+			cause: `Failing Pull checks:\n\n${failing.join('\n')}`,
+			section: 'Pull checks',
+			next: pullChecksStep(setup.signals)
+		},
+		markHandedOver(body)
+	);
+}
+
+// A conflicting draft handed to a person: the comment names the files the merge stopped on and the side branch what the Conflict fix tried is kept on.
+function handOverConflicts(
+	deps: Deps,
+	setup: Setup,
+	of: HandingOver & { readonly base: string },
+	pull: Pull,
+	why: string,
+	tried: { readonly files: readonly string[]; readonly side: string | null },
+	// the pull request body as it is to stay, before the mark
+	body: string
+): Promise<void> {
+	const code = (s: string) => `\`${s}\``;
+	const cause = [
+		tried.files.length === 0
+			? `The merge of ${code(of.base)} had no conflict to resolve.`
+			: `The merge of ${code(of.base)} stopped on conflicts in ${tried.files.map(code).join(', ')}.`,
+		...(tried.side === null
+			? []
+			: [
+					`What the Conflict fix tried is kept on ${code(tried.side)}, a local branch in the checkout Nightjar runs in.`
+				])
+	].join(' ');
+	return handOver(
+		deps,
+		of,
+		pull,
+		{
+			why,
+			sentence: `Nightjar could not resolve the conflicts of its pull request with ${code(of.base)}: ${why}.`,
+			cause,
+			next: conflictsStep(setup.signals, of.base)
+		},
+		markConflictsHandedOver(body)
+	);
 }
 
 // The Session a Pull-check fix round runs in: the head commit's, resumed, or a new one when this machine has none.
@@ -2368,7 +2448,7 @@ export type ConflictFixOutcome =
 			readonly files: readonly string[];
 			readonly usd: number;
 	  }
-	// nothing pushed: the merge and what the Session left are kept on the -attempt-conflicts side branch `side`
+	// nothing pushed: the merge and what the Session left are kept on the -attempt-conflicts side branch `side`, and the Feature is handed to a person; `conflicting` are the files the merge stopped on
 	| {
 			readonly kind: 'gaveUp';
 			readonly pull: Pull;
@@ -2376,7 +2456,10 @@ export type ConflictFixOutcome =
 			readonly why: string;
 			readonly usd: number;
 			readonly side: string | null;
+			readonly conflicting: readonly string[];
 	  }
+	// the pull request has had its `rounds` Conflict fixes: no merge and no Session, and the Feature is handed to a person
+	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
 	// a green merge whose push was rejected because a person pushed to the branch: it waits on `side`, and the Feature is handed to a person
 	| {
 			readonly kind: 'diverged';
@@ -2448,13 +2531,26 @@ async function resolveConflicting(
 	if (notOurs !== null) return skip(notOurs);
 	// the Code host's word was stale: there is nothing to merge
 	if ((await tree.baseCommits(1)).text === '') return skip(`its branch holds ${tree.at.base}`);
-	// counted from the branch, so a new run goes on from the rounds it had
-	const round = (await tree.conflictFixes()) + 1;
+	const base = tree.at.base;
+	const handing = (session: string | null) =>
+		tree.built().then((built) => ({ feature, note, signals, built, session, base }));
+	// counted from the branch, so neither a new run nor taking needs a person off resets it
+	const used = await tree.conflictFixes();
+	const rounds = setup.limits.conflictsRounds;
+	if (used >= rounds) {
+		const why = `it has had its ${String(rounds)} Conflict fix${rounds === 1 ? '' : 'es'}`;
+		deps.say(`${hash(feature.id)}: ${pull.url} conflicts with ${base}, and ${why}`);
+		const trailers = await tree.headTrailers();
+		const of = await handing(trailers.get(SESSION_TRAILER) ?? null);
+		await handOverConflicts(deps, setup, of, pull, why, { files: [], side: null }, draft.body);
+		return { kind: 'atLimit', pull, rounds };
+	}
+	const round = used + 1;
 	// a new Session, as the head commit's knows nothing of the base's changes
 	const session = deps.newId();
 	where.run = { ...where.run, place: { kind: 'conflictFix', round }, session };
 	deps.say(
-		`${hash(feature.id)}: ${pull.url} conflicts with ${tree.at.base}, Conflict fix ${String(round)}`
+		`${hash(feature.id)}: ${pull.url} conflicts with ${base}, Conflict fix ${String(round)}`
 	);
 	await signals.on('working');
 	try {
@@ -2467,6 +2563,11 @@ async function resolveConflicting(
 			note,
 			signals
 		});
+		if (got.kind === 'gaveUp') {
+			const why = `Conflict fix ${String(round)} gave up: ${got.why}`;
+			const tried = { files: got.conflicting, side: got.side };
+			await handOverConflicts(deps, setup, await handing(session), pull, why, tried, draft.body);
+		}
 		// a push that faulted ends the fix as any fault does: in the Logbook with its stack, naming the fix for the hand-back
 		return got.kind === 'faulted' ? { ...got, fault: faultAt(got.fault, where.run, note) } : got;
 	} finally {
@@ -2524,12 +2625,14 @@ async function conflictFixRound(
 		if (side !== null) note({ kind: 'thrownAway', branch: side, why, session });
 		return side;
 	};
+	// the files the merge stopped on
+	let conflicting: readonly string[] = [];
 	const gaveUp = async (why: string, usd: number): Promise<ConflictFixOutcome> => {
 		const side = await throwAway(why);
 		deps.say(
 			`${hash(feature.id)}: ${name} gave up: ${why}${side === null ? '' : `; the attempt is kept on ${side}`}`
 		);
-		return { kind: 'gaveUp', pull, round, why, usd, side };
+		return { kind: 'gaveUp', pull, round, why, usd, side, conflicting };
 	};
 	const halted = async (halt: Halt): Promise<ConflictFixOutcome> => {
 		await throwAway(haltWhy(halt));
@@ -2540,11 +2643,26 @@ async function conflictFixRound(
 
 	building();
 	const { conflictsUsd: cap, conflictsMinutes: minutes } = setup.limits;
+	const deadline = deps.now().getTime() + minutes * 60_000;
+	// why the fix stopped short of a green check: one of its own caps, else the fix rounds ran out
+	const stillRed = (spent: number) => {
+		if (!allowanceOf(deps)(cap, spent).enough) return `it reached its cap of ${dollars(cap)}`;
+		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
+		return `\`${setup.check}\` still fails after the fix rounds`;
+	};
+	// a resolution that leaves a conflict marker in a file resolved nothing there
+	const markers = async (): Promise<string | null> => {
+		const marked = await withMarkers(tree, [...new Set([...conflicting, ...files])]);
+		return marked.length === 0
+			? null
+			: `it left conflict markers in ${marked.map((f) => `\`${f}\``).join(', ')}`;
+	};
 	const merged = await tree.mergeBase();
 	let summary = `Merged ${tree.at.base}, which had no conflict to resolve.`;
 	let files: readonly string[] = [];
 	let spent = 0;
 	if (merged.kind === 'conflicts') {
+		conflicting = merged.files;
 		deps.say(`${hash(feature.id)}: the merge stopped on ${merged.files.join(', ')}`);
 		const got = await deps.codingAgent.conflicts({
 			kind: 'conflicts',
@@ -2586,6 +2704,9 @@ async function conflictFixRound(
 				files = got.files;
 				spent = got.costUsd;
 		}
+		if (files.length === 0) return gaveUp('the Session resolved no file', spent);
+		const marked = await markers();
+		if (marked !== null) return gaveUp(marked, spent);
 	}
 	const first = await deps.runCheck(setup.check, tree.at.folder, envOf(setup));
 	// a merge with no conflict had no Session, so none to fix the check in
@@ -2601,13 +2722,15 @@ async function conflictFixRound(
 			cap,
 			spent,
 			check: first,
-			of: { kind: 'conflicts' }
+			of: { kind: 'conflicts' },
+			deadline
 		}
 	);
 	if (fixed.halt !== undefined) return halted(fixed.halt);
-	if (!fixed.check.ok) {
-		return gaveUp(`\`${setup.check}\` still fails after the fix rounds`, fixed.spent);
-	}
+	if (!fixed.check.ok) return gaveUp(stillRed(fixed.spent), fixed.spent);
+	// the check's fix rounds may have written a marker back
+	const marked = await markers();
+	if (marked !== null) return gaveUp(marked, fixed.spent);
 	const all = [summary, ...fixed.summaries].join('\n\n');
 	if (!(await tree.commitConflictFix(round, all, session))) {
 		return gaveUp('no merge was left to commit', fixed.spent);
@@ -2629,6 +2752,19 @@ async function conflictFixRound(
 	}
 	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
 	return { kind: 'fixed', pull, round, summary: all, files, usd: fixed.spent };
+}
+
+// A line git writes to mark a conflict: the start of our side or the end of theirs.
+const CONFLICT_MARKER = /^(?:<{7}|>{7})(?: |$)/m;
+
+// Those of `files` that still hold a conflict marker.
+async function withMarkers(tree: Worktree, files: readonly string[]): Promise<string[]> {
+	const marked: string[] = [];
+	for (const file of files) {
+		const text = await tree.read(file);
+		if (text !== null && CONFLICT_MARKER.test(text)) marked.push(file);
+	}
+	return marked.sort();
 }
 
 // How a push ended: on the Code host; set aside on `side` because a person pushed first; or failed on a fault.

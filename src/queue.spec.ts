@@ -677,7 +677,15 @@ describe('queue --watch with the Conflict fix pass', () => {
 		c.done('20');
 		const pull = await c.conflicting('20');
 		c.resolveWith(() =>
-			Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1, side: null })
+			Promise.resolve({
+				kind: 'gaveUp',
+				pull,
+				round: 1,
+				why: 'still red',
+				usd: 1,
+				side: null,
+				conflicting: []
+			})
 		);
 		await queue(w.deps, false);
 		expect(work(w.trail)).toEqual(['resolve 20', 'build 2', 'build 4']);
@@ -691,7 +699,15 @@ describe('queue --watch with the Conflict fix pass', () => {
 		c.done('20');
 		const pull = await c.conflicting('20');
 		c.resolveWith(() =>
-			Promise.resolve({ kind: 'gaveUp', pull, round: 1, why: 'still red', usd: 1, side: null })
+			Promise.resolve({
+				kind: 'gaveUp',
+				pull,
+				round: 1,
+				why: 'still red',
+				usd: 1,
+				side: null,
+				conflicting: []
+			})
 		);
 		const { sleep } = w.deps;
 		w.deps = {

@@ -111,6 +111,7 @@ describe('next steps', () => {
 				'Fix the failing check'
 			],
 			['Pull checks', next.pullChecksStep(names), 'Read the failing Pull checks above'],
+			['conflicts', next.conflictsStep(names, 'main'), 'Merge `main` into the branch'],
 			['Review left open', next.reviewStep(names), 'Read the issues above'],
 			['a thrown-away Feedback round', next.feedbackStep(names), 'Read why above'],
 			['the Feedback limit', next.feedbackLimitStep(names), 'Answer the requests for changes'],

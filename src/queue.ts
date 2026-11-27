@@ -1,6 +1,7 @@
 // --once, --watch, nightjar <id> and doctor: which Feature to build next, which conflicting or red draft pull request the revisit passes fix first, and what happens to a Feature whose build fails on a fault.
 import {
 	askAPerson,
+	conflictsHandedOver,
 	featureOfBody,
 	handedOver,
 	noteTickets,
@@ -354,8 +355,9 @@ const triedKey = (d: NightjarDraft) => `${String(d.pull.id)} ${d.headCommit}`;
 // A draft the Pull-check pass fixes: its Pull checks done and one red.
 const isRed = ({ checks }: NightjarDraft) => !checks.pending && checks.failed.length > 0;
 
-// A draft the Conflict fix pass takes: the Code host says it conflicts with its base. One it cannot say of, or one only behind its base, is left alone.
-const isConflicting = (draft: NightjarDraft) => draft.conflicts === 'yes';
+// A draft the Conflict fix pass takes: the Code host says it conflicts with its base, and the pass has not handed it to a person. One it cannot say of, or one only behind its base, is left alone.
+const isConflicting = (draft: NightjarDraft) =>
+	draft.conflicts === 'yes' && !conflictsHandedOver(draft.body);
 
 // The oldest draft a revisit pass may take: one `wanted` picks, no person engaged, not handed to a person, its body naming a Feature assigned to the person that holds no Signal.
 async function nextDraft(
@@ -700,6 +702,7 @@ const fixEnd = (got: PullFixOutcome): Ended =>
 const CONFLICT_FIX_GOOD_ENDS: readonly ConflictFixOutcome['kind'][] = [
 	'fixed',
 	'gaveUp',
+	'atLimit',
 	'diverged'
 ];
 

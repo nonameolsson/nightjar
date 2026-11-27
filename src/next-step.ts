@@ -83,6 +83,12 @@ export const pullChecksStep = (n: SignalNames): NextStep => [
 	`${HAND_BACK} to have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
 ];
 
+// A draft pull request whose conflicts with its base Nightjar could not resolve: the person's now, and its Conflict fixes still count.
+export const conflictsStep = (n: SignalNames, base: string): NextStep => [
+	`Merge ${tag(base)} into the branch and resolve the conflicts yourself, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.`,
+	`${HAND_BACK} to have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Conflict fixes it had still count.`
+];
+
 // A Feature whose Review still asks for changes after Nightjar's Review rounds: the issues are the person's now.
 export const reviewStep = (n: SignalNames): NextStep => [
 	"Read the issues above and fix the ones that are right on the branch, or review the pull request: the Review is Nightjar's own and can be wrong.",
