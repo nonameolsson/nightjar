@@ -2,6 +2,8 @@
 
 Research note, read 2026-11-27. Every source below was read on that date.
 
+Grill: #383.
+
 ## 1. Question and short answer
 
 Could Nightjar be an agent that is always running, listens to a Sentry error, an error log or a system warning (such as a Grafana alert for high CPU or memory), and on its own makes an issue, investigates, and opens a draft pull request? What would that take, and where does it fit in Nightjar's model?
