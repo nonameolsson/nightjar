@@ -70,8 +70,8 @@ describe('nightjar ui page', () => {
 		const page = await get('/');
 		expect(page.status).toBe(200);
 		expect(page.text).toContain('off');
-		expect(page.text).toContain('Completed');
-		expect(page.text).toContain('nothing has finished yet');
+		expect(page.text).toContain('<h2>Merged</h2>');
+		expect(page.text).toContain('not available from this Code host');
 	});
 
 	it('shows a watching run: next poll, spend against the limit, built today, and the Queue', async () => {
@@ -207,7 +207,7 @@ describe('nightjar ui page', () => {
 		});
 	});
 
-	it('shows progress on Waiting on you and Completed, in the Board and the Table', async () => {
+	it('shows progress on Waiting on you and Pull request, in the Board and the Table', async () => {
 		const built = (feature: string, ticket: string, minute: number) =>
 			record(ledgerFile(), {
 				at: new Date(2026, 9, 30, 8, minute).toISOString(),
@@ -1096,7 +1096,7 @@ describe('nightjar ui events', () => {
 });
 
 describe('nightjar ui board', () => {
-	it('opens on a Board of five Mats with a card per Feature, and keeps Overview', async () => {
+	it('opens on a Board of six Mats with a card per Feature, and keeps Overview', async () => {
 		const file = status();
 		file.doing({
 			kind: 'building',
@@ -1124,7 +1124,7 @@ describe('nightjar ui board', () => {
 		await open();
 		const page = (await get('/')).text;
 		expect(page).toContain('<main id="panels" data-view="board" tabindex="-1">');
-		for (const name of ['Queue', 'Shelf', 'Building', 'Waiting on you', 'Completed'])
+		for (const name of ['Shelf', 'Queue', 'Building', 'Waiting on you', 'Pull request', 'Merged'])
 			expect(page).toContain(`<h2>${name}</h2>`);
 		expect(page).toContain('Exports');
 		expect(page).toContain('Ticket 2 of 3, build, round 1 of 3');
@@ -1178,7 +1178,7 @@ describe('nightjar ui board', () => {
 		expect(rows[0]).toContain('needs info');
 	});
 
-	it('shows one Completed card per Feature: its latest run and how many runs it had', async () => {
+	it('shows one Pull request card per Feature: its latest run and how many runs it had', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		const url = (n: number) => `https://example.test/pull/${String(n)}`;
@@ -1198,7 +1198,7 @@ describe('nightjar ui board', () => {
 		expect(board.split('<article').find((a) => a.includes('Exports'))).toContain('1 recent run');
 		// newest first: the latest run of #132 came after #147's
 		expect(board.indexOf('Retries')).toBeLessThan(board.indexOf('Exports'));
-		expect(page).toContain('<h2>Completed</h2><i class="tally">2</i>');
+		expect(page).toContain('<h2>Pull request</h2><i class="tally">2</i>');
 		expect(table.split('<tr ').filter((r) => r.includes('Retries'))).toHaveLength(1);
 		expect(table).toContain('latest of 3 recent runs');
 		expect(overview.split('<li>').filter((r) => r.includes('Retries'))).toHaveLength(1);
@@ -1245,12 +1245,12 @@ describe('nightjar ui board', () => {
 		expect(cards('Several')[0]).toContain('entry waiting');
 		expect(cards('Several')[0]).toContain('1 earlier run, the latest failed');
 		expect(cards('Exports')[0]).toContain('entry queue');
-		expect(cards('Retries')[0]).toContain('entry pulled');
-		expect(page).toContain('<h2>Completed</h2><i class="tally">1</i>');
+		expect(cards('Retries')[0]).toContain('entry pull');
+		expect(page).toContain('<h2>Pull request</h2><i class="tally">1</i>');
 		for (const title of ['Library', 'Several', 'Exports', 'Retries'])
 			expect(table.split('<tr ').filter((r) => r.includes(title))).toHaveLength(1);
 		expect(table.split('<tr ').find((r) => r.includes('Library'))).toContain('2 earlier runs');
-		const done = overview.split('<section id="completed">')[1] ?? '';
+		const done = overview.split('<section id="pull">')[1] ?? '';
 		expect(done).toContain('Retries');
 		expect(done).not.toContain('Library');
 	});
@@ -1320,7 +1320,7 @@ describe('nightjar ui board', () => {
 		expect(card).not.toContain('Next step');
 	});
 
-	it('lists at most ten Completed, newest first, and says when the run is off', async () => {
+	it('lists the failures of the recent events in Waiting on you, newest first, and says when the run is off', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		for (let n = 1; n <= 12; n++)
@@ -1328,7 +1328,7 @@ describe('nightjar ui board', () => {
 		await open();
 		let page = (await get('/')).text;
 		const board = page.split('<div class="board">')[1]?.split('<div class="table">')[0] ?? '';
-		expect(board.match(/class="entry failed"/g)).toHaveLength(10);
+		expect(board.match(/class="entry waiting failed"/g)).toHaveLength(10);
 		expect(board.indexOf('#112')).toBeLessThan(board.indexOf('#111'));
 		alive = false;
 		page = (await get('/')).text;
@@ -1387,7 +1387,7 @@ describe('nightjar ui board', () => {
 		expect(card).toContain('needs info');
 	});
 
-	it('shows how long a Completed Feature took, and nothing for one with no start', async () => {
+	it('shows how long a finished run took, and nothing for one with no start', async () => {
 		const file = status();
 		file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		const start = new Date(at.getTime() - 14 * 60_000).toISOString();
@@ -1595,11 +1595,11 @@ describe('nightjar ui board', () => {
 		});
 	});
 
-	it('reads the Board with Waiting on you first, then Building, Queue, Shelf and Completed', async () => {
+	it('reads the Board with Waiting on you first, then Building, Pull request, Queue, Shelf and Merged', async () => {
 		status().doing({ kind: 'idle', nextPollAt: at.toISOString() });
 		await open();
 		const page = (await get('/')).text;
-		const order = ['waiting', 'building', 'queue', 'shelf', 'completed'].map((state) =>
+		const order = ['waiting', 'building', 'pull', 'queue', 'shelf', 'merged'].map((state) =>
 			page.indexOf(`<section class="mat" data-state="${state}"`)
 		);
 		expect(order.every((i) => i >= 0)).toBe(true);
@@ -1726,7 +1726,8 @@ describe('nightjar ui Table', () => {
 		const ids = [...table.matchAll(/<tr data-state="(\w+)"[^>]*data-id="(\d+)"/g)].map(
 			(m) => `${m[1] ?? ''}:${m[2] ?? ''}`
 		);
-		expect(ids).toEqual(['queue:9', 'queue:10', 'waiting:3', 'completed:32', 'completed:31']);
+		// #32's last build failed and it carries no Signal, so it waits on the person
+		expect(ids).toEqual(['queue:9', 'queue:10', 'waiting:3', 'waiting:32', 'pull:31']);
 		expect(table).toContain('href="https://example.test/pull/31"');
 		expect(table).toContain('>draft pull request</a>');
 		expect(table).toContain('failed: check red');
@@ -1758,7 +1759,9 @@ describe('nightjar ui Table', () => {
 			dataset: { [attr]: k }
 		});
 		const sorts = ['id', 'title', 'state', 'time', 'cost', 'outcome'].map((k) => item('sort', k));
-		const chips = ['queue', 'building', 'waiting', 'completed'].map((k) => item('chip', k));
+		const chips = ['shelf', 'queue', 'building', 'waiting', 'pull', 'merged'].map((k) =>
+			item('chip', k)
+		);
 		let focused: string | null = null;
 		const picks = ['any', 'completed', 'failed', 'waiting'].map((k) => ({
 			...item('pick', k),
@@ -1838,21 +1841,28 @@ describe('nightjar ui Table', () => {
 		s.click(time, 'sort');
 		// 31 took 5 minutes, 32 took 10; rows with no time come last
 		expect(order(s).slice(0, 2)).toEqual(['31', '32']);
-		s.click(s.chips[3] as (typeof s.chips)[number], 'chip');
-		expect(s.rows().map((r) => r.hidden)).toEqual([false, false, true, true, true]);
-		expect(order(s).filter((_, i) => !s.rows()[i]?.hidden)).toEqual(['31', '32']);
+		s.click(s.chips[4] as (typeof s.chips)[number], 'chip');
+		expect(s.rows().map((r) => r.hidden)).toEqual([false, true, true, true, true]);
+		expect(order(s).filter((_, i) => !s.rows()[i]?.hidden)).toEqual(['31']);
 
 		// a live refresh swaps the panels' content but the arrangement stays
 		s.refresh();
 		expect(order(s).slice(0, 2)).toEqual(['31', '32']);
-		expect(s.rows().filter((r) => r.hidden)).toHaveLength(3);
+		expect(s.rows().filter((r) => r.hidden)).toHaveLength(4);
 
 		// a reload reads it back from local storage
 		const again = sandbox(page, store);
 		again.load();
 		expect(order(again).slice(0, 2)).toEqual(['31', '32']);
-		expect(again.rows().filter((r) => r.hidden)).toHaveLength(3);
-		expect(again.chips.map((c) => c.dataset['on'])).toEqual(['false', 'false', 'false', 'true']);
+		expect(again.rows().filter((r) => r.hidden)).toHaveLength(4);
+		expect(again.chips.map((c) => c.dataset['on'])).toEqual([
+			'false',
+			'false',
+			'false',
+			'false',
+			'true',
+			'false'
+		]);
 	});
 
 	it('offers the outcomes as a labelled group of buttons beside the state chips', async () => {
@@ -1895,8 +1905,9 @@ describe('nightjar ui Table', () => {
 		// a Feature that failed is not a completed one
 		s.click(done, 'pick');
 		expect(ids(s)).toEqual(['31']);
+		// a failed Feature with no Signal waits on the person too
 		s.click(waiting, 'pick');
-		expect(ids(s)).toEqual(['3']);
+		expect(ids(s)).toEqual(['3', '32']);
 		s.click(any, 'pick');
 		expect(ids(s)).toEqual(['9', '10', '3', '32', '31']);
 		expect(s.shown.textContent).toBe('');
@@ -2088,7 +2099,7 @@ describe('nightjar ui page, more', () => {
 			return file;
 		};
 
-		it('labels a failed Feature Failed in the Table, not Completed', async () => {
+		it('gives a failed Feature its Standing in the Table, and says its last build failed', async () => {
 			building();
 			await open();
 			const page = (await get('/')).text;
@@ -2097,7 +2108,9 @@ describe('nightjar ui page, more', () => {
 					.split('<tr ')
 					.slice(1)
 					.find((r) => r.includes('Retry')) ?? '';
-			expect(row).toContain('<td class="col-state">Failed</td>');
+			expect(row).toContain('<td class="col-state">Waiting on you</td>');
+			expect(row).toContain('data-failed="true"');
+			expect(row).toContain('last build failed: it broke');
 		});
 
 		it('names a waiting Ticket needs a person, not waiting', async () => {
@@ -2151,12 +2164,16 @@ describe('nightjar ui audit fixes', () => {
 		}
 	});
 
-	it('announces only when the waiting or failed count rises', async () => {
+	it('announces a Feature that moves into Waiting on you, and no other move', async () => {
 		await open();
 		const script = (await get('/')).text.split('<script>')[1]?.split('</script>')[0] ?? '';
 		const live = { textContent: '' };
 		const panels = { dataset: {} as Record<string, string>, innerHTML: '' };
-		const counts = { waiting: 1, failed: 0 };
+		const row = (id: string, title: string) => ({ dataset: { state: 'waiting', id, title } });
+		const webhooks = row('3', 'Webhooks');
+		const audit = row('4', 'Audit log');
+		// the Table's rows in Waiting on you; a move anywhere else takes a row out of it
+		let waiting = [webhooks];
 		let message: ((e: { data: string }) => void) | undefined;
 		const frames: Array<() => void> = [];
 		const flush = () => frames.splice(0).forEach((f) => f());
@@ -2165,15 +2182,7 @@ describe('nightjar ui audit fixes', () => {
 			requestAnimationFrame: (f: () => void) => frames.push(f),
 			document: {
 				getElementById: (id: string) => (id === 'live' ? live : panels),
-				querySelectorAll: (sel: string) =>
-					Array.from({
-						length:
-							sel === 'tr[data-state="waiting"]'
-								? counts.waiting
-								: sel === 'tr[data-failed]'
-									? counts.failed
-									: 0
-					})
+				querySelectorAll: (sel: string) => (sel === 'tr[data-state="waiting"]' ? waiting : [])
 			},
 			localStorage: { getItem: () => null, setItem: () => {} },
 			EventSource: function EventSource() {
@@ -2192,23 +2201,21 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('');
 		push();
 		expect(live.textContent).toBe('');
-		counts.waiting = 2;
+		waiting = [webhooks, audit];
 		push();
-		expect(live.textContent).toBe('2 waiting on a person');
-		counts.waiting = 1;
+		expect(live.textContent).toBe('#4 Audit log moved to Waiting on you');
+		// a move out of Waiting on you says nothing
+		waiting = [audit];
 		push();
-		expect(live.textContent).toBe('2 waiting on a person');
-		counts.failed = 1;
-		push();
-		expect(live.textContent).toBe('1 failed');
+		expect(live.textContent).toBe('#4 Audit log moved to Waiting on you');
 		// a repeat of the same text is cleared first, so assistive tech reads it again
-		counts.failed = 0;
+		waiting = [];
 		push();
-		counts.failed = 1;
+		waiting = [audit];
 		message?.({ data: JSON.stringify('') });
 		expect(live.textContent).toBe('');
 		flush();
-		expect(live.textContent).toBe('1 failed');
+		expect(live.textContent).toBe('#4 Audit log moved to Waiting on you');
 	});
 
 	const BUTTONS = [

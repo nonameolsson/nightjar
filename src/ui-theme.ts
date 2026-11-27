@@ -112,7 +112,8 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .mat[data-state="waiting"] { --h: var(--ask); }
 .mat[data-state="queue"] { --h: var(--purple); }
 .mat[data-state="shelf"] { --h: var(--gray); }
-.mat[data-state="completed"] { --h: var(--built); }
+.mat[data-state="pull"] { --h: var(--built); }
+.mat[data-state="merged"] { --h: var(--ink); }
 .tab { align-items: center; display: flex; gap: 8px; height: 28px; padding: 0 2px; }
 .tab::before { background: var(--h); border-radius: 50%; content: ""; height: 8px; width: 8px; }
 .tab h2 { font-size: 13px; font-weight: 600; }
@@ -152,8 +153,8 @@ pre { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .tickets .next { margin-left: 4px; }
 .entry.waiting .now .label { color: var(--ask); }
 .entry.building .now .label { color: var(--blue-ink); }
-.entry.pulled .now .label { color: var(--built); }
-.entry.failed .now .label, .entry.failed .now p { color: var(--fault); }
+.entry.pull .now .label { color: var(--built); }
+.entry.failed .now .label { color: var(--fault); }
 .tickets li { font-size: 12.5px; padding: 2px 0 2px 4px; }
 .tickets li.waiting { color: var(--ask); }
 .detail { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; position: sticky; top: 16px; }
@@ -213,7 +214,8 @@ tr { --h: var(--blue); }
 tr[data-state="waiting"] { --h: var(--ask); }
 tr[data-state="queue"] { --h: var(--purple); }
 tr[data-state="shelf"] { --h: var(--gray); }
-tr[data-state="completed"] { --h: var(--built); }
+tr[data-state="pull"] { --h: var(--built); }
+tr[data-state="merged"] { --h: var(--ink); }
 tr[data-failed] { --h: var(--fault); }
 tr[data-failed] :is(td.col-state, td.col-outcome) { color: var(--fault); }
 :is(th, td).col-time, td.cost, th.col-cost { text-align: right; }

@@ -10,7 +10,8 @@ import { SHELF_MAX } from './tracker.js';
 import { NO_LINKS, type Links } from './ui-links.js';
 import { readFactory } from './status-reader.js';
 import { StatusFile } from './status.js';
-import { fileSpend, ledgerPath } from './ledger.js';
+import { fileSpend, ledgerPath, record } from './ledger.js';
+import { fileLogbook, type Decision } from './logbook.js';
 import { renderPanels } from './ui.js';
 import {
 	listsFrom,
@@ -323,9 +324,9 @@ describe('the page over what it read of the Tracker', () => {
 				`https://github.com/o/app/issues?q=${encodeURIComponent(`is:issue is:open assignee:${person}`)}`
 		};
 
-		it('is a fifth Mat between Queue and Completed, newest update first, with its tally', async () => {
+		it('is a Mat between Queue and Merged, newest update first, with its tally', async () => {
 			const html = panels({ last: await read(shelfTracker()), fault: null });
-			const states = ['waiting', 'building', 'queue', 'shelf', 'completed'];
+			const states = ['waiting', 'building', 'pull', 'queue', 'shelf', 'merged'];
 			const pos = (s: string) => board(html).indexOf(`<section class="mat" data-state="${s}"`);
 			expect(pos('waiting')).toBeGreaterThanOrEqual(0);
 			expect(states.map(pos)).toEqual(states.map(pos).sort((a, b) => a - b));
@@ -360,12 +361,12 @@ describe('the page over what it read of the Tracker', () => {
 			expect(table).toMatch(/<tr data-state="shelf"[^>]*data-title="Reports &#60;b&#62;"/);
 			const [, after = ''] = overview.split('<section id="shelf">');
 			const [section = ''] = after.split('</section>');
-			expect(section).toContain('<h2>Shelf</h2>');
+			expect(section).toContain('<h2>Shelf <small>2</small></h2>');
 			expect(section).toContain('Old idea');
 			expect(section).toContain('Lone issue');
 		});
 
-		it('takes a Feature with finished runs off Completed while it sits on the Shelf, its runs on its card', async () => {
+		it('moves a Feature with finished runs off the Shelf to where its runs leave it, and one the Tracker lists nowhere off the Board', async () => {
 			const file = new StatusFile({
 				path: join(root, '.factory', 'status.json'),
 				spend: fileSpend(ledgerPath(root)),
@@ -386,6 +387,7 @@ describe('the page over what it read of the Tracker', () => {
 				title: 'Reports',
 				url: 'https://example.test/pull/8'
 			});
+			// closed, or someone else's: the Tracker's whole lists hold it nowhere
 			file.happened({
 				kind: 'pull',
 				feature: '40',
@@ -393,21 +395,22 @@ describe('the page over what it read of the Tracker', () => {
 				url: 'https://example.test/pull/9'
 			});
 			const html = panels({ last: await read(shelfTracker()), fault: null });
-			const shelf = mat(html, 'shelf');
-			expect(shelf).toContain('1 earlier run, the latest failed');
-			expect(shelf).toContain('2 earlier runs, the latest:');
-			expect(shelf).toContain('pull/8"');
-			const done = mat(html, 'completed');
-			expect(done).toContain('<h2>Completed</h2><i class="tally">1</i>');
-			expect(done).toContain('Exports');
-			expect(done).not.toContain('Old idea');
-			expect(done).not.toContain('Reports');
+			expect(mat(html, 'shelf')).toContain('<h2>Shelf</h2><i class="tally">0</i>');
+			const waiting = mat(html, 'waiting');
+			expect(waiting).toContain('Old idea');
+			expect(waiting).toContain('last build failed');
+			expect(waiting).toContain('push refused');
+			const pull = mat(html, 'pull');
+			expect(pull).toContain('<h2>Pull request</h2><i class="tally">1</i>');
+			expect(pull).toContain('pull/8"');
+			expect(pull).not.toContain('pull/7"');
+			expect(pull).toContain('latest of 2 recent runs');
+			expect(html).not.toContain('Exports');
 			const [, rest = ''] = html.split('<div class="table">');
 			const table = rest.split('<div class="overview">')[0] ?? '';
-			expect(table).toMatch(/<tr data-state="shelf"[^>]*data-title="Old idea"[^]*?1 earlier run/);
-			const overview = rest.split('<div class="overview">')[1] ?? '';
-			const onShelf = overview.split('<section id="shelf">')[1]?.split('</section>')[0] ?? '';
-			expect(onShelf).toContain('1 earlier run, the latest failed');
+			const failedRow = /<tr data-state="waiting" data-failed="true"[^>]*data-title="Old idea"/;
+			expect(table).toMatch(failedRow);
+			expect(table).toMatch(/<tr data-state="pull"[^>]*data-title="Reports &#60;b&#62;"/);
 		});
 
 		it('lists at most 50, then "and N more in the Tracker" as a link to their open issues', async () => {
@@ -546,7 +549,8 @@ describe('the page over what it read of the Tracker', () => {
 			pid: 42,
 			dailyUsd: 8
 		});
-		file.happened({ kind: 'pull', feature: '40', title: 'Done thing', url: 'https://x.test/1' });
+		// #7 opened a draft, so it stands in Pull request, and still opens as a Shelf Feature does
+		file.happened({ kind: 'pull', feature: '7', title: 'Reports', url: 'https://x.test/1' });
 		const lists = { last: await read(shelfTracker()), fault: null };
 		const view = readFactory(root, { now: () => at, alive: () => true });
 		const html = renderPanels(root, view, NO_LINKS, lists, true);
@@ -558,11 +562,171 @@ describe('the page over what it read of the Tracker', () => {
 			expect(opened(part).sort()).toEqual(['1', '4', '5', '6', '7']);
 		expect(mat(html, 'queue')).toContain('aria-haspopup="dialog" aria-controls="feature"');
 		// the title is still text, never markup
-		expect(mat(html, 'shelf')).toContain('>Reports &#60;b&#62;</button>');
-		// a Feature that is done opens nothing
-		expect(mat(html, 'completed')).toContain('Done thing');
-		expect(mat(html, 'completed')).not.toContain('data-feature');
+		expect(mat(html, 'pull')).toContain('>Reports &#60;b&#62;</button>');
 		// without a reader for the panel, a title is plain text
 		expect(renderPanels(root, view, NO_LINKS, lists)).not.toContain('data-feature');
+	});
+
+	// Each Feature in its one Standing, by the one rule, over a FakeTracker and mock .factory/ files
+	describe('Standings', () => {
+		const STANDINGS = ['waiting', 'building', 'pull', 'queue', 'shelf', 'merged'];
+		const WORDS: Record<string, string> = {
+			waiting: 'Waiting on you',
+			pull: 'Pull request',
+			queue: 'Queue',
+			shelf: 'Shelf'
+		};
+		const status = () => {
+			const file = new StatusFile({
+				path: join(root, '.factory', 'status.json'),
+				spend: fileSpend(ledgerPath(root)),
+				now: () => at,
+				pid: 42,
+				dailyUsd: 8
+			});
+			file.doing({ kind: 'idle', nextPollAt: at.toISOString() });
+			return file;
+		};
+		// a minute of the hour before `at`
+		const minute = (m: number) => new Date(at.getTime() - (60 - m) * 60_000).toISOString();
+		const log = (feature: string, m: number, decision: Decision) =>
+			fileLogbook(root).write({ ...decision, at: minute(m), feature });
+		const draft = (feature: string, m = 10) =>
+			log(feature, m, {
+				kind: 'pullOpened',
+				url: `https://code.example/pull/${feature}`,
+				created: true
+			});
+		const failed = (feature: string, m = 30) => {
+			log(feature, m - 10, { kind: 'buildStarted', by: 'go', branch: 'b', workflow: null });
+			log(feature, m, { kind: 'fault', place: 'check', why: 'push refused', passing: false });
+		};
+		const cards = (html: string, state: string) => mat(html, state).split('<article').slice(1);
+		const card = (html: string, state: string, title: string) =>
+			cards(html, state).find((c) => c.includes(title)) ?? '';
+		// every Mat a Feature's card is on
+		const where = (html: string, title: string) =>
+			STANDINGS.filter((s) => cards(html, s).some((c) => c.includes(title)));
+		const page = async () => panels({ last: await read(shelfTracker()), fault: null });
+
+		it('puts a Feature a Slot holds in Building, even with an open pull request in its Logbook', async () => {
+			draft('1');
+			status().doing({
+				kind: 'building',
+				feature: '1',
+				title: 'Saved filters',
+				ticket: null,
+				step: 'feedback',
+				round: null,
+				rounds: null,
+				session: null,
+				startedAt: minute(40)
+			});
+			expect(where(await page(), 'Saved filters')).toEqual(['building']);
+		});
+
+		it('puts a Feature with needs info or needs a person in Waiting on you, even with an open pull request', async () => {
+			draft('4');
+			draft('5');
+			const html = await page();
+			expect(where(html, 'Audit log')).toEqual(['waiting']);
+			expect(where(html, 'SSO')).toEqual(['waiting']);
+		});
+
+		it('puts a Feature whose last build failed and that carries no Signal in Waiting on you, saying so', async () => {
+			// from its Logbook, and from status.json alone
+			failed('6');
+			status().happened({ kind: 'failed', feature: '7', title: 'Reports', why: 'check red' });
+			const html = await page();
+			expect(where(html, 'Old idea')).toEqual(['waiting']);
+			expect(where(html, 'Reports')).toEqual(['waiting']);
+			expect(card(html, 'waiting', 'Old idea')).toContain('last build failed');
+			expect(card(html, 'waiting', 'Old idea')).toContain('<p>push refused</p>');
+			expect(card(html, 'waiting', 'Reports')).toContain('<p>check red</p>');
+			expect(html).toMatch(/waiting on you<\/span> <b>4<\/b>/);
+		});
+
+		it('keeps a failed Feature given the Go again in the Queue, with its failure on its card', async () => {
+			failed('1');
+			const html = await page();
+			expect(where(html, 'Saved filters')).toEqual(['queue']);
+			expect(card(html, 'queue', 'Saved filters')).toContain('last build failed');
+		});
+
+		it('puts a paused Feature, which keeps the Go, in the Queue: Paused, and until when while the pause has an end', async () => {
+			log('1', 20, { kind: 'buildStarted', by: 'go', branch: 'b', workflow: null });
+			log('1', 30, { kind: 'paused', why: 'plan usage limit' });
+			const file = status();
+			let html = await page();
+			expect(where(html, 'Saved filters')).toEqual(['queue']);
+			expect(card(html, 'queue', 'Saved filters')).toContain('<p class="meta notes">Paused</p>');
+			const until = '2026-10-30T12:00:00.000Z';
+			file.doing({ kind: 'paused', why: 'plan usage limit', until });
+			html = await page();
+			expect(where(html, 'Saved filters')).toEqual(['queue']);
+			expect(card(html, 'queue', 'Saved filters')).toContain(
+				`Paused until <time datetime="${until}">`
+			);
+		});
+
+		it('puts a Feature whose Logbook shows a draft opened in Pull request, not on the Shelf, its state unknown', async () => {
+			draft('7');
+			const html = await page();
+			expect(where(html, 'Reports')).toEqual(['pull']);
+			const pull = card(html, 'pull', 'Reports');
+			expect(pull).toContain('state unknown: this Code host does not list pull requests');
+			expect(pull).toContain('href="https://code.example/pull/7"');
+			expect(pull).toContain(`opened <time datetime="${minute(10)}">`);
+			expect(mat(html, 'shelf')).toContain('<h2>Shelf</h2><i class="tally">1</i>');
+			expect(mat(html, 'pull')).toContain('<h2>Pull request</h2><i class="tally">1</i>');
+		});
+
+		it('puts a stopped Feature in Pull request when its Logbook shows a draft, else on the Shelf, Stopped by you', async () => {
+			draft('7');
+			// a stop the ledger records, and one the Logbook does
+			record(ledgerPath(root), {
+				at: minute(30),
+				repo: 'o/app',
+				feature: '7',
+				ticket: null,
+				branch: 'b',
+				step: 'review',
+				session: 's',
+				costUsd: 1,
+				outcome: 'failed: stopped by a person'
+			});
+			log('6', 20, { kind: 'buildStarted', by: 'go', branch: 'b', workflow: null });
+			log('6', 30, { kind: 'thrownAway', branch: null, why: 'stopped by a person' });
+			const html = await page();
+			expect(where(html, 'Reports')).toEqual(['pull']);
+			expect(where(html, 'Old idea')).toEqual(['shelf']);
+			expect(card(html, 'pull', 'Reports')).toContain('Stopped by you');
+			expect(card(html, 'shelf', 'Old idea')).toContain('Stopped by you');
+		});
+
+		it('shows each Feature in one Mat, the same Standing in the Table and the Overview, Merged unknown, and no Completed', async () => {
+			draft('7');
+			failed('6');
+			draft('5');
+			const html = await page();
+			const [board = '', rest = ''] = html.split('<div class="table">');
+			const [table = '', overview = ''] = rest.split('<div class="overview">');
+			expect(mat(html, 'merged')).toContain('not available from this Code host');
+			expect(html).not.toContain('Completed</h2>');
+			expect(board).not.toContain('data-state="completed"');
+			const titles = ['Saved filters', 'Audit log', 'SSO', 'Old idea', 'Reports &#60;b&#62;'];
+			for (const title of titles) {
+				const mats = where(html, title);
+				expect(mats).toHaveLength(1);
+				const row = new RegExp(`<tr data-state="([a-z]+)"[^>]*data-title="${title}"`);
+				expect(row.exec(table)?.[1]).toBe(mats[0]);
+			}
+			for (const s of ['waiting', 'pull', 'queue', 'shelf']) {
+				const n = String(cards(html, s).length);
+				expect(mat(html, s)).toContain(`<i class="tally">${n}</i>`);
+				const head = `<section id="${s}"><h2>${WORDS[s] ?? s} <small>${n}</small>`;
+				expect(overview).toContain(head);
+			}
+		});
 	});
 });

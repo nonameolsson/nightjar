@@ -264,10 +264,13 @@ describe('statusNoteText', () => {
 
 	it('says each state by the Board’s word', () => {
 		const words: Record<NoteState, string> = {
+			shelf: 'Shelf',
+			queue: 'Queue',
 			building: 'Building',
 			waiting: 'Waiting on you',
 			paused: 'Paused',
 			pull: 'Draft PR open',
+			merged: 'Merged',
 			stopped: 'Stopped'
 		};
 		expect(STATE_WORDS).toEqual(words);
