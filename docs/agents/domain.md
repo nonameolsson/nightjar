@@ -16,6 +16,10 @@ Write from the default branch's tip: a session's checkout can lag `main`, and an
 
 An issue, a spec or a ticket cites an ADR by its path on `origin/main`, so write the ADR first, in the same session that settles it. A number named before its file exists is taken by the next ADR another session writes, and the citation then points at the wrong decision. `scripts/adr.spec.ts` checks every `ADR NNNN` in the repo's files, but nothing checks an issue.
 
+## When a grilling settles
+
+A `/grill-with-docs` session that settles hands off to `/to-spec`, then `/to-tickets`. Both run only when the person types them, so name them when the frontier empties.
+
 ## File structure
 
 Single-context repo (most repos):
