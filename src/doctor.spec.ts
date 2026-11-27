@@ -661,6 +661,47 @@ describe('nightjar doctor over Workflows', () => {
 		).toBe(true);
 	});
 
+	describe('a Step whose prompt is an @file', () => {
+		const filed = {
+			filed: { steps: [step('critique', '@factory/steps/x.md')] },
+			quick: WORKFLOWS.quick
+		};
+		const setup = () => {
+			m = machine();
+			m.writeConfig({ ...GITHUB, workflows: filed });
+			return { ...m.env, FAKE_CLAUDE_SKILLS: 'tdd' };
+		};
+
+		it('fails the Workflow whose prompt file is missing, and no other', async () => {
+			const env = setup();
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(
+				/FAIL {2}Workflow filed: step critique's prompt file factory\/steps\/x.md is missing/
+			);
+			expect(err.join('\n')).not.toContain('Workflow quick');
+			expect(out.join('\n')).toContain('  ok    Workflow quick:');
+		});
+
+		it('looks up the skills the file names, and finds the file', async () => {
+			const env = setup();
+			mkdirSync(join(m.root, 'factory/steps'), { recursive: true });
+			writeFileSync(join(m.root, 'factory/steps/x.md'), 'Run /design-critic on the screens.\n');
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/FAIL {2}Workflow filed: step critique names \/design-critic/);
+			expect(err.join('\n')).not.toContain('prompt file');
+			expect(out.join('\n')).toContain('  ok    Workflow quick:');
+		});
+
+		it('passes when the file is there and names a skill that is loaded', async () => {
+			const env = setup();
+			env.FAKE_CLAUDE_SKILLS = 'design-critic';
+			mkdirSync(join(m.root, 'factory/steps'), { recursive: true });
+			writeFileSync(join(m.root, 'factory/steps/x.md'), 'Run /design-critic on the screens.\n');
+			expect(await start({ env })).toBe(0);
+			expect(out.join('\n')).toContain('Workflow filed: 1 Step, skills found: /design-critic');
+		});
+	});
+
 	it('fails a Workflow whose output is a note and whose Steps can edit code, and passes one without Steps', async () => {
 		m = machine();
 		m.writeConfig({

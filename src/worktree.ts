@@ -138,6 +138,8 @@ export interface Worktree {
 	commitTicket(id: string, title: string, summary: string, session: string): Promise<boolean>;
 	// The folder the Steps share, made, and kept out of the branch.
 	notes(): Promise<string>;
+	// A file of the worktree, by its path from the root, or null when there is none.
+	read(path: string): Promise<string | null>;
 	// The Steps the branch's own commits hold, as their trailers name them.
 	stepsDone(): Promise<Set<string>>;
 	// The Feature's diff against its base, cut at `limit` characters.
@@ -280,6 +282,14 @@ export class GitWorktree implements Worktree {
 			appendFileSync(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}${line}\n`);
 		}
 		return folder;
+	}
+
+	read(path: string): Promise<string | null> {
+		try {
+			return Promise.resolve(readFileSync(resolve(this.at.folder, path), 'utf8'));
+		} catch {
+			return Promise.resolve(null);
+		}
 	}
 
 	// The Steps the branch's own commits hold, as their trailers name them.

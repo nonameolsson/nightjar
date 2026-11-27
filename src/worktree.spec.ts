@@ -146,6 +146,13 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(world.left(tree)).toEqual([]);
 	});
 
+	it('reads a file of the worktree, and says none when it has none', async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'x.md');
+		expect(await tree.read('x.md')).toBe('work\n');
+		expect(await tree.read('none.md')).toBeNull();
+	});
+
 	it('commits what a session left, naming the Ticket, and says when it left nothing', async () => {
 		const { world, tree } = await fresh();
 		expect(await tree.commitTicket('2', 'Share it', 'Done.', 's1')).toBe(false);

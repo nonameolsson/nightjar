@@ -111,6 +111,28 @@ export const DEFAULT_REVIEW_FIX_ROUNDS = 2;
 // How many rounds a Step with an `until` runs when it names no maxRounds.
 export const DEFAULT_ROUNDS = 3;
 
+// The path after the @ of a Step prompt that names a file, else null.
+export const promptFileOf = (prompt: string): string | null =>
+	prompt.startsWith('@') ? prompt.slice(1).trim() : null;
+
+// Whether a Step prompt's @path is relative and stays inside the repo.
+function promptFileInside(prompt: string): boolean {
+	const path = promptFileOf(prompt) ?? '';
+	if (path === '' || /^([/\\]|[a-zA-Z]:)/.test(path)) return false;
+	let depth = 0;
+	for (const part of path.split(/[/\\]/)) {
+		if (part === '..') depth -= 1;
+		else if (part !== '' && part !== '.') depth += 1;
+		if (depth < 0) return false;
+	}
+	return depth > 0;
+}
+
+const nameOf = (step: unknown): string =>
+	typeof step === 'object' && step !== null && 'name' in step && typeof step.name === 'string'
+		? step.name
+		: '';
+
 const Step = z
 	.strictObject({
 		name: oneLine('a Step name').meta({
@@ -121,7 +143,7 @@ const Step = z
 			.regex(/\S/, 'give the Step a prompt')
 			.meta({
 				description:
-					'What the agent is told to do, such as "/some-skill critique"; it may name any skill. Nightjar adds the rule that nobody is at the keyboard.'
+					'What the agent is told to do, such as "/some-skill critique"; it may name any skill. Starting with @, it is a path from the repo\'s root to a Markdown file that holds the prompt, such as "@factory/steps/design-review.md", read from the Feature\'s worktree when the Step runs; the path must stay inside the repo. Nightjar adds the rule that nobody is at the keyboard.'
 			}),
 		point: z
 			.enum(['afterEachTicket', 'afterAllTickets'], {
@@ -153,6 +175,11 @@ const Step = z
 	.refine((step) => step.maxRounds === undefined || step.until !== undefined, {
 		path: ['maxRounds'],
 		error: 'maxRounds needs an until'
+	})
+	.refine((step) => promptFileOf(step.prompt) === null || promptFileInside(step.prompt), {
+		path: ['prompt'],
+		error: (issue) =>
+			`the prompt of the Step "${nameOf(issue.input)}" must be @ and a path inside the repo, such as @factory/steps/x.md, not absolute and not leaving the repo`
 	});
 
 const Workflow = z

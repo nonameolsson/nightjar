@@ -1,11 +1,12 @@
 // `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeAdapters, type Adapters } from './adapters.js';
 import { accountLine, parseAccount, profileEnv } from './account.js';
 import { apiKeyProblem } from './args.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { checksOver, runChecks, type Check, type Line } from './check-runner.js';
-import { loadConfig, loadRules, type Config } from './config.js';
+import { loadConfig, loadRules, promptFileOf, type Config } from './config.js';
 import { installs } from './install-commands.js';
 import { localTime, nextDue, parseCron } from './cron.js';
 import type { GhRunner } from './github/api.js';
@@ -404,7 +405,20 @@ const workflowsCheck = check({
 			name,
 			localNetwork: w.localNetwork === true,
 			note: w.output === 'note',
-			steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
+			steps: w.steps.map((s) => {
+				const file = promptFileOf(s.prompt);
+				if (file === null)
+					return { step: s.name, skills: skillsNamed(s.prompt), file: null, gone: false };
+				const path = join(root, file);
+				// the file is read from the checkout; a Feature's own branch may hold another
+				const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
+				return {
+					step: s.name,
+					skills: text === null ? [] : skillsNamed(text),
+					file,
+					gone: text === null
+				};
+			})
 		}));
 		if (named.length === 0) return { found: { workflowProblems: {} } };
 		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
@@ -431,7 +445,9 @@ const workflowsCheck = check({
 					.map((k) => `step ${s.step} names /${k}`)
 			);
 			const used = [...new Set(w.steps.flatMap((s) => s.skills))];
-			const faults: string[] = [];
+			const faults: string[] = w.steps.flatMap((s) =>
+				s.gone ? [`step ${s.step}'s prompt file ${s.file ?? ''} is missing from the checkout`] : []
+			);
 			if (skills === null && used.length > 0) {
 				faults.push(
 					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked'
