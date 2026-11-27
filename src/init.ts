@@ -1,4 +1,4 @@
-// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for. Under --dry-run it stops once that is shown.
+// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for. Under --dry-run it stops once that is shown. On a terminal, a new setup goes on to a tour that makes the first Feature, unless --no-tour.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
@@ -21,8 +21,10 @@ import {
 	type Line
 } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
+import { makeFeature } from './create.js';
 import { detectChecks, detectTools, type Detected } from './detect-check.js';
 import { failures, printLines } from './doctor.js';
+import { firstFeature, sentenceProblem, shownFeature, suggestedSentence } from './first-feature.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
@@ -30,6 +32,7 @@ import type { Os } from './sandbox.js';
 import { clackPrompter, type Prompter } from './prompter.js';
 import { recap } from './recap.js';
 import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
+import type { FeatureWriter, Tracker } from './tracker.js';
 
 // How each question is answered: by its flag, else by its default under --yes, else by asking.
 interface Answering {
@@ -49,6 +52,7 @@ export interface InitOptions extends Answering {
 	readonly os: Os;
 	readonly useApiKey: boolean;
 	readonly dryRun: boolean;
+	readonly noTour: boolean;
 	readonly profile?: string;
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
@@ -907,6 +911,41 @@ async function showDryRun(
 	return 0;
 }
 
+const SENTENCE_QUESTION = 'What should your first Feature do, in one sentence?';
+const MAKE_QUESTION = 'Make this Feature and its Ticket on the Tracker?';
+
+// The tour's first Feature: shown as it will be made, and made on a yes as `nightjar create` makes one. 1 when the Tracker failed part way.
+async function makeFirstFeature(
+	o: InitOptions,
+	prompter: Prompter,
+	writer: (Tracker & FeatureWriter) | string
+): Promise<number> {
+	if (typeof writer === 'string') {
+		say(`no first Feature made: ${writer}`);
+		return 0;
+	}
+	const suggested = suggestedSentence(o.root);
+	prompter.note('Now your first Feature. Press Enter to take the suggested sentence.');
+	const got = orCancel(
+		await prompter.text(SENTENCE_QUESTION, suggested, sentenceProblem),
+		SENTENCE_QUESTION
+	);
+	const plan = firstFeature(got.trim() || suggested);
+	say('this is your first Feature and its one Ticket:');
+	for (const line of shownFeature(plan)) console.log(line);
+	if (!orCancel(await prompter.confirm(MAKE_QUESTION, true), MAKE_QUESTION)) {
+		say('made nothing on the Tracker');
+		return 0;
+	}
+	try {
+		await makeFeature(writer, plan, say);
+		return 0;
+	} catch (fault) {
+		console.error(`nightjar: ${why(fault)}`);
+		return 1;
+	}
+}
+
 export async function runInit(given: InitOptions): Promise<number> {
 	const file = join(given.root, CONFIG_FILE);
 	const wrote = !existsSync(file);
@@ -965,6 +1004,11 @@ export async function runInit(given: InitOptions): Promise<number> {
 		);
 		return 2;
 	}
+	// the tour: a person at a terminal, in a repo this run set up
+	if (wrote && terminal !== undefined && !o.noTour && checked.adapters !== null) {
+		const code = await makeFirstFeature(o, terminal, checked.adapters.writer);
+		if (code !== 0) return code;
+	}
 	// a terminal shows bold itself; elsewhere the output is read as Markdown, as Claude Code does
 	const bold = (words: string) =>
 		terminal === undefined ? `**${words}**` : `\x1b[1m${words}\x1b[22m`;
@@ -992,7 +1036,8 @@ const INIT_USAGE = `usage: nightjar init [--yes] [--dry-run] [--no-tour] [--use-
   --yes, -y  take every default and ask nothing; a value with no default must be given by its flag
   --dry-run  check the machine, show what init would write and create, taking each answer as --yes does,
              and name each value that lacks a flag; asks, writes and creates nothing
-  --no-tour  stop once factory.json and .gitignore are written, with the recap of how to go on
+  --no-tour  stop once factory.json and .gitignore are written, with the recap of how to go on,
+             making no first Feature
   a flag sets its answer and skips its question; --allowed-commands is comma separated, or none`;
 
 // the flags that take a value, each named as Answering.flags names it
@@ -1017,6 +1062,7 @@ const VALUE_FLAGS = new Set([
 interface InitArgs {
 	readonly yes: boolean;
 	readonly dryRun: boolean;
+	readonly noTour: boolean;
 	readonly useApiKey: boolean;
 	readonly flags: ReadonlyMap<string, string>;
 }
@@ -1025,6 +1071,7 @@ interface InitArgs {
 function parseInitArgs(argv: readonly string[]): InitArgs | string {
 	let yes = false;
 	let dryRun = false;
+	let noTour = false;
 	let useApiKey = false;
 	const flags = new Map<string, string>();
 	for (let i = 0; i < argv.length; i += 1) {
@@ -1033,8 +1080,7 @@ function parseInitArgs(argv: readonly string[]): InitArgs | string {
 		if (a === '--yes' || a === '-y') yes = true;
 		else if (a === '--dry-run') dryRun = true;
 		else if (a === '--use-api-key') useApiKey = true;
-		// every run ends once the files are written, which is all this flag asks for
-		else if (a === '--no-tour') continue;
+		else if (a === '--no-tour') noTour = true;
 		else if (a.startsWith('--') && VALUE_FLAGS.has(name)) {
 			const value = argv[i + 1];
 			if (value === undefined || value.startsWith('--')) return `${a} needs a value`;
@@ -1042,7 +1088,7 @@ function parseInitArgs(argv: readonly string[]): InitArgs | string {
 			i += 1;
 		} else return `unknown argument ${a}`;
 	}
-	return { yes, dryRun, useApiKey, flags };
+	return { yes, dryRun, noTour, useApiKey, flags };
 }
 
 // The `init` command: its arguments, the checkout it is run in, and a refusal said as it is.
@@ -1072,6 +1118,7 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 			os: host.os,
 			useApiKey: parsed.useApiKey,
 			dryRun,
+			noTour: parsed.noTour,
 			...(profile === undefined ? {} : { profile }),
 			yes,
 			flags,

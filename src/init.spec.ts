@@ -3,14 +3,19 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AzureDevOpsApi } from './azure-devops/api.js';
 import { FakeAzureDevOps, type FakeProcess } from './azure-devops/fake-azure-devops.js';
+import { AzureBoardsTracker } from './azure-devops/tracker.js';
 import { loadConfig } from './config.js';
 import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
+import type { GhRunner } from './github/api.js';
 import { FakeGitHub } from './github/fake-github.js';
+import { GitHubTracker } from './github/tracker.js';
 import { runNightjar } from './main.js';
 import type { Prompter } from './prompter.js';
 import { recap } from './recap.js';
+import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 
 let out: string[];
 let err: string[];
@@ -1020,7 +1025,7 @@ describe('nightjar init on a terminal', () => {
 			note: (text) => void transcript.push(text)
 		};
 	}
-	const initUi = (
+	const tourUi = (
 		picks: Picks,
 		argv: string[] = ['init'],
 		prompter = withUi(picks),
@@ -1035,6 +1040,13 @@ describe('nightjar init on a terminal', () => {
 			prompter
 		});
 	};
+	// the setup alone, which stops before the tour's first Feature; that has specs of its own
+	const initUi = (
+		picks: Picks,
+		argv: string[] = ['init'],
+		prompter?: Prompter,
+		ado?: FakeAzureDevOps
+	) => tourUi(picks, [...argv, '--no-tour'], prompter, ado);
 
 	const gitignore = () => join(m.root, '.gitignore');
 	const makefile = (...targets: string[]) =>
@@ -1048,6 +1060,8 @@ describe('nightjar init on a terminal', () => {
 		return transcript.slice(start, transcript.indexOf(SUMMARY_QUESTION) + 1);
 	};
 	const ansiRecap = () => recap({ go: 'factory-go', bold: (words) => `\x1b[1m${words}\x1b[22m` });
+	const issuesOpened = () =>
+		github.calls.filter((c) => c.method === 'POST' && c.path === 'repos/o/r/issues');
 	// the Tracker and Code host questions on GitHub, taking the repo each offers
 	const github4 = ['github', '', 'github', ''];
 
@@ -1242,9 +1256,11 @@ describe('nightjar init on a terminal', () => {
 
 	it('stops after the writes under --no-tour, with the recap', async () => {
 		makefile('check');
-		expect(await initUi([true], ['init', '--no-tour'])).toBe(0);
+		expect(await tourUi([true], ['init', '--no-tour'])).toBe(0);
+		expect(offered).toEqual([[SUMMARY_QUESTION, true]]);
 		expect(existsSync(written())).toBe(true);
 		expect(readFileSync(gitignore(), 'utf8')).toBe('.factory/\n');
+		expect(issuesOpened()).toEqual([]);
 		expect(out.at(-1)).toBe(ansiRecap());
 	});
 
@@ -1391,6 +1407,203 @@ describe('nightjar init on a terminal', () => {
 				['Git repo on Azure Repos, by name', 'fabrikam-app']
 			]);
 			expect(m.readConfig()).toMatchObject(azurePair('Feature', 'Product Backlog Item'));
+		});
+	});
+
+	describe('the tour makes the first Feature', () => {
+		const SENTENCE_QUESTION = 'What should your first Feature do, in one sentence?';
+		const MAKE_QUESTION = 'Make this Feature and its Ticket on the Tracker?';
+		const NOTE = "Add a short 'Built with Nightjar' note to the README";
+		const CREATE = 'Create a README with one line about this repo';
+		const bodyOf = (sentence: string) =>
+			`${sentence}\n\n## Acceptance criteria\n\n- [ ] ${sentence}\n- [ ] the check passes`;
+		const tracked = () => new GitHubTracker('o/r', github.gh, DEFAULT_SIGNAL_NAMES);
+		const doctor = (ado?: FakeAzureDevOps) =>
+			runNightjar(['doctor', '1'], {
+				os: { platform: 'linux', kernel: '' },
+				cwd: m.root,
+				env: m.env,
+				gh: github.gh,
+				...(ado === undefined ? {} : { request: ado.request })
+			});
+		// what is shown between the line that introduces the Feature and the question to make it
+		const shown = () =>
+			transcript.slice(
+				transcript.indexOf('nightjar: this is your first Feature and its one Ticket:') + 1,
+				transcript.indexOf(MAKE_QUESTION)
+			);
+
+		beforeEach(() => {
+			// no issue yet, so the Feature is #1 and its Ticket #2
+			github = new FakeGitHub('o/r', 'ann');
+			makefile('check');
+		});
+
+		it.each([
+			['the README note in a repo with a README', 'README.md', NOTE],
+			['a README of any extension', 'readme.rst', NOTE],
+			['a new README in a repo without one', null, CREATE]
+		])('offers %s, and takes it with Enter', async (_what, readme, sentence) => {
+			if (readme !== null) writeFileSync(join(m.root, readme), 'hello\n');
+			expect(await tourUi([true, '', true])).toBe(0);
+			expect(offered).toEqual([
+				[SUMMARY_QUESTION, true],
+				[SENTENCE_QUESTION, sentence],
+				[MAKE_QUESTION, true]
+			]);
+			expect((await tracked().feature('1')).title).toBe(sentence);
+		});
+
+		it('makes a Feature with no Signal and its one Ticket ready, as shown, then the recap', async () => {
+			const sentence = 'Say hello in the README';
+			expect(await tourUi([true, sentence, true])).toBe(0);
+			expect(err).toEqual([]);
+			expect(shown()).toEqual([
+				`  Feature: ${sentence}`,
+				`    ${sentence}`,
+				`  Ticket: ${sentence}`,
+				`    ${sentence}`,
+				'',
+				'    ## Acceptance criteria',
+				'',
+				`    - [ ] ${sentence}`,
+				'    - [ ] the check passes'
+			]);
+			expect(await tracked().feature('1')).toEqual({
+				id: '1',
+				title: sentence,
+				body: sentence
+			});
+			expect((await tracked().standing('1')).signals).toEqual([]);
+			const tickets = await tracked().tickets('1');
+			expect(tickets).toMatchObject([
+				{ id: '2', title: sentence, body: bodyOf(sentence), signals: ['ready'] }
+			]);
+			expect(out).toContain(`nightjar: made the Feature #1 ${sentence}`);
+			expect(out).toContain(`nightjar: made Ticket 1 as #2 ${sentence}, ready`);
+			expect(out.at(-1)).toBe(ansiRecap());
+
+			out.length = 0;
+			expect(await doctor()).toBe(0);
+			expect(out).toEqual(['nightjar: #2: ok']);
+		});
+
+		it('creates nothing on no, and ends with the recap', async () => {
+			expect(await tourUi([true, '', false])).toBe(0);
+			expect(issuesOpened()).toEqual([]);
+			expect(out).toContain('nightjar: made nothing on the Tracker');
+			expect(out.at(-1)).toBe(ansiRecap());
+		});
+
+		it.each([
+			['the sentence', [true, null], SENTENCE_QUESTION],
+			['the yes or no', [true, '', null], MAKE_QUESTION]
+		])('ends on a cancel at %s, keeping the setup', async (_what, picks, question) => {
+			// a cancelled text prompt answers null, which the scripted one would read as Enter
+			const scripted = withUi(picks);
+			const prompter: Prompter = {
+				...scripted,
+				text: (message, fallback, accept) =>
+					picks[1] === null ? Promise.resolve(null) : scripted.text(message, fallback, accept)
+			};
+			expect(await tourUi(picks, ['init'], prompter)).toBe(2);
+			expect(err.join('\n')).toContain(`cancelled at: ${question}`);
+			expect(existsSync(written())).toBe(true);
+			expect(issuesOpened()).toEqual([]);
+		});
+
+		it.each([
+			['that opens a code block', '```'],
+			['that reads as a Model line', 'Model: opus'],
+			['too long for a title', 'a'.repeat(256)]
+		])('asks again for a sentence %s', async (_what, refused) => {
+			expect(await tourUi([true, refused, 'Say hello', true])).toBe(0);
+			expect((await tracked().feature('1')).title).toBe('Say hello');
+		});
+
+		it('says what it made before a fault of the Tracker, and exits 1', async () => {
+			const real = github.gh;
+			const failing: GhRunner = (args) =>
+				args.some((a) => a.endsWith('/sub_issues'))
+					? Promise.resolve({
+							ok: false,
+							out: '',
+							err: 'gh: Server Error (HTTP 500)',
+							missing: false
+						})
+					: real(args);
+			Object.assign(github, { gh: failing });
+			expect(await tourUi([true, '', true])).toBe(1);
+			expect(err.join('\n')).toContain('made before it: #1. Nothing was undone.');
+			expect(out.join('\n')).not.toContain('From here on');
+		});
+
+		it('says why a Tracker without a Ticket type makes none, and ends with the recap', async () => {
+			const argv = [
+				'init',
+				'--tracker',
+				'azure-devops',
+				'--tracker-organization',
+				'contoso',
+				'--tracker-project',
+				'Fabrikam',
+				'--code-host',
+				'github',
+				'--check',
+				'make check'
+			];
+			expect(await tourUi(['', '', '', ['make check'], '', true], argv)).toBe(0);
+			expect(out.join('\n')).toContain(
+				'nightjar: no first Feature made: factory.json: tracker.ticketType: name the work item type'
+			);
+			expect(offered.map(([q]) => q)).not.toContain(SENTENCE_QUESTION);
+			expect(out.at(-1)).toBe(ansiRecap());
+		});
+
+		it('makes a Feature and a child Ticket with the ready tag on Azure DevOps', async () => {
+			const ado = azureProject();
+			setOrigin('https://dev.azure.com/contoso/Fabrikam/_git/fabrikam-app');
+			expect(await tourUi([true, '', true], ['init'], undefined, ado)).toBe(0);
+			expect(err).toEqual([]);
+			const made = ado.asked.filter((c) => c.url.includes('/_apis/wit/workitems/$'));
+			expect(made.map((c) => /workitems\/\$([^?]+)/.exec(c.url)?.[1])).toEqual([
+				'Feature',
+				'User%20Story'
+			]);
+			const api = new AzureDevOpsApi('contoso', ado.signIn(), ado.request);
+			const settings = { project: 'Fabrikam', featureType: 'Feature', ticketType: 'User Story' };
+			const boards = new AzureBoardsTracker(api, settings, DEFAULT_SIGNAL_NAMES);
+			expect(await boards.tickets('1')).toMatchObject([
+				{ id: '2', title: CREATE, body: bodyOf(CREATE), signals: ['ready'] }
+			]);
+			expect(ado.tagsOf(1)).toEqual([]);
+			expect(ado.tagsOf(2)).toEqual(['ready-for-agent']);
+
+			out.length = 0;
+			expect(await doctor(ado)).toBe(0);
+			// Azure Repos of the same organization links a work item as #N
+			expect(out).toEqual(['nightjar: #2: ok']);
+		});
+
+		it.each([
+			['under --yes', ['init', '--yes', '--check', 'make check']],
+			['in a dry run', ['init', '--dry-run']]
+		])('is not taken %s', async (_how, argv) => {
+			expect(await tourUi([], argv)).toBe(0);
+			expect(offered).toEqual([]);
+			expect(issuesOpened()).toEqual([]);
+		});
+
+		it('is not taken over a factory.json that is there', async () => {
+			m.writeConfig({
+				tracker: { type: 'github' },
+				codeHost: { type: 'github' },
+				check: 'make check',
+				allowedCommands: []
+			});
+			expect(await tourUi([])).toBe(0);
+			expect(offered).toEqual([]);
+			expect(out.at(-1)).toBe(ansiRecap());
 		});
 	});
 });
