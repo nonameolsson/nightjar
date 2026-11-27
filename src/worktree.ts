@@ -1,7 +1,14 @@
 // Only Nightjar commits in the worktree or saves a failed attempt; the Code host pushes.
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { firstLine, run, type Env } from './git.js';
 
 // A git command Nightjar cannot go on without.
@@ -138,6 +145,8 @@ export interface Worktree {
 	commitTicket(id: string, title: string, summary: string, session: string): Promise<boolean>;
 	// The folder the Steps share, made, and kept out of the branch.
 	notes(): Promise<string>;
+	// A file of the worktree, by its path from the root, or null when there is none.
+	read(path: string): Promise<string | null>;
 	// The Steps the branch's own commits hold, as their trailers name them.
 	stepsDone(): Promise<Set<string>>;
 	// The Feature's diff against its base, cut at `limit` characters.
@@ -280,6 +289,10 @@ export class GitWorktree implements Worktree {
 			appendFileSync(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}${line}\n`);
 		}
 		return folder;
+	}
+
+	read(path: string): Promise<string | null> {
+		return Promise.resolve(readInside(this.at.folder, path));
 	}
 
 	// The Steps the branch's own commits hold, as their trailers name them.
@@ -485,6 +498,17 @@ export class GitWorktree implements Worktree {
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
 		await this.git(['commit', '-q', '-m', reviewCommitMessage(round, summary, session)]);
 		return true;
+	}
+}
+
+// A file under `root`, or null when it is missing, unreadable, or a link leads out of `root`: a Step's prompt file is the repo's, not the machine's.
+export function readInside(root: string, path: string): string | null {
+	try {
+		const base = realpathSync(root);
+		const real = realpathSync(resolve(base, path));
+		return real.startsWith(base + sep) ? readFileSync(real, 'utf8') : null;
+	} catch {
+		return null;
 	}
 }
 

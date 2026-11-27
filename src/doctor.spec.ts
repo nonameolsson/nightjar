@@ -1,5 +1,6 @@
 // `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { oneEscape } from './fakes/github.js';
@@ -659,6 +660,65 @@ describe('nightjar doctor over Workflows', () => {
 		expect(
 			checked.lines.filter((l) => l.status === 'fail').every((l) => l.only !== undefined)
 		).toBe(true);
+	});
+
+	describe('a Step whose prompt is an @file', () => {
+		const filed = {
+			filed: { steps: [step('critique', '@factory/steps/x.md')] },
+			quick: WORKFLOWS.quick
+		};
+		const setup = () => {
+			m = machine();
+			m.writeConfig({ ...GITHUB, workflows: filed });
+			return { ...m.env, FAKE_CLAUDE_SKILLS: 'tdd' };
+		};
+
+		it('fails the Workflow whose prompt file is missing, and no other', async () => {
+			const env = setup();
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(
+				/FAIL {2}Workflow filed: step critique's prompt file factory\/steps\/x.md is missing/
+			);
+			expect(err.join('\n')).not.toContain('Workflow quick');
+			expect(out.join('\n')).toContain('  ok    Workflow quick:');
+		});
+
+		it('looks up the skills the file names, and finds the file', async () => {
+			const env = setup();
+			mkdirSync(join(m.root, 'factory/steps'), { recursive: true });
+			writeFileSync(join(m.root, 'factory/steps/x.md'), 'Run /design-critic on the screens.\n');
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/FAIL {2}Workflow filed: step critique names \/design-critic/);
+			expect(err.join('\n')).not.toContain('prompt file');
+			expect(out.join('\n')).toContain('  ok    Workflow quick:');
+		});
+
+		it('reports a prompt path that is a folder, or a link out of the checkout, as missing', async () => {
+			const env = setup();
+			mkdirSync(join(m.root, 'factory/steps/x.md'), { recursive: true });
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/step critique's prompt file factory\/steps\/x.md is missing/);
+		});
+
+		it('reports a prompt file that is a symlink out of the checkout as missing', async () => {
+			const env = setup();
+			const outside = mkdtempSync(join(tmpdir(), 'outside-'));
+			writeFileSync(join(outside, 'x.md'), 'Run /design-critic.\n');
+			mkdirSync(join(m.root, 'factory/steps'), { recursive: true });
+			symlinkSync(join(outside, 'x.md'), join(m.root, 'factory/steps/x.md'));
+			expect(await start({ env })).toBe(2);
+			expect(err.join('\n')).toMatch(/step critique's prompt file factory\/steps\/x.md is missing/);
+			rmSync(outside, { recursive: true, force: true });
+		});
+
+		it('passes when the file is there and names a skill that is loaded', async () => {
+			const env = setup();
+			env.FAKE_CLAUDE_SKILLS = 'design-critic';
+			mkdirSync(join(m.root, 'factory/steps'), { recursive: true });
+			writeFileSync(join(m.root, 'factory/steps/x.md'), 'Run /design-critic on the screens.\n');
+			expect(await start({ env })).toBe(0);
+			expect(out.join('\n')).toContain('Workflow filed: 1 Step, skills found: /design-critic');
+		});
 	});
 
 	it('fails a Workflow whose output is a note and whose Steps can edit code, and passes one without Steps', async () => {

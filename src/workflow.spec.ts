@@ -159,6 +159,8 @@ describe('the Steps of a Workflow', () => {
 		checkOk: boolean;
 		// the Steps the branch holds already
 		done: string[];
+		// the files the worktree holds, by path from its root
+		files: Record<string, string>;
 		agent: (req: StepRequest) => StepOutcome;
 		// the fix rounds; the default runs none and leaves the check as it is
 		fixer: (work: FixWork) => FixEnd;
@@ -180,6 +182,7 @@ describe('the Steps of a Workflow', () => {
 		serveOk: true,
 		checkOk: true,
 		done: [],
+		files: {},
 		agent: (req) => stepDone(req),
 		fixer: (work) => ({ check: work.check, spent: work.spent, summaries: [] }),
 		dailyPause: null,
@@ -193,6 +196,7 @@ describe('the Steps of a Workflow', () => {
 			// each commit a Step makes moves the head
 			head: () => Promise.resolve(`head-${String(b.commits.length)}`),
 			notes: () => Promise.resolve(NOTES),
+			read: (path) => Promise.resolve(b.files[path] ?? null),
 			diff: () => Promise.resolve({ text: '+++ b/ticket-3.txt', truncated: false }),
 			stepsDone: () => Promise.resolve(new Set(b.done)),
 			commitStep: (o) => {
@@ -316,6 +320,38 @@ describe('the Steps of a Workflow', () => {
 		expect(b.said).toEqual(['w/critique: session session-1', 'w/polish: session session-2']);
 		const section = steps.section([], ref);
 		expect(section).toBe('## Workflow `w`\n\n- `critique`: done\n- `polish`: done');
+	});
+
+	it('gives a Step whose prompt is an @file the text of the file in the worktree', async () => {
+		const b = bench();
+		b.files['factory/steps/x.md'] = '# Critique\n\n/design-critic the screens\n';
+		const filed = {
+			name: 'critique',
+			prompt: '@factory/steps/x.md',
+			point: 'afterAllTickets'
+		} as const;
+		const steps = await open(b, { steps: [filed] });
+		expect(await steps.runAt('afterAllTickets', null)).toEqual({ kind: 'next' });
+		expect(b.asked[0]?.step).toEqual({
+			...filed,
+			prompt: '# Critique\n\n/design-critic the screens\n'
+		});
+		expect(steps.section([], ref)).toBe('## Workflow `w`\n\n- `critique`: done');
+	});
+
+	it('leaves a Step undone, with the reason, when its prompt file is missing', async () => {
+		const b = bench();
+		const filed = {
+			name: 'critique',
+			prompt: '@factory/steps/x.md',
+			point: 'afterAllTickets'
+		} as const;
+		const steps = await open(b, { steps: [filed, polish] });
+		await steps.runAt('afterAllTickets', null);
+		expect(b.asked.map((r) => r.step.name)).toEqual(['polish']);
+		expect(steps.section([], ref)).toBe(
+			'## Workflow `w`\n\n- `critique`: **not done**, its prompt file factory/steps/x.md is missing; its changes were thrown away\n- `polish`: done'
+		);
 	});
 
 	it('runs an afterEachTicket Step after its Ticket, without the Feature diff, and keys it by the Ticket', async () => {

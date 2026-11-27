@@ -658,6 +658,23 @@ describe('workflows', () => {
 		expect(refusal()).toContain(said);
 	});
 
+	it('loads a Step whose prompt is an @file inside the repo', () => {
+		write({
+			...VALID,
+			workflows: { w: { steps: [{ ...step, prompt: '@factory/steps/x.md' }] } }
+		});
+		expect(loadConfig(root).workflows?.w?.steps[0]?.prompt).toBe('@factory/steps/x.md');
+	});
+
+	it.each(['@../x.md', '@/etc/x', '@a/../../x.md', '@', '@C:\\x.md'])(
+		'refuses the Step prompt %s, naming the Step',
+		(prompt) => {
+			write({ ...VALID, workflows: { w: { steps: [{ ...step, prompt }] } } });
+			expect(refusal()).toContain('the Step "critique"');
+			expect(refusal()).toContain('inside the repo');
+		}
+	);
+
 	it('loads a Workflow with a prompt and no Steps, and one with both', () => {
 		write({
 			...VALID,

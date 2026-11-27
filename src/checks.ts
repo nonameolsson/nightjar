@@ -16,8 +16,8 @@ import { goFault } from './intake.js';
 import { isLoaded, loadedSkills, type LoadedSkills } from './skills.js';
 import { templateFaults } from './template.js';
 import { sandboxFinding, type Os, type SandboxFinding } from './sandbox.js';
-import { skillsNamed } from './workflow.js';
-import { defaultBranch, signing } from './worktree.js';
+import { promptOf, skillsNamed } from './workflow.js';
+import { defaultBranch, readInside, signing } from './worktree.js';
 import { why } from './say.js';
 
 export type { Line } from './check-runner.js';
@@ -400,12 +400,24 @@ const workflowsCheck = check({
 	name: 'Workflows',
 	needs: ['root', 'claude'],
 	run: async ({ root, loaded, sandbox }, o) => {
-		const named = Object.entries(loaded?.config.workflows ?? {}).map(([name, w]) => ({
-			name,
-			localNetwork: w.localNetwork === true,
-			note: w.output === 'note',
-			steps: w.steps.map((s) => ({ step: s.name, skills: skillsNamed(s.prompt) }))
-		}));
+		const named = await Promise.all(
+			Object.entries(loaded?.config.workflows ?? {}).map(async ([name, w]) => ({
+				name,
+				localNetwork: w.localNetwork === true,
+				note: w.output === 'note',
+				// the file is read from the checkout; a Feature's own branch may hold another
+				steps: await Promise.all(
+					w.steps.map(async (s) => {
+						const prompt = await promptOf(s.prompt, (file) =>
+							Promise.resolve(readInside(root, file))
+						);
+						return 'missing' in prompt
+							? { step: s.name, skills: [], missing: prompt.missing }
+							: { step: s.name, skills: skillsNamed(prompt.text), missing: null };
+					})
+				)
+			}))
+		);
 		if (named.length === 0) return { found: { workflowProblems: {} } };
 		const wanted = named.some((w) => w.steps.some((s) => s.skills.length > 0));
 		const skills = wanted
@@ -431,7 +443,11 @@ const workflowsCheck = check({
 					.map((k) => `step ${s.step} names /${k}`)
 			);
 			const used = [...new Set(w.steps.flatMap((s) => s.skills))];
-			const faults: string[] = [];
+			const faults: string[] = w.steps.flatMap((s) =>
+				s.missing === null
+					? []
+					: [`step ${s.step}'s prompt file ${s.missing} is missing from the checkout`]
+			);
 			if (skills === null && used.length > 0) {
 				faults.push(
 					'could not list the skills a headless claude session loads, so /skills in its Steps are unchecked'

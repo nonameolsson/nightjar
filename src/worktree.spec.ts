@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -145,6 +145,28 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(await tree.isSetUp()).toBe(false);
 		expect(world.left(tree)).toEqual([]);
 	});
+
+	it('reads a file of the worktree, and says none when it has none', async () => {
+		const { world, tree } = await fresh();
+		world.write(tree, 'x.md');
+		expect(await tree.read('x.md')).toBe('work\n');
+		expect(await tree.read('none.md')).toBeNull();
+	});
+
+	it.runIf(_name === 'git')(
+		'reads no file that a symlink or a directory puts out of reach',
+		async () => {
+			const { tree } = await fresh();
+			const outside = mkdtempSync(join(tmpdir(), 'outside-'));
+			writeFileSync(join(outside, 'secret.md'), 'secret\n');
+			symlinkSync(join(outside, 'secret.md'), join(tree.at.folder, 'link.md'));
+			symlinkSync(outside, join(tree.at.folder, 'dir'));
+			expect(await tree.read('link.md')).toBeNull();
+			expect(await tree.read('dir/secret.md')).toBeNull();
+			expect(await tree.read('.')).toBeNull();
+			rmSync(outside, { recursive: true, force: true });
+		}
+	);
 
 	it('commits what a session left, naming the Ticket, and says when it left nothing', async () => {
 		const { world, tree } = await fresh();
