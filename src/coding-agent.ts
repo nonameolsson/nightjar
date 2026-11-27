@@ -4,17 +4,20 @@ import type { Env } from './git.js';
 import type { Feedback } from './code-host.js';
 import {
 	BUILD_SCHEMA,
+	CONFLICTS_SCHEMA,
 	FEEDBACK_SCHEMA,
 	RETRO_SCHEMA,
 	REVIEW_ROUND_SCHEMA,
 	REVIEW_SCHEMA,
 	STEP_SCHEMA,
 	buildPrompt,
+	conflictsPrompt,
 	feedbackPrompt,
 	fixPrompt,
 	freshPullChecksPrompt,
 	pullChecksPrompt,
 	readBuildAnswer,
+	readConflictsAnswer,
 	readFeedbackAnswer,
 	readRetroAnswer,
 	readReview,
@@ -116,6 +119,8 @@ export interface BuildRequest extends Work {
 export type Fixing =
 	| { readonly kind: 'build'; readonly output?: 'note' }
 	| { readonly kind: 'feedback' }
+	// a Conflict fix's fix rounds keep its answer's shape
+	| { readonly kind: 'conflicts' }
 	| { readonly kind: 'reviewRound'; readonly output?: 'note' }
 	| { readonly kind: 'step'; readonly step: StepConfig; readonly extras: StepExtras }
 	// `fresh` is given when the head commit's Session is gone: the fix starts a new Session, which has only this to go on
@@ -177,6 +182,18 @@ export interface ReviewRoundRequest extends Work {
 	readonly diff: { readonly text: string; readonly truncated: boolean };
 	// "note": the Feature's Workflow writes a note, so the round may revise only the note
 	readonly output?: 'note';
+}
+
+// A Conflict fix: Nightjar's merge of the base into the branch stopped on `files`, which a new Session resolves.
+export interface ConflictsRequest extends Work {
+	readonly kind: 'conflicts';
+	readonly sessionId: string;
+	readonly feature: Feature;
+	readonly files: readonly string[];
+	// the base's commits since the branch forked or was last merged
+	readonly baseCommits: { readonly text: string; readonly truncated: boolean };
+	// the most minutes the Session may run
+	readonly minutes: number;
 }
 
 export interface ReviewRequest extends Work {
@@ -256,6 +273,12 @@ export type ReviewRoundOutcome = Outcome<
 	| { readonly kind: 'blocked'; readonly blocker: string }
 >;
 
+export type ConflictsOutcome = Outcome<
+	// `files`: the files the Session says it resolved
+	| { readonly kind: 'resolved'; readonly summary: string; readonly files: readonly string[] }
+	| { readonly kind: 'blocked'; readonly blocker: string }
+>;
+
 export type ReviewOutcome = Outcome<{ readonly kind: 'reviewed'; readonly review: Review }>;
 
 export type RetroOutcome = Outcome<
@@ -269,6 +292,7 @@ export interface CodingAgent {
 	fix(req: FixRequest): Promise<FixOutcome>;
 	step(req: StepRequest): Promise<StepOutcome>;
 	feedback(req: FeedbackRequest): Promise<FeedbackOutcome>;
+	conflicts(req: ConflictsRequest): Promise<ConflictsOutcome>;
 	review(req: ReviewRequest): Promise<ReviewOutcome>;
 	reviewRound(req: ReviewRoundRequest): Promise<ReviewRoundOutcome>;
 	retro(req: RetroRequest): Promise<RetroOutcome>;
@@ -420,6 +444,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 				...(req.minutes === undefined ? {} : { minutes: req.minutes }),
 				...(req.of.kind === 'step' ? stepSession(req.of.step, req.of.extras) : {}),
 				...(req.of.kind === 'feedback' ? { schema: FEEDBACK_SCHEMA } : {}),
+				...(req.of.kind === 'conflicts' ? { schema: CONFLICTS_SCHEMA } : {}),
 				// a Review round's fix rounds name the round's model and effort, as a Step's do
 				...(req.of.kind === 'reviewRound'
 					? { schema: REVIEW_ROUND_SCHEMA, ...pick(setup.review) }
@@ -438,6 +463,13 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 					const answer = readFeedbackAnswer(output);
 					if (answer === null) return null;
 					return answer.outcome === 'answered'
+						? { kind: 'fixed' as const, summary: answer.summary }
+						: { kind: 'gaveUp' as const };
+				}
+				if (req.of.kind === 'conflicts') {
+					const answer = readConflictsAnswer(output);
+					if (answer === null) return null;
+					return answer.outcome === 'resolved'
 						? { kind: 'fixed' as const, summary: answer.summary }
 						: { kind: 'gaveUp' as const };
 				}
@@ -521,6 +553,33 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 			}
 		);
 
+	// A Conflict fix starts a Session of its own, on the defaults a build would run on and the Conflict fix's own minutes.
+	const conflicts = (req: ConflictsRequest) =>
+		outcomeOf(
+			request(req, {
+				prompt: conflictsPrompt({
+					feature: req.feature,
+					base: req.at.base,
+					files: req.files,
+					baseCommits: req.baseCommits,
+					allowed: setup.allowedCommands,
+					check: setup.check,
+					...(setup.rules === undefined ? {} : { rules: setup.rules })
+				}),
+				sessionId: req.sessionId,
+				schema: CONFLICTS_SCHEMA,
+				minutes: req.minutes,
+				...pick()
+			}),
+			(output) => {
+				const answer = readConflictsAnswer(output);
+				if (answer === null) return null;
+				return answer.outcome === 'resolved'
+					? { kind: 'resolved' as const, summary: answer.summary, files: answer.files }
+					: { kind: 'blocked' as const, blocker: answer.blocker };
+			}
+		);
+
 	// A Review round starts a Session of its own, on a Ticket's minutes and the Review's model and effort.
 	const reviewRound = (req: ReviewRoundRequest) =>
 		outcomeOf(
@@ -589,6 +648,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 		fix,
 		step,
 		feedback,
+		conflicts,
 		reviewRound,
 		retro,
 		review: (req) =>

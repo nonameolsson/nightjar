@@ -105,6 +105,9 @@ const oneLine = (what: string) => z.string().regex(/^[^\r\n]*\S[^\r\n]*$/, `${wh
 // The Pull-check pass's limits when factory.json names none.
 export const DEFAULT_PULL_CHECKS = { fixRounds: 2, fixUsd: 5, fixMinutes: 30 } as const;
 
+// The Conflict fix's limits when factory.json names none: the Pull-check pass's.
+export const DEFAULT_CONFLICTS = { fixRounds: 2, fixUsd: 5, fixMinutes: 30 } as const;
+
 // How many Review rounds a build gets when factory.json names none.
 export const DEFAULT_REVIEW_FIX_ROUNDS = 2;
 
@@ -579,6 +582,41 @@ export const ConfigSchema = z
 			.meta({
 				description:
 					"The pass over Nightjar's own red draft pull requests: it fixes their failed Pull checks until a person engages with the pull request"
+			}),
+		conflicts: z
+			.strictObject({
+				enabled: z.boolean().optional().meta({
+					description:
+						'true has Nightjar, under --watch, merge the base into its own draft pull requests that conflict with it, resolve the conflicts and push one merge commit; off by default'
+				}),
+				fixRounds: z
+					.number()
+					.int()
+					.min(1)
+					.max(10)
+					.optional()
+					.meta({
+						description: `How many Conflict fixes one pull request may get, counted from its branch's commits; ${String(DEFAULT_CONFLICTS.fixRounds)} when left out`
+					}),
+				fixUsd: z
+					.number()
+					.positive()
+					.optional()
+					.meta({
+						description: `The most one Conflict fix may cost in dollars, its check's fix rounds too; ${String(DEFAULT_CONFLICTS.fixUsd)} when left out`
+					}),
+				fixMinutes: z
+					.number()
+					.positive()
+					.optional()
+					.meta({
+						description: `The most minutes one Conflict fix may run, its check's fix rounds too; ${String(DEFAULT_CONFLICTS.fixMinutes)} when left out`
+					})
+			})
+			.optional()
+			.meta({
+				description:
+					"The pass over Nightjar's own draft pull requests that conflict with their base: it merges the base in and resolves the conflicts until a person engages with the pull request. Never a rebase, and a draft only behind its base is left alone"
 			}),
 		publish: z.boolean().optional().meta({
 			description:

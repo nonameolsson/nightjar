@@ -1,7 +1,8 @@
 // The Spend module: records each Session's cost and answers whether the day is over and whether work may spend more.
 
-// The kinds of a build's work: 'pullChecks' is a Pull-check fix round, 'feedback' a Feedback round and 'reviewRound' a Review round, each with its check's own fix rounds.
-type BuildStep = 'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'feedback' | 'reviewRound';
+// The kinds of a build's work: 'pullChecks' is a Pull-check fix round, 'conflicts' a Conflict fix, 'feedback' a Feedback round and 'reviewRound' a Review round, each with its check's own fix rounds.
+type BuildStep =
+	'build' | 'fix' | 'review' | 'step' | 'pullChecks' | 'conflicts' | 'feedback' | 'reviewRound';
 
 // What one model did in a Session: its tokens and its share of the Session's dollars.
 export interface ModelUsage {

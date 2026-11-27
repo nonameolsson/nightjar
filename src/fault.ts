@@ -17,7 +17,9 @@ export type FaultPlace =
 	// after the last Session: the push of the branch and the draft pull request
 	| { readonly kind: 'pull' }
 	// null before the round is counted
-	| { readonly kind: 'pullFix'; readonly round: number | null };
+	| { readonly kind: 'pullFix'; readonly round: number | null }
+	// null before the round is counted
+	| { readonly kind: 'conflictFix'; readonly round: number | null };
 
 // Where a fault happened, as the words after "Nightjar stopped on a fault".
 export function placeText(place: FaultPlace): string {
@@ -43,6 +45,8 @@ export function placeText(place: FaultPlace): string {
 			return place.round === null
 				? 'in a Pull-check fix'
 				: `in Pull-check fix ${String(place.round)}`;
+		case 'conflictFix':
+			return place.round === null ? 'in a Conflict fix' : `in Conflict fix ${String(place.round)}`;
 	}
 }
 
@@ -111,7 +115,12 @@ export function faultAsk(o: {
 	const [first = '', ...more] = withoutStack(why(o.fault)).trim().split('\n');
 	const reason = short(first.trim().replace(/\.$/, ''));
 	const where = o.place === null ? '' : ` ${placeText(o.place)}`;
-	const again = o.place?.kind === 'pullFix' ? 'another Pull-check fix' : 'giving the Go again';
+	const again =
+		o.place?.kind === 'pullFix'
+			? 'another Pull-check fix'
+			: o.place?.kind === 'conflictFix'
+				? 'another Conflict fix'
+				: 'giving the Go again';
 	const cause = passingFault(o.fault)
 		? `This looks like a passing fault, such as the network or a service being down for a moment, so ${again} is likely to work.`
 		: `This fault will probably happen again, so fix what it names before ${again}.`;

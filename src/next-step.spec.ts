@@ -158,6 +158,15 @@ describe('next steps', () => {
 		expect(pullFix).toContain('Nightjar tries a Pull-check fix again');
 	});
 
+	it('only takes needs-info off after a fault in a Conflict fix, which no Go starts either', () => {
+		const step = next.faultStep(renamed, { passing: true, pullFix: false, conflictFix: true });
+		const back = step.at(-1) ?? '';
+		expect(back).toMatch(new RegExp(`^${next.HAND_BACK}`));
+		expect(back).toContain('remove `stuck`');
+		expect(back).not.toContain('run-it');
+		expect(back).toContain('Nightjar tries a Conflict fix again');
+	});
+
 	it('tells a person a pause asks nothing of them, and when Nightjar goes on', () => {
 		expect(next.pausedStep(true)).toEqual([
 			'Nothing to do: the Go stays on this Feature, and Nightjar tries it again then, going on from the branch.'

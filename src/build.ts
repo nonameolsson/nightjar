@@ -9,7 +9,7 @@ import {
 	type FixOutcome,
 	type ReviewOutcome
 } from './coding-agent.js';
-import { DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
+import { DEFAULT_CONFLICTS, DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
 import {
 	BuildFault,
 	passingFault,
@@ -129,6 +129,11 @@ export interface Limits {
 	// the most one Pull-check fix round may cost and run, its check's fix rounds too
 	readonly pullFixUsd: number;
 	readonly pullFixMinutes: number;
+	// how many Conflict fixes one pull request may get, counted from its branch's trailers
+	readonly conflictsRounds: number;
+	// the most one Conflict fix may cost and run, its check's fix rounds too
+	readonly conflictsUsd: number;
+	readonly conflictsMinutes: number;
 }
 
 export const LIMITS: Limits = {
@@ -141,10 +146,13 @@ export const LIMITS: Limits = {
 	dailyUsd: DEFAULT_DAILY_USD,
 	pullFixRounds: DEFAULT_PULL_CHECKS.fixRounds,
 	pullFixUsd: DEFAULT_PULL_CHECKS.fixUsd,
-	pullFixMinutes: DEFAULT_PULL_CHECKS.fixMinutes
+	pullFixMinutes: DEFAULT_PULL_CHECKS.fixMinutes,
+	conflictsRounds: DEFAULT_CONFLICTS.fixRounds,
+	conflictsUsd: DEFAULT_CONFLICTS.fixUsd,
+	conflictsMinutes: DEFAULT_CONFLICTS.fixMinutes
 };
 
-// What factory.json's pullChecks says of the pass's limits.
+// What factory.json's pullChecks, or its conflicts block, says of a pass's limits.
 interface PullFixSettings {
 	readonly fixRounds?: number | undefined;
 	readonly fixUsd?: number | undefined;
@@ -159,6 +167,17 @@ export function pullFixLimits(
 		pullFixRounds: pullChecks?.fixRounds ?? LIMITS.pullFixRounds,
 		pullFixUsd: pullChecks?.fixUsd ?? LIMITS.pullFixUsd,
 		pullFixMinutes: pullChecks?.fixMinutes ?? LIMITS.pullFixMinutes
+	};
+}
+
+// The Conflict fix limits factory.json's conflicts block sets, each one it leaves out at its default.
+export function conflictsLimits(
+	conflicts: PullFixSettings | undefined
+): Pick<Limits, 'conflictsRounds' | 'conflictsUsd' | 'conflictsMinutes'> {
+	return {
+		conflictsRounds: conflicts?.fixRounds ?? LIMITS.conflictsRounds,
+		conflictsUsd: conflicts?.fixUsd ?? LIMITS.conflictsUsd,
+		conflictsMinutes: conflicts?.fixMinutes ?? LIMITS.conflictsMinutes
 	};
 }
 
@@ -259,7 +278,8 @@ const allowanceOf =
 const hash = (id: ItemId) => `#${id}`;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
-type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback' | 'reviewRound';
+type Work =
+	'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'conflicts' | 'feedback' | 'reviewRound';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -1971,23 +1991,13 @@ async function fixRedDraft(
 	const note = noteFor(deps.logbook, feature.id, deps.now);
 	where.note = note;
 	const signals = signalsOf(tracker, feature.id, note);
-	const base = baseOf(feature.body);
-	const tree = await deps.openWorktree(
-		setup.root,
-		setup.worktrees,
-		draft.branch,
-		base !== null && 'branch' in base ? base.branch : setup.baseBranch,
-		setup.env
-	);
-	const skip = (why: string): PullFixOutcome => {
-		deps.say(`${pull.url}: left alone, ${why}`);
-		return { kind: 'skipped', why };
-	};
-	if (!(await tree.toRemote())) return skip('its branch here holds commits the Code host lacks');
-	const trailers = await tree.headTrailers();
-	if (![...trailers.keys()].some((k) => k.startsWith(TRAILER_PREFIX))) {
-		return skip("its head commit is not Nightjar's");
+	const tree = await openDraft(deps, setup, feature, draft);
+	const notOurs = await notNightjars(tree);
+	if (notOurs !== null) {
+		deps.say(`${pull.url}: left alone, ${notOurs}`);
+		return { kind: 'skipped', why: notOurs };
 	}
+	const trailers = await tree.headTrailers();
 	const headSession = trailers.get(SESSION_TRAILER);
 	// counted from the branch, so neither a new run nor taking needs a person off resets it
 	const used = await tree.pullFixes();
@@ -2319,14 +2329,316 @@ async function pullFixRound(
 	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
 }
 
+// The worktree of a draft's branch, on the base its Feature is built on.
+function openDraft(deps: Deps, setup: Setup, feature: Feature, draft: NightjarDraft) {
+	const base = baseOf(feature.body);
+	return deps.openWorktree(
+		setup.root,
+		setup.worktrees,
+		draft.branch,
+		base !== null && 'branch' in base ? base.branch : setup.baseBranch,
+		setup.env
+	);
+}
+
+// Why a revisit pass leaves a draft alone after all, or null when it is Nightjar's to fix: its branch here holds commits the Code host lacks, or a person made its head commit.
+async function notNightjars(tree: Worktree): Promise<string | null> {
+	if (!(await tree.toRemote())) return 'its branch here holds commits the Code host lacks';
+	const trailers = await tree.headTrailers();
+	if (![...trailers.keys()].some((k) => k.startsWith(TRAILER_PREFIX))) {
+		return "its head commit is not Nightjar's";
+	}
+	return null;
+}
+
+// A draft pull request the Conflict fix pass takes: the Code host says it conflicts with its base, no person engaged, and on a Feature of the person's that holds no Signal.
+export interface ConflictingDraft {
+	readonly draft: NightjarDraft;
+	// the Feature its body's marker names
+	readonly feature: ItemId;
+}
+
+export type ConflictFixOutcome =
+	// the merge, resolved and green, pushed to the branch as its `round`th Conflict fix, which cost `usd`; `files` are those the Session resolved
+	| {
+			readonly kind: 'fixed';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly summary: string;
+			readonly files: readonly string[];
+			readonly usd: number;
+	  }
+	// nothing pushed: the merge and what the Session left are kept on the -attempt-conflicts side branch `side`
+	| {
+			readonly kind: 'gaveUp';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly why: string;
+			readonly usd: number;
+			readonly side: string | null;
+	  }
+	// a green merge whose push was rejected because a person pushed to the branch: it waits on `side`, and the Feature is handed to a person
+	| {
+			readonly kind: 'diverged';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly side: string;
+			readonly usd: number;
+	  }
+	// a green merge whose push failed on a fault: the queue hands the Feature back with needs info
+	| {
+			readonly kind: 'faulted';
+			readonly pull: Pull;
+			readonly round: number;
+			readonly fault: unknown;
+			readonly title: string;
+			readonly usd: number;
+	  }
+	// the pull request is not Nightjar's to fix after all, or its branch already holds the base; nothing was done
+	| { readonly kind: 'skipped'; readonly why: string }
+	| ({ readonly kind: 'paused' } & Pause)
+	| { readonly kind: 'stopped' };
+
+// What a Conflict fix that did not finish is kept on: the Feature's branch with this after `-attempt-`.
+const CONFLICTS_ATTEMPT = 'conflicts';
+
+// One Conflict fix on a draft that conflicts with its base (docs/adr/0011): Nightjar merges the base into the branch, a new Session resolves the conflicts the merge stopped on, the repo's check runs with the usual fix rounds in that Session, and one merge commit with a Factory-Conflicts trailer is pushed only when it is green. No Review and no Step runs after it, and the pull request body is left as it was.
+// A fault that escapes it is thrown as a BuildFault that names the Conflict fix.
+export async function fixConflicts(
+	deps: Deps,
+	setup: Setup,
+	conflicting: ConflictingDraft
+): Promise<ConflictFixOutcome> {
+	const where: { run: FaultRun; note: Note | null } = {
+		run: {
+			place: { kind: 'conflictFix', round: null },
+			tickets: [],
+			session: null,
+			pull: conflicting.draft.pull.url
+		},
+		note: null
+	};
+	try {
+		return await resolveConflicting(deps, setup, conflicting, where);
+	} catch (fault) {
+		throw faultAt(fault, where.run, where.note);
+	}
+}
+
+async function resolveConflicting(
+	deps: Deps,
+	setup: Setup,
+	conflicting: ConflictingDraft,
+	where: { run: FaultRun; note: Note | null }
+): Promise<ConflictFixOutcome> {
+	const { draft } = conflicting;
+	const { pull } = draft;
+	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
+	if (day !== null) return { kind: 'paused', why: day };
+	const feature = await deps.tracker.feature(conflicting.feature);
+	const note = noteFor(deps.logbook, feature.id, deps.now);
+	where.note = note;
+	const signals = signalsOf(deps.tracker, feature.id, note);
+	const tree = await openDraft(deps, setup, feature, draft);
+	const skip = (why: string): ConflictFixOutcome => {
+		deps.say(`${pull.url}: left alone, ${why}`);
+		return { kind: 'skipped', why };
+	};
+	const notOurs = await notNightjars(tree);
+	if (notOurs !== null) return skip(notOurs);
+	// the Code host's word was stale: there is nothing to merge
+	if ((await tree.baseCommits(1)).text === '') return skip(`its branch holds ${tree.at.base}`);
+	// counted from the branch, so a new run goes on from the rounds it had
+	const round = (await tree.conflictFixes()) + 1;
+	// a new Session, as the head commit's knows nothing of the base's changes
+	const session = deps.newId();
+	where.run = { ...where.run, place: { kind: 'conflictFix', round }, session };
+	deps.say(
+		`${hash(feature.id)}: ${pull.url} conflicts with ${tree.at.base}, Conflict fix ${String(round)}`
+	);
+	await signals.on('working');
+	try {
+		const got = await conflictFixRound(deps, setup, {
+			feature,
+			tree,
+			pull,
+			session,
+			round,
+			note,
+			signals
+		});
+		// a push that faulted ends the fix as any fault does: in the Logbook with its stack, naming the fix for the hand-back
+		return got.kind === 'faulted' ? { ...got, fault: faultAt(got.fault, where.run, note) } : got;
+	} finally {
+		await signals.off('working');
+	}
+}
+
+async function conflictFixRound(
+	deps: Deps,
+	setup: Setup,
+	o: {
+		feature: Feature;
+		tree: Worktree;
+		pull: Pull;
+		session: string;
+		round: number;
+		note: Note;
+		signals: FeatureSignals;
+	}
+): Promise<ConflictFixOutcome> {
+	const { feature, tree, pull, session, round, note } = o;
+	const show = buildingOf(feature, deps.now);
+	let sessionStartedAt = deps.now();
+	// the whole Conflict fix, the check's own fix rounds too, shows as the Conflict fix it is
+	const building = () => {
+		sessionStartedAt = deps.now();
+		deps.status.doing(
+			show({
+				ticket: null,
+				step: 'conflicts',
+				round,
+				rounds: setup.limits.conflictsRounds,
+				session
+			})
+		);
+	};
+	const log = (entry: LogEntry) => {
+		const at = deps.now();
+		deps.spend.record({
+			at: at.toISOString(),
+			repo: setup.repo,
+			feature: feature.id,
+			branch: tree.at.branch,
+			durationMs: Math.max(0, at.getTime() - sessionStartedAt.getTime()),
+			...entry,
+			step: 'conflicts'
+		});
+		sessionStartedAt = at;
+	};
+	const name = `Conflict fix ${String(round)}`;
+	const before = await tree.head();
+	// Takes the branch back to `before`, the merge gone; what the fix left is kept on the -attempt-conflicts branch, which the Logbook names with `why`.
+	const throwAway = async (why: string): Promise<string | null> => {
+		const side = await tree.discard(before, CONFLICTS_ATTEMPT);
+		if (side !== null) note({ kind: 'thrownAway', branch: side, why, session });
+		return side;
+	};
+	const gaveUp = async (why: string, usd: number): Promise<ConflictFixOutcome> => {
+		const side = await throwAway(why);
+		deps.say(
+			`${hash(feature.id)}: ${name} gave up: ${why}${side === null ? '' : `; the attempt is kept on ${side}`}`
+		);
+		return { kind: 'gaveUp', pull, round, why, usd, side };
+	};
+	const halted = async (halt: Halt): Promise<ConflictFixOutcome> => {
+		await throwAway(haltWhy(halt));
+		return halt.kind === 'paused'
+			? { kind: 'paused', why: halt.why, ...resetOf(halt) }
+			: { kind: 'stopped' };
+	};
+
+	building();
+	const { conflictsUsd: cap, conflictsMinutes: minutes } = setup.limits;
+	const merged = await tree.mergeBase();
+	let summary = `Merged ${tree.at.base}, which had no conflict to resolve.`;
+	let files: readonly string[] = [];
+	let spent = 0;
+	if (merged.kind === 'conflicts') {
+		deps.say(`${hash(feature.id)}: the merge stopped on ${merged.files.join(', ')}`);
+		const got = await deps.codingAgent.conflicts({
+			kind: 'conflicts',
+			at: tree.at,
+			sessionId: session,
+			feature,
+			files: merged.files,
+			baseCommits: await tree.baseCommits(DIFF_CHARS),
+			budgetUsd: cap,
+			minutes
+		});
+		const entry = {
+			ticket: null,
+			step: 'conflicts' as const,
+			session,
+			costUsd: got.costUsd,
+			...modelsOf(got)
+		};
+		switch (got.kind) {
+			case 'paused':
+				log({ ...entry, outcome: `paused: ${got.why}` });
+				return halted(got);
+			case 'aborted':
+				log({ ...entry, outcome: STOPPED });
+				return halted(got);
+			case 'failed':
+				log({
+					...entry,
+					outcome: `conflicts ${String(round)} failed: ${got.why}`,
+					failure: got.failure
+				});
+				return gaveUp(got.why, got.costUsd);
+			case 'blocked':
+				log({ ...entry, outcome: `conflicts ${String(round)} blocked` });
+				return gaveUp(`the Session is blocked: ${got.blocker}`, got.costUsd);
+			case 'resolved':
+				log({ ...entry, outcome: `conflicts ${String(round)}` });
+				summary = got.summary;
+				files = got.files;
+				spent = got.costUsd;
+		}
+	}
+	const first = await deps.runCheck(setup.check, tree.at.folder, envOf(setup));
+	// a merge with no conflict had no Session, so none to fix the check in
+	if (merged.kind === 'clean' && !first.ok) {
+		return gaveUp(`\`${setup.check}\` fails after the merge, which had no conflict to resolve`, 0);
+	}
+	const fixed = await fixUntilGreen(
+		{ deps, setup, tree, building, log: (e) => log(e), note },
+		{
+			ticket: null,
+			name,
+			sessionId: session,
+			cap,
+			spent,
+			check: first,
+			of: { kind: 'conflicts' }
+		}
+	);
+	if (fixed.halt !== undefined) return halted(fixed.halt);
+	if (!fixed.check.ok) {
+		return gaveUp(`\`${setup.check}\` still fails after the fix rounds`, fixed.spent);
+	}
+	const all = [summary, ...fixed.summaries].join('\n\n');
+	if (!(await tree.commitConflictFix(round, all, session))) {
+		return gaveUp('no merge was left to commit', fixed.spent);
+	}
+	const of = { feature: feature.id, note, signals: o.signals };
+	const pushed = await pushBranch(deps, setup, tree, of, 'conflictFix');
+	if (pushed.kind === 'diverged') {
+		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
+	}
+	if (pushed.kind === 'fault') {
+		return {
+			kind: 'faulted',
+			pull,
+			round,
+			fault: pushed.fault,
+			title: feature.title,
+			usd: fixed.spent
+		};
+	}
+	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
+	return { kind: 'fixed', pull, round, summary: all, files, usd: fixed.spent };
+}
+
 // How a push ended: on the Code host; set aside on `side` because a person pushed first; or failed on a fault.
 export type PushEnd =
 	| { readonly kind: 'pushed' }
 	| { readonly kind: 'diverged'; readonly side: string }
 	| { readonly kind: 'fault'; readonly fault: unknown };
 
-// What a push carries: on a fault a Pull-check fix is set aside, and a Feedback round's commit too unless an unpushed Ticket's commit lies under it.
-type Carries = 'build' | 'feedbackRound' | 'pullFix';
+// What a push carries: on a fault a Pull-check fix or a Conflict fix is set aside, and a Feedback round's commit too unless an unpushed Ticket's commit lies under it.
+type Carries = 'build' | 'feedbackRound' | 'pullFix' | 'conflictFix';
 
 // Every push of a Feature's branch; a failure is sorted by git, never by the message (ADR 0010).
 async function pushBranch(

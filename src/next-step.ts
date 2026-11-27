@@ -114,17 +114,19 @@ export const pausedStep = (retries: boolean): NextStep => [
 		: 'Nothing to do now: the Go stays on this Feature, and Nightjar goes on from the branch the next time it runs.'
 ];
 
-// A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix is handed back by taking needs-info off alone, as no Go starts that pass.
+// A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix or a Conflict fix is handed back by taking needs-info off alone, as no Go starts those passes.
 export function faultStep(
 	n: SignalNames,
-	o: { readonly passing: boolean; readonly pullFix: boolean }
+	o: { readonly passing: boolean; readonly pullFix: boolean; readonly conflictFix?: boolean }
 ): NextStep {
 	const task = o.passing
 		? 'Nothing to fix first: this kind of fault usually goes away by itself.'
 		: 'Fix what the fault above names first: in the repo, in its setup, or on the machine that ran Nightjar.';
-	const back = o.pullFix
-		? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries a Pull-check fix again the next time it runs.`
-		: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
+	const pass = o.pullFix ? 'a Pull-check fix' : o.conflictFix === true ? 'a Conflict fix' : null;
+	const back =
+		pass !== null
+			? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries ${pass} again the next time it runs.`
+			: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
 	return [task, back];
 }
 

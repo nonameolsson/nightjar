@@ -55,6 +55,8 @@ export function runningStage(doing: Pick<Extract<Doing, { kind: 'building' }>, '
 		review: 'review',
 		reviewRound: 'reviewRounds',
 		pullChecks: 'pullChecks',
+		// a Conflict fix, like a Pull-check fix, fixes the draft after the pull request opens
+		conflicts: 'pullChecks',
 		feedback: 'feedback'
 	};
 	return of[doing.step];

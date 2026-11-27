@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import {
 	buildFeature,
+	conflictsLimits,
+	fixConflicts,
 	fixPullChecks,
 	LIMITS,
 	pullFixLimits,
@@ -36,6 +38,7 @@ import { leasePorts, type PortLease } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
+	conflictsPass,
 	featureExit,
 	feedbackPass,
 	fixNamed,
@@ -256,7 +259,8 @@ export async function runNightjar(
 		limits: {
 			...LIMITS,
 			dailyUsd: ready.person.dailyUsd,
-			...pullFixLimits(config.pullChecks)
+			...pullFixLimits(config.pullChecks),
+			...conflictsLimits(config.conflicts)
 		},
 		signal: stop.signal
 	};
@@ -304,6 +308,14 @@ export async function runNightjar(
 		const work = workOf(say, portEnv);
 		return fixPullChecks(work.deps, work.setup, red);
 	});
+	const conflicts = conflictsPass(
+		config.conflicts,
+		adapters.codeHost,
+		(conflicting, say, portEnv) => {
+			const work = workOf(say, portEnv);
+			return fixConflicts(work.deps, work.setup, conflicting);
+		}
+	);
 	const publish = publishPass(config.publish, adapters.codeHost);
 	// the build of one Feature, with the request for changes that started it when it has no Go
 	const build = async (feature: Named, say: Say, portEnv?: PortEnv, started?: Asked) => {
@@ -331,6 +343,7 @@ export async function runNightjar(
 		signal: stop.signal,
 		signals: config.signals,
 		...(pullChecks === null ? {} : { pullChecks }),
+		...(conflicts === null ? {} : { conflicts }),
 		...(publish === null ? {} : { publish }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		slots: slotsFor(args.parallel, ready.person),
