@@ -536,9 +536,9 @@ async function reportCheck(o: InitOptions): Promise<void> {
 
 // The settings init leaves out, named once after it writes, with where the README explains them.
 const README_CONFIG = 'https://github.com/nonameolsson/nightjar#configure-factoryjson';
-// review.model is the one we recommend setting: a stronger model than the builders' reviews better.
+// review.model is the one we recommend setting: a stronger model than the default reviews better.
 const README_REVIEW_MODEL = 'https://github.com/nonameolsson/nightjar#review-model';
-const OPTIONAL_SETTINGS = `optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see ${README_CONFIG}. Set review.model to a stronger model than the builders': ${README_REVIEW_MODEL}`;
+const OPTIONAL_SETTINGS = `optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see ${README_CONFIG}. Set review.model to a stronger model than model: ${README_REVIEW_MODEL}`;
 
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
