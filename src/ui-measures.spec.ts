@@ -237,11 +237,12 @@ describe('the Measures panel as renderPanels draws it', () => {
 		expect(panel).not.toContain('class="empty"');
 	});
 
-	it('comes after Completed and before All Logbooks, in the overview', async () => {
+	it('comes after Merged and before All Logbooks, in the overview', async () => {
 		const host = new FakeCodeHost();
 		await opened(host);
 		const html = panels(NO_HOST_YET);
-		expect(html.indexOf('<section id="completed">')).toBeLessThan(
+		expect(html.indexOf('<section id="merged">')).toBeGreaterThan(-1);
+		expect(html.indexOf('<section id="merged">')).toBeLessThan(
 			html.indexOf('<section id="measures">')
 		);
 		expect(html.indexOf('<section id="measures">')).toBeLessThan(

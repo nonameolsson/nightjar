@@ -7,10 +7,13 @@ import { STATUS_MARKER, type ItemId } from './tracker.js';
 
 // The Board's state words, one table for the Status note, the pull request and the page, so none of them drifts from the others.
 export const STATE_WORDS = {
+	shelf: 'Shelf',
+	queue: 'Queue',
 	building: 'Building',
 	waiting: 'Waiting on you',
 	paused: 'Paused',
 	pull: 'Draft PR open',
+	merged: 'Merged',
 	stopped: 'Stopped'
 } as const;
 

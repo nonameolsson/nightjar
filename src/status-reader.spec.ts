@@ -69,6 +69,7 @@ describe('readFactory', () => {
 			tail: [],
 			completed: [],
 			builds: [],
+			marks: new Map(),
 			featureCostUsd: 0,
 			builtToday: 0,
 			week: { completed: 0, failed: 0, handed: 0, spentUsd: 0 },

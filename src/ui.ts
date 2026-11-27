@@ -70,6 +70,17 @@ import {
 } from './view-text.js';
 import { STAGE_TEXT, type BuildCost } from './build-cost.js';
 import { STATE_TEXT, type BuildStage } from './build-stages.js';
+import {
+	historyOf,
+	NO_HISTORY,
+	STANDINGS,
+	standingOf,
+	type History,
+	type Mark,
+	type Standing,
+	type StandingAnswer
+} from './standing.js';
+import { STATE_WORDS, untilText } from './status-note.js';
 
 export const UI_PORT = 4545;
 const HOST = '127.0.0.1';
@@ -194,13 +205,19 @@ function header(repo: string, view: FactoryView, tracker: TrackerLists | undefin
 	return `<header><h1>${escape(repo)}</h1> <span class="state">${runState(view)}</span>${poll}${trackerRead(tracker)}</header>`;
 }
 
-function cards(view: FactoryView, lists: Lists): string {
+// The Features that stand in Waiting on you, and the Tickets of a building Feature that wait on the person; '-' while neither the list nor a failure is known
+function waitingCount(all: Features): number | undefined {
+	const tickets = all.building.reduce((n, b) => n + b.waitingTickets.length, 0);
+	return all.waitingRead || all.waiting.length > 0 ? all.waiting.length + tickets : undefined;
+}
+
+function cards(view: FactoryView, all: Features): string {
 	const status = view.status;
 	const spent =
 		status === null
 			? 'no spend recorded'
 			: `${dollars(status.spentTodayUsd)} of ${dollars(status.dailyUsd)}`;
-	const waiting = lists.known ? lists.waitingOnYou?.items.length : undefined;
+	const waiting = waitingCount(all);
 	return `<section id="cards"><div class="stat"><span>spent today</span> ${spent}</div><div class="stat"><span>built today</span> <b>${String(view.builtToday)}</b></div><div class="stat"><span>waiting on you</span> <b>${waiting === undefined ? '-' : String(waiting)}</b></div></section>`;
 }
 
@@ -228,16 +245,22 @@ function week(view: FactoryView): string {
 	);
 }
 
-function queue(lists: Lists, links: Links): string {
+// One Standing on the Overview: its word and its count, the same as its Mat's
+const overviewSection = (s: Standing, count: number | null, body: string, more = '') =>
+	`<section id="${s}"><h2>${STANDING_WORDS[s]}${count === null ? '' : ` <small>${String(count)}</small>`}${more}</h2>${body}</section>`;
+
+const overviewItem = (card: FeatureCard, links: Links, rest = '') =>
+	`<li>${card.id === '' ? '' : idHtml(card.id, links)} ${cardTitle(card)}${rest}</li>`;
+
+function overviewQueue(all: Features, lists: Lists, links: Links): string {
 	let body: string;
 	if (!lists.known) body = lists.empty;
-	else if (lists.queue === undefined) body = '<p class="empty">not read yet</p>';
-	else if (lists.queue.length === 0) body = emptyQueue(links);
-	else
-		body = `<ul>${lists.queue.map((q) => `<li>${idHtml(q.id, links)} ${titleHtml(q.id, q.title, lists.opens)}</li>`).join('')}</ul>`;
+	else if (all.queue === undefined) body = '<p class="empty">not read yet</p>';
+	else if (all.queue.length === 0) body = emptyQueue(links);
+	else body = `<ul>${all.queue.map((q) => overviewItem(q, links, notesText(q))).join('')}</ul>`;
 	const refreshed =
 		lists.known && lists.at !== undefined ? ` <small>refreshed ${clock(lists.at)}</small>` : '';
-	return `<section id="queue"><h2>Queue${refreshed}</h2>${body}</section>`;
+	return overviewSection('queue', all.queue?.length ?? null, body, refreshed);
 }
 
 // Where a build stands, in words: `Ticket 2 of 3, step, round 1 of 2`.
@@ -285,55 +308,62 @@ function current(view: FactoryView, links: Links): string {
 	return `<section id="current"><h2>Current build</h2>${body}</section>`;
 }
 
-function waiting(view: FactoryView, lists: Lists, links: Links): string {
-	const found = lists.known ? lists.waitingOnYou : undefined;
-	let body: string;
-	if (!lists.known) body = lists.empty;
-	else if (found === undefined) body = '<p class="empty">not read yet</p>';
-	else {
-		const note = found.trackerCannotList
-			? '<p class="empty">not available from this Tracker</p>'
-			: found.items.length === 0
-				? '<p class="empty">nothing</p>'
-				: '';
-		const items = found.items
-			.map((i) => {
-				const back = lastHandBack(view, i.feature ?? i.id, i.kind === 'ticket' ? i.id : null);
-				const opens = lists.opens && i.kind === 'feature';
-				return `<li>${idHtml(i.id, links)} ${titleHtml(i.id, i.title, opens)}: ${escape(i.why)}${back === undefined ? '' : `, ${escape(back.why)}`}</li>`;
-			})
-			.join('');
-		body = note + (items === '' ? '' : `<ul>${items}</ul>`);
-	}
-	return `<section id="waiting"><h2>Waiting on you</h2>${body}</section>`;
+// A reason, after a comma; nothing without one
+const andWhy = (back: HandBack | undefined) => (back === undefined ? '' : `, ${escape(back.why)}`);
+
+// Each Feature that waits, with why, and each of its Tickets that waits, with why Nightjar handed it back
+function overviewWaiting(all: Features, lists: Lists, links: Links): string {
+	const ticket = (t: WaitingTicket) =>
+		`<li>${idHtml(t.id, links)} ${escape(t.title)}: ${escape(t.why)}${andWhy(t.handBack)}</li>`;
+	const item = (c: WaitingCard) =>
+		overviewItem(c, links, `: ${escape(c.why)}${andWhy(c.handBack)}${notesText(c)}`) +
+		c.waitingTickets.map(ticket).join('');
+	const items = all.waiting.map(item).join('');
+	let note = '';
+	if (!lists.known) note = lists.empty;
+	else if (!all.waitingRead) note = '<p class="empty">not read yet</p>';
+	else if (all.trackerCannotList) note = '<p class="empty">not available from this Tracker</p>';
+	else if (items === '') note = '<p class="empty">nothing</p>';
+	return overviewSection(
+		'waiting',
+		waitingTally(all, lists),
+		note + (items === '' ? '' : `<ul>${items}</ul>`)
+	);
 }
 
-function shelf(view: FactoryView, lists: Lists, links: Links): string {
-	const all = features(view, lists);
-	const li = (c: ShelfCard) =>
-		`<li>${idHtml(c.id, links)} ${cardTitle(c)}${shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`}${earlierHtml(c)}</li>`;
+function overviewShelf(all: Features, lists: Lists, links: Links): string {
+	const li = (c: ShelfCard) => {
+		const note = shelfNote(c) === '' ? '' : ` <small>${shelfNote(c)}</small>`;
+		return overviewItem(c, links, `${note}${notesText(c)}${earlierHtml(c)}`);
+	};
 	const items = (all.shelf ?? []).map(li).join('');
 	const body = shelfEmpty(all, lists) ?? `<ul>${items}</ul>${shelfMore(all, lists, links)}`;
-	return `<section id="shelf"><h2>Shelf</h2>${body}</section>`;
+	return overviewSection('shelf', shelfTally(all, lists), body);
+}
+
+function overviewPull(all: Features, links: Links): string {
+	const li = (c: PullCard) => {
+		const cost = c.done === undefined ? '' : ` ${dollars(c.done.costUsd)}`;
+		const rest = `${cost} <small>${PULL_UNKNOWN}</small>${notesText(c)}`;
+		return overviewItem(c, links, ` ${pullLinkHtml(c.url)}${rest}`);
+	};
+	const body =
+		all.pull.length === 0 ? '<p class="empty">none</p>' : `<ul>${all.pull.map(li).join('')}</ul>`;
+	return overviewSection('pull', all.pull.length, body);
 }
 
 // a javascript: link in a pull request url would run on click
 const safeUrl = (url: string) => /^https?:\/\//.test(url);
 
-function completed(view: FactoryView, lists: Lists, links: Links): string {
-	const li = ({ done: { event, costUsd }, runs }: CompletedCard) =>
-		`<li>${idHtml(event.feature, links)}${event.title === undefined ? '' : escape(` ${event.title}`)} ${outcomeHtml(event)} ${dollars(costUsd)} <small>${runsText(runs)}</small></li>`;
-	const rows = features(view, lists).completed.map(li).join('');
-	return `<section id="completed"><h2>Completed</h2>${rows === '' ? '<p class="empty">nothing has finished yet</p>' : `<ul>${rows}</ul>`}</section>`;
-}
+// A link to a draft pull request; a url that is not http stays text
+const pullLinkHtml = (url: string) =>
+	safeUrl(url)
+		? `<a class="act ext" href="${escape(url)}" ${EXTERNAL}>draft pull request</a>`
+		: escape(url);
 
-// A draft pull request link, or the failure and why; a url that is not http stays text
+// A draft pull request link, or the failure and why
 const outcomeHtml = (event: Completed['event']) =>
-	event.kind === 'pull'
-		? safeUrl(event.url)
-			? `<a class="act ext" href="${escape(event.url)}" ${EXTERNAL}>draft pull request</a>`
-			: escape(event.url)
-		: `failed: ${escape(event.why)}`;
+	event.kind === 'pull' ? pullLinkHtml(event.url) : `failed: ${escape(event.why)}`;
 
 // how long the build took; null for an event with no start, or a start that does not read
 function tookMs(event: Completed['event']): number | null {
@@ -370,12 +400,14 @@ interface FeatureCard {
 	readonly progress: Progress | null;
 	// its title opens the Feature detail panel: a Feature on Waiting on you, the Queue or the Shelf, when the page reads the Tracker
 	readonly opens?: true;
-	// the Feature's finished runs, on a card that is not on Completed because it is active again
+	// the Feature's finished runs, on a card whose Standing is not the one a run left it in
 	readonly earlier?: Earlier;
 	// its open pull request, whose branch holds Tickets the Tracker still shows open
 	readonly pull?: FeaturePull;
-	// how each stage of its own build went: the one in flight, or the run a Completed card shows
+	// how each stage of its own build went: the one in flight, or the run its card shows
 	readonly stages?: readonly BuildStage[];
+	// its Standing and the facts the card shows with it
+	readonly answer?: StandingAnswer;
 }
 // how many finished runs a Feature had in status.json's recent events, and the latest of them
 interface Earlier {
@@ -460,17 +492,71 @@ const BUILT_BY_RUN_END = 'built by the end of this run';
 
 interface WaitingCard extends FeatureCard {
 	readonly state: 'waiting';
+	// needs info, needs a person, or LAST_FAILED for a Feature whose last build failed and that carries no Signal
 	readonly why: string;
-	// why Nightjar handed the Feature itself back, and what to do; absent when nothing recorded it
+	// why Nightjar handed the Feature itself back, or why its build failed, and what to do; absent when nothing recorded it
 	readonly handBack?: HandBack;
+	// the failed run, while status.json's recent events hold it
+	readonly done?: Completed;
 }
-interface CompletedCard extends FeatureCard {
-	readonly state: 'completed';
-	// the Feature's latest run
-	readonly done: Completed;
-	// how many of the runs still in status.json's recent events were the Feature's
-	readonly runs: number;
+// The words on a Feature whose last build failed
+const LAST_FAILED = 'last build failed';
+
+interface PullCard extends FeatureCard {
+	readonly state: 'pull';
+	readonly url: string;
+	// when it opened
+	readonly since: string;
+	// the run that opened it or last pushed to it, while status.json's recent events hold it, and how many of those runs were the Feature's
+	readonly done?: Completed;
+	readonly runs?: number;
 }
+type PullOf = NonNullable<StandingAnswer['pull']>;
+// What a Pull request card says of its state, while the page knows a pull request only from a Logbook
+const PULL_UNKNOWN = 'state unknown: this Code host does not list pull requests';
+// What Merged says while the page cannot tell a merged pull request from an open one
+const MERGED_UNKNOWN = 'not available from this Code host';
+
+// The page's word for each Standing, from the table the Status note and the pull request body share (docs/adr/0012)
+const STANDING_WORDS: Readonly<Record<Standing, string>> = {
+	shelf: STATE_WORDS.shelf,
+	queue: STATE_WORDS.queue,
+	building: STATE_WORDS.building,
+	waiting: STATE_WORDS.waiting,
+	pull: 'Pull request',
+	merged: STATE_WORDS.merged
+};
+
+// The Mats stacked, what needs the person first
+const BOARD_ORDER: Standing[] = ['waiting', 'building', 'pull', 'queue', 'shelf', 'merged'];
+
+// What happened to a Feature's last build, beside its Standing: it failed, paused or a person stopped it. As text unless `html`, which marks a time up for the browser.
+function notesOf(card: FeatureCard, html = false): string[] {
+	const a = card.answer;
+	if (a === undefined) return [];
+	const notes: string[] = [];
+	// a card that says so in its label says it once
+	const label = 'why' in card ? card.why : undefined;
+	if (a.failed !== undefined && label !== LAST_FAILED) notes.push(LAST_FAILED);
+	if (a.paused !== undefined) {
+		const until = a.paused.until;
+		const when = until === null ? '' : ` until ${html ? stampHtml(until) : untilText(until)}`;
+		notes.push(`Paused${when}`);
+	}
+	if (a.stopped === true) notes.push('Stopped by you');
+	return notes;
+}
+
+const notesHtml = (card: FeatureCard) => {
+	const notes = notesOf(card, true);
+	return notes.length === 0 ? '' : `<p class="meta notes">${notes.join(' · ')}</p>`;
+};
+
+// The same notes in a line, after a comma
+const notesText = (card: FeatureCard) => {
+	const notes = notesOf(card, true);
+	return notes.length === 0 ? '' : `, ${notes.join(', ')}`;
+};
 
 const progressText = (p: Progress | null) =>
 	p === null ? '?' : `${String(p.built)} of ${String(p.total)} ${p.counts}`;
@@ -537,15 +623,34 @@ interface Features {
 	readonly queue: readonly QueuedCard[] | undefined;
 	// one per busy Slot, oldest first
 	readonly building: readonly BuildingCard[];
-	readonly waiting: readonly WaitingCard[] | undefined;
+	// those the list of who waits names, then those whose last build failed and that carry no Signal, the latest failure first
+	readonly waiting: readonly WaitingCard[];
+	// whether the list of who waits was read; a failure is known without it
+	readonly waitingRead: boolean;
 	readonly trackerCannotList: boolean;
+	// the latest run first
+	readonly pull: readonly PullCard[];
 	// newest update first; undefined while the Tracker has not been read
 	readonly shelf: readonly ShelfCard[] | undefined;
-	// how many Features the Shelf holds in all, those listed and those left out
+	// how many Features stand on the Shelf in all, those listed and those the Tracker left out
 	readonly shelfTotal: number;
+	// how many the Tracker left out of its list
+	readonly shelfLeftOut: number;
 	readonly shelfCannotList: boolean;
-	// newest first
-	readonly completed: readonly CompletedCard[];
+}
+
+// Each Feature's History: its marks from its Logbook and the ledger, and the pull and failed events of status.json, which keep a fault that stopped a run before its Logbook could say so.
+function historiesOf(view: FactoryView): Map<string, History> {
+	const marks = new Map<string, Mark[]>();
+	for (const [id, m] of view.marks ?? []) marks.set(id, [...m]);
+	for (const { event } of view.completed) {
+		const mark: Mark =
+			event.kind === 'pull'
+				? { kind: 'pull', at: event.at, url: event.url, created: false }
+				: { kind: 'failed', at: event.at, why: event.why };
+		marks.set(event.feature, [...(marks.get(event.feature) ?? []), mark]);
+	}
+	return new Map([...marks].map(([id, m]) => [id, historyOf(m)]));
 }
 
 // The one list of Features, built from what the reader and the Tracker give.
@@ -589,29 +694,17 @@ function features(view: FactoryView, lists: Lists): Features {
 	for (const q of listed ?? []) if (q.ticketCounts) totals.set(q.id, q.ticketCounts.total);
 	for (const i of found?.items ?? [])
 		if (i.kind === 'feature' && i.ticketCounts) totals.set(i.id, i.ticketCounts.total);
-	const completedCard = (done: Completed, runs: number): CompletedCard => {
+	// what a finished run built
+	const runProgress = (done: Completed): Progress | null => {
 		const { event } = done;
 		const built = done.builtTickets ?? 0;
 		const total = totals.get(event.feature) ?? null;
 		// a pull request says what its branch holds; this run's sessions may have built only part of it
-		let progress: Progress | null = null;
-		if (event.kind === 'pull') {
-			if (event.tickets !== undefined) progress = { ...event.tickets, counts: BUILT_BY_RUN_END };
-		} else if (total !== null) {
-			progress = { built: Math.min(built, total), total, counts: BUILT_IN_RUN };
-		}
-		return {
-			state: 'completed',
-			id: event.feature,
-			...(event.title === undefined ? {} : { title: event.title }),
-			waitingTickets: [],
-			done,
-			runs,
-			progress,
-			...(done.stages === undefined ? {} : { stages: done.stages })
-		};
+		if (event.kind === 'pull')
+			return event.tickets === undefined ? null : { ...event.tickets, counts: BUILT_BY_RUN_END };
+		return total === null ? null : { built: Math.min(built, total), total, counts: BUILT_IN_RUN };
 	};
-	// one card per Feature: its latest run, and how many runs it had
+	// each Feature's latest run in the recent events, and how many runs it had
 	const latest = new Map<string, { done: Completed; runs: number }>();
 	for (const done of view.completed) {
 		const id = done.event.feature;
@@ -620,31 +713,29 @@ function features(view: FactoryView, lists: Lists): Features {
 		latest.delete(id);
 		latest.set(id, { done, runs });
 	}
-	const completed = [...latest.values()].map((l) => completedCard(l.done, l.runs)).reverse();
+	const titles = titlesOf(view);
 	const backOf = (feature: string) => lastHandBack(view, feature, null);
-	let waiting: WaitingCard[] | undefined;
+	const waiting: WaitingCard[] = [];
 	if (found !== undefined) {
-		waiting = found.items
-			.filter((i) => i.kind === 'feature')
-			.map((i): WaitingCard => {
-				// the Status note on the Tracker first, then what this run wrote to status.json
-				const handBack = i.note ?? backOf(i.id);
-				return {
-					state: 'waiting',
-					id: i.id,
-					title: i.title,
-					why: i.why,
-					...(handBack === undefined ? {} : { handBack }),
-					waitingTickets: [],
-					progress: i.ticketCounts ? builtOf(i.ticketCounts, i.pull, BUILT_NOW) : null,
-					...(i.pull === undefined ? {} : { pull: i.pull }),
-					...opens
-				};
+		for (const i of found.items) {
+			if (i.kind !== 'feature') continue;
+			// the Status note on the Tracker first, then what this run wrote to status.json
+			const handBack = i.note ?? backOf(i.id);
+			waiting.push({
+				state: 'waiting',
+				id: i.id,
+				title: i.title,
+				why: i.why,
+				...(handBack === undefined ? {} : { handBack }),
+				waitingTickets: [],
+				progress: i.ticketCounts ? builtOf(i.ticketCounts, i.pull, BUILT_NOW) : null,
+				...(i.pull === undefined ? {} : { pull: i.pull }),
+				...opens
 			});
+		}
 		// an older file names no Feature on a Ticket: it is the one being built, else the one that just ended
-		const owner = (building[0] ?? completed[0])?.id ?? '';
-		const titleOf = (id: string) =>
-			[...building, ...completed].find((c) => c.id === id && c.title !== undefined)?.title;
+		const owner = building[0]?.id ?? [...latest.keys()].at(-1) ?? '';
+		const titleOf = (id: string) => building.find((b) => b.id === id)?.title ?? titles.get(id);
 		const byFeature = new Map<string, WaitingTicket[]>();
 		for (const t of found.items.filter((i) => i.kind === 'ticket')) {
 			const id = t.feature ?? owner;
@@ -707,26 +798,124 @@ function features(view: FactoryView, lists: Lists): Features {
 	});
 	const shelved = lists.known ? lists.shelf : undefined;
 	const shelfCards = shelved?.features.map(onShelf);
-	// a Feature with finished runs that is active again, or back on the Shelf, sits there alone with its runs on its card
-	const active = new Set(
-		[...building, ...(waiting ?? []), ...(queue ?? []), ...(shelfCards ?? [])].map((c) => c.id)
-	);
-	const withEarlier = <C extends FeatureCard>(card: C): C => {
-		const done = completed.find((c) => c.id === card.id);
-		return done === undefined
-			? card
-			: { ...card, earlier: { runs: done.runs, done: done.done, progress: done.progress } };
+
+	// Each Feature's Standing, by the one rule, from its Slot, its Signals and its History
+	const signals = new Map<string, 'go' | 'waiting'>();
+	for (const q of queue ?? []) signals.set(q.id, 'go');
+	// needs info or needs a person comes first, as the rule puts Waiting on you before the Queue
+	for (const w of waiting) signals.set(w.id, 'waiting');
+	const shelfIds = new Set(shelfCards?.map((c) => c.id));
+	// the Tracker's lists hold every open Feature of the person's, so one on none of them is closed or someone else's
+	const whole =
+		found !== undefined &&
+		!found.trackerCannotList &&
+		listed !== undefined &&
+		shelved != null &&
+		shelved.total <= shelved.features.length;
+	const held = new Map(building.map((b) => [b.id, featureStart(b.doing)]));
+	const histories = historiesOf(view);
+	const pause = on ? pauseOf(view) : null;
+	const answers = new Map<string, StandingAnswer>();
+	const ids = new Set([...held.keys(), ...signals.keys(), ...shelfIds, ...histories.keys()]);
+	for (const id of ids) {
+		const answer = standingOf({
+			held: held.get(id) ?? null,
+			signal: signals.get(id) ?? null,
+			listed: signals.has(id) || shelfIds.has(id) ? true : whole ? false : undefined,
+			history: histories.get(id) ?? NO_HISTORY,
+			pause
+		});
+		if (answer !== null) answers.set(id, answer);
+	}
+	function standsIn(standing: Standing): (card: FeatureCard) => boolean {
+		return (card) => answers.get(card.id)?.standing === standing;
+	}
+	// a card the Tracker's lists gave: its Standing, and its finished runs, which a run did not leave it where it stands with
+	const placed = <C extends FeatureCard>(card: C): C => {
+		const answer = answers.get(card.id);
+		const run = latest.get(card.id);
+		if (run === undefined) return answer === undefined ? card : { ...card, answer };
+		const earlier = { runs: run.runs, done: run.done, progress: runProgress(run.done) };
+		return { ...card, ...(answer === undefined ? {} : { answer }), earlier };
 	};
+	// a card the rule moved off the Shelf keeps its title, and opens as a Shelf card does
+	const own = (id: string) => {
+		const title = shelfCards?.find((c) => c.id === id)?.title ?? titles.get(id);
+		return { ...(title === undefined ? {} : { title }), ...(shelfIds.has(id) ? opens : {}) };
+	};
+	const failedCard = (id: string, answer: StandingAnswer): WaitingCard => {
+		const run = latest.get(id);
+		const event = run?.done.event;
+		// the run in the recent events is this failure, when it is the latest of the Feature's runs and failed
+		const done = event?.kind === 'failed' ? run?.done : undefined;
+		const next = event?.kind === 'failed' ? event.next : undefined;
+		return {
+			state: 'waiting',
+			id,
+			...own(id),
+			why: LAST_FAILED,
+			handBack: {
+				feature: id,
+				ticket: null,
+				why: answer.failed ?? '',
+				...(next === undefined ? {} : { next }),
+				at: event?.at ?? ''
+			},
+			waitingTickets: [],
+			progress: done === undefined ? null : runProgress(done),
+			...(done === undefined ? {} : { done }),
+			...(done?.stages === undefined ? {} : { stages: done.stages }),
+			answer
+		};
+	};
+	const pullCard = (id: string, answer: StandingAnswer, pull: PullOf): PullCard => {
+		const run = latest.get(id);
+		const done = run?.done.event.kind === 'pull' ? run.done : undefined;
+		return {
+			state: 'pull',
+			id,
+			...own(id),
+			url: pull.url,
+			since: pull.at,
+			waitingTickets: [],
+			progress: done === undefined ? null : runProgress(done),
+			...(done === undefined || run === undefined ? {} : { done, runs: run.runs }),
+			...(done?.stages === undefined ? {} : { stages: done.stages }),
+			answer
+		};
+	};
+	const listedWaiting = new Set(waiting.map((w) => w.id));
+	const failed: WaitingCard[] = [];
+	const pulls: PullCard[] = [];
+	for (const [id, answer] of answers) {
+		if (answer.standing === 'waiting' && !listedWaiting.has(id)) {
+			failed.push(failedCard(id, answer));
+		}
+		if (answer.standing === 'pull' && answer.pull !== undefined) {
+			pulls.push(pullCard(id, answer, answer.pull));
+		}
+	}
+	// the latest run first: by its time, then by its place in the recent events
+	const runs = [...latest.keys()];
+	const lastAt = (c: FeatureCard) => Date.parse(histories.get(c.id)?.last?.at ?? '') || 0;
+	const newest = (a: FeatureCard, b: FeatureCard) =>
+		lastAt(b) - lastAt(a) || runs.indexOf(b.id) - runs.indexOf(a.id);
+	const shelf = shelfCards?.filter(standsIn('shelf'));
+	// the Tracker counts its Shelf, which held those the rule moved off it, and lists at most SHELF_MAX of it
+	const total = shelved?.total ?? 0;
+	const moved = (shelfCards?.length ?? 0) - (shelf?.length ?? 0);
 	return {
-		queue: queue?.map(withEarlier),
-		building: building.map(withEarlier),
-		waiting: waiting?.map(withEarlier),
+		queue: queue?.filter(standsIn('queue')).map(placed),
+		building: building.map(placed),
+		waiting: [...waiting.filter(standsIn('waiting')).map(placed), ...failed.sort(newest)],
+		waitingRead: found !== undefined,
 		trackerCannotList: found?.trackerCannotList ?? false,
+		pull: pulls.sort(newest),
 		// the Tracker's order, newest update first, which its contract suite holds it to
-		shelf: shelfCards?.map(withEarlier),
-		shelfTotal: shelved?.total ?? 0,
-		shelfCannotList: shelved === null,
-		completed: completed.filter((c) => !active.has(c.id))
+		shelf: shelf?.map(placed),
+		shelfTotal: total - moved,
+		shelfLeftOut: Math.max(0, total - (shelfCards?.length ?? 0)),
+		shelfCannotList: shelved === null
 	};
 }
 
@@ -769,16 +958,28 @@ function waitingCard(card: WaitingCard, links: Links): string {
 				: '<p class="meta">no reason recorded; see its comments on the Tracker</p>';
 	const u = unblock(card, links);
 	return nest(
-		'waiting',
+		card.why === LAST_FAILED ? 'waiting failed' : 'waiting',
 		card,
 		links,
 		progressHtml(card.progress),
-		whyHtml(card, u) + pullHtml(card) + earlierHtml(card),
-		actionLink(u, links),
-		helpHtml(card, u, links),
+		whyHtml(card, u) + notesHtml(card) + pullHtml(card) + earlierHtml(card),
+		actionLink(u, links) + runClock(card.done),
+		helpHtml(card, u, links) + runFold(card.id, card.done),
 		why + waitingTicketsHtml(card, links) + nextStepHtml(back)
 	);
 }
+
+// How long a finished run took, and what it cost; nothing without a run
+function runClock(run: Completed | undefined): string {
+	if (run === undefined) return '';
+	const took = tookMs(run.event);
+	const time = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
+	return `${time}${dollars(run.costUsd)}`;
+}
+
+// A finished run's cost by stage and by model, folded; nothing without a run
+const runFold = (id: string, run: Completed | undefined) =>
+	run === undefined ? '' : costFold(run.cost, foldKey('card', id, run.event.at), SPLIT_SUMMARY);
 
 // One Feature as a nest in the ledger: who, its egg row, where it stands, its clock; what sits `under` its title, in
 // the Feature column beside the other cells; and what hangs `beneath` the whole row.
@@ -889,23 +1090,25 @@ function queuedCard(card: QueuedCard, links: Links): string {
 		card,
 		links,
 		count,
-		`<p class="label">Queued</p>${pullHtml(card)}${earlierHtml(card)}`,
+		`<p class="label">Queued</p>${notesHtml(card)}${pullHtml(card)}${earlierHtml(card)}`,
 		est
 	);
 }
 
-function completedCard(card: CompletedCard, links: Links): string {
-	const { event, costUsd, cost } = card.done;
-	const took = tookMs(event);
-	const duration = took === null ? '' : `<time class="took">${elapsed(took)}</time> `;
+// A Feature whose draft pull request a Logbook shows opened: its link, when it opened, and the run that opened it while the recent events hold it
+function pullRequestCard(card: PullCard, links: Links): string {
+	const run = card.done;
+	const runs = card.runs === undefined ? '' : `<p class="meta runs">${runsText(card.runs)}</p>`;
+	const link = `<p>${pullLinkHtml(card.url)} <small>opened ${stampHtml(card.since)}</small></p>`;
+	const now = `<p class="label">${STANDING_WORDS.pull}</p>${link}<p class="meta">${PULL_UNKNOWN}</p>`;
 	return nest(
-		event.kind === 'failed' ? 'failed' : 'pulled',
+		'pull',
 		card,
 		links,
-		progressHtml(card.progress),
-		`<p class="label">${event.kind === 'failed' ? 'Failed' : 'Done'}</p><p>${event.kind === 'failed' ? escape(event.why) : outcomeHtml(event)}</p><p class="meta runs">${runsText(card.runs)}</p>`,
-		`${duration}${dollars(costUsd)}`,
-		costFold(cost, foldKey('card', event.feature, event.at), SPLIT_SUMMARY)
+		run === undefined ? '' : progressHtml(card.progress),
+		now + notesHtml(card) + runs,
+		runClock(run),
+		runFold(card.id, run)
 	);
 }
 
@@ -928,14 +1131,14 @@ function shelfCard(card: ShelfCard, links: Links): string {
 		card,
 		links,
 		note === '' ? '' : `<p class="meta count">${note}</p>`,
-		`<p class="label">On the Shelf</p>${earlierHtml(card)}`,
+		`<p class="label">On the Shelf</p>${notesHtml(card)}${earlierHtml(card)}`,
 		updatedHtml(card.updated)
 	);
 }
 
 // The Shelf lists at most SHELF_MAX Features; the rest are one link to the person's open issues on the Tracker.
 function shelfMore(all: Features, lists: Lists, links: Links): string {
-	const more = all.shelfTotal - (all.shelf?.length ?? 0);
+	const more = all.shelfLeftOut;
 	if (more <= 0) return '';
 	const text = `and ${String(more)} more in the Tracker`;
 	const href = lists.known && lists.person !== undefined ? links.assigned(lists.person) : null;
@@ -952,9 +1155,9 @@ function shelfEmpty(all: Features, lists: Lists): string | null {
 	return null;
 }
 
-function group(state: string, name: string, count: number | null, body: string): string {
+function group(state: Standing, count: number | null, body: string): string {
 	const shown = count === null ? '' : `<i class="tally">${String(count)}</i>`;
-	return `<section class="mat" data-state="${state}"><div class="tab"><h2>${name}</h2>${shown}</div><div class="lines">${body}</div></section>`;
+	return `<section class="mat" data-state="${state}"><div class="tab"><h2>${STANDING_WORDS[state]}</h2>${shown}</div><div class="lines">${body}</div></section>`;
 }
 
 const copyable = (command: string) =>
@@ -1031,8 +1234,7 @@ function helpHtml(card: WaitingCard, u: Unblock | null, links: Links): string {
 const LEGEND =
 	'<p class="legend"><span><i class="egg built"></i>built</span><span><i class="egg building"></i>building</span><span><i class="egg need"></i>needs a person</span><span><i class="slot"></i>waiting</span></p>';
 
-function board(view: FactoryView, lists: Lists, links: Links): string {
-	const all = features(view, lists);
+function board(view: FactoryView, all: Features, lists: Lists, links: Links): string {
 	const on = running(view);
 	const { known } = lists;
 	const none = (text: string) => `<p class="empty">${text}</p>`;
@@ -1047,44 +1249,45 @@ function board(view: FactoryView, lists: Lists, links: Links): string {
 		all.building.length === 0
 			? none('nothing is being built')
 			: all.building.map((b) => buildingCard(b, links)).join('');
-	let waiting: string;
-	if (!lists.known) waiting = lists.empty;
-	else if (all.waiting === undefined) waiting = none('not read yet');
-	else {
-		const note = all.trackerCannotList ? none('not available from this Tracker') : '';
-		const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
-		waiting = note + (cards === '' ? (all.trackerCannotList ? '' : none('nothing')) : cards);
-	}
+	const cards = all.waiting.map((c) => waitingCard(c, links)).join('');
+	let note = '';
+	if (!lists.known) note = lists.empty;
+	else if (!all.waitingRead) note = none('not read yet');
+	else if (all.trackerCannotList) note = none('not available from this Tracker');
+	else if (cards === '') note = none('nothing');
+	const pulls = all.pull.map((c) => pullRequestCard(c, links)).join('');
 	const shelfCards = (all.shelf ?? []).map((c) => shelfCard(c, links)).join('');
 	const shelf = shelfEmpty(all, lists) ?? shelfCards + shelfMore(all, lists, links);
-	const completed =
-		all.completed.length === 0
-			? none('nothing has finished yet')
-			: all.completed.map((c) => completedCard(c, links)).join('');
 	// one panel per build, oldest first, stacked in one column beside the Mats
 	const side =
 		all.building.length === 0
 			? ''
 			: `<div class="details">${all.building.map((b) => detail(b, links)).join('')}</div>`;
+	const mats: Record<Standing, string> = {
+		waiting: group('waiting', waitingTally(all, lists), note + cards),
+		building: group('building', on ? all.building.length : null, building),
+		pull: group('pull', all.pull.length, pulls === '' ? none('none') : pulls),
+		queue: group('queue', known ? (all.queue?.length ?? null) : null, queued),
+		shelf: group('shelf', shelfTally(all, lists), shelf),
+		merged: group('merged', null, none(MERGED_UNKNOWN))
+	};
 	return (
 		`<div class="board">${LEGEND}${STEPS_LEGEND}<div class="cols${side === '' ? '' : ' has-detail'}"><div class="left">` +
 		'<div class="head" aria-hidden="true"><span>Feature</span><span>Tickets</span><span>State</span><span>Time and cost</span></div>' +
-		group('waiting', 'Waiting on you', known ? (all.waiting?.length ?? null) : null, waiting) +
-		group('building', 'Building', on ? all.building.length : null, building) +
-		group('queue', 'Queue', known ? (all.queue?.length ?? null) : null, queued) +
-		group('shelf', 'Shelf', known && all.shelf !== undefined ? all.shelfTotal : null, shelf) +
-		group('completed', 'Completed', all.completed.length, completed) +
+		BOARD_ORDER.map((s) => mats[s]).join('') +
 		`</div>${side}</div></div>`
 	);
 }
 
-const STATES = [
-	['queue', 'Queue'],
-	['building', 'Building'],
-	['waiting', 'Waiting on you'],
-	['shelf', 'Shelf'],
-	['completed', 'Completed']
-] as const;
+// Waiting on you's count: shown once its list is read, or a failure stands there
+const waitingTally = (all: Features, lists: Lists) =>
+	(lists.known && all.waitingRead) || all.waiting.length > 0 ? all.waiting.length : null;
+
+const shelfTally = (all: Features, lists: Lists) =>
+	lists.known && all.shelf !== undefined ? all.shelfTotal : null;
+
+// The Table's state filter, in the order a Feature moves
+const STATES = STANDINGS.map((s) => [s, STANDING_WORDS[s]] as const);
 
 const COLUMNS = [
 	['id', 'Id'],
@@ -1096,12 +1299,11 @@ const COLUMNS = [
 	['progress', 'Progress']
 ] as const;
 
-// One row per Feature, in state then Queue order; the page script sorts and filters them in the browser.
-function table(view: FactoryView, lists: Lists, links: Links): string {
-	const all = features(view, lists);
+// One row per Feature, in Standing then Queue order; the page script sorts and filters them in the browser.
+function table(all: Features, lists: Lists, links: Links): string {
 	interface Row {
 		readonly card: FeatureCard;
-		readonly state: (typeof STATES)[number][0];
+		readonly state: Standing;
 		readonly time: number | null;
 		readonly timeText: string;
 		readonly cost: number | null;
@@ -1126,7 +1328,21 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 					);
 		return fold === '' ? dollars(r.cost) : fold;
 	};
+	// in the order a Feature moves, as the state filter runs
 	const rows: Row[] = [];
+	for (const card of all.shelf ?? []) {
+		const said = [shelfNote(card), ...notesOf(card)].filter((n) => n !== '').join(', ');
+		rows.push({
+			card,
+			state: 'shelf',
+			time: null,
+			timeText: '',
+			cost: null,
+			outcome: said,
+			outcomeText: `${said} <small>${updatedHtml(card.updated)}</small>${earlierHtml(card)}`,
+			progress: null
+		});
+	}
 	for (const card of all.queue ?? [])
 		rows.push({
 			card,
@@ -1134,8 +1350,8 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			time: card.estimateMs,
 			timeText: estimateHtml(card.estimateMs),
 			cost: null,
-			outcome: '',
-			outcomeText: earlierHtml(card),
+			outcome: notesOf(card).join(', '),
+			outcomeText: notesOf(card).join(', ') + earlierHtml(card),
 			progress: card.progress
 		});
 	for (const card of all.building) {
@@ -1154,52 +1370,44 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 			progress: card.progress
 		});
 	}
-	for (const card of all.waiting ?? []) {
-		const outcome = card.handBack === undefined ? card.why : `${card.why}: ${card.handBack.why}`;
+	// how long a finished run took, and its cost with the split, for a card that shows one
+	const ranFor = (run: Completed | undefined) => {
+		const took = run === undefined ? null : tookMs(run.event);
+		return {
+			time: took,
+			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
+			cost: run?.costUsd ?? null,
+			...(run === undefined ? {} : { split: { cost: run.cost, at: run.event.at } })
+		};
+	};
+	for (const card of all.waiting) {
+		const why = card.handBack === undefined ? card.why : `${card.why}: ${card.handBack.why}`;
+		const said = [why, ...notesOf(card)].join(', ');
 		rows.push({
 			card,
 			state: 'waiting',
-			time: null,
-			timeText: '',
-			cost: null,
-			outcome,
-			outcomeText: `${escape(outcome)}${earlierHtml(card)}`,
+			...ranFor(card.done),
+			outcome: said,
+			outcomeText: `${escape(said)}${earlierHtml(card)}`,
 			action: actionLink(unblock(card, links), links),
 			progress: card.progress
 		});
 	}
-	for (const card of all.shelf ?? [])
+	for (const card of all.pull) {
+		const said = [PULL_UNKNOWN, ...notesOf(card)].join(', ');
+		const runs = card.runs === undefined ? '' : `, ${runsText(card.runs)}`;
 		rows.push({
 			card,
-			state: 'shelf',
-			time: null,
-			timeText: '',
-			cost: null,
-			outcome: shelfNote(card),
-			outcomeText: `${shelfNote(card)} <small>${updatedHtml(card.updated)}</small>${earlierHtml(card)}`,
-			progress: null
-		});
-	for (const card of all.completed) {
-		const { event, costUsd, cost } = card.done;
-		const took = tookMs(event);
-		rows.push({
-			card,
-			state: 'completed',
-			time: took,
-			timeText: took === null ? '' : `<time class="took">${elapsed(took)}</time>`,
-			cost: costUsd,
-			split: { cost, at: event.at },
-			outcome: event.kind === 'pull' ? event.url : `failed: ${event.why}`,
-			// a draft pull request is the row's action, kept in view as a waiting row's Answer is
-			outcomeText:
-				event.kind === 'pull'
-					? `<small>${runsText(card.runs)}</small>`
-					: `${outcomeHtml(event)} <small>${runsText(card.runs)}</small>`,
-			...(event.kind === 'pull' ? { action: outcomeHtml(event) } : {}),
+			state: 'pull',
+			...ranFor(card.done),
+			outcome: said,
+			outcomeText: `<small>${said}${runs}</small>`,
+			// the draft pull request is the row's action, kept in view as a waiting row's Answer is
+			action: pullLinkHtml(card.url),
 			progress: card.progress
 		});
 	}
-	const label = (state: string) => STATES.find(([s]) => s === state)?.[1] ?? state;
+	const label = (state: Standing) => STANDING_WORDS[state];
 	const chips = STATES.map(
 		([s, name]) => `<button type="button" data-chip="${s}">${name}</button>`
 	).join('');
@@ -1213,8 +1421,8 @@ function table(view: FactoryView, lists: Lists, links: Links): string {
 	const body = rows
 		.map(
 			(r, i) =>
-				`<tr data-state="${r.state}"${r.outcome.startsWith('failed: ') ? ' data-failed="true"' : ''} data-order="${String(i)}" data-rank="${String(STATES.findIndex(([s]) => s === r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
-				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td class="col-title"><div class="cell"><span class="clip" title="${escape(r.card.title ?? '')}">${cardTitle(r.card)}</span>${logbookLink(r.card.id)}</div></td><td class="col-state">${r.outcome.startsWith('failed: ') ? 'Failed' : label(r.state)}</td><td class="col-time">${r.timeText}</td><td class="cost">${costCell(r)}</td><td class="col-outcome"><div class="cell"><span class="clip" title="${escape(r.outcome)}">${r.outcomeText}</span>${r.action === undefined || r.action === '' ? '' : ` ${r.action}`}</div></td><td class="progress"><div class="cell">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}${stepsBar(r.card)}</div></td></tr>`
+				`<tr data-state="${r.state}"${r.card.answer?.failed === undefined ? '' : ' data-failed="true"'} data-order="${String(i)}" data-rank="${String(STANDINGS.indexOf(r.state))}" data-id="${escape(r.card.id)}" data-title="${escape(r.card.title ?? '')}" data-time="${r.time === null ? '' : String(r.time)}"${r.state === 'building' ? ` data-since="${escape(featureStart((r.card as BuildingCard).doing))}"` : ''} data-cost="${r.cost === null ? '' : String(r.cost)}" data-outcome="${escape(r.outcome)}" data-progress="${r.progress === null ? '' : String(r.progress.total === 0 ? 0 : r.progress.built / r.progress.total)}">` +
+				`<td>${r.card.id === '' ? '' : idHtml(r.card.id, links)}</td><td class="col-title"><div class="cell"><span class="clip" title="${escape(r.card.title ?? '')}">${cardTitle(r.card)}</span>${logbookLink(r.card.id)}</div></td><td class="col-state">${label(r.state)}</td><td class="col-time">${r.timeText}</td><td class="cost">${costCell(r)}</td><td class="col-outcome"><div class="cell"><span class="clip" title="${escape(r.outcome)}">${r.outcomeText}</span>${r.action === undefined || r.action === '' ? '' : ` ${r.action}`}</div></td><td class="progress"><div class="cell">${r.state === 'shelf' ? '' : progressHtml(r.progress, r.state === 'building' ? (r.card as BuildingCard).doing.tickets : undefined)}${stepsBar(r.card)}</div></td></tr>`
 		)
 		.join('');
 	let note = '';
@@ -1317,22 +1525,25 @@ export function renderPanels(
 	measures?: MeasuresView
 ): string {
 	const lists = listsOf(view, tracker, opens);
+	// one list of Features, each in its one Standing, which every view reads
+	const all = features(view, lists);
 	const overview = [
 		week(view),
 		current(view, links),
-		queue(lists, links),
-		shelf(view, lists, links),
-		waiting(view, lists, links),
-		completed(view, lists, links),
+		overviewShelf(all, lists, links),
+		overviewQueue(all, lists, links),
+		overviewWaiting(all, lists, links),
+		overviewPull(all, links),
+		overviewSection('merged', null, `<p class="empty">${MERGED_UNKNOWN}</p>`),
 		...(measures === undefined ? [] : [measuresPanel(measures)]),
 		allLogbooks(listLogbooks(root), titlesOf(view))
 	].join('\n');
 	return [
 		header(lastRepo(ledgerPath(root)) ?? basename(root), view, tracker),
-		cards(view, lists),
+		cards(view, all),
 		MAIN,
-		board(view, lists, links),
-		table(view, lists, links),
+		board(view, all, lists, links),
+		table(all, lists, links),
 		`<div class="overview">${overview}</div>`
 	].join('\n');
 }
@@ -1437,10 +1648,10 @@ function compareRows(a, b, sort, dir, now) {
 }
 // the page's own markup carries these; a stand-in element without them is left alone
 const attr = (el, name, value) => el && el.setAttribute && el.setAttribute(name, value);
-// whether a row's Feature ended as the outcome says; a failed row is a Completed one, so the two are told apart
+// whether a row's Feature ended as the outcome says: completed is a draft pull request opened, so the row stands in Pull request or Merged
 function outcomeOf(row, outcome) {
 	const d = row.dataset;
-	if (outcome === 'completed') return d.state === 'completed' && !d.failed;
+	if (outcome === 'completed') return (d.state === 'pull' || d.state === 'merged') && !d.failed;
 	if (outcome === 'failed') return !!d.failed;
 	if (outcome === 'waiting') return d.state === 'waiting';
 	return true;
@@ -1547,22 +1758,23 @@ show(VIEWS.includes(saved) ? saved : 'board');
 for (const b of document.querySelectorAll('button[data-view]')) {
 	b.onclick = () => showView(b.dataset.view);
 }
-// the status region speaks only when the count of Features waiting on a person, or failed, rises
 // inner scrollers a swap would reset, matched by position
 const SCROLLERS = ['.detail', '.scroll', 'pre'];
+const idText = ${String(idText)};
+// the status region speaks only of a Feature that moved into Waiting on you, and of no other move
 let seen = null;
 function announce() {
-	const waiting = document.querySelectorAll('tr[data-state="waiting"]').length;
-	const failed = document.querySelectorAll('tr[data-failed]').length;
-	const said = [];
-	if (seen && waiting > seen.waiting) said.push(waiting + ' waiting on a person');
-	if (seen && failed > seen.failed) said.push(failed + ' failed');
-	if (said.length) {
+	const rows = Array.from(document.querySelectorAll('tr[data-state="waiting"]'));
+	const ids = rows.map((r) => r.dataset.id);
+	const moved = seen === null ? [] : rows.filter((r) => !seen.includes(r.dataset.id));
+	if (moved.length) {
+		const names = moved.map((r) => [r.dataset.id ? idText(r.dataset.id) : '', r.dataset.title || ''].filter(Boolean).join(' '));
+		const said = names.join(', ') + ' moved to Waiting on you';
 		// clear first so an identical message is read again
 		live.textContent = '';
-		requestAnimationFrame(() => { live.textContent = said.join(', '); });
+		requestAnimationFrame(() => { live.textContent = said; });
 	}
-	seen = { waiting, failed };
+	seen = ids;
 }
 function tick() {
 	const now = Date.now();
@@ -1679,7 +1891,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .mat[data-state="waiting"] { --h: var(--amber); }
 .mat[data-state="queue"] { --h: var(--slate); }
 .mat[data-state="shelf"] { --h: var(--muted); }
-.mat[data-state="completed"] { --h: var(--ok); }
+.mat[data-state="pull"] { --h: var(--ok); }
+.mat[data-state="merged"] { --h: var(--ink2); }
 .tab { align-items: center; border-right: 2px solid var(--h); color: var(--h); display: flex; flex-direction: column; gap: 10px; justify-content: space-between; padding: 14px 6px; }
 .tab h2 { font: 600 0.75rem var(--mono); letter-spacing: 0.14em; text-transform: uppercase; transform: rotate(180deg); writing-mode: vertical-rl; }
 .tally { align-items: center; background: var(--h); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--void); display: grid; font: 700 1rem var(--mono); font-style: normal; height: 2.3rem; justify-content: center; width: 2.3rem; }
@@ -1726,8 +1939,8 @@ pre { background: var(--shade-deep); border: 1px solid var(--line); color: var(-
 .tickets .next { margin-left: 4px; }
 .entry.waiting .now .label { color: var(--amber); }
 .entry.building .now .label { color: var(--teal); }
-.entry.pulled .now .label { color: var(--ok); }
-.entry.failed .now .label, .entry.failed .now p { color: var(--err); }
+.entry.pull .now .label { color: var(--ok); }
+.entry.failed .now .label { color: var(--err); }
 .tickets li { font: 0.85rem var(--mono); padding: 2px 0 2px 4px; }
 .tickets li.waiting { color: var(--amber); }
 .details { display: grid; gap: 16px; position: sticky; top: 16px; }
@@ -1777,7 +1990,8 @@ tr[data-state] td:first-child { border-left: 3px solid var(--teal); }
 tr[data-state="waiting"] td:first-child { border-left-color: var(--amber); }
 tr[data-state="queue"] td:first-child { border-left-color: var(--slate); }
 tr[data-state="shelf"] td:first-child { border-left-color: var(--muted); }
-tr[data-state="completed"] td:first-child { border-left-color: var(--ok); }
+tr[data-state="pull"] td:first-child { border-left-color: var(--ok); }
+tr[data-state="merged"] td:first-child { border-left-color: var(--ink2); }
 tr[data-failed] td:first-child { border-left-color: var(--err); }
 table { border-collapse: collapse; width: 100%; }
 th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }

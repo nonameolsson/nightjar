@@ -20,6 +20,7 @@ import {
 import { lastWeek, type Week, type WeekSource } from './last-week.js';
 import { everyLogbook } from './logbook-reader.js';
 import { renderSession } from './session-render.js';
+import { logbookMarks, STOPPED_BY_A_PERSON, type Mark } from './standing.js';
 import {
 	buildsOf,
 	featureStart,
@@ -66,6 +67,8 @@ export interface FactoryView {
 	readonly builds?: readonly BuildView[];
 	// the pull and failed events in `recent`, oldest first
 	readonly completed: readonly Completed[];
+	// each Feature's marks from its Logbook and the ledger, which with `completed` give its History; absent in a hand-made view
+	readonly marks?: ReadonlyMap<ItemId, readonly Mark[]>;
 	// what the oldest build's sessions cost since it started; 0 when nothing is building
 	readonly featureCostUsd: number;
 	// the same cost by stage and by model; absent when nothing is building, and in a hand-made view
@@ -139,19 +142,35 @@ function pullOf(done: readonly Done[], line: Spent): Done | undefined {
 
 // How the Features ended and who was handed what, for the week: every Logbook's draft pull requests, faults and hand-overs to a person, which each keep a week and more, besides status.json's, which keep a fault that stopped the run before its Feature's Logbook could say so.
 function weekEnds(
-	root: string,
+	books: ReadonlyMap<ItemId, readonly LogbookEntry[]>,
 	done: readonly Done[],
 	handedBack: WeekSource['handedBack']
 ): Pick<WeekSource, 'outcomes' | 'handedBack'> {
 	const outcomes: WeekSource['outcomes'][number][] = [...done];
 	const handed = [...handedBack];
-	for (const entries of everyLogbook(root).values())
+	for (const entries of books.values())
 		for (const e of entries) {
 			if (e.kind === 'pullOpened') outcomes.push({ feature: e.feature, kind: 'pull', at: e.at });
 			if (e.kind === 'fault') outcomes.push({ feature: e.feature, kind: 'failed', at: e.at });
 			if (e.kind === 'handed') handed.push({ feature: e.feature, at: e.at });
 		}
 	return { outcomes, handedBack: handed };
+}
+
+// Each Feature's marks, for its Standing: its Logbook's, and the ledger's Sessions a person stopped, which a Logbook does not always record.
+function marksOf(
+	books: ReadonlyMap<ItemId, readonly LogbookEntry[]>,
+	spent: readonly Spent[]
+): Map<ItemId, Mark[]> {
+	const marks = new Map<ItemId, Mark[]>();
+	for (const [feature, entries] of books) marks.set(feature, logbookMarks(entries));
+	for (const s of spent)
+		if (s.outcome.includes(STOPPED_BY_A_PERSON))
+			marks.set(s.feature, [
+				...(marks.get(s.feature) ?? []),
+				{ kind: 'stopped', at: new Date(s.at).toISOString() }
+			]);
+	return marks;
 }
 
 // What a view shows, read from the repo root's .factory/ and nothing else.
@@ -183,15 +202,17 @@ export function readFactory(root: string, options: ReadOptions = {}): FactoryVie
 	const done = (status?.recent ?? []).filter(isDone);
 	// the oldest build's, which an older reader follows
 	const oldest = builds[0];
+	const books = everyLogbook(root);
 	return {
 		status,
 		builds,
+		marks: marksOf(books, spent),
 		featureCostUsd: oldest?.costUsd ?? 0,
 		...(oldest?.cost === undefined ? {} : { featureCost: oldest.cost }),
 		...(oldest?.stages === undefined ? {} : { featureStages: oldest.stages }),
 		medianTicketMs: medianTicketMs(spent),
 		builtToday: builtOn(ledgerPath(root), now),
-		week: lastWeek({ sessions: spent, ...weekEnds(root, done, status?.handedBack ?? []) }, now),
+		week: lastWeek({ sessions: spent, ...weekEnds(books, done, status?.handedBack ?? []) }, now),
 		stopped: status !== null && !alive(status.pid),
 		tail: builds[0]?.tail ?? [],
 		completed: done.map((event, i) => {
