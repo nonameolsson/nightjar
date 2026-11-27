@@ -499,7 +499,7 @@ describe('nightjar init ends with the next step', () => {
 		expect(await init(answers)).toBe(0);
 		const lines = out.filter((l) => l.includes('optional settings'));
 		expect(lines).toEqual([
-			"nightjar: optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see https://github.com/nonameolsson/nightjar#configure-factoryjson. Set review.model to a stronger model than the builders': https://github.com/nonameolsson/nightjar#review-model"
+			'nightjar: optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see https://github.com/nonameolsson/nightjar#configure-factoryjson. Set review.model to a stronger model than model: https://github.com/nonameolsson/nightjar#review-model'
 		]);
 		// the recommendation is only named: init writes no review block
 		expect(JSON.parse(readFileSync(written(), 'utf8'))).not.toHaveProperty('review');
