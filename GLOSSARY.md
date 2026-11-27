@@ -73,11 +73,11 @@ _Avoid_: tracking comment, sticky comment, progress comment
 ### The page
 
 **Mat**:
-One state's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), with a label tab and a tally of its Features.
+One state's group of Features on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), under its name and a count.
 _Avoid_: column, swimlane
 
 **Egg**:
-One Ticket's mark on the Board: built, building, needs a person, or waiting. It rests in a round nest socket in its Feature's row.
+One Ticket's status mark on the Board: built, building, needs a person, or waiting.
 _Avoid_: dot, pip, bar
 
 **Steps bar**:
