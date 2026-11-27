@@ -2097,7 +2097,7 @@ describe('nightjar ui page, more', () => {
 					.split('<tr ')
 					.slice(1)
 					.find((r) => r.includes('Retry')) ?? '';
-			expect(row).toContain('<td>Failed</td>');
+			expect(row).toContain('<td class="col-state">Failed</td>');
 		});
 
 		it('names a waiting Ticket needs a person, not waiting', async () => {
@@ -2254,21 +2254,33 @@ describe('nightjar ui audit fixes', () => {
 		expect(sizes.filter((s) => !ramp.includes(s ?? ''))).toEqual([]);
 	});
 
-	it.each(THEMES)(
-		"lays a Board entry out by the Board's own width, not the window's (%s)",
-		async (theme) => {
-			const { style } = await css(theme);
-			expect(style).toContain('container: board / inline-size');
-			expect(style).not.toContain('@media (min-width: 1261px) and (max-width: 1400px)');
-			// narrow: two columns; middling: three, the name over its eggs; wide: the four the head names
-			const wide = [...style.matchAll(/@container board \(min-width: (\d+)px\)/g)].map((m) =>
-				Number(m[1])
-			);
-			expect(wide).toHaveLength(2);
-			const block = style.split(`@container board (min-width: ${String(wide[1])}px)`)[1] ?? '';
-			expect(block.split('\n}')[0]).toContain('.head { display: grid; }');
-		}
-	);
+	it("lays a Board entry out by the Board's own width, not the window's (nightjar)", async () => {
+		const { style } = await css('nightjar');
+		expect(style).toContain('container: board / inline-size');
+		expect(style).not.toContain('@media (min-width: 1261px) and (max-width: 1400px)');
+		// narrow: two columns; middling: three, the name over its eggs; wide: the four the head names
+		const wide = [...style.matchAll(/@container board \(min-width: (\d+)px\)/g)].map((m) =>
+			Number(m[1])
+		);
+		expect(wide).toHaveLength(2);
+		const block = style.split(`@container board (min-width: ${String(wide[1])}px)`)[1] ?? '';
+		expect(block.split('\n}')[0]).toContain('.head { display: grid; }');
+	});
+
+	it("lays Paper's Board out as cards, each state's in a grid that fills the Board's width, with no head row", async () => {
+		const { style } = await css('paper');
+		expect(rule(style, '.head')).toContain('display: none');
+		expect(rule(style, '.lines')).toContain('grid-template-columns: repeat(auto-fill');
+		expect(rule(style, '.entry')).toContain('border: 1px solid var(--line)');
+		expect(style).not.toContain('@container board');
+	});
+
+	it("keeps Paper's Table to one line per Feature, cutting the title and outcome short but never the action", async () => {
+		const { style } = await css('paper');
+		expect(rule(style, 'th, td')).toContain('white-space: nowrap');
+		expect(rule(style, '.clip')).toContain('text-overflow: ellipsis');
+		expect(rule(style, 'td.col-outcome a.act')).toContain('flex: none');
+	});
 
 	it('keeps the inner scroll of the log, detail panel and Table across a live swap', async () => {
 		await open();
