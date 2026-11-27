@@ -18,7 +18,7 @@ export function printLines(lines: readonly Line[]): void {
 export const failures = (lines: readonly Line[]) => lines.filter((l) => l.status === 'fail').length;
 
 // What it would build, answer feedback on and publish, over the Adapters the checks made ready.
-export async function dryRunReady(ready: Pick<Ready, 'adapters' | 'assignee' | 'config'>) {
+async function dryRunReady(ready: Pick<Ready, 'adapters' | 'assignee' | 'config'>) {
 	const { adapters, assignee, config } = ready;
 	const publish = publishPass(config.publish, adapters.codeHost);
 	await dryRun({

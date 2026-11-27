@@ -1,5 +1,5 @@
-// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it asks, offering what the repo holds, and shows what it will write before it writes.
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it shows what it will write before it writes: on a terminal what it guessed, with one yes or no, and otherwise the answers it asked for.
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
 import { askOnStdin, type Ask } from './ask.js';
@@ -15,12 +15,13 @@ import {
 } from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { detectChecks, detectTools, type Detected } from './detect-check.js';
-import { dryRunReady, failures, printLines } from './doctor.js';
+import { failures, printLines } from './doctor.js';
 import { run, type Env } from './git.js';
 import { repoFromRemote, type GhRunner } from './github/api.js';
 import { say, why } from './say.js';
 import type { Os } from './sandbox.js';
 import { clackPrompter, type Prompter } from './prompter.js';
+import { recap } from './recap.js';
 import { DEFAULT_SIGNAL_NAMES, SIGNALS } from './signals.js';
 
 // How each question is answered: by its flag, else by its default under --yes, else by asking.
@@ -315,15 +316,15 @@ const ALLOWED_HELP: Help = {
 	]
 };
 
-// The check command: offered from what the repo holds, else asked for with a placeholder to go by.
-async function askCheck(o: InitOptions): Promise<string> {
+// The check command: offered from what the repo holds, else asked for with a placeholder to go by. A `guess` taken before is offered over what is found.
+async function askCheck(o: InitOptions, guess?: string): Promise<string> {
 	const found = detectChecks(o.root);
 	const question = 'Command that checks the work, run after each Ticket';
 	const named = o.flags.has('check');
 	if (found.length === 0 || named) {
 		const hint = o.yes ? '' : '; try a placeholder such as `make check`';
 		if (!named) say(`no check command detected in this repo${hint}`);
-		return answer(o, 'check', question, undefined, checkProblem, CHECK_HELP);
+		return answer(o, 'check', question, guess, checkProblem, CHECK_HELP);
 	}
 	if (found.length === 1) {
 		const [only] = found;
@@ -331,7 +332,7 @@ async function askCheck(o: InitOptions): Promise<string> {
 	} else if (o.yes) {
 		say(`detected several check commands; taking the first, \`${found[0]?.command ?? ''}\``);
 	} else if (o.prompter !== undefined) {
-		return pickCheck(o.prompter, found, o, question);
+		return pickCheck(o.prompter, found, o, question, guess ?? found[0]?.command);
 	} else {
 		say('detected several check commands; pick one number, or type your own command:');
 		found.forEach((d, i) => {
@@ -342,7 +343,7 @@ async function askCheck(o: InitOptions): Promise<string> {
 		o,
 		'check',
 		question,
-		found[0]?.command,
+		guess ?? found[0]?.command,
 		(t) => {
 			// A list such as `1,2` is not a command; the check is one command.
 			if (/^[\d\s,]+$/.test(t) && !/^\d+$/.test(t))
@@ -364,20 +365,23 @@ async function pickCheck(
 	prompter: Prompter,
 	found: readonly Detected[],
 	o: Answering,
-	question: string
+	question: string,
+	initial: string | undefined
 ): Promise<string> {
 	prompter.note(CHECK_HELP.short);
+	// a command that was typed, not detected, is offered again where it was typed
+	const own = found.some((d) => d.command === initial) ? undefined : initial;
 	const got = await prompter.select(
 		question,
 		[
 			...found.map((d) => ({ value: d.command, label: d.command, hint: `from ${d.source}` })),
 			{ value: OWN_CHECK, label: 'Type my own command' }
 		],
-		found[0]?.command
+		own === undefined ? initial : OWN_CHECK
 	);
 	const picked = orCancel(got, question);
 	if (picked !== OWN_CHECK) return picked;
-	return answer(o, 'check', 'Command that checks the work', undefined, checkProblem, CHECK_HELP);
+	return answer(o, 'check', 'Command that checks the work', own, checkProblem, CHECK_HELP);
 }
 
 // A typed check command, or why it will not do; a list such as `1,2` is not one command.
@@ -466,12 +470,15 @@ async function knownPair(o: InitOptions, fromOrigin: string | null): Promise<Con
 	}
 }
 
-async function interview(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
-	const pair = await askPair(o, fromOrigin);
-	const check = await askCheck(o);
-	warnIfNeverFails(check);
-	const suggested = [...new Set([check, ...detectTools(o.root).map((d) => d.command)])];
-	const allowedCommands = await askAllowed(o, suggested);
+// The commands offered to the Coding agent: the check, then the tools the repo's files name.
+const suggestedCommands = (root: string, check: string) => [
+	...new Set([check, ...detectTools(root).map((d) => d.command)])
+];
+
+type Pair = Awaited<ReturnType<typeof askPair>>;
+
+// The answers put together as factory.json, refused when the schema does not take them.
+function answersFrom(pair: Pair, check: string, allowedCommands: readonly string[]): Answers {
 	const config = {
 		$schema: SCHEMA_URL,
 		...pair,
@@ -489,6 +496,29 @@ async function interview(o: InitOptions, fromOrigin: string | null): Promise<Ans
 	return { written: config, parsed: checked.data };
 }
 
+async function interview(
+	o: InitOptions,
+	fromOrigin: string | null,
+	guessedCheck?: string
+): Promise<Answers> {
+	const pair = await askPair(o, fromOrigin);
+	const check = await askCheck(o, guessedCheck);
+	warnIfNeverFails(check);
+	return answersFrom(pair, check, await askAllowed(o, suggestedCommands(o.root, check)));
+}
+
+// The setup taken from origin and the repo's files, asking for the check alone, and only when the repo names none or several.
+async function guessAnswers(o: InitOptions, fromOrigin: string): Promise<Answers> {
+	const pair = await askPair({ ...o, yes: true }, fromOrigin);
+	const found = detectChecks(o.root);
+	const only = found.length === 1 && !o.flags.has('check') ? found[0] : undefined;
+	const check = only?.command ?? (await askCheck(o));
+	warnIfNeverFails(check);
+	const suggested = suggestedCommands(o.root, check);
+	const allowed = o.flags.has('allowed-commands') ? await askAllowed(o, suggested) : suggested;
+	return answersFrom(pair, check, allowed);
+}
+
 // Where a section of factory.json is: the repo on GitHub, the project on Azure DevOps, the path of a module.
 function place(section: Config['tracker'] | Config['codeHost'], fromOrigin: string | null): string {
 	if (section.type === 'github') return section.repo ?? fromOrigin ?? 'the repo of your git origin';
@@ -503,32 +533,82 @@ const LOGIN_TOOL: Record<Kind, string> = {
 	module: 'the module'
 };
 
+// What becomes of the Signal labels on the Tracker the answers chose.
+function labelsLine({ tracker }: Config, fromOrigin: string | null): string {
+	if (tracker.type === 'github') {
+		const names = SIGNALS.map((s) => DEFAULT_SIGNAL_NAMES[s]).join(', ');
+		return `create the Signal labels on ${place(tracker, fromOrigin)}: ${names}`;
+	}
+	if (tracker.type === 'azure-devops')
+		return 'create no Signal labels: Azure DevOps shows Signals as tags on first use';
+	return `create no Signal labels: ${tracker.path} shows Signals its own way`;
+}
+
+function loginLines(o: InitOptions, config: Config, fromOrigin: string | null): string[] {
+	const { tracker, codeHost } = config;
+	const profile = o.profile === undefined ? '' : ` under the profile ${o.profile}`;
+	return [
+		`${LOGIN_TOOL[tracker.type]} for the Tracker, on ${place(tracker, fromOrigin)}`,
+		`${LOGIN_TOOL[codeHost.type]} for the Code host, on ${place(codeHost, fromOrigin)}`,
+		o.useApiKey
+			? 'claude, billing ANTHROPIC_API_KEY'
+			: `claude, signed in to your Claude plan${profile}`
+	];
+}
+
+const SUMMARY_OPENING = 'this is what init will do:';
+
 // What init is about to do with the answers: the file it writes, the labels it creates, the logins it checks.
 function printSummary(o: InitOptions, answers: Answers, fromOrigin: string | null): void {
-	say('this is what init will do:');
+	say(SUMMARY_OPENING);
 	console.log(`  write ${CONFIG_FILE}:`);
 	for (const line of JSON.stringify(answers.written, null, '\t').split('\n'))
 		console.log(`    ${line}`);
-	const { tracker, codeHost } = answers.parsed;
-	if (tracker.type === 'github') {
-		const names = SIGNALS.map((s) => DEFAULT_SIGNAL_NAMES[s]).join(', ');
-		console.log(`  create the Signal labels on ${place(tracker, fromOrigin)}: ${names}`);
-	} else if (tracker.type === 'azure-devops') {
-		console.log('  create no Signal labels: Azure DevOps shows Signals as tags on first use');
-	} else {
-		console.log(`  create no Signal labels: ${tracker.path} shows Signals its own way`);
-	}
+	console.log(`  ${labelsLine(answers.parsed, fromOrigin)}`);
 	console.log('  check the logins:');
-	console.log(`    ${LOGIN_TOOL[tracker.type]} for the Tracker, on ${place(tracker, fromOrigin)}`);
+	for (const line of loginLines(o, answers.parsed, fromOrigin)) console.log(`    ${line}`);
+}
+
+const serviceName = (
+	section: Config['tracker'] | Config['codeHost'],
+	github: string,
+	azureDevOps: string
+) =>
+	section.type === 'github'
+		? github
+		: section.type === 'azure-devops'
+			? azureDevOps
+			: `the module ${section.path}`;
+
+// The pair and where it is, as one line: `GitHub Issues + GitHub, repo o/app`. A module is named by its path alone.
+function pairLine({ tracker, codeHost }: Config, fromOrigin: string | null): string {
+	const issues = place(tracker, fromOrigin);
+	const repo = place(codeHost, fromOrigin);
+	// the repo's place says where the Tracker is too, when that is the same or holds it
+	const covered =
+		tracker.type === codeHost.type && (repo === issues || repo.startsWith(`${issues}/`));
+	return [
+		`${serviceName(tracker, 'GitHub Issues', 'Azure DevOps Boards')} + ${serviceName(codeHost, 'GitHub', 'Azure Repos')}`,
+		...(tracker.type === 'module' || covered ? [] : [`Tracker on ${issues}`]),
+		...(codeHost.type === 'module' ? [] : [`repo ${repo}`])
+	].join(', ');
+}
+
+// The summary a person at a terminal says yes or no to.
+function printTerminalSummary(o: InitOptions, answers: Answers, fromOrigin: string | null): void {
+	const { parsed } = answers;
+	say(SUMMARY_OPENING);
+	console.log(`  ${pairLine(parsed, fromOrigin)}`);
+	console.log(`  check: ${parsed.check}`);
 	console.log(
-		`    ${LOGIN_TOOL[codeHost.type]} for the Code host, on ${place(codeHost, fromOrigin)}`
+		`  commands the Coding agent may run: ${parsed.allowedCommands.join(', ') || 'none'}`
 	);
-	const profile = o.profile === undefined ? '' : ` under the profile ${o.profile}`;
-	console.log(
-		o.useApiKey
-			? '    claude, billing ANTHROPIC_API_KEY'
-			: `    claude, signed in to your Claude plan${profile}`
-	);
+	console.log('  write:');
+	console.log(`    ${CONFIG_FILE}`);
+	if (!ignoresFactory(o.root)) console.log('    .gitignore, adding the line .factory/');
+	console.log(`  ${labelsLine(parsed, fromOrigin)}`);
+	console.log('  logins checked:');
+	for (const line of loginLines(o, parsed, fromOrigin)) console.log(`    ${line}`);
 }
 
 const yesOrNo = (text: string): string | null =>
@@ -546,10 +626,17 @@ function ignoresFactory(root: string): boolean {
 	try {
 		return readFileSync(join(root, '.gitignore'), 'utf8')
 			.split('\n')
-			.some((l) => /^\/?\.factory\/?$/.test(l.trim()));
+			.some((l) => /^(\/|\*\*\/)?\.factory(\/\*{0,2})?$/.test(l.trim()));
 	} catch {
 		return false;
 	}
+}
+
+function ignoreFactory(root: string): void {
+	const file = join(root, '.gitignore');
+	const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+	const gap = text === '' || text.endsWith('\n') ? '' : '\n';
+	appendFileSync(file, `${gap}.factory/\n`);
 }
 
 // Runs the check once on the checkout as it is, and says whether it passes; it never fails init.
@@ -587,24 +674,69 @@ function stopsAt(lines: readonly Line[]): boolean {
 	return true;
 }
 
+// The answers to write, or the exit code of a run that writes nothing.
+type Settled = Answers | number;
+
+function declined(): number {
+	say(`wrote nothing; run \`nightjar init\` again to start over`);
+	return 1;
+}
+
+// Piped answers and --yes: the interview, what init will do, and the go-ahead.
+async function settleByAnswers(o: InitOptions, fromOrigin: string | null): Promise<Settled> {
+	const answers = await interview(o, fromOrigin);
+	if (stopsAt(await checkLogins(checkOptions(o), answers.parsed))) return 2;
+	printSummary(o, answers, fromOrigin);
+	return (await confirm(o)) ? answers : declined();
+}
+
+// A person at a terminal says yes or no to what was guessed from a GitHub origin; on no, and where the pair is not GitHub's, each question is asked first.
+async function settleAtTerminal(
+	o: InitOptions,
+	prompter: Prompter,
+	fromOrigin: string | null,
+	known: Config | null
+): Promise<Settled> {
+	const propose = async (answers: Answers, onNo: string) => {
+		if (stopsAt(await checkLogins(checkOptions(o), answers.parsed))) return 2;
+		printTerminalSummary(o, answers, fromOrigin);
+		prompter.note(`${onNo} Any answer can be edited later in ${CONFIG_FILE}.`);
+		const question = 'Set up Nightjar like this?';
+		return orCancel(await prompter.confirm(question, true), question) ? answers : 'no';
+	};
+	let guessedCheck: string | undefined;
+	if (fromOrigin !== null && known?.tracker.type === 'github' && known.codeHost.type === 'github') {
+		const guessed = await guessAnswers(o, fromOrigin);
+		const got = await propose(guessed, 'No asks each question, with these as the defaults.');
+		if (got !== 'no') return got;
+		guessedCheck = guessed.parsed.check;
+	}
+	const got = await propose(await interview(o, fromOrigin, guessedCheck), 'No writes nothing.');
+	return got === 'no' ? declined() : got;
+}
+
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
 	const wrote = !existsSync(file);
 	const fromOrigin = await origin(o.root, o.env);
-	const pair = wrote ? await knownPair(o, fromOrigin) : CONFIG_FILE;
-	if (stopsAt(await checkPrerequisites(checkOptions(o), pair))) return 2;
+	const known = wrote ? await knownPair(o, fromOrigin) : null;
+	if (stopsAt(await checkPrerequisites(checkOptions(o), wrote ? known : CONFIG_FILE))) return 2;
+	// a person at a terminal, as against piped answers and --yes
+	const terminal = o.yes ? undefined : o.prompter;
 	if (!wrote) {
 		say(`${CONFIG_FILE} is there already; keeping it`);
 	} else {
-		const answers = await interview(o, fromOrigin);
-		if (stopsAt(await checkLogins(checkOptions(o), answers.parsed))) return 2;
-		printSummary(o, answers, fromOrigin);
-		if (!(await confirm(o))) {
-			say(`wrote nothing; run \`nightjar init\` again to start over`);
-			return 1;
-		}
-		writeFileSync(file, `${JSON.stringify(answers.written, null, '\t')}\n`);
+		const settled =
+			terminal === undefined
+				? await settleByAnswers(o, fromOrigin)
+				: await settleAtTerminal(o, terminal, fromOrigin, known);
+		if (typeof settled === 'number') return settled;
+		writeFileSync(file, `${JSON.stringify(settled.written, null, '\t')}\n`);
 		say(`wrote ${CONFIG_FILE}`);
+		if (terminal !== undefined && !ignoresFactory(o.root)) {
+			ignoreFactory(o.root);
+			say('added `.factory/` to .gitignore');
+		}
 		say(OPTIONAL_SETTINGS);
 	}
 	if (!ignoresFactory(o.root))
@@ -633,42 +765,11 @@ export async function runInit(o: InitOptions): Promise<number> {
 		);
 		return 2;
 	}
-	say(`ready. Commit ${CONFIG_FILE}, then:`);
-	console.log('  1. run `nightjar doctor` to see what would build');
-	console.log('  2. assign a Feature to yourself and give it the Go');
-	// only a person who just answered the interview is asked; --yes and a kept file ask nothing
-	if (!wrote || o.yes || checked.ready === null || !(await offerDoctor(o))) return 0;
-	say('running `nightjar doctor`:');
-	try {
-		await dryRunReady(checked.ready);
-	} catch (fault) {
-		console.error(`  FAIL  Features: ${why(fault)}`);
-		return 2;
-	}
+	// a terminal shows bold itself; elsewhere the output is read as Markdown, as Claude Code does
+	const bold = (words: string) =>
+		terminal === undefined ? `**${words}**` : `\x1b[1m${words}\x1b[22m`;
+	console.log(recap({ go: loadConfig(o.root).signals.go, bold }));
 	return 0;
-}
-
-// Whether to run doctor now; an empty answer is yes, and an input that has ended is no.
-async function offerDoctor(o: InitOptions): Promise<boolean> {
-	if (o.prompter !== undefined) {
-		o.prompter.note(
-			'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
-		);
-		const question = 'Run `nightjar doctor` now?';
-		const run = await o.prompter.confirm(question, true);
-		if (run === null) say(`cancelled at: ${question}`);
-		return run ?? false;
-	}
-	printHelp([
-		'Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
-	]);
-	for (;;) {
-		const got = await o.ask('Run `nightjar doctor` now, y or n [y]: ');
-		if (got === null) return false;
-		const text = got.trim() === '' ? 'y' : got.trim();
-		if (yesOrNo(text) === null) return /^y/i.test(text);
-		console.log('  answer y or n');
-	}
 }
 
 export interface InitHost {
@@ -681,13 +782,15 @@ export interface InitHost {
 	readonly prompter?: Prompter;
 }
 
-const INIT_USAGE = `usage: nightjar init [--yes] [--use-api-key] [--profile NAME] [--check CMD] [--allowed-commands LIST]
+const INIT_USAGE = `usage: nightjar init [--yes] [--no-tour] [--use-api-key] [--profile NAME] [--check CMD]
+                     [--allowed-commands LIST]
                      [--tracker TYPE] [--tracker-repo R] [--tracker-organization O] [--tracker-project P]
                      [--tracker-feature-type T] [--tracker-ticket-type T] [--tracker-path PATH]
                      [--code-host TYPE] [--code-host-repo R] [--code-host-organization O]
                      [--code-host-project P] [--code-host-path PATH]
 
   --yes, -y  take every default and ask nothing; a value with no default must be given by its flag
+  --no-tour  stop once factory.json and .gitignore are written, with the recap of how to go on
   a flag sets its answer and skips its question; --allowed-commands is comma separated, or none`;
 
 // the flags that take a value, each named as Answering.flags names it
@@ -725,6 +828,8 @@ function parseInitArgs(argv: readonly string[]): InitArgs | string {
 		const name = a.replace(/^--/, '');
 		if (a === '--yes' || a === '-y') yes = true;
 		else if (a === '--use-api-key') useApiKey = true;
+		// every run ends once the files are written, which is all this flag asks for
+		else if (a === '--no-tour') continue;
 		else if (a.startsWith('--') && VALUE_FLAGS.has(name)) {
 			const value = argv[i + 1];
 			if (value === undefined || value.startsWith('--')) return `${a} needs a value`;

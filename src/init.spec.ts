@@ -10,6 +10,7 @@ import { machine, type Machine } from './fakes/machine.js';
 import { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
 import type { Prompter } from './prompter.js';
+import { recap } from './recap.js';
 
 let out: string[];
 let err: string[];
@@ -601,44 +602,45 @@ describe('nightjar init shows what it will do, and asks before it writes', () =>
 	});
 });
 
-describe('nightjar init ends with the next step', () => {
+// the recap as it is read where nothing draws bold
+const markdownRecap = (go = 'factory-go') => recap({ go, bold: (words) => `**${words}**` });
+
+describe('nightjar init ends with the recap', () => {
 	const answers = ['github', '', 'github', '', 'make check', '', ''];
 
-	it('says to run doctor, then to assign a Feature and give it the Go', async () => {
-		expect(await init(answers)).toBe(0);
-		expect(out).toEqual(
-			expect.arrayContaining([
-				'nightjar: ready. Commit factory.json, then:',
-				'  1. run `nightjar doctor` to see what would build',
-				'  2. assign a Feature to yourself and give it the Go'
-			])
-		);
-	});
-
-	it('offers to run doctor, and runs it on yes', async () => {
-		expect(await init([...answers, ''])).toBe(0);
-		expect(asked.at(-1)).toBe('Run `nightjar doctor` now, y or n [y]: ');
-		expect(out).toContain('nightjar: would build #1 One escape');
-	});
-
-	it('prints a line of help before it offers doctor', async () => {
-		await init([...answers, 'n']);
-		const offer = transcript.findIndex((line) => line.startsWith('Run `nightjar doctor` now'));
-		expect(transcript[offer - 1]).toBe(
-			'  Doctor reads the Tracker and lists the Features it would build; it changes nothing.'
-		);
-	});
-
-	it('runs no doctor on no', async () => {
-		expect(await init([...answers, 'n'])).toBe(0);
-		expect(out).not.toContain('nightjar: running `nightjar doctor`:');
+	it.each([
+		['after piped answers', answers, ['init']],
+		['under --yes', [], ['init', '--yes', '--check', 'make check']]
+	])('prints it last, %s, and offers nothing more', async (_how, given, argv) => {
+		expect(await init(given, {}, argv)).toBe(0);
+		expect(out.at(-1)).toBe(markdownRecap());
+		expect(asked.filter((q) => q.includes('nightjar doctor'))).toEqual([]);
 		expect(out.join('\n')).not.toContain('would build #1');
+		expect(out.join('\n')).not.toContain('Your draft pull request');
+		// off a terminal, .gitignore is left to the person
+		expect(existsSync(join(m.root, '.gitignore'))).toBe(false);
+		expect(out).toContain(
+			'nightjar: add `.factory/` to .gitignore: Nightjar keeps its status and logs there'
+		);
 	});
 
-	it('asks again for an answer that is neither yes nor no', async () => {
-		expect(await init([...answers, 'maybe', 'y'])).toBe(0);
-		expect(out).toContain('  answer y or n');
-		expect(out).toContain('nightjar: would build #1 One escape');
+	it('prints it over a factory.json that is there, with the name that file gives the Go', async () => {
+		m.writeConfig({
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: [],
+			signals: { go: 'build-me' }
+		});
+		expect(await init([])).toBe(0);
+		expect(out.at(-1)).toBe(markdownRecap('build-me'));
+		expect(existsSync(join(m.root, '.gitignore'))).toBe(false);
+	});
+
+	it('prints none when something is left to fix', async () => {
+		github.refuseLabels();
+		expect(await init(answers)).toBe(2);
+		expect(out.join('\n')).not.toContain('From here on');
 	});
 
 	it('names the optional settings once, in one line, with the README link', async () => {
@@ -658,12 +660,6 @@ describe('nightjar init ends with the next step', () => {
 		});
 		expect(await init([])).toBe(0);
 		expect(out.join('\n')).not.toContain('optional settings');
-	});
-
-	it('offers nothing under --yes, but still says the next step', async () => {
-		expect(await init([], {}, ['init', '--yes', '--check', 'make check'])).toBe(0);
-		expect(asked).toEqual([]);
-		expect(out).toContain('  1. run `nightjar doctor` to see what would build');
 	});
 });
 
@@ -806,11 +802,11 @@ describe('nightjar init with --yes and flags', () => {
 		github = new FakeGitHub('acme/widgets', 'ann');
 		const argv = ['init', '--tracker', 'github', '--code-host', 'github', '--check', 'make check'];
 		expect(await init(['', '', ''], {}, [...argv, '--tracker-repo', 'acme/widgets'])).toBe(0);
+		// piped answers are no terminal, so nothing is guessed
 		expect(asked).toEqual([
 			'GitHub repo the branch is pushed to, owner/name [o/r]: ',
 			'Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: ',
-			'Write factory.json and go on, y or n [y]: ',
-			'Run `nightjar doctor` now, y or n [y]: '
+			'Write factory.json and go on, y or n [y]: '
 		]);
 		expect(m.readConfig()).toMatchObject({
 			tracker: { repo: 'acme/widgets' },
@@ -819,19 +815,29 @@ describe('nightjar init with --yes and flags', () => {
 	});
 });
 
-describe('nightjar init on a terminal, with select prompts', () => {
+describe('nightjar init on a terminal', () => {
+	type Picks = (string | string[] | boolean | null)[];
+	const SUMMARY_QUESTION = 'Set up Nightjar like this?';
+	// each prompt shown, with the answer it offered
+	let offered: [string, unknown][];
+	beforeEach(() => {
+		offered = [];
+	});
+
 	// scripted picks; a pick is a value, or a list of values for a multi-select
-	function withUi(picks: (string | string[] | boolean | null)[]): Prompter {
+	function withUi(picks: Picks): Prompter {
 		const left = [...picks];
-		const next = (message: string) => {
+		const next = (message: string, initial: unknown) => {
+			if (left.length === 0) throw new Error(`no pick left for: ${message}`);
 			transcript.push(message);
+			offered.push([message, initial]);
 			return left.shift();
 		};
 		return {
 			// like a terminal, a refused answer is shown and asked again
 			text: (message, fallback, accept) => {
 				for (;;) {
-					const got = (next(message) as string) || (fallback ?? '');
+					const got = (next(message, fallback) as string) || (fallback ?? '');
 					const printed = out.length;
 					const problem = accept(got);
 					// a line printed while a prompt is drawn garbles it
@@ -840,36 +846,257 @@ describe('nightjar init on a terminal, with select prompts', () => {
 					transcript.push(problem);
 				}
 			},
-			select: (message) => Promise.resolve(next(message) as string),
-			multiselect: (message, choices) => {
+			select: (message, _choices, initial) => Promise.resolve(next(message, initial) as string),
+			multiselect: (message, choices, initial) => {
 				transcript.push(`${message} [${choices.map((c) => c.value).join(' | ')}]`);
+				offered.push([message, initial]);
 				return Promise.resolve(left.shift() as string[]);
 			},
-			confirm: (message) => Promise.resolve(next(message) as boolean | null),
-			note: () => undefined
+			confirm: (message, initial) => Promise.resolve(next(message, initial) as boolean | null),
+			note: (text) => void transcript.push(text)
 		};
 	}
-	const initUi = (picks: (string | string[] | boolean | null)[]) =>
-		runNightjar(['init'], {
+	const initUi = (picks: Picks, argv: string[] = ['init'], prompter = withUi(picks)) => {
+		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+		return runNightjar(argv, {
 			os: { platform: 'linux', kernel: '' },
 			cwd: m.root,
 			env: m.env,
 			gh: github.gh,
-			prompter: withUi(picks)
+			request: ado.request,
+			prompter
 		});
+	};
+
+	const gitignore = () => join(m.root, '.gitignore');
+	const makefile = (...targets: string[]) =>
+		writeFileSync(join(m.root, 'Makefile'), targets.map((t) => `${t}:\n\techo ok\n`).join(''));
+	const twoChecks = () => {
+		makefile('test');
+		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+	};
+	const summary = () => {
+		const start = transcript.indexOf('nightjar: this is what init will do:');
+		return transcript.slice(start, transcript.indexOf(SUMMARY_QUESTION) + 1);
+	};
+	const ansiRecap = () => recap({ go: 'factory-go', bold: (words) => `\x1b[1m${words}\x1b[22m` });
+	// the Tracker and Code host questions on GitHub, taking the repo each offers
+	const github4 = ['github', '', 'github', ''];
+
+	it('asks one yes or no when the repo names one check, then writes and ends with the recap', async () => {
+		makefile('check');
+		expect(await initUi([true])).toBe(0);
+		expect(err).toEqual([]);
+		expect(offered).toEqual([[SUMMARY_QUESTION, true]]);
+		expect(m.readConfig()).toEqual({
+			$schema: 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json',
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: ['make check']
+		});
+		expect(readFileSync(gitignore(), 'utf8')).toBe('.factory/\n');
+		expect(out).toContain('nightjar: added `.factory/` to .gitignore');
+		expect(out.join('\n')).not.toContain('add `.factory/` to .gitignore: Nightjar');
+		expect(github.repoLabelNames()).toContain('factory-go');
+		expect(out).toContain('nightjar: running the check once on this checkout: make check');
+		expect(out.at(-1)).toBe(ansiRecap());
+		expect(out.join('\n')).not.toContain('Your draft pull request');
+		const commits = spawnSync('git', ['rev-list', '--all', '--count'], {
+			cwd: m.root,
+			env: m.env,
+			encoding: 'utf8'
+		});
+		expect(commits.stdout.trim()).toBe('0');
+	});
+
+	it('shows one summary of the guesses and of what it will do, before it writes', async () => {
+		makefile('check');
+		writeFileSync(join(m.root, 'package.json'), '{"scripts":{"lint":"x"}}');
+		await initUi([true]);
+		expect(summary()).toEqual([
+			'nightjar: this is what init will do:',
+			'  GitHub Issues + GitHub, repo o/r',
+			'  check: make check',
+			'  commands the Coding agent may run: make check, npm run lint',
+			'  write:',
+			'    factory.json',
+			'    .gitignore, adding the line .factory/',
+			'  create the Signal labels on o/r: factory-go, ready-for-agent, agent-working, needs-info, ready-for-human',
+			'  logins checked:',
+			'    GitHub CLI for the Tracker, on o/r',
+			'    GitHub CLI for the Code host, on o/r',
+			'    claude, signed in to your Claude plan',
+			'No asks each question, with these as the defaults. Any answer can be edited later in factory.json.',
+			SUMMARY_QUESTION
+		]);
+		expect(transcript.indexOf('nightjar: wrote factory.json')).toBeGreaterThan(
+			transcript.indexOf(SUMMARY_QUESTION)
+		);
+	});
+
+	it.each([
+		['appends to one that lacks it', 'node_modules', 'node_modules\n.factory/\n'],
+		['leaves one that has it', 'node_modules\n.factory/\n', null],
+		['leaves one that has it from the root', '/.factory\n', null],
+		['leaves one that has it at any depth', '**/.factory/\n', null],
+		['leaves one that ignores what it holds', '.factory/*\n', null]
+	])('.gitignore: %s', async (_what, before, after) => {
+		makefile('check');
+		writeFileSync(gitignore(), before);
+		expect(await initUi([true])).toBe(0);
+		expect(readFileSync(gitignore(), 'utf8')).toBe(after ?? before);
+		expect(summary().some((l) => l.includes('.gitignore'))).toBe(after !== null);
+	});
+
+	it('takes the commands of --allowed-commands over its guess', async () => {
+		makefile('check');
+		expect(await initUi([true], ['init', '--allowed-commands', 'make lint *'])).toBe(0);
+		expect(m.readConfig()).toMatchObject({ allowedCommands: ['make lint *'] });
+	});
+
+	it('asks which check when the repo names several, then the one yes or no', async () => {
+		twoChecks();
+		expect(await initUi(['go test ./...', true])).toBe(0);
+		expect(offered.map(([q]) => q)).toEqual([
+			'Command that checks the work, run after each Ticket',
+			SUMMARY_QUESTION
+		]);
+		expect(m.readConfig()).toMatchObject({ check: 'go test ./...' });
+	});
+
+	it('asks for the check when the repo names none, then the one yes or no', async () => {
+		expect(await initUi(['make verify', true])).toBe(0);
+		expect(out.join('\n')).toContain('no check command detected');
+		expect(offered.map(([q]) => q)).toEqual([
+			'Command that checks the work, run after each Ticket (? for more)',
+			SUMMARY_QUESTION
+		]);
+		expect(m.readConfig()).toMatchObject({ check: 'make verify' });
+	});
+
+	it('asks each question on no, offering the guesses, then asks again before it writes', async () => {
+		makefile('check');
+		const picks = [false, ...github4, '', ['make check'], '', true];
+		expect(await initUi(picks)).toBe(0);
+		expect(offered).toEqual([
+			[SUMMARY_QUESTION, true],
+			['Tracker', 'github'],
+			['GitHub repo whose issues are the Features, owner/name', 'o/r'],
+			['Code host', 'github'],
+			['GitHub repo the branch is pushed to, owner/name', 'o/r'],
+			['Command that checks the work, run after each Ticket (? for more)', 'make check'],
+			['Commands the Coding agent may run', ['make check']],
+			['Others, separated by commas (empty for none)', ''],
+			[SUMMARY_QUESTION, true]
+		]);
+		expect(transcript).toContain(
+			'No writes nothing. Any answer can be edited later in factory.json.'
+		);
+		expect(readFileSync(gitignore(), 'utf8')).toBe('.factory/\n');
+	});
+
+	it.each([
+		['a picked check', ['go test ./...'], 'go test ./...', [['go test ./...']]],
+		['a typed check', ['\0own', 'make verify'], 'make verify', [['\0own'], ['make verify']]]
+	])('offers %s again after no, among several', async (_what, first, check, defaults) => {
+		twoChecks();
+		const again = first.map(() => '');
+		again[0] = first[0] ?? '';
+		const picks = [...first, false, ...github4, ...again, [check], '', true];
+		expect(await initUi(picks)).toBe(0);
+		const start = offered.findIndex(([q]) => q === 'Code host') + 2;
+		expect(offered.slice(start, start + defaults.length).map(([, d]) => [d])).toEqual(defaults);
+		expect(m.readConfig()).toMatchObject({ check });
+	});
+
+	it('offers a typed check again after no, when the repo names none', async () => {
+		const picks = ['make verify', false, ...github4, '', ['make verify'], '', true];
+		expect(await initUi(picks)).toBe(0);
+		expect(offered).toContainEqual([
+			'Command that checks the work, run after each Ticket (? for more)',
+			'make verify'
+		]);
+		expect(m.readConfig()).toMatchObject({ check: 'make verify' });
+	});
+
+	it('writes nothing on no to what the questions came to', async () => {
+		makefile('check');
+		expect(await initUi([false, ...github4, '', ['make check'], '', false])).toBe(1);
+		expect(existsSync(written())).toBe(false);
+		expect(existsSync(gitignore())).toBe(false);
+		expect(github.repoLabelNames()).toEqual([]);
+		expect(out).toContain('nightjar: wrote nothing; run `nightjar init` again to start over');
+		expect(out.join('\n')).not.toContain('From here on');
+	});
+
+	it('writes nothing when the person cancels at the summary', async () => {
+		makefile('check');
+		expect(await initUi([null])).toBe(2);
+		expect(err.join('\n')).toContain(`cancelled at: ${SUMMARY_QUESTION}`);
+		expect(existsSync(written())).toBe(false);
+		expect(existsSync(gitignore())).toBe(false);
+	});
+
+	it('asks the questions at once when a flag names another pair', async () => {
+		const argv = [
+			'init',
+			'--tracker',
+			'azure-devops',
+			'--tracker-organization',
+			'contoso',
+			'--tracker-project',
+			'Fabrikam',
+			'--code-host',
+			'github',
+			'--check',
+			'make check'
+		];
+		expect(await initUi(['', '', '', ['make check'], '', true], argv)).toBe(0);
+		expect(offered[0]?.[0]).toContain('Work item type that plays the Feature');
+		expect(offered.filter(([q]) => q === SUMMARY_QUESTION)).toHaveLength(1);
+		expect(summary()).toContain(
+			'  Azure DevOps Boards + GitHub, Tracker on contoso/Fabrikam, repo o/r'
+		);
+		expect(readFileSync(gitignore(), 'utf8')).toBe('.factory/\n');
+	});
+
+	it('asks the questions at once when origin is not on GitHub', async () => {
+		spawnSync('git', ['remote', 'set-url', 'origin', 'https://example.com/o/app.git'], {
+			cwd: m.root,
+			env: m.env
+		});
+		const picks = ['github', 'o/r', 'github', 'o/r', 'make check', ['make check'], '', true];
+		expect(await initUi(picks)).toBe(0);
+		expect(offered[0]?.[0]).toBe('Tracker');
+		expect(summary()).toContain('  GitHub Issues + GitHub, repo o/r');
+	});
+
+	it('stops after the writes under --no-tour, with the recap', async () => {
+		makefile('check');
+		expect(await initUi([true], ['init', '--no-tour'])).toBe(0);
+		expect(existsSync(written())).toBe(true);
+		expect(readFileSync(gitignore(), 'utf8')).toBe('.factory/\n');
+		expect(out.at(-1)).toBe(ansiRecap());
+	});
+
+	it('guesses nothing and leaves .gitignore alone under --yes', async () => {
+		expect(await initUi([], ['init', '--yes', '--check', 'make check'])).toBe(0);
+		expect(offered).toEqual([]);
+		expect(existsSync(gitignore())).toBe(false);
+		expect(out.at(-1)).toBe(markdownRecap());
+	});
 
 	it('takes a picked check and the ticked allowed commands', async () => {
-		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
-		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
+		twoChecks();
 		const code = await initUi([
-			'github',
-			'',
-			'github',
-			'',
+			'go test ./...',
+			false,
+			...github4,
 			'go test ./...',
 			['make test'],
 			'make lint',
-			false
+			true
 		]);
 		expect(code).toBe(0);
 		expect(m.readConfig()).toMatchObject({
@@ -880,45 +1107,27 @@ describe('nightjar init on a terminal, with select prompts', () => {
 	});
 
 	it('refuses a list of numbers typed as my own check', async () => {
-		writeFileSync(join(m.root, 'Makefile'), 'test:\n\techo ok\n');
-		writeFileSync(join(m.root, 'go.mod'), 'module x\n');
-		const own = '\0own';
-		const picks = ['github', '', 'github', '', own, '1,2', 'make check', [], '', false];
-		expect(await initUi(picks)).toBe(0);
+		twoChecks();
+		expect(await initUi(['\0own', '1,2', 'make check', true])).toBe(0);
 		expect(transcript.join('\n')).toContain('the check is a single command');
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
 	it('shows the longer help for ?, and takes the answer after it', async () => {
-		const picks = ['github', '', 'github', '', '?', 'make check', ['make check'], '', false];
-		expect(await initUi(picks)).toBe(0);
+		expect(await initUi(['?', 'make check', true])).toBe(0);
 		expect(transcript.join('\n')).toContain('Keep it fast and deterministic');
 		expect(m.readConfig()).toMatchObject({ check: 'make check' });
 	});
 
 	it('warns about a check that can never fail after the prompt, not inside it', async () => {
-		expect(await initUi(['github', '', 'github', '', 'true', ['true'], '', false])).toBe(0);
+		expect(await initUi(['true', true])).toBe(0);
 		expect(out.join('\n')).toContain('`true` can never fail');
 		expect(transcript).not.toContain('<printed during a prompt>');
 	});
 
-	it('says it was cancelled when the person cancels the doctor question', async () => {
-		const picks = ['github', '', 'github', '', 'make check', ['make check'], '', 'y', null];
-		expect(await initUi(picks)).toBe(0);
-		expect(out.join('\n')).toContain('cancelled at: Run `nightjar doctor` now?');
-		expect(existsSync(written())).toBe(true);
-	});
-
-	it('writes nothing when the person cancels', async () => {
-		const prompter = withUi([]);
-		const code = await runNightjar(['init'], {
-			os: { platform: 'linux', kernel: '' },
-			cwd: m.root,
-			env: m.env,
-			gh: github.gh,
-			prompter: { ...prompter, select: () => Promise.resolve(null) }
-		});
-		expect(code).toBe(2);
+	it('writes nothing when the person cancels a question', async () => {
+		const prompter = { ...withUi([]), text: () => Promise.resolve(null) };
+		expect(await initUi([], ['init'], prompter)).toBe(2);
 		expect(err.join('\n')).toContain('cancelled');
 		expect(existsSync(written())).toBe(false);
 	});

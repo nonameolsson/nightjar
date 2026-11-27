@@ -48,7 +48,7 @@ The commands below are written as `nightjar …`; with `npx`, put `npx @nonameol
 npm i -D @nonameolsson/nightjar
 ```
 
-Whichever you pick, commit `factory.json` and add `.factory/` to `.gitignore`.
+Whichever you pick, commit `factory.json`, with `.factory/` in `.gitignore` (`init` adds it when run on a terminal).
 
 From a tarball, built from a clone of this repo:
 
@@ -73,23 +73,25 @@ nightjar init
 
 Before it asks or writes anything, `init` checks this machine with `doctor`'s own checks: the platform, the sandbox, Node, `ANTHROPIC_API_KEY` without `--use-api-key`, a git checkout with an `origin`, `claude` installed and signed in, and the logins of the Tracker and Code host that your flags and a GitHub `origin` name. It lists every check that fails with how to fix it, writes nothing and exits 2. When your answers choose the Tracker and Code host, it checks their logins too, before it writes.
 
-It asks for:
+**On a terminal**, in a repo with no `factory.json` and a `github.com` `origin`, `init` guesses the setup: GitHub Issues and GitHub on the repo `origin` names, the check command the repo names, and the commands the Coding agent may run. It asks for the check command only when the repo names none or several. One summary shows the guesses, the files it will write, the Signal labels it will create and the logins it checked, and asks one yes or no. On no it asks each question below, with the guesses as the defaults. With another `origin`, or flags that name another Tracker or Code host, it asks the questions straight away, then shows the same summary. On yes it writes `factory.json` and adds `.factory/` to `.gitignore` (creating the file when there is none), unless that already ignores it. It never commits. `--no-tour` asks `init` to stop once those files are written and the setup is checked.
+
+Otherwise, with answers piped in, or to change a guess, it asks for:
 
 - the Tracker: `github`, `azure-devops` or `module` (your own, see [Another Tracker or Code host](#another-tracker-or-code-host)), and what that one needs: the `owner/name` repo on GitHub (it offers the one `origin` names), the organization, project and Feature type on Azure DevOps (and the type of a Ticket, which `nightjar create` needs), or the module's path;
 - the Code host, the same way (on Azure Repos: organization, project and repo);
 - the **check command**: it offers what the repo names (a `Makefile` or `justfile` target, a `package.json` script run by the package manager its lockfile names, `pyproject.toml`, `Cargo.toml`, `go.mod`, `mise.toml`, `deno.json`, a workflow under `.github/workflows/`, a `*.test.sh`), as a numbered list when there are several, and asks for one when it finds none. It warns about a check that can never fail, such as `true`;
 - the commands the Coding agent may run, which it offers as the check command and the test, lint and build commands it found.
 
-Each question prints a line of help, and `?` prints more. Before it writes, `init` shows the `factory.json` it will write, the Signal labels it will create and the logins it will check, and asks to go on; on no it writes nothing. Then it writes `factory.json` (below), which you commit, names the optional settings it left out, and:
+Each question prints a line of help, and `?` prints more. With answers piped in or under `--yes`, before it writes, `init` shows the `factory.json` it will write, the Signal labels it will create and the logins it will check, and asks to go on; on no it writes nothing. Then it writes `factory.json` (below), which you commit, names the optional settings it left out, and:
 
 - **on GitHub** creates the Signal labels (`factory-go`, `ready-for-agent`, `agent-working`, `needs-info`, `ready-for-human`, or the names `factory.json` gives them), leaving any that exist as they are;
 - **on Azure DevOps** says tags appear on first use, so there is nothing to create;
 - lists every check `doctor` makes, now with that file, so commit signing, Workflows and Sources are checked too;
 - runs the check once on this checkout and says whether it passes: one that fails now will stop every Ticket.
 
-It ends with the next step, run `nightjar doctor`, then assign a Feature to yourself and give it the Go, and offers to run `doctor` straight away.
+It ends with a recap of how to go on: commit `factory.json` and `.gitignore`, write Features and give each the Go, then `nightjar --watch`, `nightjar ui` and `nightjar doctor`.
 
-It reads its answers from standard input, line by line, so a script can pipe them in; there is no need for a terminal. A script or an agent can instead give the answers as flags, and `--yes` takes every default and asks nothing:
+Without a terminal it reads its answers from standard input, line by line, so a script can pipe them in; piped answers and `--yes` leave `.gitignore` alone, and `init` says to add `.factory/` to it. A script or an agent can instead give the answers as flags, and `--yes` takes every default and asks nothing:
 
 ```bash
 nightjar init --yes --check 'make check'
@@ -97,7 +99,7 @@ nightjar init --yes --check 'make check' --tracker azure-devops --tracker-organi
   --tracker-project Fabrikam --code-host-repo fabrikam-app
 ```
 
-Each answer has its flag: `--check`, `--allowed-commands` (comma separated, or `none`), `--tracker` and `--code-host` (the type), and a field of either, as `--tracker-` or `--code-host-` then the field: `repo`, `organization`, `project`, `path`, and on the Tracker `feature-type` and `ticket-type`. Under `--yes`, a value with no default and no flag stops `init` before it writes anything, naming the flag to pass. If `factory.json` is already there, `init` checks the machine first, with the logins that file names, then keeps it, asks nothing, does not run your check command, and only creates the labels and lists the checks: run it that way when you join a repo that has one.
+Each answer has its flag: `--check`, `--allowed-commands` (comma separated, or `none`), `--tracker` and `--code-host` (the type), and a field of either, as `--tracker-` or `--code-host-` then the field: `repo`, `organization`, `project`, `path`, and on the Tracker `feature-type` and `ticket-type`. Under `--yes`, a value with no default and no flag stops `init` before it writes anything, naming the flag to pass. If `factory.json` is already there, `init` checks the machine first, with the logins that file names, then keeps it, asks nothing, does not run your check command, and only creates the labels, lists the checks and prints the recap: run it that way when you join a repo that has one.
 
 ## Configure: `factory.json`
 
@@ -363,7 +365,7 @@ Nightjar ignores every issue until a person promotes it. A Feature is built only
 
 To start on a repo:
 
-1. Run `nightjar init`, commit `factory.json`, and add `.factory/` to `.gitignore` ([Set up](#set-up-nightjar-init)).
+1. Run `nightjar init`, then commit `factory.json` and a `.gitignore` that lists `.factory/` ([Set up](#set-up-nightjar-init)).
 2. Run `nightjar doctor` and fix each `FAIL`.
 3. Pick the few issues worth automating. Leave the rest alone.
 4. Turn each pick into a Feature with Tickets that meet the [Ticket contract](#the-ticket-contract). An old issue rarely does: it has no acceptance criteria and no blocking links. Write it as a Feature file, link the old issue from the spec, and make it with `nightjar create --dry-run FILE`, then `nightjar create FILE` ([Write a Feature](#write-a-feature)). The `nightjar-feature` skill can start from the old issue's references: it reads each issue and its comments, writes `Replaces <reference>.` into the spec, and after `nightjar create` offers to comment on the old issue and close it as not planned. Close the old issue once the Feature carries its work.
