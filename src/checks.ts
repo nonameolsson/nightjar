@@ -277,6 +277,31 @@ export const pullChecksCheck = check({
 	}
 });
 
+// a warning only: the pass never runs, but every build still does
+export const conflictsCheck = check({
+	name: 'Conflict fix',
+	needs: ['adapters', 'loaded'],
+	unmet: null,
+	run: ({ adapters, loaded }) => {
+		if (loaded.config.conflicts?.enabled !== true) return {};
+		const { codeHost } = adapters;
+		const lacking = (['nightjarDrafts', 'conflicts'] as const).filter(
+			(method) => typeof codeHost[method] !== 'function'
+		);
+		if (lacking.length === 0) return {};
+		return {
+			lines: [
+				{
+					name: 'Conflict fix',
+					status: 'warn',
+					detail: `conflicts.enabled is on, but this Code host cannot say which of Nightjar's drafts conflict (its Adapter has no ${lacking.join(' and no ')}), so the pass will not run.`,
+					summary: null
+				}
+			]
+		};
+	}
+});
+
 // a warning only: nothing is published, but every build still runs
 export const publishCheck = check({
 	name: 'publish',
@@ -561,6 +586,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	trackerCheck,
 	codeHostCheck,
 	pullChecksCheck,
+	conflictsCheck,
 	publishCheck,
 	installsCheck,
 	leftWorkingCheck,

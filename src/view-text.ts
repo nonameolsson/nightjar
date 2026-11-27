@@ -19,11 +19,12 @@ export const elapsed = (ms: number) => {
 
 const STEP_TEXT: Readonly<Record<string, string>> = {
 	pullChecks: 'Pull-check fix',
+	conflicts: 'Conflict fix',
 	feedback: 'Feedback round',
 	reviewRound: 'Review round'
 };
 
-// How a view names a build's step: the step as it is, but for a Pull-check fix round, a Feedback round and a Review round.
+// How a view names a build's step: the step as it is, but for a Pull-check fix round, a Conflict fix, a Feedback round and a Review round.
 export const stepText = (step: string) => STEP_TEXT[step] ?? step;
 
 // How a view names the kind of work a ledger line records.
@@ -33,6 +34,7 @@ export const KIND_TEXT: Readonly<Record<string, string>> = {
 	step: 'Step round',
 	review: 'Review',
 	pullChecks: 'Pull-check fix',
+	conflicts: 'Conflict fix',
 	feedback: 'Feedback round',
 	retro: 'Retro'
 };

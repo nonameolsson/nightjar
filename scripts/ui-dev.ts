@@ -19,6 +19,7 @@ const SCENARIOS = [
 	'building',
 	'two-builds',
 	'review-round',
+	'conflict-fix',
 	'idle',
 	'paused',
 	'stopped',
@@ -151,6 +152,24 @@ if (scenario === 'review-round') {
 		models: models(1.2),
 		outcome: 'fixed',
 		durationMs: 3 * 60_000
+	});
+}
+
+if (scenario === 'conflict-fix') {
+	// the build that opened the pull request, then the Conflict fix that is running on it
+	session('272', null, 30, 1.8);
+	record(ledger, {
+		at: ago(3),
+		repo: 'o/app',
+		feature: '272',
+		ticket: null,
+		branch: 'nightjar/272',
+		step: 'conflicts',
+		session: 's-272-conflicts',
+		costUsd: 0.9,
+		models: models(0.9),
+		outcome: 'conflicts 1',
+		durationMs: 2 * 60_000
 	});
 }
 
@@ -330,7 +349,8 @@ if (
 	scenario === 'building' ||
 	scenario === 'two-builds' ||
 	scenario === 'stopped' ||
-	scenario === 'review-round'
+	scenario === 'review-round' ||
+	scenario === 'conflict-fix'
 ) {
 	const log = (name: string, texts: readonly string[]) =>
 		writeFileSync(
@@ -356,19 +376,22 @@ if (
 	building(11, { kind: 'ticketBuilt', commit: 'a1b2c3d', ticket: '1' });
 	building(11, { kind: 'ticketStarted', ticket: '3' });
 	const reviewing = scenario === 'review-round';
+	// a Conflict fix works on the pull request, so it has no Ticket either
+	const conflicting = scenario === 'conflict-fix';
+	const wholeFeature = reviewing || conflicting;
 	file.doing({
 		kind: 'building',
 		feature: '272',
 		title: 'Custom <views>',
 		// a Review round works on the whole Feature, so it has no Ticket
-		ticket: reviewing ? null : '3',
-		step: reviewing ? 'reviewRound' : 'build',
+		ticket: wholeFeature ? null : '3',
+		step: reviewing ? 'reviewRound' : conflicting ? 'conflicts' : 'build',
 		round: reviewing ? 2 : 1,
 		rounds: reviewing ? 2 : 3,
 		session: 'dev',
 		startedAt: ago(4),
 		featureStartedAt: ago(20),
-		tickets: reviewing
+		tickets: wholeFeature
 			? [
 					{ id: '1', title: 'Models', state: 'built' },
 					{ id: '3', title: 'Views list', state: 'built' },

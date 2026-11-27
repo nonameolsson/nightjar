@@ -1764,6 +1764,74 @@ describe('dryRun with Publish', () => {
 	});
 });
 
+describe('dryRun with the Conflict fix', () => {
+	const dry = (w: ReturnType<typeof world>) =>
+		dryRun({
+			...w.deps,
+			...(w.deps.conflicts === undefined ? {} : { conflicts: w.deps.conflicts }),
+			...(w.deps.publish === undefined ? {} : { publish: w.deps.publish })
+		});
+
+	it('lists a draft it would resolve conflicts on, ahead of a draft it would publish, and resolves nothing', async () => {
+		const w = world();
+		const c = withConflicts(w);
+		c.done('20');
+		c.done('22');
+		const conflicting = await c.conflicting('20');
+		const pass = publishPass(true, c.host);
+		if (pass === null) throw new Error('the fake Code host cannot publish');
+		w.deps = { ...w.deps, publish: pass, now: () => new Date(Date.now() + 3_600_000) };
+		const body = `Nightjar built all of it.\n\n${featureMarker('22')}\n${publishMark({ complete: true, approved: true })}`;
+		const ready = await c.host.createDraft({
+			title: 'Done',
+			head: 'factory/22-done',
+			base: 'main',
+			body
+		});
+		c.host.setChecks(ready, { pending: false, failed: [] });
+		await dry(w);
+		expect(w.lines).toEqual([
+			'would build #2 Older',
+			'would build #4 Later',
+			`would resolve conflicts on #20 Done 20, on ${conflicting.url}`,
+			`would publish #22 Done 22, on ${ready.url}`
+		]);
+		expect(c.resolved).toEqual([]);
+	});
+
+	it('says it has nothing to do only when no draft conflicts either', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const c = withConflicts(w);
+		c.done('20');
+		await dry(w);
+		expect(w.lines).toHaveLength(1);
+		expect(w.lines[0]).not.toContain('would');
+		w.lines.length = 0;
+		const conflicting = await c.conflicting('20');
+		await dry(w);
+		expect(w.lines).toEqual([`would resolve conflicts on #20 Done 20, on ${conflicting.url}`]);
+	});
+
+	it('leaves out a draft that does not conflict, or whose state is unknown, and one a person engaged', async () => {
+		const w = world();
+		const c = withConflicts(w);
+		for (const id of ['20', '22', '24']) c.done(id);
+		await c.conflicting('20', 'no');
+		await c.conflicting('22', 'unknown');
+		c.host.engage(await c.conflicting('24'));
+		await dry(w);
+		expect(w.lines.some((l) => l.includes('would resolve'))).toBe(false);
+	});
+
+	it('lists nothing to resolve when the pass is off', async () => {
+		const w = world();
+		await dryRun(w.deps);
+		expect(w.lines.some((l) => l.startsWith('would resolve'))).toBe(false);
+	});
+});
+
 describe('nightjar <id>', () => {
 	it('reads the Queue and Waiting on you before it builds, the named Feature not in the Queue', async () => {
 		const w = world();

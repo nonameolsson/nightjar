@@ -1,6 +1,6 @@
 // `nightjar doctor`: runs every check, says how to fix each that fails, and lists what it would build.
 import { checkMachine, type CheckOptions, type Line, type Ready } from './checks.js';
-import { dryRun, publishPass } from './queue.js';
+import { conflictsPass, dryRun, publishPass } from './queue.js';
 import { say, why } from './say.js';
 
 const MARKS = { ok: 'ok  ', fail: 'FAIL', skip: 'skip', warn: 'warn' } as const;
@@ -17,15 +17,20 @@ export function printLines(lines: readonly Line[]): void {
 
 export const failures = (lines: readonly Line[]) => lines.filter((l) => l.status === 'fail').length;
 
-// What it would build, answer feedback on and publish, over the Adapters the checks made ready.
+// What it would build, answer feedback on, resolve conflicts on and publish, over the Adapters the checks made ready.
 export async function dryRunReady(ready: Pick<Ready, 'adapters' | 'assignee' | 'config'>) {
 	const { adapters, assignee, config } = ready;
 	const publish = publishPass(config.publish, adapters.codeHost);
+	// the pass's own fix never runs in a dry run; only its drafts are listed
+	const conflicts = conflictsPass(config.conflicts, adapters.codeHost, () =>
+		Promise.reject(new Error('a dry run resolves nothing'))
+	);
 	await dryRun({
 		tracker: adapters.tracker,
 		codeHost: adapters.codeHost,
 		person: assignee,
 		say,
+		...(conflicts === null ? {} : { conflicts }),
 		...(publish === null ? {} : { publish })
 	});
 }
