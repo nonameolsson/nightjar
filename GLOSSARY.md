@@ -77,7 +77,7 @@ Where a Feature stands in its life, as the page works it out from its Signals, i
 _Avoid_: status, stage, phase, column, state
 
 **Mat**:
-One Standing's group of Features on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), under its name and a count.
+One Standing's group of Features on the `nightjar ui` Board (Shelf, Queue, Building, Waiting on you, Pull request, Merged), under its name and a count.
 _Avoid_: column, swimlane
 
 **Egg**:
