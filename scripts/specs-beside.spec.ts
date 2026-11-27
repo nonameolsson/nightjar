@@ -22,7 +22,6 @@ const GRANDFATHERED = new Set([
 	'src/signals.ts',
 	'src/skills.ts',
 	'src/tracker.ts',
-	'src/ui-banner.ts',
 	'src/view-text.ts'
 ]);
 

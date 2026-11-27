@@ -15,7 +15,7 @@ import { statusNoteText } from './status-note.js';
 import { readFactory } from './status-reader.js';
 import { logbookPage, logbookSection, renderPanels, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
-import { PAPER_STYLE, THEMES, type Theme } from './ui-theme.js';
+import { STYLE } from './ui-style.js';
 import {
 	detailFrom,
 	listsFrom,
@@ -1406,12 +1406,11 @@ describe('nightjar ui board', () => {
 		expect(board.match(/class="took"/g)).toHaveLength(2);
 	});
 
-	it('labels the ledger columns, inlines the banner under a CSP that allows only data images, and says when a count is unknown', async () => {
+	it('labels the ledger columns under a CSP that allows only data images, and says when a count is unknown', async () => {
 		await open();
 		const got = await fetch(`http://127.0.0.1:${String(ui?.port)}/`);
 		const page = await got.text();
 		expect(got.headers.get('content-security-policy')).toContain('img-src data:');
-		expect(page).toContain('.banner { background-image: url(data:image/webp;base64,');
 		expect(page).toContain('<span>Tickets</span><span>State</span>');
 		expect(page).not.toContain('>?<');
 	});
@@ -2045,15 +2044,12 @@ describe('nightjar ui last seven days', () => {
 		expect(renderPanels(root, view)).toContain('<li><b>$0.00</b> spent</li>');
 	});
 
-	it('has a style for the counts and the filter in both themes, and keeps their targets large on a phone', async () => {
+	it('has a style for the counts and the filter, and keeps their targets large on a phone', async () => {
 		await open();
 		const page = (await get('/')).text;
 		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*a\.count[^}]*min-height: 44px/);
-		expect(PAPER_STYLE).toMatch(/@media \(pointer: coarse\) \{[^}]*a\.count[^}]*min-height: 44px/);
-		for (const style of [page, PAPER_STYLE]) {
-			expect(style).toContain('.week {');
-			expect(style).toContain('.filters {');
-		}
+		expect(page).toContain('.week {');
+		expect(page).toContain('.filters {');
 	});
 });
 
@@ -2116,14 +2112,13 @@ describe('nightjar ui page, more', () => {
 			expect(page).not.toContain('<i class="egg waiting"></i>waiting');
 		});
 
-		it('lets a keyboard scroll the Table and names the banner once', async () => {
+		it('lets a keyboard scroll the Table', async () => {
 			building();
 			await open();
 			const page = (await get('/')).text;
 			expect(page).toContain(
 				'<div class="scroll" tabindex="0" role="region" aria-label="Feature table">'
 			);
-			expect(page).toContain('<div class="banner" aria-hidden="true">');
 			expect(page).toContain("'aria-pressed'");
 			expect(page).not.toContain("'aria-current'");
 		});
@@ -2131,24 +2126,21 @@ describe('nightjar ui page, more', () => {
 });
 
 describe('nightjar ui audit fixes', () => {
-	// a theme's own stylesheet; each theme is a whole sheet, so the rules every page needs are checked in each
-	const css = async (theme: Theme = 'nightjar') => {
+	// the page's one stylesheet, as a browser gets it
+	const css = async () => {
 		await open();
 		const page = (await get('/')).text;
-		const style =
-			page.split(new RegExp(`<style data-theme="${theme}"[^>]*>`))[1]?.split('</style>')[0] ?? '';
+		const style = page.split('<style>')[1]?.split('</style>')[0] ?? '';
 		return { page, style };
 	};
 	const rule = (style: string, selector: string) =>
 		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
 
 	it('has a status region outside the panels that stays out of sight', async () => {
-		for (const theme of THEMES) {
-			const { page, style } = await css(theme);
-			expect(page).toContain('<p id="live" class="sr" role="status"></p>');
-			expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
-			expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
-		}
+		const { page, style } = await css();
+		expect(page).toContain('<p id="live" class="sr" role="status"></p>');
+		expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
+		expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
 	});
 
 	it('announces only when the waiting or failed count rises', async () => {
@@ -2211,65 +2203,33 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('1 failed');
 	});
 
-	const BUTTONS = [
-		'th button',
-		'#views button',
-		'#themes button',
-		'.chips button',
-		'button.copy',
-		'a.act',
-		'a.open'
-	];
-	it.each(THEMES)(
-		'gives sort buttons, view and theme tabs, chips, copy buttons and links a 24px hit area, 44px on touch (%s)',
-		async (theme) => {
-			const { style } = await css(theme);
-			for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
-			const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-			for (const s of BUTTONS) expect(coarse, s).toContain(s);
-			expect(coarse).toContain('min-height: 44px');
-		}
-	);
-	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
+	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act', 'a.open'];
+	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
 		const { style } = await css();
-		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(rem|px)/g)].map((m) =>
-			m[2] === 'px' ? `${m[1] ?? ''}px` : Number(m[1])
-		);
-		const ramp = [0.75, 0.85, 1, 1.05, 1.2, 1.6, '15px'];
-		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
+		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
+		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
+		for (const s of BUTTONS) expect(coarse, s).toContain(s);
+		expect(coarse).toContain('min-height: 44px');
 	});
 
-	it("keeps Paper's font sizes on its 11.5px to 16px ramp", async () => {
-		const { style } = await css('paper');
+	it('keeps every font size on the 11.5px to 16px ramp', async () => {
+		const { style } = await css();
 		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)px/g)].map((m) => m[1]);
 		expect(sizes.length).toBeGreaterThan(0);
 		const ramp = ['11.5', '12', '12.5', '13', '13.5', '14', '16'];
 		expect(sizes.filter((s) => !ramp.includes(s ?? ''))).toEqual([]);
 	});
 
-	it("lays a Board entry out by the Board's own width, not the window's (nightjar)", async () => {
-		const { style } = await css('nightjar');
-		expect(style).toContain('container: board / inline-size');
-		expect(style).not.toContain('@media (min-width: 1261px) and (max-width: 1400px)');
-		// narrow: two columns; middling: three, the name over its eggs; wide: the four the head names
-		const wide = [...style.matchAll(/@container board \(min-width: (\d+)px\)/g)].map((m) =>
-			Number(m[1])
-		);
-		expect(wide).toHaveLength(2);
-		const block = style.split(`@container board (min-width: ${String(wide[1])}px)`)[1] ?? '';
-		expect(block.split('\n}')[0]).toContain('.head { display: grid; }');
-	});
-
-	it("lays Paper's Board out as cards, each state's in a grid that fills the Board's width, with no head row", async () => {
-		const { style } = await css('paper');
+	it("lays the Board out as cards, each state's in a grid that fills the Board's width, with no head row", async () => {
+		const { style } = await css();
 		expect(rule(style, '.head')).toContain('display: none');
 		expect(rule(style, '.lines')).toContain('grid-template-columns: repeat(auto-fill');
 		expect(rule(style, '.entry')).toContain('border: 1px solid var(--line)');
 		expect(style).not.toContain('@container board');
 	});
 
-	it("keeps Paper's Table to one line per Feature, cutting the title and outcome short but never the action", async () => {
-		const { style } = await css('paper');
+	it('keeps the Table to one line per Feature, cutting the title and outcome short but never the action', async () => {
+		const { style } = await css();
 		expect(rule(style, 'th, td')).toContain('white-space: nowrap');
 		expect(rule(style, '.clip')).toContain('text-overflow: ellipsis');
 		expect(rule(style, 'td.col-outcome a.act')).toContain('flex: none');
@@ -2320,8 +2280,8 @@ describe('nightjar ui audit fixes', () => {
 		expect(rule(style, '.egg.need::before, .egg.need::after')).not.toContain('border-radius');
 	});
 
-	it.each(THEMES)('draws colours from tokens: no literals outside :root (%s)', async (theme) => {
-		const { style } = await css(theme);
+	it('draws colours from tokens: no literals outside :root', async () => {
+		const { style } = await css();
 		const rest = style
 			.split('\n')
 			.filter((l) => !l.startsWith(':root'))
@@ -2330,17 +2290,27 @@ describe('nightjar ui audit fixes', () => {
 		expect(rest).not.toContain('rgba(');
 	});
 
-	it('keeps the Nightjar tokens for its sockets, mats and shading', async () => {
-		const { style } = await css('nightjar');
-		for (const t of ['--socket-dash', '--socket-border', '--panel-overlay', '--shade-soft'])
-			expect(style).toContain(`${t}:`);
+	it('follows the machine for light and dark: light tokens on :root, dark ones under the media query', async () => {
+		const { style } = await css();
+		expect(style).toContain(':root { color-scheme: light;');
+		expect(style).toContain('@media (prefers-color-scheme: dark) {\n:root { color-scheme: dark;');
 	});
 
-	it('sets the body background once', async () => {
+	it('has one stylesheet and no theme: no switch, no data-theme, no theme script or kept choice, no banner', async () => {
+		const { page } = await css();
+		expect(page.match(/<style/g)).toHaveLength(1);
+		for (const gone of ['data-theme', 'id="themes"', 'nightjar-theme', 'banner', 'THEMES'])
+			expect(page, gone).not.toContain(gone);
+		expect(page).not.toContain('background-image');
+		expect(page).not.toContain('data:image/webp');
+	});
+
+	it('sets the body background once, to a token and no image', async () => {
 		const { style } = await css();
 		const body = rule(style, 'body');
-		expect(body).not.toContain('background:');
-		expect(body.match(/linear-gradient/g)).toHaveLength(2);
+		expect(body).toContain('background-color: var(--bg)');
+		expect(body).not.toContain('gradient');
+		expect(body).not.toContain('url(');
 	});
 
 	it('has no hover tooltip or shadow: the help button opens the panel', async () => {
@@ -2351,16 +2321,13 @@ describe('nightjar ui audit fixes', () => {
 		expect(page).not.toContain('data-tip');
 	});
 
-	it.each(THEMES)(
-		'lets the whole page scroll on a short or narrow viewport (%s)',
-		async (theme) => {
-			const { style } = await css(theme);
-			const block =
-				style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
-			expect(block).toContain('height: auto');
-			expect(block).toContain('overflow: visible');
-		}
-	);
+	it('lets the whole page scroll on a short or narrow viewport', async () => {
+		const { style } = await css();
+		const block =
+			style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
+		expect(block).toContain('height: auto');
+		expect(block).toContain('overflow: visible');
+	});
 
 	it('puts focus back on a copy button or link after a live swap', async () => {
 		await open();
@@ -3165,12 +3132,12 @@ describe("nightjar ui Session and Logbook pages in the Board's stylesheet", () =
 		};
 	};
 
-	it("serves both pages in the Board's default stylesheet, one of it, and nothing of the banner", async () => {
+	it('serves every page in the one stylesheet, one of it, and nothing of the banner', async () => {
 		seed();
 		await open();
 		const served = (await get('/')).text;
-		const board = served.split('<style data-theme="paper">')[1]?.split('</style>')[0];
-		expect(board).toBe(PAPER_STYLE);
+		const board = served.split('<style>')[1]?.split('</style>')[0];
+		expect(board).toBe(STYLE);
 		const found = {
 			session: (await get('/sessions/sess-1')).text,
 			logbook: (await get('/features/261')).text
@@ -3613,22 +3580,18 @@ describe('nightjar ui Steps bar', () => {
 	});
 
 	const styleOf = (page: string) => page.split('<style>')[1]?.split('</style>')[0] ?? '';
-	it.each(['paper', 'nightjar', 'Logbook page', 'Session page'])(
+	it.each(['Board', 'Logbook page', 'Session page'])(
 		'draws each state from tokens, each with its own shape as well as its hue (%s)',
 		async (on) => {
 			let style: string;
-			if (on === 'paper') {
-				style = PAPER_STYLE;
-			} else if (on === 'Logbook page') {
+			if (on === 'Logbook page') {
 				const view = readFactory(root, { alive: () => true });
 				style = styleOf(logbookPage(readLogbook(root, '7'), view));
 			} else if (on === 'Session page') {
 				style = styleOf(sessionPage({ id: 's', runs: [], lines: [] }));
 			} else {
 				await open();
-				const served = (await get('/')).text;
-				const theme = new RegExp(`<style data-theme="${on}"[^>]*>`);
-				style = served.split(theme)[1]?.split('</style>')[0] ?? '';
+				style = styleOf((await get('/')).text);
 			}
 			const rules = ['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'].map(
 				(s) => style.split('\n').find((l) => l.startsWith(`.seg.${s} {`)) ?? ''
