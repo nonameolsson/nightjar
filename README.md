@@ -574,7 +574,18 @@ Pick exactly one of `doctor`, `retro`, `--once`, `--watch` or a Feature id. `--u
 
 Before building, Nightjar checks the API-key choice, Node, `factory.json`, the Tracker and Code host logins (`gh`, or the Azure DevOps sign-in, and the Azure Repos repo when it is the Code host), that `claude` is installed and signed in, and commit signing, and prints what it found. A build stops at the first check that fails; `doctor` runs every check and lists each result as `ok`, `FAIL` (with how to fix it) or `skip` (when `factory.json` could not be read, so the logins it names are not tried). `doctor` refuses a repo with no check command. Exit code 2 means it refused to start, or a check failed; the message says why.
 
-Ctrl-C once stops the running session and hands its Ticket back; Ctrl-C again quits at once. On macOS, Nightjar keeps the machine awake while it runs.
+Ctrl-C once stops the run: the running session ends and the work on its Ticket is thrown away; Ctrl-C again quits at once. On macOS, Nightjar keeps the machine awake while it runs.
+
+### Stop and restart a run
+
+To change how a run is set up, such as giving it more Slots with `--parallel N`, stop it with one Ctrl-C and start it again. Nothing already built is lost:
+
+- The Tickets already built stay as commits on the Feature's branch, and its worktree stays.
+- The Ticket being built is built again from the start, so its session counts toward `dailyUsd` twice. Stop just after a Ticket is committed to lose nothing.
+- No draft pull request opens, and the Feature's Status note says it was stopped.
+- Nightjar takes the Go (`factory-go`) off a Feature when it starts building it, so a stopped Feature is not in the Queue. Put the Go back on it, still assigned to you, before you start the run again.
+
+The next run goes on from the Feature's branch, building only the Tickets left.
 
 ## What you get
 
