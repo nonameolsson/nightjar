@@ -1,266 +1,264 @@
 ---
 name: Nightjar UI
-description: A cyberpunk night-shift habitat board where every Ticket is an egg in a round nest socket, grouped on HUD-framed mats by state.
+description: A quiet ledger of the Queue on warm paper greys, light or dark by the machine's scheme, with hue only in small status marks.
 colors:
-  void: "#04070b"
-  panel: "#0b131b"
-  line: "#1b3a42"
-  teal: "#22e3d2"
-  teal-deep: "#14a89c"
-  amber: "#ff9a1f"
-  slate-violet: "#8f98e0"
-  ok-green: "#3fd17f"
-  ink: "#e6f1f2"
-  ink-soft: "#9db5b8"
-  muted: "#7f979b"
-  err: "#ff5a5f"
-  socket-dash: "#2f5a63"
-  socket-border: "#3f7078"
-  bar-overlay: "rgba(4, 7, 11, 0.94)"
-  panel-overlay: "rgba(8, 13, 19, 0.85)"
-  panel-overlay-strong: "rgba(8, 13, 19, 0.92)"
-  teal-wash: "rgba(34, 227, 210, 0.07)"
-  shade-soft: "rgba(0, 0, 0, 0.3)"
-  shade-mid: "rgba(0, 0, 0, 0.35)"
-  shade-deep: "rgba(0, 0, 0, 0.45)"
+  light:
+    bg: "#ffffff"
+    surface-2: "#f7f7f5"
+    surface-3: "#efeeec"
+    ink: "#37352f"
+    muted: "#66655f"
+    line: "#e9e9e7"
+    accent: "#1d76cf"
+    built: "#1d7f52"
+    fault: "#c93a3f"
+    ask: "#956a0a"
+    pending: "#a3a29e"
+    blue: "#337ea9"
+    blue-ink: "#306e92"
+    purple: "#9065b0"
+    gray: "#787774"
+    on-fill: "#ffffff"
+    scrim: "rgba(15, 15, 15, 0.25)"
+  dark:
+    bg: "#191919"
+    surface-2: "#202020"
+    surface-3: "#2c2c2c"
+    ink: "#d4d4d2"
+    muted: "#a3a3a1"
+    line: "#2f2f2f"
+    accent: "#2a7fd8"
+    built: "#4cc38a"
+    fault: "#ff6369"
+    ask: "#e2b93d"
+    pending: "#5f5e5b"
+    blue: "#5e9fd1"
+    blue-ink: "#71abd7"
+    purple: "#9d68d3"
+    gray: "#9b9b9b"
+    on-fill: "#191919"
+    scrim: "rgba(0, 0, 0, 0.5)"
 typography:
-  heading-mono:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
-    fontSize: "1.6rem"
-    fontWeight: 700
-    lineHeight: 1.5
-  panel-title:
-    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif"
-    fontSize: "1.2rem"
-    fontWeight: 700
-    lineHeight: 1.5
-  entry-name:
-    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif"
-    fontSize: "1.05rem"
+  title:
+    fontFamily: "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif"
+    fontSize: "16px"
     fontWeight: 600
-    lineHeight: 1.5
+    lineHeight: 1.4
+  name:
+    fontFamily: "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif"
+    fontSize: "14px"
+    fontWeight: 600
+    lineHeight: 1.4
   body:
-    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif"
-    fontSize: "15px"
+    fontFamily: "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif"
+    fontSize: "13px"
     fontWeight: 400
-    lineHeight: 1.5
-  data:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
-    fontSize: "0.85rem"
-    fontWeight: 400
-    lineHeight: 1.5
+    lineHeight: 1.4
+    fontFeature: "'tnum' 1"
   label:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
-    fontSize: "0.75rem"
-    fontWeight: 600
-    letterSpacing: "0.14em"
-  meter-value:
-    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif"
-    fontSize: "1rem"
-    fontWeight: 700
+    fontFamily: "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif"
+    fontSize: "12px"
+    fontWeight: 500
+    lineHeight: 1.4
+  code:
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+    fontSize: "12px"
+    fontWeight: 400
     lineHeight: 1.5
 rounded:
-  none: "0"
-  pill: "999px"
+  sm: "4px"
+  md: "6px"
+  lg: "8px"
+  pill: "9999px"
   round: "50%"
 spacing:
   xs: "4px"
   sm: "8px"
-  md: "16px"
-  lg: "20px"
-  xl: "32px"
+  md: "12px"
+  lg: "16px"
+  xl: "24px"
 components:
-  nav-tab:
+  view-tab:
     backgroundColor: "transparent"
-    textColor: "{colors.ink-soft}"
-    rounded: "{rounded.none}"
-    padding: "5px 16px"
-  nav-tab-active:
-    backgroundColor: "{colors.teal-wash}"
-    textColor: "{colors.teal}"
+    textColor: "{colors.light.muted}"
+    rounded: "{rounded.md}"
+    padding: "0 10px"
+    height: "28px"
+  view-tab-active:
+    backgroundColor: "{colors.light.surface-3}"
+    textColor: "{colors.light.ink}"
   chip:
     backgroundColor: "transparent"
-    textColor: "{colors.teal}"
+    textColor: "{colors.light.muted}"
     rounded: "{rounded.pill}"
-    padding: "3px 14px"
+    padding: "2px 12px"
   chip-on:
-    backgroundColor: "{colors.teal}"
-    textColor: "{colors.void}"
-  mat:
-    backgroundColor: "{colors.panel-overlay}"
-    rounded: "{rounded.none}"
+    backgroundColor: "{colors.light.surface-3}"
+    textColor: "{colors.light.ink}"
+  action-link:
+    backgroundColor: "transparent"
+    textColor: "{colors.light.ink}"
+    rounded: "{rounded.md}"
+    padding: "0 10px"
+    height: "28px"
+  card:
+    backgroundColor: "{colors.light.bg}"
+    rounded: "{rounded.lg}"
+    padding: "12px 14px"
   detail-panel:
-    backgroundColor: "{colors.panel-overlay-strong}"
-    rounded: "{rounded.none}"
-    padding: "18px"
-    width: "340px"
+    backgroundColor: "{colors.light.bg}"
+    rounded: "{rounded.lg}"
+    padding: "14px 16px"
   meter:
-    backgroundColor: "{colors.shade-soft}"
-    rounded: "{rounded.none}"
+    backgroundColor: "{colors.light.surface-2}"
+    rounded: "{rounded.md}"
     padding: "6px 10px"
-  nest-socket:
-    backgroundColor: "{colors.shade-mid}"
-    textColor: "{colors.socket-border}"
+  status-mark:
     rounded: "{rounded.round}"
-    size: "1.75rem"
+    size: "14px"
 ---
 
 # Design System: Nightjar UI
 
-## Themes
-
-The page has two themes, each a whole stylesheet of its own (`src/ui-theme.ts`), and a switch at the end of the bar that keeps the person's pick in local storage (`nightjar-theme`). The theme not shown is turned off with `media="not all"`, and a head script applies a kept pick before the body draws.
-
-- **Paper**, the default (`PAPER_STYLE` in `src/ui-theme.ts`): on warm paper greys, the Board is cards and the Table is lines, so the two views never read as one, the platform sans at 13px with tabular figures, one hairline for every rule, and a 6px radius. It follows the machine's light or dark scheme. Each state's group stands under a 28px heading with a dot of its hue (blue building, amber needs a person, violet queue, grey shelf, green completed), its name and a bare count; no fill and no column head. Tickets are 14px status icons that keep the Hue-Plus-Shape Rule: a green disc with a check (built), a blue half-filled ring (building), an amber disc with a bar (needs a person), a dashed ring (waiting). **The Board is for triage**: each Feature is a card (a hairline border, 8px radius, 12 by 14px padding) in a grid that fills the Board's width, cards at least 280px wide (420px under Waiting on you, whose cards carry a reason and a Next step). A card reads top to bottom: its id over its title, with its time and cost or its action (Answer, Open) at the top right; its state in words; what a waiting Feature says (its reason, its Tickets handed back, its Next step); then, past a hairline, its Tickets and Steps bar. **The Table is for comparing**: one 40px line per Feature, no cell wraps; the title and the outcome are cut short with an ellipsis (the whole text in their `title`) while an action (Answer, Open, the draft pull request) always stays in view; the state is its word after a dot of its hue; time and cost are right-aligned; the Progress cell lays the Tickets, the Steps bar and then its words on one line. Hue lives in those small objects and a state's words, never in a field; blue also draws focus and selection. No banner, no uppercase tracked labels, no coloured left edge. Its type ramp is 11.5, 12, 12.5, 13, 13.5, 14 and 16px. Colours are tokens on `:root`, light first and dark second, under the same no-literal rule as below.
-- **Nightjar**: the night-shift HUD this file describes from here on (`STYLE` in `src/ui.ts`).
-
 ## Overview
 
-**Creative North Star: "The Night Shift Mat"**
+**Creative North Star: "The Quiet Ledger"**
 
-A cyberpunk HUD runs over a field-guide's habitat boards. A nightjar banner (teal and amber line art) sits over a dark void with a faint teal grid. Below it, one mat per state holds Tickets as eggs resting in round nest sockets. A person glancing at the board reads state from egg and mat colour alone; the text is there to confirm.
+The page is one design, drawn on warm paper greys and light or dark by the machine's own scheme: there is no theme to pick and no switch in the bar. It reads like a ledger: one line or one card per Feature, a hairline for every rule, the platform sans at 13px with tabular figures so clocks and tallies hold still on a live update. A person glancing at it learns what is done, what is building and what needs them from small status marks and a state's words, then reads the text to confirm.
 
-The page is dense and instrument-like: system sans for names and prose, `ui-monospace` for labels, counts, clocks and anything that is data. Colour is semantic (teal builds, amber needs a person, slate violet queues, green completes, red fails) and always paired with a shape change, so state never rests on hue alone. Frames are hard-edged and square, finished with corner brackets rather than rounded cards.
+Hue lives only in small objects: a Ticket's 14px status mark, a group's dot, a state's words. It never fills a field. Blue is kept for focus and selection. The page is calm, dense and glanceable, close to a document in a notes app and far from a dashboard: it rejects the removed night-shift HUD look, so no banner image, no glow, no corner brackets, no uppercase tracked labels and no coloured left edge.
+
+The same stylesheet draws every page: the Board, the Table and the Overview, the Feature detail panel, the Session page and the Logbook page. A person who moves from the Board to a Logbook stays in one tool.
 
 **Key Characteristics:**
-- Dark void ground (#04070b) with a 32px teal grid at 3.5% alpha
-- One accent colour per state, carried by the mat's tab, tally, brackets and tint
-- Eggs are the unit of state; sockets are round, everything else is square or hexagonal
-- Mono for data and labels, sans for names and prose
-- No shadows for depth; borders and corner brackets build structure
+- White ground in the light scheme and near-black (#191919) in the dark one, with warm grey surfaces, one hairline colour for every rule
+- State is a small mark plus the state's words; hue never travels alone
+- The platform sans at 13px with tabular figures; monospace only for code, commands and transcripts
+- A 6px radius on controls, 8px on cards and panels, pills for chips and the state tag
+- Flat: depth is a hairline border, with one shadow only under the modal drawer
 
 ## Colors
 
-A teal-and-amber HUD palette on near-black, with two supporting state hues.
+A warm paper-grey palette in two schemes, with five state hues kept to small objects. Every colour is a token on `:root`: the light values first, the dark values under `@media (prefers-color-scheme: dark)`. A spec rejects a literal colour outside `:root`.
 
 ### Primary
-- **Signal Teal** (#22e3d2): the live colour. Building eggs, the active view tab, links, the Building-now panel frame and caption, selected chips, focus rings, selection background.
-- **Deep Teal** (#14a89c): built eggs, built stepper hexagons, resting borders on the detail panel and chips, overview section headings, scrollbar.
+- **Focus Blue** (`accent`, light #1d76cf, dark #2a7fd8): focus rings, text selection (at 20%), checked boxes, the skip link. Never a state.
 
 ### Secondary
-- **Needs-Person Amber** (#ff9a1f): a Ticket or run waiting on a human (egg with wing-flash) and the waiting mat. Reserved for "someone must act".
+- **Needs-Person Amber** (`ask`, light #956a0a, dark #e2b93d): a Ticket or Feature that waits for a person: its mark, its state's words, and a 8% (12% dark) tint behind the reason and Next step under a card.
 
 ### Tertiary
-- **Queue Slate Violet** (#8f98e0): the queue mat only.
-- **Shelf Grey** (#7f979b, the muted ink): the shelf mat only. Work with no Go yet is neither live nor waiting, so it takes the quiet neutral rather than a state hue.
-- **Completed Green** (#3fd17f): the completed mat and a pulled entry's label.
-- **Fault Red** (#ff5a5f): failed entries only.
+- **Building Blue** (`blue`, light #337ea9, dark #5e9fd1; `blue-ink` for text, light #306e92, dark #71abd7): the building state, the live blip dot, the in-flight build in a Logbook.
+- **Built Green** (`built`, light #1d7f52, dark #4cc38a): built Tickets, the Completed group's dot, a pulled Feature's words, a passed Steps-bar segment.
+- **Queue Violet** (`purple`, light #9065b0, dark #9d68d3): the Queue group's dot only.
+- **Shelf Grey** (`gray`, light #787774, dark #9b9b9b): the Shelf group's dot and a Logbook decision's mark.
+- **Fault Red** (`fault`, light #c93a3f, dark #ff6369): failed Features, failed Steps-bar segments and faults, in words as well as colour.
 
 ### Neutral
-- **Void** (#04070b): page ground, text on bright fills, interior of stepper hexagons.
-- **Panel** (#0b131b): declared surface base; mats and panel use translucent near-black overlays on the void instead.
-- **Line** (#1b3a42): all hairlines, mat borders, dashed entry dividers, table rules.
-- **Ink** (#e6f1f2): primary text. **Soft Ink** (#9db5b8): secondary text, labels. **Muted** (#7f979b): meta, empty states, column heads.
-- **Socket Dash** (#2f5a63): dashed outline of a waiting (empty) egg.
-- **Socket Border** (#3f7078): the 1px ring of a nest socket; the one border brighter than Line.
+- **Paper** (`bg`, light #ffffff, dark #191919): the page, cards, the bar and the drawer.
+- **Paper Wash** (`surface-2`, light #f7f7f5, dark #202020): hover rows, meters, code blocks, the hover of a control.
+- **Paper Shade** (`surface-3`, light #efeeec, dark #2c2c2c): the selected view tab and chip, the state tag, inline code.
+- **Ink** (`ink`, light #37352f, dark #d4d4d2): text. **Muted** (`muted`, light #66655f, dark #a3a3a1): secondary text, labels, meta.
+- **Hairline** (`line`, light #e9e9e7, dark #2f2f2f): every rule and border. **Pending** (`pending`, light #a3a29e, dark #5f5e5b): the dashed ring of a waiting Ticket and a hovered card's border.
+- **On Fill** (`on-fill`, light #ffffff, dark #191919): the check and bang drawn inside a filled mark.
+- **Scrim** (`scrim`, rgba(15, 15, 15, 0.25) light, rgba(0, 0, 0, 0.5) dark): the backdrop behind the drawer.
 
-### Overlays
-Every colour is a `:root` token (`--socket-dash`, `--socket-border`, `--bar-overlay`, `--panel-overlay`, `--panel-overlay-strong`, `--teal-wash`, `--shade-soft|mid|deep`); a spec rejects a literal outside `:root`, and translucent teal is `color-mix()` on `--teal`.
-
-Translucent fills laid over the void and its grid; they stand in for a solid surface colour.
-- **Bar Overlay** (rgba(4, 7, 11, 0.94)): the sticky bar. **Panel Overlay** (rgba(8, 13, 19, 0.85)): the mat; **Panel Overlay Strong** (rgba(8, 13, 19, 0.92)): the Building-now panel, which sits above the grid and needs the extra opacity.
-- **Teal Wash** (rgba(34, 227, 210, 0.07)): active view tab fill, and the top tint of the Building-now panel.
-- **Shade** (black at 0.3, 0.35, 0.45): **soft** for meters and egg inset shading (0.25 on the needs-a-person egg, 0.3 on the speckles), **mid** for the socket fill (0.35), **deep** for the session log (0.45). Egg shading and speckles use soft (0.3) and mid (0.35); the needs-a-person egg shares soft.
+The mixes are derived, not new colours: `--ask-bg` is `color-mix()` of Needs-Person Amber, and `--accent-bg` of Focus Blue at 20%.
 
 ### Named Rules
-**The Hue-Plus-Shape Rule.** State colour never travels alone: built, building, needs-a-person and waiting each differ in egg form (solid, ringed pulse, wing-flash, dashed empty) as well as colour.
+**The Hue-Plus-Shape Rule.** State colour never travels alone. A Ticket's mark is a green disc with a check (built), a blue half-filled ring (building), an amber disc with a bang (needs a person) or a dashed ring (waiting). A Steps-bar segment is solid (passed), hatched (passed after a retry), broken by a gap (failed), half-filled with a ring (running), dashed (not reached) or a thin line (not needed). A state's words always come with its mark.
 
-**The One Hue Per Mat Rule.** A mat sets a single `--h` and derives its tab, tally, brackets and tint from it. Do not mix state hues inside one mat.
+**The Small Objects Rule.** Hue lives in a mark, a dot or a state's words, never in a field or a rule. A card, a row and a panel stay on Paper and Hairline.
+
+**The Both Schemes Rule.** Every text and state mark meets WCAG AA contrast in the light scheme and in the dark one. A new colour is added to both `:root` blocks, never to one.
 
 ## Typography
 
-**Display Font:** none shipped (known gap); the mono heading at 1.6rem stands in.
-**Body Font:** system-ui, -apple-system, 'Segoe UI', sans-serif
-**Label/Mono Font:** ui-monospace, SFMono-Regular, Menlo, monospace
+**Body Font:** ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif (the platform's own face)
+**Mono Font:** ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
 
-**Character:** An operator's console: neutral system sans for what things are called, monospace for what they measure. All numerals are tabular so clocks and tallies do not jitter on live update.
+**Character:** The reader's own system face, quiet and tight, so the page feels native on every machine. Numerals are tabular everywhere (`font-feature-settings: 'tnum' 1`), so clocks, costs and counts do not jitter as the page updates live. Monospace is kept for code: Signals, commands, tool calls and logs.
 
 ### Hierarchy
-- **Heading** (700, 1.6rem, 1.5, mono): the run title in the page header.
-- **Panel title** (700, 1.2rem, 1.5, sans): Building-now Ticket name.
-- **Entry name** (600, 1.05rem, 1.5, sans): Ticket and run names on mats.
-- **Body** (400, 15px, 1.5, sans): prose and descriptions; secondary text 0.85rem in Soft Ink.
-- **Data** (400, 0.85rem, mono): stats, meta, clocks, Ticket lists, session log (0.75rem, 1.7).
-- **Label** (600-700, 0.75rem, mono, 0.14-0.2em tracking, uppercase): mat tabs, table column heads, meter captions, the sticky-bar mark.
-- **Meter value** (700 inherited, 1rem, sans): elapsed and cost under their captions.
+- **Title** (600, 16px, 1.4): the run header and the Feature detail panel's title.
+- **Name** (600, 14px, 1.4): a Feature's title on a card and a detail panel's Ticket.
+- **Body** (400, 13px, 1.4): everything else; secondary lines are 12 to 13.5px in Muted.
+- **Label** (500, 12px, 1.4, Muted): group names beside their dot (600, 13px), section heads, column heads (11.5px), meter captions (11.5px). Sentence case, never uppercase, never tracked.
+- **Code** (400, 12px, 1.5, mono): code, commands, tool calls and the folded logs.
 
 ### Type ramp
-The CSS uses only these sizes: 0.75rem (labels, column heads, meter captions, session log; the floor, nothing smaller), 0.85rem (data, tabs, chips, clocks, legend), 1rem (meter values, tally), 1.05rem (entry name), 1.2rem (panel title), 1.6rem (heading), plus the 15px body. A spec holds the ramp.
+The CSS uses only 11.5, 12, 12.5, 13, 13.5, 14 and 16px, plus `1em` headings. A spec holds the ramp.
 
 ### Named Rules
-**The Mono Means Measured Rule.** Monospace marks counts, ids, times, costs, and column or tab labels. Names and sentences stay in sans.
+**The Mono Means Code Rule.** Monospace marks what is typed or logged: a Signal's name, a command, a tool call, a log. Names, counts, times and costs stay in the sans with tabular figures.
 
 ## Layout
 
-The page never scrolls: the bar (view switcher and links to the Tracker and pull requests) and the run header with its numbers stay fixed, and only the content beneath scrolls. Below 480px height or 400px width (a landscape phone, 400% zoom) the bar and header scroll with the content, so the Features stay reachable. A 150px banner (100px on phones) opens the scrolling content and fades into the void. Content is a centred column, max 1380px, 32px side padding (12px on phones). On Board with a running Ticket the content splits into a flexible left column and a 340px sticky detail panel (20px gap, `top: 16px`). Mats stack with 16px between; each is a two-column grid, an 88px tab rail (40px on phones) and the entry lines. In Nightjar an entry lays itself out by the Board column's own width (a container query on `.left`, named `board`), not the window's, so the detail panel beside it counts. Wide, it is the 4-column grid the head row names (name 1.1fr, 12rem eggs, state 1fr, 7.5rem time and cost). Middling, it is 3 columns, the eggs under the name, and the head row hides. Narrow, the name and its time and cost share a line, then the eggs, then the state. It switches at 724px and 1040px, as its tab rail and padding take 124px. Paper's cards need no query: their grid fits as many as the Board's width holds. Cells align on their first baseline, so a name lines up with the first line of its state, and a long name wraps under itself, not under its id (a hanging indent the width of the id). A waiting Feature's reason and Next step (`.under`) take their own area at that same indent: last and full width on narrow and middling widths, as in the page's order, so the state stays near the name; right under the name when wide. Entries have 14px vertical padding (a Paper card 12px). At 1260px and below the detail panel moves above the mats and stops sticking; at 760px (phone) the mark hides and the tab rail narrows to 40px. Interactive controls (sort buttons, view tabs, chips) are at least 24px tall, 44px on `pointer: coarse`. A visually hidden `role="status"` region announces a rise in waiting or failed Features; a skip link jumps to the panels. Table view scrolls horizontally with a 36rem minimum. Spacing rhythm is 4/8/16/20/32.
+The page never scrolls as a whole: the bar (the mark, Board / Table / Overview, and links to the Tracker and pull requests) and the run header with its numbers stay fixed, and only the content beneath scrolls. Below 480px height or 400px width (a landscape phone, 400% zoom) the bar and header scroll with the content, so the Features stay reachable. Content is a centred column, at most 1380px wide, with 24px side padding (12px on a phone). A visually hidden `role="status"` region announces a rise in waiting or failed Features, and a skip link jumps to the panels.
+
+**The Board is for triage.** Each state is a group: a 28px heading with a dot of the group's hue, its name and a bare count, then its Feature cards in a grid that fits as many as the width holds, at least 280px each (420px under Waiting on you, whose cards carry a reason and a Next step). With a Feature selected the Board splits into a flexible left column and a 340px sticky detail panel (24px gap); at 1260px and below the panel moves above the groups and stops sticking. **The Table is for comparing**: one 40px line per Feature, no cell wraps, the title and outcome cut with an ellipsis (the whole text in their `title`) while an action always stays in view; the state is its word after a dot of its hue; time and cost are right-aligned; the Progress cell lays the Tickets, the Steps bar and its words on one line. It scrolls sideways below a 36rem minimum. **The Overview** is hairline-ruled sections of plain lines.
+
+The Session page and the Logbook page share the bar (with a way back to the Board) and the scrolling region, and use the same column. Spacing steps are 4, 8, 12, 16 and 24px (a group's bottom margin is 20px). Interactive controls are at least 24px tall, and 44px under `pointer: coarse`.
 
 ## Elevation & Depth
 
-Flat. Depth comes from translucent near-black panels over the grid, 1px Line borders, a gradient tint at each mat's tab edge, and corner brackets. No drop or glow shadows exist. The only `box-shadow` uses are inset 3px shading inside an egg and the expanding 9px ring on the live blip dot, both of which describe object form or a pulse, not elevation.
+Flat. Surfaces are told apart by a 1px Hairline and, for a hover or a selection, a step to Paper Wash or Paper Shade. The one shadow is under the Feature detail drawer, which floats over the page above a Scrim; the one other `box-shadow` is the expanding ring on the live blip dot, a pulse and not elevation.
 
 ### Named Rules
-**The Flat Frame Rule.** Surfaces are separated by border and tint, never by shadow. A new surface gets a Line border and, if it is a primary frame, corner brackets.
+**The Flat Page Rule.** A card, a panel, a row and a fold sit on the page with a Hairline and no shadow. Only a modal drawer is lifted.
 
 ## Shapes
 
-Square frames, round sockets, hexagonal counters. Mats, the detail panel, meters and the log are 0-radius rectangles with 1px borders. Two 16px, 2px corner brackets in the state hue mark each mat (top-right and bottom-right) and the detail panel (top-left and bottom-right). Counts and stepper nodes are flat-top hexagons (`clip-path` 25%/75% polygon: 2.3rem tally, 13px stepper node). Eggs are an ovoid (50% / 62% 62% 38% 38%) with two speckle dots; sockets are 1.75rem circles. Chips are the only pill (999px).
+Soft, small radii. Controls (view tabs, action links, copy and close buttons), meters, code blocks and the Session page's `.run` blocks are 6px. Cards, the Feature detail panel and the drawer are 8px, and Steps-bar segments 2px. Chips and the run header's state tag are pills. Status marks and group dots are circles. The only borders are the 1px Hairline, the dashed ring of a waiting mark and the Pending hover of a card.
 
 ## Components
 
 ### Navigation
-A sticky bar at 94% void with a Line bottom border. The mark is mono, bold, 0.2em tracked, in Signal Teal. View tabs are square, borderless buttons in Soft Ink; hover goes Ink; active is Signal Teal text on a 7% teal wash with a Deep Teal border. Focus shows a 2px teal outline, 2px offset.
+A 40px bar on Paper over a Hairline. The mark is 13px, 600, in Ink. View tabs are 28px high, 6px-radius, borderless text buttons in Muted; hover steps to Paper Wash and Ink; the active view is on Paper Shade in Ink at weight 500. The links to the Tracker and pull requests sit at the right as bordered action links with a small external-link mask icon. Focus is a 2px Focus Blue outline, 1px offset.
 
-### Habitat Mat
-A bordered rectangle tinted from its left by 12% of its state hue. Left rail is a vertical label tab (mono uppercase, reading bottom-to-top) with a hexagon tally below it, ruled off by a 2px state-hue border. Waiting is amber, building teal, queue slate violet, shelf grey, completed green. Entries are separated by dashed Line rules.
+### Group and Feature Card
+A group heading is a 28px line: an 8px dot in the group's hue (blue building, amber needs a person, violet queue, grey shelf, green completed), the name in 600 and a bare count in Muted. Each Feature is a card: Paper, 1px Hairline, 8px radius, 12 by 14px padding, border to Pending on hover. It reads top to bottom: its id over its title (14px, 600), with its time and cost or its action (Answer, Open) at the top right; its state in words in the state's hue; what a waiting Feature says (its reason, its Tickets handed back and its Next step) on an amber tint; then, past a Hairline, its Tickets and Steps bar.
 
-### Egg and Nest Socket
-- **Built:** solid Deep Teal egg. **Building:** Signal Teal egg with a 2px ring at 3px offset pulsing over 2.4s (`incubate`). **Needs a person:** amber egg with two small amber wings angled 20 degrees (the wing-flash). **Waiting:** dashed Socket Dash outline, no fill (hidden inside a socket, which stands for the empty nest).
-- Sockets are 1.75rem circles on 35% black with a Socket Border ring.
-
-### Building-Now Panel
-One panel per busy Slot, oldest first, stacked in one column with a 16px gap; the column is the sticky element, so the panels move together. While the run is paused, a panel's step line starts "Finishing:" and its Building Mat row says Finishing. Mono, translucent with a teal top wash and a Deep Teal border and teal corner brackets. Caption with a blinking blip dot, Ticket title in sans with a mono id, a vertical stepper of hexagon nodes (built Deep Teal fill, building Signal Teal fill and bold text, waiting amber outline, pending muted outline) on a 1px Line spine, a 2-up grid of elapsed and cost meters (small tracked caption over a 1rem bold value), and a scrollable session log.
-
-### Feature Detail Panel
-A modal drawer on the right, 640px wide (full width on a phone), full height and scrolling on its own over a 45% black backdrop. Same frame as the Building-now panel: translucent with a teal top wash, a Deep Teal border and teal corner brackets (top-left, bottom-right). A mono caption and a Close button, then the Feature's title in sans with a mono id. Spec and Tickets sit under Line-ruled mono section heads; the spec's own headings drop to 1rem sans. Tickets use the Building-now stepper: a closed Ticket is a filled Deep Teal hexagon in muted text, an open one an outline, and each says `open` or `closed` in words. Each Ticket's acceptance criteria fold under a teal mono `<summary>`. A Feature's title that opens the panel is a text button with a dotted underline that goes teal on hover.
-
-### Cost Fold
-A build's cost opens into its stages and its models as a native `<details>`, folded by default: under a Completed card (a full-width row beneath the entry), under Building now's meters, and in a Table row's Cost cell, whose summary is the dollars themselves with a dotted underline and a visually hidden "cost by stage and model". The summary is a 0.75rem mono Muted line (44px on `pointer: coarse`) with a 2px teal focus ring. Inside, a Muted 0.75rem mono head (`By stage`, `By model`, not uppercase) over a two-column list on dashed Line rules: the stage or model in Soft Ink, then its dollars and a `<small>` of its Sessions or its tokens. At phone width each line stacks to one column. A build whose ledger lines name no model says so in a quiet `empty` line; one with some unnamed says how many Sessions and dollars. A fold stays open, and focus stays on its summary, across a live swap. Paper draws the same at 12px on a solid Line rule.
+### Status Mark
+14px, circular, one per Ticket, the Hue-Plus-Shape forms above. Waiting is a dashed 1.5px Pending ring. The Feature detail panel's stepper uses a 12px mark in the same forms.
 
 ### Steps Bar
-One segment per stage of a Feature's latest build (Tickets, Steps, Review, Review rounds, Pull checks, Feedback), in an `<ol>` beneath its Eggs on its Board card and in its Table row's Progress cell; nothing for a Feature with no Session in its build. Each segment is a 1.25rem by 0.5rem flat bar 3px apart (Paper: 18 by 8px, 2px radius, 2px apart), and keeps the Hue-Plus-Shape Rule: **passed** solid Deep Teal; **passed after a retry or a round** Deep Teal hatching in a Deep Teal outline; **failed** Fault Red broken by a gap in its middle; **running** half-filled Signal Teal in a Signal Teal outline with the `incubate` ring (off under reduced motion); **not reached** a dashed Socket Dash outline; **not needed** a 2px Muted line. Paper draws the same forms in `--built`, `--fault`, `--blue` and `--pending`. Each segment's `title` and a visually hidden text name the stage, its state, its Sessions and their cost. A legend of the six forms sits once above the Board, after the Egg legend, and once above the Table's chips.
-
-### Last seven days
-The Overview opens with a section headed `Last seven days` (an overview heading, tracked mono Deep Teal) over one wrapping row of four counts: Features completed, failed and handed to a person, and the dollars spent. Each is a mono 1rem bold number and its words in Ink (Soft Ink in Nightjar, with a dotted underline on the three links); the words carry the meaning, so no colour does. The three counts of Features are links to the Table's outcome filter, named for a screen reader with what the filter shows ("show every completed Feature in the Table", "show the Features that need a person now in the Table"), at least 24px tall (44px on `pointer: coarse`); the dollars are plain text. A Muted line below says where the counts come from, and that the filter shows every Feature the Table holds with that outcome, of any day, so its number need not match the week's. A zero is a zero, never an empty section.
+One 18 by 8px, 2px-radius segment per stage of a Feature's latest build (Tickets, Steps, Review, Review rounds, Pull checks, Feedback), 2px apart, in an `<ol>` beneath the Tickets on a card and in the Table's Progress cell. It keeps the Hue-Plus-Shape Rule. Each segment's `title` and a visually hidden text name the stage, its state, its Sessions and their cost. A legend of the forms sits once above the Board and once above the Table's chips.
 
 ### Chips and Table
-Filter chips are pill outlines in Deep Teal with teal text; on state they fill Signal Teal with void text. The state chips are followed by a second group of chips, labelled `Outcome` in a muted mono caption, one chip pressed at a time (Any, Completed, Failed, Needs a person); they are buttons with `aria-pressed`, and a muted mono line under them says `Showing n of m Features` while any filter is on. Table headers are tracked mono buttons that turn teal when sorted, with a rotated-border chevron for direction; rows have Line bottom borders.
+Chips are 24px-tall pills on a Hairline in Muted; the pressed chip is on Paper Shade in Ink, weight 500. State chips are followed by an `Outcome` group, one pressed at a time, with `aria-pressed`, and a Muted line says `Showing n of m Features` while a filter is on. Table headers are 11.5px Muted buttons that turn Ink when sorted, with a rotated-border chevron; rows have Hairline bottom borders and step to Paper Wash on hover.
 
-### Session Log
-Black 45% fill, Line border, 0.75rem mono at 1.7 line-height in Soft Ink, wrapped, capped at 14rem height and scrolling.
+### Feature Detail Panel
+Beside the Board, a 340px sticky panel on Paper with a Hairline and an 8px radius: a Building-now caption with the blip dot, the Ticket's title and id, a vertical stepper of marks, a 2-up grid of elapsed and cost meters on Paper Wash, and a scrollable session log. Under a Feature's title, the drawer (`<dialog>`, 640px, full width on a phone) opens over a Scrim, with a Close button, the spec and Tickets under Hairline-ruled sections, each Ticket's acceptance criteria folded under a `<summary>`, and the Feature's Logbook section last.
+
+### Cost Fold
+A build's cost opens into its stages and its models as a native `<details>`, folded by default, under a Completed card, under Building now's meters and in a Table row's Cost cell, whose summary is the dollars with a dotted underline. A fold stays open, and focus stays on its summary, across a live swap.
+
+### Last seven days
+The Overview opens with one wrapping row of four counts: Features completed, failed and handed to a person, and the dollars spent, each a 16px 600 number and its words. The three counts of Features link to the Table's outcome filter; a Muted line says where they come from. A zero is a zero, never an empty section.
 
 ### Session Page
-`/sessions/<id>` shares the bar (with a way back to the Board), the banner and the scrolling region. One bordered `.run` block per ledger line holds its Feature, Ticket, kind, outcome, cost and duration as a wrapping grid of mono labels over values. The transcript below is a list: the Coding agent's text in sans, each tool call in mono behind a Deep Teal rule, and each tool result a native `<details>` folded under a 0.75rem mono summary, opened with the keyboard or a tap (44px on `pointer: coarse`). The open result is the Session Log's `pre`, taller (24rem). It links back to its Feature's Logbook.
+`/sessions/<id>`: one hairline-bordered `.run` block per ledger line, 6px radius, holds its Feature, Ticket, kind, outcome, cost and duration as a wrapping grid of 11.5px Muted labels over values. The transcript below is a list: the Coding agent's text in the sans, each tool call a 12px mono line on Paper Wash, and each tool result a native `<details>` folded under a 12px Muted summary (44px on touch), opening a code block 24rem tall. It links back to its Feature's Logbook.
 
 ### Logbook Page
-`/features/<id>` shares the Session Page's bar, banner and scrolling region, and follows the build live. Under a mono `Logbook` heading with the Feature's id and title, and a line of its Sessions and cost, the Logbook is one ordered list on a 2px Line spine. A Session is a `.run` block (when, a link to its page, the same wrapping grid of kind, Ticket, outcome, cost and duration) on a Deep Teal spine, its summary folded as a `<details>`. A decision is one 0.85rem Soft Ink line with a mono 0.75rem time; a Signal's name or a command is set as `code`, and what it holds (a red check's gate report, the Review's issues, the Feedback left) folds beneath it as the Session Log's `pre`. A hand-over to a person runs on an amber spine; the build in flight closes the list on a Signal Teal spine under a tracked `Building now` label. A folded item stays open, and focus stays on its link or summary, across a live swap. A Feature with no Logbook file shows a quiet `empty` note above its Sessions. On every Mat card and Table row a small mono `Logbook` link (0.75rem, named `Logbook of #id` for a screen reader) follows the Feature's name; the Overview ends with All Logbooks.
+`/features/<id>` follows the build live. Under a `Logbook` heading with the Feature's id and title, one list of entries sits on Hairlines, each with a small mark whose shape tells its kind: a grey dot for a decision, a grey ring for a Session, an amber disc with a bang for a hand-over to a person, a half-filled blue ring for the build in flight (with its state word). A Session is a quiet `.run` block (when, a link to its page, kind, Ticket, outcome, cost and duration) with its summary folded; a decision is one 12.5px line with its time, a Signal's name or a command set as `code`, and what it holds (a red check's gate report, the Review's issues, the Feedback left) folded beneath it as a code block. A fold stays open, and focus stays on its link or summary, across a live swap. A Feature with no Logbook file shows a quiet note above its Sessions.
 
 ## Do's and Don'ts
 
 ### Do:
-- **Do** draw state with an egg form plus the state hue (Hue-Plus-Shape).
-- **Do** put the state hue on a mat through `--h` only and derive tab, tally, brackets and tint from it.
-- **Do** use Signal Teal for live or active, amber only for "needs a person".
-- **Do** set counts, ids, times and costs in mono with tabular numerals.
-- **Do** end primary frames with corner brackets in their hue.
-- **Do** honour `prefers-reduced-motion`: pulse and blip animations switch off.
+- **Do** draw state with a mark's shape plus its hue, and say the state in words (Hue-Plus-Shape).
+- **Do** keep hue in small objects: a mark, a dot, a state's words.
+- **Do** add every colour as a token to both `:root` blocks, and use it as `var(--token)` elsewhere.
+- **Do** keep every text and state mark at WCAG AA contrast in the light scheme and the dark one.
+- **Do** set sizes from the ramp (11.5, 12, 12.5, 13, 13.5, 14, 16px) and keep tabular figures.
+- **Do** make every control at least 24px tall, 44px under `pointer: coarse`, and show Focus Blue's 2px ring on keyboard focus.
+- **Do** honour `prefers-reduced-motion`: the live blip switches off.
 
 ### Don't:
-- **Don't** use drop or glow shadows for elevation; build depth with borders and tints.
-- **Don't** round frames, mats or buttons; only sockets (50%), eggs and chips (999px) are round.
-- **Don't** use amber, violet or green for decoration; each is a state.
+- **Don't** add a banner, a glow, corner brackets, a grid texture or any HUD framing; that look is removed.
+- **Don't** fill a card, a row or a panel with a state hue, or draw a coloured left edge.
+- **Don't** use uppercase or tracked labels.
+- **Don't** shadow a card or a panel; only the modal drawer is lifted.
 - **Don't** rely on colour alone for state.
-- **Don't** add a new accent hue outside the state set.
-
-### Not canonized (build carries these)
-- No display face is shipped; the mono heading stands in. Treat as a gap, not a rule.
-- Small tracked uppercase captions (the Building-now caption, overview section headings) read as eyebrow labels; they are not a pattern for new surfaces. Tab, column and meter labels are functional and stay.
+- **Don't** add a theme, a toggle or a stored preference: the page follows the machine's scheme and nothing else.
+- **Don't** add a hue outside the set of the five states plus Focus Blue.
