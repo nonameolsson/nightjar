@@ -15,6 +15,10 @@
 			"prompt": "This Feature changes the nightjar ui page. Follow DESIGN.md and the surface brief in .impeccable/surfaces/src-ui-ts.md.",
 			"serve": "npm run ui:dev",
 			"localNetwork": true,
+			"allowedCommands": [
+				".claude/skills/impeccable/scripts/impeccable *",
+				".agents/skills/impeccable/scripts/impeccable *"
+			],
 			"steps": [
 				{
 					"name": "critique",
