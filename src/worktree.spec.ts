@@ -438,7 +438,7 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		const { world, reopen, moveBase } = await forked();
 		const tree = await reopen();
 
-		expect(await tree.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await tree.mergeBase()).toEqual({ kind: 'current' });
 		expect(await tree.commitConflictFix(1, 'Nothing.', 's5')).toBe(false);
 		expect(world.subjects(tree)).toEqual(['Share it (#2)']);
 
@@ -447,7 +447,7 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		await later.mergeBase();
 		await later.commitConflictFix(1, 'Took it.', 's5');
 		const merged = await reopen();
-		expect(await merged.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await merged.mergeBase()).toEqual({ kind: 'current' });
 		expect(await merged.commitConflictFix(2, 'Nothing.', 's5')).toBe(false);
 	});
 
@@ -503,8 +503,37 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 
 		expect(world.has(tree, 'junk.txt')).toBe(false);
 		expect(await tree.commitConflictFix(1, 'Kept both.', 's5')).toBe(true);
-		expect(await tree.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await tree.mergeBase()).toEqual({ kind: 'current' });
 		expect(await tree.commitConflictFix(2, 'Nothing.', 's5')).toBe(false);
+	});
+
+	it('names the files that still hold conflict markers, and none once the Session resolved them', async () => {
+		const { world, reopen, moveBase } = await forked();
+		moveBase('base.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const tree = await reopen();
+		expect(await tree.conflictMarkers()).toEqual([]);
+		await tree.mergeBase();
+
+		expect(await tree.conflictMarkers()).toEqual(['shared.txt']);
+		world.write(tree, 'shared.txt');
+		expect(await tree.conflictMarkers()).toEqual([]);
+	});
+
+	it("lists the base's commits the branch lacks, and none once they are merged in", async () => {
+		const { reopen, moveBase } = await forked();
+		moveBase('base.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const tree = await reopen();
+		const before = await tree.baseCommits(10_000);
+		expect(before.text).toContain('base.txt');
+		expect(before.text).toContain('shared.txt');
+		expect(before.truncated).toBe(false);
+		expect((await tree.baseCommits(5)).truncated).toBe(true);
+
+		await tree.mergeBase();
+		await tree.commitConflictFix(1, 'Took it.', 's5');
+		expect((await tree.baseCommits(10_000)).text.trim()).toBe('');
 	});
 
 	it("reads the head commit's trailers, and none from a person's own commit", async () => {

@@ -88,9 +88,17 @@ export function conflictFixCommitMessage(
 	return `Merge ${base} into the branch, conflict fix round ${String(round)}\n\n${summary.trim()}\n\n${CONFLICTS_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
 }
 
-// What merging the base into the branch came to: it completed, or it stopped on the files it names.
+// What merging the base into the branch came to: it completed, it stopped on the files it names, or there was nothing to merge because the branch already holds the base.
 export type MergeOutcome =
-	{ readonly kind: 'clean' } | { readonly kind: 'conflicts'; readonly files: readonly string[] };
+	| { readonly kind: 'clean' }
+	| { readonly kind: 'conflicts'; readonly files: readonly string[] }
+	| { readonly kind: 'current' };
+
+// A line git writes where a conflict starts or ends: seven < or > at the start, then a space or nothing.
+const CONFLICT_MARKER = /^(?:<{7}|>{7})(?: |$)/m;
+
+// Whether a file's text still holds a conflict marker a merge left.
+export const holdsConflictMarkers = (text: string): boolean => CONFLICT_MARKER.test(text);
 
 // The commit of one Review round, the `round`th of its build.
 export function reviewCommitMessage(round: number, summary: string, session: string): string {
@@ -191,12 +199,16 @@ export interface Worktree {
 	): Promise<string | null>;
 	// One commit of what a Review round left, the `round`th of its build; false when it changed no file.
 	commitReview(round: number, summary: string, session: string): Promise<boolean>;
-	// Merges the base, as the worktree last fetched it, into the branch without committing, never a rebase; the merge is left pending for `commitConflictFix`, with the files it stopped on holding conflict markers. Clean when the merge completed, or when the branch already holds the base.
+	// Merges the base, as the worktree last fetched it, into the branch without committing, never a rebase; the merge is left pending for `commitConflictFix`, with the files it stopped on holding conflict markers. Clean when the merge completed; current, with nothing pending, when the branch already holds the base.
 	mergeBase(): Promise<MergeOutcome>;
 	// One merge commit of the pending merge and what the Session left, the `round`th Conflict fix, keeping every earlier commit; false when no merge is pending.
 	commitConflictFix(round: number, summary: string, session: string): Promise<boolean>;
 	// How many Conflict fixes the branch's own commits hold, from their trailers.
 	conflictFixes(): Promise<number>;
+	// The files changed since the head commit that still hold a conflict marker, sorted.
+	conflictMarkers(): Promise<string[]>;
+	// The base's commits the branch lacks, the ones since it forked or was last merged, as a log cut at `limit` characters.
+	baseCommits(limit: number): Promise<{ text: string; truncated: boolean }>;
 }
 
 // The trailers of a commit message: the `Key: value` lines of its last paragraph, by key.
@@ -502,7 +514,10 @@ export class GitWorktree implements Worktree {
 			this.env
 		);
 		if (merged.missing) throw new GitFailure('git is not on the PATH.');
-		if (merged.ok) return { kind: 'clean' };
+		if (merged.ok) {
+			// a branch that already holds the base merges nothing, and git begins no merge
+			return (await this.mergeHead()) === null ? { kind: 'current' } : { kind: 'clean' };
+		}
 		const out = await this.git(['diff', '--name-only', '--diff-filter=U']);
 		const files = out.split('\n').filter((l) => l !== '');
 		// a merge that stopped on no file did not stop on conflicts: git refused it
@@ -528,6 +543,29 @@ export class GitWorktree implements Worktree {
 			`${this.at.base}..HEAD`
 		]);
 		return out.split('\n').filter((l) => l.trim() !== '').length;
+	}
+
+	// Each file git sees changed or added since the head commit, read from the folder; one that cannot be read as a file holds no marker.
+	async conflictMarkers(): Promise<string[]> {
+		const changed = await this.git(['diff', '--name-only', 'HEAD']);
+		const added = await this.git(['ls-files', '--others', '--exclude-standard']);
+		const listed = [...changed.split('\n'), ...added.split('\n')];
+		const files = [...new Set(listed)].filter((f) => f !== '');
+		const marked = files.filter((file) => {
+			try {
+				return holdsConflictMarkers(readFileSync(join(this.at.folder, file), 'utf8'));
+			} catch {
+				return false;
+			}
+		});
+		return marked.sort();
+	}
+
+	async baseCommits(limit: number): Promise<{ text: string; truncated: boolean }> {
+		const text = await this.git(['log', '--stat', '--format=%h %s%n%n%b', `HEAD..${this.at.base}`]);
+		return text.length > limit
+			? { text: text.slice(0, limit), truncated: true }
+			: { text, truncated: false };
 	}
 }
 

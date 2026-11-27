@@ -14,7 +14,9 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	buildFeature,
+	conflictsLimits,
 	featureOfBody,
+	fixConflicts,
 	fixPullChecks,
 	handedOver,
 	LIMITS,
@@ -22,10 +24,19 @@ import {
 	type Deps,
 	type Setup
 } from './build.js';
-import { dryRun, feedbackPass, pullChecksPass, queue, type QueueDeps } from './queue.js';
+import {
+	conflictsPass,
+	dryRun,
+	feedbackPass,
+	pullChecksPass,
+	queue,
+	type QueueDeps
+} from './queue.js';
 import type {
 	BuildOutcome,
 	BuildRequest,
+	ConflictsOutcome,
+	ConflictsRequest,
 	Ended,
 	FeedbackOutcome,
 	FeedbackRequest,
@@ -54,7 +65,7 @@ import type { WorkflowConfig } from './workflow.js';
 import type { Served } from './serve.js';
 import type { Doing, Happened } from './status.js';
 import { DEFAULT_SIGNAL_NAMES, type Signal } from './signals.js';
-import { attemptBranch, openWorktree, type OpenWorktree } from './worktree.js';
+import { attemptBranch, openWorktree, trailersOf, type OpenWorktree } from './worktree.js';
 import type { LogbookEntry } from './logbook.js';
 import { baseLine, botPullMarker } from './base-line.js';
 
@@ -67,7 +78,13 @@ type Act = 'build' | 'ask' | 'fail' | 'flaky' | 'down' | 'lasting' | 'lasting-ot
 
 // One piece of work the build loop asked the Coding agent for.
 type Work =
-	BuildRequest | FixRequest | StepRequest | FeedbackRequest | ReviewRequest | ReviewRoundRequest;
+	| BuildRequest
+	| FixRequest
+	| StepRequest
+	| FeedbackRequest
+	| ReviewRequest
+	| ReviewRoundRequest
+	| ConflictsRequest;
 
 // How any kind of work can end besides its answer.
 type Ending = Ended & { readonly sessionId: string; readonly costUsd: number };
@@ -110,6 +127,8 @@ interface World {
 	reviewAgent: (req: ReviewRequest) => ReviewOutcome;
 	// what the scripted agent does in a Review round; the default changes a file and says it fixed the issues
 	reviewRoundAgent: (req: ReviewRoundRequest) => ReviewRoundOutcome;
+	// what the scripted agent does in a Conflict fix; the default resolves each file it is given and says so
+	conflictsAgent: (req: ConflictsRequest) => ConflictsOutcome;
 	// whether a Review round leaves a changed file; the default does
 	reviewRoundWrites: boolean;
 	acts: Record<string, Act>;
@@ -287,6 +306,16 @@ function worldOf(o: {
 			costUsd: 2
 		}),
 		reviewRoundWrites: true,
+		conflictsAgent: (req) => {
+			for (const file of req.files) trees.write(req.at.folder, file, 'both sides\n');
+			return {
+				kind: 'resolved',
+				summary: 'Kept both sides.',
+				files: req.files,
+				sessionId: req.sessionId,
+				costUsd: 2
+			};
+		},
 		acts: {},
 		flaky: 1,
 		waits: [],
@@ -378,7 +407,8 @@ function deps(world: World): Deps {
 				answer(req, () => {
 					if (world.reviewRoundWrites) write(world, req.at.folder, `review-${req.sessionId}.txt`);
 					return world.reviewRoundAgent(req);
-				})
+				}),
+			conflicts: (req) => answer(req, () => world.conflictsAgent(req))
 		},
 		runCheck: (command, cwd, env) => {
 			world.checks.push({ command, cwd });
@@ -2583,6 +2613,315 @@ describe('the Pull-check pass in --watch', () => {
 		expect(got).toMatchObject({ kind: 'paused' });
 		expect(world.asked).toEqual([]);
 		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+});
+
+describe('the Conflict fix pass in --watch', () => {
+	const BRANCH = 'factory/1-one-escape';
+	const SIDE = `${BRANCH}-attempt-conflicts`;
+	// the subject of the merge commit of the `round`th Conflict fix
+	const merge = (round: number) =>
+		`Merge origin/main into the branch, conflict fix round ${String(round)}`;
+
+	// Feature 1 built into a draft, then the base moved: it wrote base.txt, and ticket-2.txt as the branch did but otherwise, so the Code host says the draft conflicts. Feature 10 waits in the Queue.
+	async function conflicting(world: World, o: { clash?: boolean } = {}) {
+		world.host.conflictOnOpen = 'yes';
+		await buildFeature(deps(world), setup(world), '1');
+		// the next Feature's draft does not conflict
+		world.host.conflictOnOpen = 'no';
+		const pull = world.host.pulls[0];
+		if (pull === undefined) throw new Error('no draft was opened');
+		world.trees.moveBase('main', 'base.txt', 'from the base\n');
+		if (o.clash !== false) world.trees.moveBase('main', 'ticket-2.txt', 'from the base\n');
+		world.tracker.add({
+			id: '10',
+			title: 'Next',
+			assignees: ['ann'],
+			signals: ['go'],
+			children: ['11']
+		});
+		world.tracker.add({ id: '11', title: 'Ticket 11', signals: ['ready'] });
+		// what happened from here on
+		world.asked.length = 0;
+		world.checks.length = 0;
+		return pull;
+	}
+
+	// a new run of --watch that ends on its first idle tick, with the Conflict fix pass on unless `on` is false
+	function watch(
+		world: World,
+		o: { on?: boolean; deps?: Partial<Deps>; setup?: Partial<Setup>; said?: string[] } = {}
+	): QueueDeps {
+		const d = { ...deps(world), ...o.deps, say: (line: string) => o.said?.push(line) };
+		const stop = new AbortController();
+		const s = setup(world, o.setup);
+		const pass = conflictsPass({ enabled: o.on ?? true }, world.host, (taken) =>
+			fixConflicts(d, s, taken)
+		);
+		return {
+			tracker: world.tracker,
+			person: 'ann',
+			build: ({ id }) => buildFeature(d, s, id),
+			status: d.status,
+			now: d.now,
+			say: d.say,
+			sleep: () => {
+				stop.abort();
+				return Promise.resolve();
+			},
+			signal: stop.signal,
+			...(pass === null ? {} : { conflicts: pass })
+		};
+	}
+
+	const pushes = (world: World) => world.host.pushes.filter((p) => p.branch === BRANCH);
+	const ownChecks = (world: World) => world.checks.filter((c) => c.cwd === tree());
+
+	it('merges the base, has a new Session resolve the files the merge stopped on, and pushes one merge commit with a Factory-Conflicts trailer, before the next Feature', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		const before = world.trees.messages(tree());
+		expect(await queue(watch(world), false)).toBe(130);
+
+		const [first, ...rest] = world.asked;
+		expect(first).toMatchObject({
+			kind: 'conflicts',
+			sessionId: 'session-1',
+			feature: { id: '1', title: 'One escape' },
+			files: ['ticket-2.txt'],
+			at: { branch: BRANCH, folder: tree(), base: 'origin/main' },
+			budgetUsd: LIMITS.conflictsUsd,
+			minutes: LIMITS.conflictsMinutes
+		});
+		// the base's commits since the branch forked
+		const given = first?.kind === 'conflicts' ? first.baseCommits.text : '';
+		expect(given).toContain('base.txt');
+		expect(given).toContain('ticket-2.txt');
+
+		const after = world.trees.messages(tree());
+		expect(after.slice(1)).toEqual(before);
+		expect(after[0]?.split('\n')[0]).toBe(merge(1));
+		expect(after[0]).toContain('Kept both sides.');
+		expect(after[0]).toMatch(/\nFactory-Conflicts: 1\nFactory-Session: session-1$/);
+		// every commit is still Nightjar's, so Publish still sees the branch as its own
+		for (const message of after) {
+			expect([...trailersOf(message).keys()].some((k) => k.startsWith('Factory-'))).toBe(true);
+		}
+		expect(world.trees.has(tree(), 'base.txt')).toBe(true);
+		expect(ownChecks(world)).toHaveLength(1);
+		expect(pushes(world)).toHaveLength(2);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		// then Feature 10, built as before
+		expect(rest.map((r) => r.kind)).toEqual(['build', 'review']);
+		expect(rest[0]).toMatchObject({ ticket: { id: '11' } });
+	});
+
+	it('runs no Review and no Step after the fix, and leaves the publish mark as it was, dropping only the conflict notice', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		const body = world.host.pulls[0]?.body ?? '';
+		expect(body).toContain('## Conflicts with main');
+		await queue(watch(world), false);
+
+		expect(askedOf(world, 'review').map((r) => r.feature.id)).toEqual(['10']);
+		expect(askedOf(world, 'step')).toEqual([]);
+		const now = world.host.pulls[0]?.body ?? '';
+		expect(now).not.toContain('## Conflicts with main');
+		expect(publishMarkOf(now)).toEqual(publishMarkOf(body));
+	});
+
+	it('holds the Feature as working while the Session runs', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		const signals: string[][] = [];
+		const resolve = world.conflictsAgent;
+		world.conflictsAgent = (req) => {
+			signals.push([...world.tracker.signalsOf('1')]);
+			return resolve(req);
+		};
+		await queue(watch(world), false);
+		expect(signals).toEqual([['working']]);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it('runs the check with the usual fix rounds in the same Session, and the ledger records them all as step conflicts', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		world.checkOk = false;
+		world.fixAgent = (req) => {
+			write(world, req.at.folder, `fix-${String(req.round)}.txt`);
+			// the check is green after the first of its own fix rounds
+			world.checkOk = true;
+			return { kind: 'fixed', summary: 'Fixed the import.', sessionId: req.resume, costUsd: 1 };
+		};
+		await queue(watch(world), false);
+
+		expect(askedOf(world, 'fix').map((f) => [f.of.kind, f.resume])).toEqual([
+			['conflicts', 'session-1']
+		]);
+		expect(world.trees.subjects(tree())[0]).toBe(merge(1));
+		expect(world.trees.messages(tree())[0]).toContain('Fixed the import.');
+		expect(pushes(world)).toHaveLength(2);
+		const rows = ledger(world).filter((e) => e.step === 'conflicts');
+		expect(rows.map((e) => [e.feature, e.session, e.outcome, e.costUsd])).toEqual([
+			['1', 'session-1', 'conflicts 1', 2],
+			['1', 'session-1', 'round 1', 1]
+		]);
+		expect(world.doing).toContainEqual(
+			expect.objectContaining({ kind: 'building', feature: '1', step: 'conflicts', round: 1 })
+		);
+	});
+
+	it('keeps a merge that stays red on the -attempt-conflicts side branch, and pushes nothing', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		const before = world.trees.messages(tree());
+		world.checkOk = false;
+		await queue(watch(world), false);
+
+		expect(world.trees.messages(tree())).toEqual(before);
+		expect(world.trees.sides.get(SIDE)?.sort()).toEqual(['base.txt', 'ticket-2.txt']);
+		expect(world.trees.has(tree(), 'base.txt')).toBe(false);
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+	});
+
+	it('throws away a Session that says it is blocked, running no check', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		const before = world.trees.messages(tree());
+		world.conflictsAgent = (req) => ({
+			kind: 'blocked',
+			blocker: 'Both sides rename the function; which name wins is a person’s call.',
+			sessionId: req.sessionId,
+			costUsd: 1
+		});
+		await queue(watch(world), false);
+
+		expect(world.trees.messages(tree())).toEqual(before);
+		expect(world.trees.sides.get(SIDE)).toContain('ticket-2.txt');
+		expect(ownChecks(world)).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(ledger(world).find((e) => e.step === 'conflicts')?.outcome).toBe('conflicts 1 blocked');
+	});
+
+	it('throws away a resolution that leaves conflict markers, running no check', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		const said: string[] = [];
+		// it says it resolved the file, and leaves it as the merge did
+		world.conflictsAgent = (req) => ({
+			kind: 'resolved',
+			summary: 'Done.',
+			files: req.files,
+			sessionId: req.sessionId,
+			costUsd: 1
+		});
+		await queue(watch(world, { said }), false);
+
+		expect(world.trees.sides.get(SIDE)).toContain('ticket-2.txt');
+		expect(ownChecks(world)).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(said.some((l) => l.includes('conflict markers are left in ticket-2.txt'))).toBe(true);
+	});
+
+	it('still runs the check before it pushes a merge the Code host called conflicting that merges clean, with no Session', async () => {
+		const world = makeWorld();
+		await conflicting(world, { clash: false });
+		await queue(watch(world), false);
+
+		expect(askedOf(world, 'conflicts')).toEqual([]);
+		expect(ownChecks(world)).toHaveLength(1);
+		const [head] = world.trees.messages(tree());
+		expect(head?.split('\n')[0]).toBe(merge(1));
+		expect(world.trees.has(tree(), 'base.txt')).toBe(true);
+		expect(pushes(world)).toHaveLength(2);
+	});
+
+	it('counts its round from the branch, so a later run goes on from the fixes it had', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		await queue(watch(world), false);
+		world.trees.moveBase('main', 'ticket-3.txt', 'from the base\n');
+		world.asked.length = 0;
+		await queue(watch(world), false);
+
+		expect(world.trees.subjects(tree()).slice(0, 2)).toEqual([merge(2), merge(1)]);
+		expect(askedOf(world, 'conflicts').map((c) => c.files)).toEqual([['ticket-3.txt']]);
+	});
+
+	it("leaves alone a draft whose head commit is not Nightjar's", async () => {
+		const world = makeWorld();
+		const pull = await conflicting(world);
+		world.host.pushedByPerson(pull);
+		const said: string[] = [];
+		await queue(watch(world, { said }), false);
+
+		expect(askedOf(world, 'conflicts')).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(said).toContain(`${pull.url}: left alone, its head commit is not Nightjar's`);
+		// the Queue still goes on
+		expect(askedOf(world, 'build').map((b) => b.ticket.id)).toEqual(['11']);
+	});
+
+	it('leaves alone a draft whose branch here holds commits the Code host lacks', async () => {
+		const world = makeWorld();
+		const pull = await conflicting(world);
+		world.trees.commitAsPerson(tree(), 'Local\n\nFactory-Ticket: #2', 'local.txt');
+		const said: string[] = [];
+		await queue(watch(world, { said }), false);
+
+		expect(askedOf(world, 'conflicts')).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+		expect(said).toContain(
+			`${pull.url}: left alone, its branch here holds commits the Code host lacks`
+		);
+	});
+
+	it('leaves a conflicting draft alone with the pass off', async () => {
+		const world = makeWorld();
+		await conflicting(world);
+		await queue(watch(world, { on: false }), false);
+		expect(askedOf(world, 'conflicts')).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+	});
+
+	it("takes no draft once the day's spend has reached the daily limit", async () => {
+		const world = makeWorld();
+		const pull = await conflicting(world);
+		const s = setup(world, { limits: { ...LIMITS, dailyUsd: 1 } });
+		const got = await fixConflicts(deps(world), s, {
+			feature: '1',
+			draft: {
+				pull: { id: pull.id, url: pull.url },
+				branch: pull.head,
+				headCommit: '',
+				body: pull.body,
+				checks: pull.checks,
+				personEngaged: false,
+				conflicts: 'yes'
+			}
+		});
+		expect(got).toMatchObject({ kind: 'paused' });
+		expect(world.asked).toEqual([]);
+		expect(world.tracker.signalsOf('1')).toEqual([]);
+		expect(pushes(world)).toHaveLength(1);
+	});
+});
+
+describe('conflictsLimits', () => {
+	it('takes each Conflict fix limit factory.json sets, and the default for one it leaves out', () => {
+		expect(conflictsLimits(undefined)).toEqual({
+			conflictsRounds: 2,
+			conflictsUsd: 5,
+			conflictsMinutes: 30
+		});
+		expect(conflictsLimits({ fixRounds: 4, fixUsd: 2 })).toEqual({
+			conflictsRounds: 4,
+			conflictsUsd: 2,
+			conflictsMinutes: 30
+		});
 	});
 });
 

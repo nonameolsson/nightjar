@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import {
 	buildFeature,
+	conflictsLimits,
+	fixConflicts,
 	fixPullChecks,
 	LIMITS,
 	pullFixLimits,
@@ -36,6 +38,7 @@ import { claimPorts, portEnv } from './ports.js';
 import {
 	buildNamed,
 	cannotClaim,
+	conflictsPass,
 	feedbackPass,
 	fixNamed,
 	handBack,
@@ -242,7 +245,8 @@ export async function runNightjar(
 		limits: {
 			...LIMITS,
 			dailyUsd: ready.person.dailyUsd,
-			...pullFixLimits(config.pullChecks)
+			...pullFixLimits(config.pullChecks),
+			...conflictsLimits(config.conflicts)
 		},
 		signal: stop.signal
 	};
@@ -269,6 +273,9 @@ export async function runNightjar(
 	const pullChecks = pullChecksPass(config.pullChecks, adapters.codeHost, (red) =>
 		fixPullChecks(deps, setup, red)
 	);
+	const conflicts = conflictsPass(config.conflicts, adapters.codeHost, (conflicting) =>
+		fixConflicts(deps, setup, conflicting)
+	);
 	const publish = publishPass(config.publish, adapters.codeHost);
 	// the build of one Feature, with the request for changes that started it when it has no Go
 	const build = async (feature: Named, started?: Asked) => {
@@ -292,6 +299,7 @@ export async function runNightjar(
 		signal: stop.signal,
 		signals: config.signals,
 		...(pullChecks === null ? {} : { pullChecks }),
+		...(conflicts === null ? {} : { conflicts }),
 		...(publish === null ? {} : { publish }),
 		pollMs: (args.poll ?? ready.person.pollSeconds) * 1000,
 		...(args.mode === 'watch' ? { newer: await startStale(realSeams(PACKAGE_DIR, ready.env)) } : {})

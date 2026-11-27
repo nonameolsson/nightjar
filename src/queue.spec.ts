@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
 	featureMarker,
 	markHandedOver,
+	type ConflictFixOutcome,
+	type ConflictingDraft,
 	type FeatureOutcome,
 	type PullFixOutcome,
 	type RedDraft
 } from './build.js';
-import type { PullChecks } from './code-host.js';
+import type { ConflictState, PullChecks } from './code-host.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import { FakeTracker, type NewItem } from './fakes/tracker.js';
 import { featureStopStep, nextStepText } from './next-step.js';
@@ -15,6 +17,7 @@ import type { Waiting } from './plan.js';
 import {
 	buildNamed,
 	cannotClaim,
+	conflictsPass,
 	dryRun,
 	fixNamed,
 	publishPass,
@@ -549,6 +552,262 @@ describe('pullChecksPass', () => {
 	it('is off over a Code host without nightjarDrafts', () => {
 		const { nightjarDrafts: _gone, ...without } = new FakeCodeHost();
 		expect(pullChecksPass({ enabled: true }, without, fix)).toBeNull();
+	});
+});
+
+// The world with drafts, and the Conflict fix pass over the same Code host; a fix that ran, as a real one does, leaves the draft no longer conflicting.
+function withConflicts(w: ReturnType<typeof world>, d: ReturnType<typeof withDrafts>) {
+	const resolved: string[] = [];
+	let outcome: (c: ConflictingDraft) => Promise<ConflictFixOutcome> = async (c) => {
+		await d.host.push(`/work/${c.feature}-merged`, c.draft.branch);
+		d.host.setConflict(c.draft.pull, 'no');
+		const { pull } = c.draft;
+		return { kind: 'fixed', pull, round: 1, summary: 'Kept both.', files: ['a.ts'], usd: 2 };
+	};
+	w.deps = {
+		...w.deps,
+		conflicts: {
+			drafts: d.host.nightjarDrafts,
+			fix: (c) => {
+				resolved.push(c.feature);
+				w.trail.push(`resolve ${c.feature}`);
+				return outcome(c);
+			}
+		}
+	};
+	// a draft for `feature` that the Code host says is `conflict` with its base, its Pull checks green unless given
+	const open = async (
+		feature: string | null,
+		conflict: ConflictState = 'yes',
+		checks: PullChecks = { pending: false, failed: [] }
+	) => {
+		const pull = await d.open(feature, checks);
+		d.host.setConflict(pull, conflict);
+		return pull;
+	};
+	return {
+		open,
+		resolved,
+		resolveWith: (o: typeof outcome) => {
+			outcome = o;
+		}
+	};
+}
+
+describe('queue --watch with the Conflict fix pass', () => {
+	it('resolves a conflicting draft before a red one, and both before the next Feature, handing it the draft and its Feature', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		d.done('22');
+		await c.open('20', 'no', { pending: false, failed: [FAILURE] });
+		const pull = await c.open('22');
+		const handed: ConflictingDraft[] = [];
+		const { conflicts } = w.deps;
+		if (conflicts === undefined) throw new Error('no Conflict fix pass');
+		w.deps = {
+			...w.deps,
+			conflicts: {
+				...conflicts,
+				fix: (taken) => {
+					handed.push(taken);
+					return conflicts.fix(taken);
+				}
+			}
+		};
+		expect(await queue(w.deps, false)).toBe(130);
+		expect(work(w.trail)).toEqual(['resolve 22', 'fix 20', 'build 2', 'build 4']);
+		expect(handed).toMatchObject([
+			{
+				feature: '22',
+				draft: { pull, branch: 'factory/22-done', conflicts: 'yes', personEngaged: false }
+			}
+		]);
+	});
+
+	it('takes the oldest conflicting draft first, and the next before any red draft', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		for (const id of ['20', '22', '24']) d.done(id);
+		await c.open('20');
+		await c.open('22', 'no', { pending: false, failed: [FAILURE] });
+		await c.open('24');
+		await queue(w.deps, false);
+		expect(work(w.trail)).toEqual(['resolve 20', 'resolve 24', 'fix 22', 'build 2', 'build 4']);
+	});
+
+	it("leaves alone a draft the Code host cannot say of, one only behind its base, an engaged one, an unmarked one, another person's and one on a Feature holding a Signal", async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const { pullChecks: _off, ...rest } = w.deps;
+		w.deps = rest;
+		const c = withConflicts(w, d);
+		d.done('20');
+		await c.open('20', 'unknown');
+		d.done('22');
+		await c.open('22', 'no');
+		d.done('24');
+		d.host.engage(await c.open('24'));
+		await c.open(null);
+		d.done('26', { assignees: ['bob'] });
+		await c.open('26');
+		d.done('28', { signals: ['human'] });
+		await c.open('28');
+		d.done('30', { signals: ['working'] });
+		await c.open('30');
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual([]);
+		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it('leaves alone a draft the Pull-check pass handed to a person', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		const pull = await c.open('20');
+		const body = d.host.pulls.find((p) => p.id === pull.id)?.body ?? '';
+		await d.host.editBody(pull, markHandedOver(body));
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual([]);
+	});
+
+	it('takes a draft once at its head commit, and fixes no Pull check on it at that commit either', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		const pull = await c.open('20', 'yes', { pending: false, failed: [FAILURE] });
+		const gaveUp = { kind: 'gaveUp', pull, round: 1, why: 'red', usd: 2, side: null } as const;
+		c.resolveWith(() => Promise.resolve(gaveUp));
+		await queue(w.deps, false);
+		expect(work(w.trail)).toEqual(['resolve 20', 'build 2', 'build 4']);
+	});
+
+	it('takes a draft again once its head commit moves', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		const pull = await c.open('20');
+		let fixes = 0;
+		c.resolveWith(async () => {
+			fixes += 1;
+			// the first round pushes a commit and the base conflicts again; the second takes
+			await d.host.push(`/work/round-${String(fixes)}`, 'factory/20-done');
+			if (fixes > 1) d.host.setConflict(pull, 'no');
+			return { kind: 'fixed', pull, round: fixes, summary: 'Kept both.', files: [], usd: 2 };
+		});
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual(['20', '20']);
+	});
+
+	it('looks again on each idle tick, so a draft that comes to conflict while nothing is queued is resolved', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		const pull = await c.open('20', 'no');
+		const { sleep } = w.deps;
+		w.deps = {
+			...w.deps,
+			sleep: (ms, signal) => {
+				d.host.setConflict(pull, 'yes');
+				return sleep(ms, signal);
+			}
+		};
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual(['20']);
+	});
+
+	it('pauses as a build does when the fix pauses, and takes the draft again after', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		await c.open('20');
+		c.resolveWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
+		await queue(w.deps, false);
+		expect(w.sleeps).toEqual([30 * 60_000, 30 * 60_000]);
+		expect(c.resolved).toEqual(['20', '20']);
+	});
+
+	it('goes on to the Queue when a fix stops on a fault, saying so', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		await c.open('20');
+		c.resolveWith(() => Promise.reject(new Error('git merge failed: refusing')));
+		await queue(w.deps, false);
+		expect(w.built).toEqual(['2', '4']);
+		expect(
+			w.lines.some((l) => l.includes('the Conflict fix of') && l.includes('git merge failed'))
+		).toBe(true);
+	});
+
+	it('resolves a conflicting draft before Publish takes it', async () => {
+		const w = world();
+		const p = withPublish(w);
+		const resolved: string[] = [];
+		w.deps = {
+			...w.deps,
+			conflicts: {
+				drafts: p.host.nightjarDrafts,
+				fix: (c) => {
+					resolved.push(c.feature);
+					w.trail.push(`resolve ${c.feature}`);
+					p.host.setConflict(c.draft.pull, 'no');
+					return Promise.resolve({ kind: 'skipped', why: 'a spec' });
+				}
+			}
+		};
+		w.tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const pull = await p.open('20');
+		p.host.setConflict(pull, 'yes');
+		await queue(w.deps, false);
+		expect(work(w.trail)).toEqual([
+			'resolve 20',
+			`publish ${String(pull.id)}`,
+			'build 2',
+			'build 4'
+		]);
+	});
+});
+
+describe('queue --once with the Conflict fix pass', () => {
+	it('never runs: --once builds the next Feature', async () => {
+		const w = world();
+		const d = withDrafts(w);
+		const c = withConflicts(w, d);
+		d.done('20');
+		await c.open('20');
+		expect(await queue(w.deps, true)).toBe(0);
+		expect(c.resolved).toEqual([]);
+		expect(w.built).toEqual(['2']);
+	});
+});
+
+describe('conflictsPass', () => {
+	const fix = () => Promise.resolve<ConflictFixOutcome>({ kind: 'stopped' });
+
+	it('is there when factory.json turns conflicts on and the Code host lists its drafts', () => {
+		expect(conflictsPass({ enabled: true }, new FakeCodeHost(), fix)).not.toBeNull();
+	});
+
+	it('is off when factory.json leaves it out or off, so --watch is as before', () => {
+		expect(conflictsPass(undefined, new FakeCodeHost(), fix)).toBeNull();
+		expect(conflictsPass({}, new FakeCodeHost(), fix)).toBeNull();
+		expect(conflictsPass({ enabled: false }, new FakeCodeHost(), fix)).toBeNull();
+	});
+
+	it('is off over a Code host without nightjarDrafts', () => {
+		const { nightjarDrafts: _gone, ...without } = new FakeCodeHost();
+		expect(conflictsPass({ enabled: true }, without, fix)).toBeNull();
 	});
 });
 

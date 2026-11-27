@@ -138,6 +138,30 @@ describe('loadConfig', () => {
 		expect(refusal()).toMatch(/^factory\.json: pullChecks\.fixMinutes: /m);
 	});
 
+	it('loads the Conflict fix and its round, dollar and minute limits, and leaves it out, so off, when not set', () => {
+		write({ ...VALID, conflicts: { enabled: true } });
+		expect(loadConfig(root)).toMatchObject({ conflicts: { enabled: true } });
+		write({ ...VALID, conflicts: { enabled: true, fixRounds: 3, fixUsd: 2.5, fixMinutes: 20 } });
+		expect(loadConfig(root)).toMatchObject({
+			conflicts: { enabled: true, fixRounds: 3, fixUsd: 2.5, fixMinutes: 20 }
+		});
+		write(VALID);
+		expect(loadConfig(root)).not.toHaveProperty('conflicts');
+	});
+
+	it('refuses Conflict fix settings out of range, or not ones it knows', () => {
+		write({ ...VALID, conflicts: { fixRounds: 0 } });
+		expect(refusal()).toMatch(/^factory\.json: conflicts\.fixRounds: /m);
+		write({ ...VALID, conflicts: { fixUsd: 0 } });
+		expect(refusal()).toMatch(/^factory\.json: conflicts\.fixUsd: /m);
+		write({ ...VALID, conflicts: { fixMinutes: -5 } });
+		expect(refusal()).toMatch(/^factory\.json: conflicts\.fixMinutes: /m);
+		write({ ...VALID, conflicts: { enabled: 'yes' } });
+		expect(refusal()).toMatch(/^factory\.json: conflicts\.enabled: /m);
+		write({ ...VALID, conflicts: { enabled: true, rebase: true } });
+		expect(refusal()).toMatch(/rebase/);
+	});
+
 	it('refuses a Pull-check setting that is not one it knows', () => {
 		write({ ...VALID, pullChecks: { enabled: 'yes' } });
 		expect(refusal()).toMatch(/^factory\.json: pullChecks\.enabled: /m);
