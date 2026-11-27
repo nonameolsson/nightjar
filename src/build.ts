@@ -1427,7 +1427,7 @@ class FeatureRun {
 			})
 		});
 		const pull = await this.openDraft(body);
-		await noteConflicts(this.deps, this.setup, pull, body, featureBase(this.feature, this.setup));
+		await noteConflicts(this.deps, this.setup, pull, body);
 		// a lone issue is its own Ticket, so it is named once
 		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
@@ -2007,7 +2007,7 @@ async function fixRedDraft(
 ): Promise<PullFixOutcome> {
 	const { draft } = red;
 	const { pull } = draft;
-	const opened = await openRevisit(deps, setup, red, where);
+	const opened = await openRevisit(deps, setup, red, where, builtOn);
 	if (opened.kind !== 'open') return opened;
 	const { feature, note, signals, tree } = opened;
 	const trailers = await tree.headTrailers();
@@ -2070,7 +2070,7 @@ async function fixRedDraft(
 		if (got.kind === 'fixed') {
 			const body = ran({ outcome: 'pushed', summary: got.summary, usd: got.usd });
 			await deps.codeHost.editBody(pull, body);
-			await noteConflicts(deps, setup, pull, body, featureBase(feature, setup));
+			await noteConflicts(deps, setup, pull, body);
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
@@ -2110,15 +2110,11 @@ function revisitEnd(got: RoundEnd<RevisitOutcome<object, object>>) {
 	}
 }
 
-// Says in the pull request body whether it conflicts with `base`, the branch its Feature is built on: the section is added when it does and dropped when it does not. Nothing else happens, no Signal and no comment.
-async function noteConflicts(
-	deps: Deps,
-	setup: Setup,
-	pull: Pull,
-	body: string,
-	base: string
-): Promise<void> {
+// Says in the pull request body whether it conflicts with its base, the base branch it opens against: the section is added when it does and dropped when it does not. Nothing else happens, no Signal and no comment.
+async function noteConflicts(deps: Deps, setup: Setup, pull: Pull, body: string): Promise<void> {
 	const { codeHost } = deps;
+	// the draft opens against the base branch, whatever its Feature is built on
+	const base = setup.baseBranch;
 	let conflicting: boolean;
 	try {
 		conflicting = await conflicts(codeHost, pull, deps.sleep, setup.signal);
@@ -2270,22 +2266,17 @@ function handOverConflicts(
 // The Session a Pull-check fix round runs in: the head commit's, resumed, or a new one when this machine has none.
 type PullFixSession = { readonly kind: 'resume' | 'fresh'; readonly id: string };
 
-// The branch a Feature is built on: the one its **Base:** line names, else the base branch.
-function featureBase(feature: Feature, setup: Setup): string {
+// The branch a Feature's own branch is cut from: the one its **Base:** line names, else the base branch. Its draft still opens against the base branch, which is the branch it conflicts with.
+function builtOn(feature: Feature, setup: Setup): string {
 	const base = baseOf(feature.body);
 	return base !== null && 'branch' in base ? base.branch : setup.baseBranch;
 }
 
-// The worktree of a draft's branch, on the base its Feature is built on.
-function openDraft(deps: Deps, setup: Setup, feature: Feature, draft: NightjarDraft) {
-	return deps.openWorktree(
-		setup.root,
-		setup.worktrees,
-		draft.branch,
-		featureBase(feature, setup),
-		setup.env
-	);
-}
+// The branch a revisit pass opens a draft's worktree on, for its Feature: the one it is built on for a Pull-check fix, the draft's own base for a Conflict fix.
+type RevisitBase = (feature: Feature, setup: Setup) => string;
+
+// The draft's own base, the branch the Code host says it conflicts with.
+const pullBase: RevisitBase = (_feature, setup) => setup.baseBranch;
 
 // A draft a revisit pass leaves alone after all, said so.
 function leftAlone(deps: Deps, pull: Pull, why: string) {
@@ -2298,7 +2289,8 @@ async function openRevisit(
 	deps: Deps,
 	setup: Setup,
 	{ draft, feature: id }: RevisitedDraft,
-	where: Where
+	where: Where,
+	base: RevisitBase
 ): Promise<
 	| ({ readonly kind: 'paused' } & Pause)
 	| { readonly kind: 'skipped'; readonly why: string }
@@ -2316,7 +2308,13 @@ async function openRevisit(
 	const note = noteFor(deps.logbook, feature.id, deps.now);
 	where.note = note;
 	const signals = signalsOf(deps.tracker, feature.id, note);
-	const tree = await openDraft(deps, setup, feature, draft);
+	const tree = await deps.openWorktree(
+		setup.root,
+		setup.worktrees,
+		draft.branch,
+		base(feature, setup),
+		setup.env
+	);
 	if (!(await tree.toRemote())) {
 		return leftAlone(deps, draft.pull, 'its branch here holds commits the Code host lacks');
 	}
@@ -2543,7 +2541,7 @@ async function resolveConflicting(
 ): Promise<ConflictFixOutcome> {
 	const { draft } = conflicting;
 	const { pull } = draft;
-	const opened = await openRevisit(deps, setup, conflicting, where);
+	const opened = await openRevisit(deps, setup, conflicting, where, pullBase);
 	if (opened.kind !== 'open') return opened;
 	const { feature, note, signals, tree } = opened;
 	// the Code host's word was stale: there is nothing to merge
@@ -2584,14 +2582,14 @@ async function resolveConflicting(
 		const ran = (
 			f: Pick<ConflictFix, 'outcome' | 'summary' | 'files' | 'usd'>,
 			conflicting: boolean
-		) => withConflictFix(draft.body, featureBase(feature, setup), { round, ...f }, conflicting);
+		) => withConflictFix(draft.body, setup.baseBranch, { round, ...f }, conflicting);
 		if (got.kind === 'fixed') {
 			const body = ran(
 				{ outcome: 'fixed', summary: got.summary, files: got.files, usd: got.usd },
 				false
 			);
 			await deps.codeHost.editBody(pull, body);
-			await noteConflicts(deps, setup, pull, body, featureBase(feature, setup));
+			await noteConflicts(deps, setup, pull, body);
 		} else if (got.kind === 'gaveUp') {
 			const why = `Conflict fix ${String(round)} gave up: ${got.why}`;
 			const tried = { files: got.conflicting, side: got.side };

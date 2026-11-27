@@ -4047,29 +4047,63 @@ describe('the Conflict fix in --watch', () => {
 			expect(body(world).match(/## Conflicts/g)).toHaveLength(1);
 		});
 
-		it("names the Feature's own base in the notice, the branch the merge took in", async () => {
+		it("merges the base the draft is opened against, not the branch a Feature's **Base:** line names, and names it in the notice", async () => {
 			const world = makeWorld();
+			const BOT = 'dependabot/npm_and_yarn/left-pad-1.1.0';
 			world.tracker.add({
 				id: '1',
 				title: 'One escape',
 				assignees: ['ann'],
 				signals: ['go'],
 				children: ['3', '2'],
-				body: `Built on a release.\n\n${baseLine('release')}\n`
+				body: `A red bot pull request.\n\n${baseLine(BOT)}\n`
 			});
-			world.trees.moveBase('release', 'seed.txt', 'seed\n');
 			await buildFeature(deps(world), setup(world), '1');
 			const pull = world.host.pulls[0];
 			if (pull === undefined) throw new Error('no draft was opened');
-			world.trees.moveBase('release', 'ticket-2.txt', 'from the base\n');
+			expect(pull.base).toBe('main');
+			// the draft's base moves on and conflicts with it; the bot's branch does not move
+			world.trees.moveBase('main', 'ticket-2.txt', 'from the base\n');
+			world.host.setConflict(pull, 'yes');
+			world.conflictsAgent = (req) => ({
+				kind: 'blocked',
+				blocker: 'Both sides changed it.',
+				sessionId: req.sessionId,
+				costUsd: 1
+			});
+			await queue(watch(world), false);
+
+			expect(askedOf(world, 'conflicts')).toMatchObject([
+				{ files: ['ticket-2.txt'], at: { base: 'origin/main' } }
+			]);
+			expect(record(world)).toContain(
+				'## Conflicts with main\n\nThis pull request conflicts with `main`'
+			);
+			expect(record(world)).not.toContain(BOT);
+			expect(world.host.pushes.map((p) => p.branch)).not.toContain(BOT);
+		});
+
+		it("pushes the merge of the draft's base for a Feature with a **Base:** line", async () => {
+			const world = makeWorld();
+			const BOT = 'dependabot/npm_and_yarn/left-pad-1.1.0';
+			world.tracker.add({
+				id: '1',
+				title: 'One escape',
+				assignees: ['ann'],
+				signals: ['go'],
+				children: ['3', '2'],
+				body: `A red bot pull request.\n\n${baseLine(BOT)}\n`
+			});
+			await buildFeature(deps(world), setup(world), '1');
+			const pull = world.host.pulls[0];
+			if (pull === undefined) throw new Error('no draft was opened');
+			world.trees.moveBase('main', 'ticket-2.txt', 'from the base\n');
 			world.host.setConflict(pull, 'yes');
 			await queue(watch(world), false);
 
-			expect(askedOf(world, 'conflicts')).toMatchObject([{ at: { base: 'origin/release' } }]);
-			expect(body(world)).toContain(
-				'## Conflicts with release\n\nThis pull request conflicts with `release`'
-			);
-			expect(body(world)).not.toContain('main');
+			expect(subjects(world)[0]).toBe('Merge origin/main into the branch, conflict fix round 1');
+			expect(world.host.pushes.map((p) => p.branch)).toContain(BRANCH);
+			expect(world.host.pushes.map((p) => p.branch)).not.toContain(BOT);
 		});
 
 		it('tells a Conflict fix that gave up too: why, and the files the merge stopped on, under the notice and before the give-up mark', async () => {
@@ -6765,6 +6799,16 @@ describe('a Feature with a **Base:** line, as a botPulls Source makes one', () =
 		await world.tracker.addSignal('1', 'go');
 		await buildFeature(deps(world), setup(world), '1');
 		expect(world.host.pulls.find((p) => p.id === bot.id)?.comments).toHaveLength(1);
+	});
+
+	it('names the base its draft is opened against when the draft conflicts', async () => {
+		const world = makeWorld();
+		await fromBot(world, `A red bot pull request.\n\n${baseLine(BOT_BRANCH)}\n`);
+		world.host.conflictOnOpen = 'yes';
+		await buildFeature(deps(world), setup(world), '1');
+		const mine = world.host.pulls.find((p) => p.head === 'factory/1-one-escape');
+		expect(mine?.body).toContain('## Conflicts with main');
+		expect(mine?.body).not.toContain(`Conflicts with ${BOT_BRANCH}`);
 	});
 
 	it('builds nothing and says why when the line names no branch', async () => {

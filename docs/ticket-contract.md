@@ -77,7 +77,7 @@ A Feature may carry a **`**Base:**`** line, on a line of its own, naming the bra
 **Base:** dependabot/npm_and_yarn/left-pad-1.1.0
 ```
 
-A `botPulls` Source writes it, naming the dependency bot's branch, so the build has the new versions to fix against. The draft pull request still opens against the repo's base branch, and the Feature's diff, its Review and its Steps read only what Nightjar added on top of the named branch. Nightjar never pushes to that branch. A name git could read as something else (an option, a range such as `a..b`, a space) marks the Feature as needing info, and nothing is built. A payload value can never write the line: a Source escapes a value that opens as `Base:`.
+A `botPulls` Source writes it, naming the dependency bot's branch, so the build has the new versions to fix against. The draft pull request still opens against the repo's base branch, and the Feature's diff, its Review and its Steps read only what Nightjar added on top of the named branch. A Conflict fix merges the repo's base branch, the one the draft opens against and conflicts with, never the named branch. Nightjar never pushes to that branch. A name git could read as something else (an option, a range such as `a..b`, a space) marks the Feature as needing info, and nothing is built. A payload value can never write the line: a Source escapes a value that opens as `Base:`.
 
 ## The Feature file
 
