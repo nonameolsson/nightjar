@@ -1,8 +1,10 @@
 // The worktree's in-memory adapter, which the build loop's specs run over in place of real git: a branch is a list of commits, and what a Session leaves is files written to it.
 import {
+	CONFLICTS_TRAILER,
 	FEEDBACK_TRAILER,
 	PULL_FIX_TRAILER,
 	attemptBranch,
+	conflictFixCommitMessage,
 	feedbackCommitMessage,
 	feedbackIds,
 	folderFor,
@@ -13,6 +15,7 @@ import {
 	ticketCommitMessage,
 	trailersOf,
 	type FeatureBranch,
+	type MergeOutcome,
 	type OpenWorktree,
 	type PushOutcome,
 	type StepCommit,
@@ -25,6 +28,13 @@ interface Commit {
 	// what its trailer names, if it has one
 	readonly ticket?: string;
 	readonly step?: string;
+	// for a merge commit, how many commits of the base it holds
+	readonly mergedBase?: number;
+}
+
+// A merge begun and not yet committed: the base commits it takes in, up to this many.
+interface PendingMerge {
+	readonly upTo: number;
 }
 
 interface Folder {
@@ -32,7 +42,13 @@ interface Folder {
 	// what is written and not yet committed
 	dirty: Map<string, string>;
 	setUp: boolean;
+	// the base's commits when the branch was made, which the branch holds from the start
+	forkedAt: number | null;
+	merge: PendingMerge | null;
 }
+
+// One commit of a base branch: the files it writes.
+type BaseCommit = ReadonlyMap<string, string>;
 
 export interface MemoryWorktrees {
 	readonly open: OpenWorktree;
@@ -50,6 +66,8 @@ export interface MemoryWorktrees {
 	readonly sides: ReadonlyMap<string, string[]>;
 	// A person's own commit on the branch, of one file, with no trailer.
 	commitAsPerson(folder: string, message: string, file: string): void;
+	// A commit of one file on a base branch, which a Feature's branch holds only once merged in; a branch is made on its first.
+	moveBase(baseBranch: string, file: string, text: string): void;
 }
 
 // The messages of the commits the Code host holds on a branch, oldest first, or null for one it lacks.
@@ -59,10 +77,19 @@ export type RemoteBranch = (branch: string) => readonly string[] | null;
 export function memoryWorktrees(remote?: RemoteBranch): MemoryWorktrees {
 	const folders = new Map<string, Folder>();
 	const sides = new Map<string, string[]>();
+	const bases = new Map<string, BaseCommit[]>();
+	const baseOf = (name: string): BaseCommit[] => {
+		let got = bases.get(name);
+		if (got === undefined) {
+			got = [];
+			bases.set(name, got);
+		}
+		return got;
+	};
 	const state = (folder: string): Folder => {
 		let got = folders.get(folder);
 		if (got === undefined) {
-			got = { commits: [], dirty: new Map(), setUp: false };
+			got = { commits: [], dirty: new Map(), setUp: false, forkedAt: null, merge: null };
 			folders.set(folder, got);
 		}
 		return got;
@@ -74,9 +101,13 @@ export function memoryWorktrees(remote?: RemoteBranch): MemoryWorktrees {
 			folder: folderFor(worktrees, branch),
 			base: `origin/${baseBranch}`
 		};
-		// a worktree a stopped run left dirty is cleaned, as the real one is
-		state(at.folder).dirty.clear();
-		return Promise.resolve(new MemoryWorktree(at, state(at.folder), sides, remote));
+		const folder = state(at.folder);
+		// a worktree a stopped run left dirty, or in a merge, is cleaned, as the real one is
+		folder.dirty.clear();
+		folder.merge = null;
+		const base = baseOf(baseBranch);
+		folder.forkedAt ??= base.length;
+		return Promise.resolve(new MemoryWorktree(at, folder, sides, remote, base));
 	};
 
 	return {
@@ -95,17 +126,27 @@ export function memoryWorktrees(remote?: RemoteBranch): MemoryWorktrees {
 		sides,
 		commitAsPerson: (folder, message, file) => {
 			state(folder).commits.push({ message, files: new Map([[file, 'by hand\n']]) });
+		},
+		moveBase: (baseBranch, file, text) => {
+			baseOf(baseBranch).push(new Map([[file, text]]));
 		}
 	};
 }
 
 class MemoryWorktree implements Worktree {
+	// how many commits the base branch had when the worktree opened
+	private readonly seen: number;
+
 	constructor(
 		readonly at: FeatureBranch,
 		private readonly folder: Folder,
 		private readonly sides: Map<string, string[]>,
-		private readonly remote: RemoteBranch | undefined
-	) {}
+		private readonly remote: RemoteBranch | undefined,
+		// the commits of the base branch, which the worktree sees as of when it opened
+		private readonly base: readonly BaseCommit[]
+	) {
+		this.seen = base.length;
+	}
 
 	isSetUp = () => Promise.resolve(this.folder.setUp);
 
@@ -170,6 +211,7 @@ class MemoryWorktree implements Worktree {
 	private reset(before: string) {
 		this.folder.commits.length = Number(before);
 		this.folder.dirty.clear();
+		this.folder.merge = null;
 	}
 
 	snapshot = () => Promise.resolve(JSON.stringify([...this.folder.dirty]));
@@ -271,6 +313,55 @@ class MemoryWorktree implements Worktree {
 	commitReview(round: number, summary: string, session: string) {
 		return Promise.resolve(this.commit({ message: reviewCommitMessage(round, summary, session) }));
 	}
+
+	// How many commits of the base the branch holds: those it forked from, and those a merge commit took in.
+	private holdsOfBase(): number {
+		const merged = this.folder.commits.map((c) => c.mergedBase ?? 0);
+		return Math.max(this.folder.forkedAt ?? 0, ...merged);
+	}
+
+	// A file both sides wrote differently is a conflict, and holds both sides between markers, as git leaves it; a file only the base wrote is taken in.
+	mergeBase(): Promise<MergeOutcome> {
+		this.folder.dirty.clear();
+		const held = this.holdsOfBase();
+		if (this.seen <= held) {
+			this.folder.merge = null;
+			return Promise.resolve({ kind: 'clean' });
+		}
+		this.folder.merge = { upTo: this.seen };
+		const ours = new Map(this.folder.commits.flatMap((c) => [...c.files]));
+		const conflicts: string[] = [];
+		for (const commit of this.base.slice(held, this.seen)) {
+			for (const [file, theirs] of commit) {
+				const mine = ours.get(file);
+				if (mine === undefined) {
+					this.folder.dirty.set(file, theirs);
+				} else if (mine !== theirs) {
+					const markers = `<<<<<<< HEAD\n${mine}=======\n${theirs}>>>>>>> ${this.at.base}\n`;
+					this.folder.dirty.set(file, markers);
+					conflicts.push(file);
+				}
+			}
+		}
+		return Promise.resolve(
+			conflicts.length === 0 ? { kind: 'clean' } : { kind: 'conflicts', files: conflicts.sort() }
+		);
+	}
+
+	commitConflictFix(round: number, summary: string, session: string) {
+		const merge = this.folder.merge;
+		if (merge === null) return Promise.resolve(false);
+		const message = conflictFixCommitMessage(round, this.at.base, summary, session);
+		this.folder.commits.push({ message, files: this.folder.dirty, mergedBase: merge.upTo });
+		this.folder.dirty = new Map();
+		this.folder.merge = null;
+		return Promise.resolve(true);
+	}
+
+	conflictFixes = () =>
+		Promise.resolve(
+			this.folder.commits.filter((c) => trailersOf(c.message).has(CONFLICTS_TRAILER)).length
+		);
 
 	discard(before: string, ticket: string) {
 		const kept = [

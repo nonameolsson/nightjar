@@ -95,6 +95,12 @@ const DraftSchema = PullSchema.extend({
 
 type Draft = z.infer<typeof DraftSchema>;
 
+// Only `conflicts` and `succeeded` say anything: the other statuses mean Azure Repos has not decided or could not merge for another reason.
+const conflictOf = (mergeStatus: string | null | undefined): ConflictState => {
+	if (mergeStatus === 'conflicts') return 'yes';
+	return mergeStatus === 'succeeded' ? 'no' : 'unknown';
+};
+
 // Each push to a pull request is an iteration; the last one is its head.
 const IterationsSchema = z.looseObject({
 	value: z.array(
@@ -517,11 +523,8 @@ export class AzureReposCodeHost implements CodeHost {
 		await this.setBody(pull, join(body.trimEnd(), lines));
 	}
 
-	// Only `conflicts` and `succeeded` say anything: the other statuses mean Azure Repos has not decided or could not merge for another reason.
 	async conflicts(pull: Pull): Promise<ConflictState> {
-		const { mergeStatus } = await this.read(pull);
-		if (mergeStatus === 'conflicts') return 'yes';
-		return mergeStatus === 'succeeded' ? 'no' : 'unknown';
+		return conflictOf((await this.read(pull)).mergeStatus);
 	}
 
 	// Azure Repos calls a merged pull request completed; an abandoned one was closed without merging.
@@ -724,6 +727,7 @@ export class AzureReposCodeHost implements CodeHost {
 			personEngaged: await this.personEngaged(raw),
 			...(raw.creationDate == null ? {} : { openedAt: raw.creationDate }),
 			checkCount: count,
+			conflicts: conflictOf(raw.mergeStatus),
 			...(listing.commits === true ? { commits: await this.commits(pull) } : {})
 		};
 	}

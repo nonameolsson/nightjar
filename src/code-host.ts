@@ -50,6 +50,8 @@ export interface NightjarDraft {
 	readonly checkCount?: number;
 	// the commits on its branch that its base lacks, oldest first; listed only when asked for, as Publish does
 	readonly commits?: readonly PullCommit[];
+	// whether it conflicts with its base, which the Conflict fix pass picks drafts by; absent counts as unknown
+	readonly conflicts?: ConflictState;
 }
 
 export interface DraftsListing {

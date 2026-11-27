@@ -51,11 +51,14 @@ interface Harness {
 	kept(tree: Worktree, side: string): string[];
 	// a person's own commit of one file on the branch, with no trailer
 	personCommit(tree: Worktree, file: string): void;
+	// a commit of one file on a base branch, made on the first; a Feature's branch holds it only once it is merged in, and a reopened worktree sees it
+	moveBase(baseBranch: string, file: string, text: string): void;
 }
 
 // The real adapter runs real git over a repo made once for the file, and each test takes a branch of its own.
 let repo: string;
 let env: Record<string, string | undefined>;
+let bases = 0;
 const sh = (...args: string[]) =>
 	execFileSync('git', args, { env, encoding: 'utf8', stdio: 'pipe' }).trim();
 
@@ -103,6 +106,16 @@ function gitHarness(): Harness {
 			writeFileSync(join(tree.at.folder, file), 'by hand\n');
 			inTree(tree, 'add', '-A');
 			inTree(tree, 'commit', '-q', '-m', 'By hand');
+		},
+		moveBase: (baseBranch, file, text) => {
+			const exists = sh('ls-remote', '--heads', join(repo, 'origin.git'), baseBranch) !== '';
+			const clone = join(repo, `base-${String((bases += 1))}`);
+			sh('clone', '-q', '-b', exists ? baseBranch : 'main', join(repo, 'origin.git'), clone);
+			if (!exists) sh('-C', clone, 'checkout', '-q', '-b', baseBranch);
+			writeFileSync(join(clone, file), text);
+			sh('-C', clone, 'add', '-A');
+			sh('-C', clone, 'commit', '-q', '-m', `The base writes ${file}`);
+			sh('-C', clone, 'push', '-q', 'origin', baseBranch);
 		}
 	};
 }
@@ -117,7 +130,10 @@ function memoryHarness(): Harness {
 		left: (tree) => trees.left(tree.at.folder),
 		subjects: (tree) => trees.subjects(tree.at.folder),
 		kept: (_tree, side) => trees.sides.get(side) ?? [],
-		personCommit: (tree, file) => trees.commitAsPerson(tree.at.folder, 'By hand', file)
+		personCommit: (tree, file) => trees.commitAsPerson(tree.at.folder, 'By hand', file),
+		moveBase: (baseBranch, file, text) => {
+			trees.moveBase(baseBranch, file, text);
+		}
 	};
 }
 
@@ -379,6 +395,140 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(await tree.built()).toEqual(new Set(['2']));
 	});
 
+	// A Feature that built Ticket #2 on `shared.txt`, on a base branch of its own; `reopen` takes the base as it is by then, as a run does that opens the worktree again.
+	const forked = async () => {
+		const world = make();
+		n += 1;
+		const base = `moving-${String(n)}`;
+		const branch = `factory/${String(n)}-feature`;
+		world.moveBase(base, 'seed.txt', 'seed\n');
+		const reopen = () => world.open('/unused', world.worktrees, branch, base, {});
+		const first = await reopen();
+		world.write(first, 'shared.txt');
+		await first.commitTicket('2', 'Share it', 'Done.', 's1');
+		const moveBase = (file: string, text: string) => world.moveBase(base, file, text);
+		return { world, branch, reopen, moveBase };
+	};
+
+	it('merges a base that wrote the same file differently, naming the conflicting file and not the others', async () => {
+		const { world, reopen, moveBase } = await forked();
+		moveBase('base.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const tree = await reopen();
+
+		expect(await tree.mergeBase()).toEqual({ kind: 'conflicts', files: ['shared.txt'] });
+		expect(await tree.ahead()).toBe(1);
+		expect(world.has(tree, 'base.txt')).toBe(true);
+	});
+
+	it('commits a resolved merge as one commit with its round and Session, and keeps every earlier commit', async () => {
+		const { world, reopen, moveBase } = await forked();
+		moveBase('base.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const tree = await reopen();
+		await tree.mergeBase();
+		world.write(tree, 'shared.txt');
+
+		expect(await tree.commitConflictFix(1, 'Kept both.', 's5')).toBe(true);
+		expect(world.subjects(tree)).toEqual([
+			`Merge ${tree.at.base} into the branch, conflict fix round 1`,
+			'Share it (#2)'
+		]);
+		expect(Object.fromEntries(await tree.headTrailers())).toEqual({
+			'Factory-Conflicts': '1',
+			'Factory-Session': 's5'
+		});
+		expect(await tree.built()).toEqual(new Set(['2']));
+		expect(await tree.conflictFixes()).toBe(1);
+		expect(world.has(tree, 'base.txt')).toBe(true);
+		expect(world.left(tree)).toEqual([]);
+	});
+
+	it('leaves a merge that completes ready to commit the same way', async () => {
+		const { world, reopen, moveBase } = await forked();
+		moveBase('base.txt', 'from the base\n');
+		const tree = await reopen();
+
+		expect(await tree.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await tree.commitConflictFix(1, 'Nothing to resolve.', 's5')).toBe(true);
+		expect(world.subjects(tree)).toHaveLength(2);
+		expect(await tree.conflictFixes()).toBe(1);
+		expect(world.has(tree, 'base.txt')).toBe(true);
+	});
+
+	it('merges nothing, and commits nothing, when the branch already holds the base', async () => {
+		const { world, reopen, moveBase } = await forked();
+		const tree = await reopen();
+
+		expect(await tree.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await tree.commitConflictFix(1, 'Nothing.', 's5')).toBe(false);
+		expect(world.subjects(tree)).toEqual(['Share it (#2)']);
+
+		moveBase('base.txt', 'from the base\n');
+		const later = await reopen();
+		await later.mergeBase();
+		await later.commitConflictFix(1, 'Took it.', 's5');
+		const merged = await reopen();
+		expect(await merged.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await merged.commitConflictFix(2, 'Nothing.', 's5')).toBe(false);
+	});
+
+	it('commits no merge when none was begun', async () => {
+		const { tree } = await fresh();
+		expect(await tree.commitConflictFix(1, 'Nothing.', 's5')).toBe(false);
+		expect(await tree.conflictFixes()).toBe(0);
+	});
+
+	it('counts the Conflict fixes again in a later run, from the trailers alone', async () => {
+		const { reopen, moveBase } = await forked();
+		for (const round of [1, 2]) {
+			moveBase(`base${String(round)}.txt`, 'from the base\n');
+			const tree = await reopen();
+			expect(await tree.conflictFixes()).toBe(round - 1);
+			await tree.mergeBase();
+			await tree.commitConflictFix(round, 'Took it.', 's5');
+		}
+
+		const again = await reopen();
+		expect(await again.conflictFixes()).toBe(2);
+		expect((await again.headTrailers()).get('Factory-Conflicts')).toBe('2');
+		expect(await again.built()).toEqual(new Set(['2']));
+	});
+
+	it('keeps a thrown-away Conflict fix on the -attempt-conflicts side branch, and the merge is gone', async () => {
+		const { world, branch, reopen, moveBase } = await forked();
+		moveBase('base.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const tree = await reopen();
+		const before = await tree.head();
+		await tree.mergeBase();
+
+		const side = `${branch}-attempt-conflicts`;
+		expect(await tree.discard(before, 'conflicts')).toBe(side);
+		expect(world.kept(tree, side).sort()).toEqual(['base.txt', 'shared.txt']);
+		expect(await tree.head()).toBe(before);
+		expect(world.left(tree)).toEqual([]);
+		expect(world.has(tree, 'base.txt')).toBe(false);
+		expect(await tree.commitConflictFix(1, 'Nothing.', 's5')).toBe(false);
+		expect(await tree.mergeBase()).toEqual({ kind: 'conflicts', files: ['shared.txt'] });
+	});
+
+	it('keeps the merge pending when a fix round restores a snapshot of what the Session left', async () => {
+		const { world, reopen, moveBase } = await forked();
+		moveBase('shared.txt', 'from the base\n');
+		const tree = await reopen();
+		await tree.mergeBase();
+		world.write(tree, 'shared.txt');
+		const mark = await tree.snapshot();
+		world.write(tree, 'junk.txt');
+		await tree.restore(mark);
+
+		expect(world.has(tree, 'junk.txt')).toBe(false);
+		expect(await tree.commitConflictFix(1, 'Kept both.', 's5')).toBe(true);
+		expect(await tree.mergeBase()).toEqual({ kind: 'clean' });
+		expect(await tree.commitConflictFix(2, 'Nothing.', 's5')).toBe(false);
+	});
+
 	it("reads the head commit's trailers, and none from a person's own commit", async () => {
 		const { world, tree } = await fresh();
 		world.write(tree, 'a.txt');
@@ -390,6 +540,36 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 
 		world.personCommit(tree, 'mine.txt');
 		expect(await tree.headTrailers()).toEqual(new Map());
+	});
+});
+
+describe('the git worktree merging its base', () => {
+	it('commits a true merge: the branch and the base are its two parents, and the base is never rebased onto', async () => {
+		const world = gitHarness();
+		world.moveBase('merging', 'seed.txt', 'seed\n');
+		const open = () => world.open('/unused', world.worktrees, 'factory/merging', 'merging', {});
+		const first = await open();
+		world.write(first, 'a.txt');
+		await first.commitTicket('2', 'Share it', 'Done.', 's1');
+		const ticket = await first.head();
+		world.moveBase('merging', 'b.txt', 'from the base\n');
+
+		const tree = await open();
+		await tree.mergeBase();
+		expect(inTree(tree, 'rev-parse', '-q', '--verify', 'MERGE_HEAD')).not.toBe('');
+		await tree.commitConflictFix(1, 'Took it.', 's5');
+
+		expect(inTree(tree, 'rev-parse', 'HEAD^1')).toBe(ticket);
+		expect(inTree(tree, 'rev-parse', 'HEAD^2')).toBe(inTree(tree, 'rev-parse', tree.at.base));
+		expect(inTree(tree, 'status', '--porcelain')).toBe('');
+	});
+
+	it('refuses a merge git itself refuses, rather than calling it a conflict', async () => {
+		const world = gitHarness();
+		const tree = await world.open('/unused', world.worktrees, 'factory/refused', 'main', {});
+		inTree(tree, 'checkout', '-q', '--orphan', 'unrelated');
+		inTree(tree, 'commit', '-q', '--allow-empty', '-m', 'Unrelated');
+		await expect(tree.mergeBase()).rejects.toThrow('git merge failed');
 	});
 });
 

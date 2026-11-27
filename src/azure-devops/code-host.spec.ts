@@ -269,6 +269,20 @@ describe('AzureReposCodeHost.conflicts', () => {
 	});
 });
 
+describe('AzureReposCodeHost.nightjarDrafts conflicts', () => {
+	it('reports each draft’s conflict state from mergeStatus: yes, no or unknown', async () => {
+		const { ado, open, one } = drafting();
+		const a = await open('factory/1-a');
+		const b = await open('factory/2-b');
+		const c = await open('factory/3-c');
+		ado.setMergeStatus(a.id, 'conflicts');
+		ado.setMergeStatus(c.id, 'queued');
+		expect((await one(a)).conflicts).toBe('yes');
+		expect((await one(b)).conflicts).toBe('no');
+		expect((await one(c)).conflicts).toBe('unknown');
+	});
+});
+
 describe('AzureReposCodeHost.nightjarDrafts', () => {
 	it("lists the open drafts on Nightjar's branches oldest first, each with its whole description and head", async () => {
 		const { ado, host, open } = drafting();

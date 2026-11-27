@@ -182,6 +182,7 @@ export class FakeCodeHost implements CodeHost {
 			personEngaged: p.personEngaged,
 			openedAt: p.openedAt,
 			checkCount: p.checkCount,
+			conflicts: p.conflict,
 			...(listing.commits === true ? { commits: this.branchCommits.get(p.head) ?? [] } : {})
 		}));
 		return Promise.resolve(listed);

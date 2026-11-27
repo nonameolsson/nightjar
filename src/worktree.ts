@@ -23,6 +23,9 @@ export const STEP_TRAILER = 'Factory-Step';
 // Counts the Pull-check fixes pushed to a branch, so a later run knows how many rounds it had.
 export const PULL_FIX_TRAILER = 'Factory-Pull-Fix';
 
+// Counts the Conflict fixes pushed to a branch, so a later run knows how many rounds it had.
+export const CONFLICTS_TRAILER = 'Factory-Conflicts';
+
 // Lists the feedback a Feedback round answered, by id; feedback no such trailer names is unanswered.
 export const FEEDBACK_TRAILER = 'Factory-Feedback';
 
@@ -81,6 +84,20 @@ export function ticketCommitMessage(
 export function pullFixCommitMessage(round: number, summary: string, session: string): string {
 	return `Fix the Pull checks, round ${String(round)}\n\n${summary.trim()}\n\n${PULL_FIX_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
 }
+
+// The merge commit of one Conflict fix, the `round`th on the branch; `base` is the ref it merged in.
+export function conflictFixCommitMessage(
+	round: number,
+	base: string,
+	summary: string,
+	session: string
+): string {
+	return `Merge ${base} into the branch, conflict fix round ${String(round)}\n\n${summary.trim()}\n\n${CONFLICTS_TRAILER}: ${String(round)}\n${SESSION_TRAILER}: ${session}`;
+}
+
+// What merging the base into the branch came to: it completed, or it stopped on the files it names.
+export type MergeOutcome =
+	{ readonly kind: 'clean' } | { readonly kind: 'conflicts'; readonly files: readonly string[] };
 
 // The commit of one Review round, the `round`th of its build.
 export function reviewCommitMessage(round: number, summary: string, session: string): string {
@@ -185,6 +202,12 @@ export interface Worktree {
 	): Promise<string | null>;
 	// One commit of what a Review round left, the `round`th of its build; false when it changed no file.
 	commitReview(round: number, summary: string, session: string): Promise<boolean>;
+	// Merges the base, as the worktree last fetched it, into the branch without committing, never a rebase; the merge is left pending for `commitConflictFix`, with the files it stopped on holding conflict markers. Clean when the merge completed, or when the branch already holds the base.
+	mergeBase(): Promise<MergeOutcome>;
+	// One merge commit of the pending merge and what the Session left, the `round`th Conflict fix, keeping every earlier commit; false when no merge is pending.
+	commitConflictFix(round: number, summary: string, session: string): Promise<boolean>;
+	// How many Conflict fixes the branch's own commits hold, from their trailers.
+	conflictFixes(): Promise<number>;
 }
 
 // The trailers of a commit message: the `Key: value` lines of its last paragraph, by key.
@@ -326,10 +349,28 @@ export class GitWorktree implements Worktree {
 		return (await this.git(['write-tree'])).trim();
 	}
 
+	// The commit a pending merge is merging in, or null when none is pending.
+	private async mergeHead(): Promise<string | null> {
+		const got = await run(
+			'git',
+			['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'],
+			this.at.folder,
+			this.env
+		);
+		return got.ok ? got.out.trim() : null;
+	}
+
 	async restore(mark: string): Promise<void> {
+		// `reset --hard` ends a pending merge, which a try of a fix round must not
+		const merging = await this.mergeHead();
 		await this.git(['reset', '-q', '--hard', 'HEAD']);
 		await this.git(['clean', '-q', '-fd']);
 		await this.git(['read-tree', '-u', '--reset', mark]);
+		if (merging !== null) {
+			// git has no command to begin a merge, so the file it keeps the merge in is written
+			const path = (await this.git(['rev-parse', '--git-path', 'MERGE_HEAD'])).trim();
+			writeFileSync(resolve(this.at.folder, path), `${merging}\n`);
+		}
 	}
 
 	// Throws away what a Step left, keeping nothing: the Step is listed as not done.
@@ -498,6 +539,42 @@ export class GitWorktree implements Worktree {
 		if ((await this.git(['diff', '--cached', '--name-only'])).trim() === '') return false;
 		await this.git(['commit', '-q', '-m', reviewCommitMessage(round, summary, session)]);
 		return true;
+	}
+
+	async mergeBase(): Promise<MergeOutcome> {
+		const merged = await run(
+			'git',
+			['merge', '--no-commit', '--no-ff', this.at.base],
+			this.at.folder,
+			this.env
+		);
+		if (merged.missing) throw new GitFailure('git is not on the PATH.');
+		if (merged.ok) return { kind: 'clean' };
+		const out = await this.git(['diff', '--name-only', '--diff-filter=U']);
+		const files = out.split('\n').filter((l) => l !== '');
+		// a merge that stopped on no file did not stop on conflicts: git refused it
+		if (files.length === 0) {
+			const why = firstLine(merged.err) || firstLine(merged.out);
+			throw new GitFailure(`git merge failed: ${why}`);
+		}
+		return { kind: 'conflicts', files };
+	}
+
+	async commitConflictFix(round: number, summary: string, session: string): Promise<boolean> {
+		if ((await this.mergeHead()) === null) return false;
+		await this.git(['add', '-A']);
+		const message = conflictFixCommitMessage(round, this.at.base, summary, session);
+		await this.git(['commit', '-q', '-m', message]);
+		return true;
+	}
+
+	async conflictFixes(): Promise<number> {
+		const out = await this.git([
+			'log',
+			`--format=%(trailers:key=${CONFLICTS_TRAILER},valueonly)`,
+			`${this.at.base}..HEAD`
+		]);
+		return out.split('\n').filter((l) => l.trim() !== '').length;
 	}
 }
 
