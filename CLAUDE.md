@@ -27,6 +27,7 @@ The module map is `docs/architecture.md`. The rules that are not visible from th
 - `src/build.ts`, the build loop, talks only to the `Tracker` and `CodeHost` interfaces and speaks of Signals.
 - Only `src/github/` calls `gh` (a lint rule holds this); only `src/azure-devops/` calls Azure DevOps.
 - Specs sit beside their code as `*.spec.ts` and run over `src/fakes/`. `src/cli.run.spec.ts` runs the real command end to end; `src/fakes/machine.ts` is a machine of stand-ins (git checkout, `gh`, `az`, `claude`, and `bwrap` and `socat` for the sandbox check, alone on the PATH; `machine(['bwrap'])` leaves one off), so a stand-in script may use shell builtins only. `cli.run.spec.ts`, and the `init` and `doctor` specs, share its one `claude`. A spec that runs `runNightjar` in this process passes a `FakeGitHub` as `Host.gh` (and a `FakeAzureDevOps` as `Host.request`); only `cli.run.spec.ts`, which runs a process, reaches the machine's `gh`.
+- Sessions run in the sandbox (`src/settings.ts`): no network, no port. Nightjar's own `setup`, check and `serve` run outside it (`src/check.ts`, ADR 0005), so a check a Session runs can fail where Nightjar's passes.
 - A Workflow only adds Steps to the loop: it can never loosen the deny rules in `src/settings.ts`.
 - Specs use placeholder repo names (`o/app`); `scripts/leak-check.spec.ts` rejects a real one, even from a ticket mockup.
 - A fresh worktree has no `node_modules`: run `npm install` before `npm run check`.
@@ -43,15 +44,11 @@ A `/grill-with-docs` session that settles hands off to `/to-spec`, then `/to-tic
 
 ### Issue tracker
 
-GitHub Issues (`nonameolsson/nightjar`) via `gh api` (REST); `gh issue` and `gh pr` fail in a cloud session. Before reading or writing an issue, see `docs/agents/issue-tracker.md`: it says how to tell whether a pull request already built it.
+GitHub Issues (`nonameolsson/nightjar`) via `gh api` (REST); `gh issue` and `gh pr` fail in a cloud session. Use `gh api` over the GitHub MCP tools, whose issue reads return every body in full. Before reading or writing an issue, see `docs/agents/issue-tracker.md`: it says how to tell whether a pull request already built it. When a person asks why a Feature's build went wrong, see `docs/agents/diagnosing-a-build.md`.
 
 ### Model and effort
 
-Each ticket names the model and effort to build it on, in `**Model:**` and
-`**Effort:**` lines under its `**Status:**`. A session that builds tickets
-(`/implement-spec`, `/implement`) runs each ticket's implementer on that
-ticket's own model and effort, and treats these lines as the person's request
-for those settings. A ticket without them runs on `sonnet` at `high`.
+Before building tickets (`/implement-spec`, `/implement`), see `docs/agents/model-and-effort.md`: each ticket names the model and effort its implementer runs on.
 
 ### Triage labels
 
