@@ -72,8 +72,12 @@ _Avoid_: tracking comment, sticky comment, progress comment
 
 ### The page
 
+**Standing**:
+Where a Feature stands in its life, as the page works it out from its Signals, its run and its pull request. A Feature has exactly one Standing at a time, and each Standing has one Mat.
+_Avoid_: status, stage, phase, column, state
+
 **Mat**:
-One state's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), with a label tab and a tally of its Features.
+One Standing's lane on the `nightjar ui` Board (Waiting on you, Building, Queue, Shelf, Completed), with a label tab and a tally of its Features.
 _Avoid_: column, swimlane
 
 **Egg**:
