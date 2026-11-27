@@ -14,7 +14,10 @@ with more than one line goes in through a heredoc into `-F body=@-`.
   the sub-issue and blocking calls take.
 - **A Ticket's body** holds what `docs/ticket-contract.md` asks: an `Acceptance criteria` checklist, its blocking links set natively (below), optional `**Model:**` and `**Effort:**` lines, and the `ready-for-agent` label. A Feature gets no Signal: the person gives it the Go.
 - **Read an issue**: `gh api repos/{owner}/{repo}/issues/<n>`, and its comments with
-  `gh api repos/{owner}/{repo}/issues/<n>/comments`.
+  `gh api repos/{owner}/{repo}/issues/<n>/comments`. Then read its state and the
+  pull requests that name it: Nightjar may already have built it, or be building it.
+  `gh api repos/{owner}/{repo}/issues/<n>/timeline --jq '.[] | select(.event=="cross-referenced") | .source.issue | select(.pull_request) | "#\(.number) \(.state) merged=\(.pull_request.merged_at != null) \(.title)"'`.
+  Lead with what you find, and read it again before you act on the issue.
 - **List issues**: `gh api 'repos/{owner}/{repo}/issues?state=open&labels=<label>' --jq '[.[] | select(.pull_request | not) | {number, title, labels: [.labels[].name]}]'`.
   This endpoint returns pull requests too; the `select` drops them.
 - **Make an issue a sub-issue of a parent**: `gh api -X POST repos/{owner}/{repo}/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`.

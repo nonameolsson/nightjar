@@ -8,7 +8,7 @@ import {
 	type Fixing,
 	type StepOutcome
 } from './coding-agent.js';
-import { DEFAULT_ROUNDS, type Config } from './config.js';
+import { DEFAULT_ROUNDS, promptFileOf, type Config } from './config.js';
 import type { Env } from './git.js';
 import { retryPassing, TRIES } from './retry.js';
 import { modelsOf, type Allowance, type LogEntry } from './spend.js';
@@ -67,6 +67,17 @@ export function chooseWorkflow(settings: WorkflowSettings, body: string): Chosen
 // What a Step is called in a commit trailer, which tells a later run it is done.
 export const stepKey = (workflow: string, step: string, ticket: ItemId | null) =>
 	`${workflow}/${step}${ticket === null ? '' : ` #${ticket}`}`;
+
+// One place decides what a Step's prompt says, so a Step and `doctor` agree on when an @file is missing; that is the `missing` path.
+export async function promptOf(
+	prompt: string,
+	read: (path: string) => Promise<string | null>
+): Promise<{ readonly text: string } | { readonly missing: string }> {
+	const path = promptFileOf(prompt);
+	if (path === null) return { text: prompt };
+	const text = await read(path);
+	return text === null ? { missing: path } : { text };
+}
 
 // The skills a Step's prompt names with a slash, such as `/some-skill args`.
 export function skillsNamed(prompt: string): string[] {
@@ -150,7 +161,16 @@ export type StepLog = LogEntry;
 // What of the Feature's worktree the Steps use.
 export type StepsTree = Pick<
 	Worktree,
-	'at' | 'head' | 'notes' | 'diff' | 'stepsDone' | 'commitStep' | 'revert' | 'snapshot' | 'restore'
+	| 'at'
+	| 'head'
+	| 'notes'
+	| 'read'
+	| 'diff'
+	| 'stepsDone'
+	| 'commitStep'
+	| 'revert'
+	| 'snapshot'
+	| 'restore'
 >;
 
 export interface StepsSetup {
@@ -307,6 +327,13 @@ export class WorkflowRun {
 		const after = ticket?.id ?? null;
 		const key = stepKey(name, step.name, after);
 		const label = `${name}/${step.name}`;
+		const prompt = await promptOf(step.prompt, (path) => tree.read(path));
+		if ('missing' in prompt) {
+			const why = `its prompt file ${prompt.missing} is missing`;
+			run.say(`${label}: ${why}`);
+			return { kind: 'undone', why };
+		}
+		const given: StepConfig = prompt.text === step.prompt ? step : { ...step, prompt: prompt.text };
 		const before = await tree.head();
 		let sessionId = run.newId();
 		const rounds = step.until === undefined ? 1 : (step.maxRounds ?? DEFAULT_ROUNDS);
@@ -353,7 +380,7 @@ export class WorkflowRun {
 						at: tree.at,
 						sessionId: id,
 						workflow: name,
-						step,
+						step: given,
 						extras,
 						round,
 						rounds,

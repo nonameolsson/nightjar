@@ -376,7 +376,7 @@
 								"prompt": {
 									"type": "string",
 									"pattern": "\\S",
-									"description": "What the agent is told to do, such as \"/some-skill critique\"; it may name any skill. Nightjar adds the rule that nobody is at the keyboard."
+									"description": "What the agent is told to do, such as \"/some-skill critique\"; it may name any skill. Starting with @, it is a path from the repo's root to a Markdown file that holds the prompt, such as \"@factory/steps/design-review.md\", read from the Feature's worktree when the Step runs; the path must stay inside the repo. Nightjar adds the rule that nobody is at the keyboard."
 								},
 								"point": {
 									"type": "string",

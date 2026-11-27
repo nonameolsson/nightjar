@@ -14,6 +14,8 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 
 Write from the default branch's tip: a session's checkout can lag `main`, and another session may have added an ADR or a term since. Run `git fetch origin main` first, and number a new ADR one past the highest in `git ls-tree --name-only origin/main docs/adr/`, not in the local `docs/adr/`. `scripts/adr.spec.ts` catches a clash only once CI merges `main`.
 
+An issue, a spec or a ticket cites an ADR by its path on `origin/main`, so write the ADR first, in the same session that settles it. A number named before its file exists is taken by the next ADR another session writes, and the citation then points at the wrong decision. `scripts/adr.spec.ts` checks every `ADR NNNN` in the repo's files, but nothing checks an issue.
+
 ## File structure
 
 Single-context repo (most repos):

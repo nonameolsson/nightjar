@@ -34,6 +34,17 @@ describe('docs/adr', () => {
 		expect(dead).toEqual([]);
 	});
 
+	it('is named by a number, wherever it is named, that an ADR has', () => {
+		const numbers = new Set(adrs.map(number));
+		const dead: string[] = [];
+		for (const path of repoFiles()) {
+			if (path === 'scripts/adr.spec.ts') continue;
+			for (const [, n] of readFileSync(path, 'utf8').matchAll(/\bADR[ -](\d{4})\b/g))
+				if (!numbers.has(n ?? '')) dead.push(`${path}: ADR ${n ?? ''}`);
+		}
+		expect(dead).toEqual([]);
+	});
+
 	it('is cited by its own number in the revisit-pass paragraph of architecture.md', () => {
 		const pullChecks = adrs.find((f) => f.includes('fixes-pull-checks'));
 		expect(pullChecks && number(pullChecks)).toBe('0004');

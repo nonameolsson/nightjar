@@ -124,6 +124,13 @@ class MemoryWorktree implements Worktree {
 			new Set(this.folder.commits.flatMap((c) => (c.ticket === undefined ? [] : [c.ticket])))
 		);
 
+	read(path: string) {
+		const dirty = this.folder.dirty.get(path);
+		if (dirty !== undefined) return Promise.resolve(dirty);
+		const commit = [...this.folder.commits].reverse().find((c) => c.files.has(path));
+		return Promise.resolve(commit?.files.get(path) ?? null);
+	}
+
 	stepsDone = () =>
 		Promise.resolve(
 			new Set(this.folder.commits.flatMap((c) => (c.step === undefined ? [] : [c.step])))

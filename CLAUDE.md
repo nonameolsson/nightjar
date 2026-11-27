@@ -16,7 +16,7 @@ Node 24, TypeScript, npm. `mise.toml` pins Node 24 (`mise trust`, then `mise ins
 - `npm test`: every spec (Vitest). One file: `npx vitest run src/build.spec.ts`; one test: `npx vitest run src/build.spec.ts -t 'hands back a Ticket'`.
 - `npm run build`: compiles `src/` to `dist/`; `dist/cli.js` is the `nightjar` bin.
 - `npm run lint`, `npm run format`, `npm run typecheck`.
-- CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you change with Edit or Write; after any other edit (a script, `sed`), run `npx prettier --write <file>`.
+- CI runs `npm run check` on every pull request (`.github/workflows/check.yml`); a hook in `.claude/settings.json` formats each file you change with Edit or Write; after any other edit (a script, `sed`), run `npx --no-install prettier --write <file>`, after `npm install`.
 - `npm run schema`: rewrites `schema/factory.schema.json` from the zod schema in `src/config.ts`. A spec fails while the two differ.
 - `npm run ui:dev [building|two-builds|review-round|idle|paused|stopped|off|shelf]`: the `nightjar ui` page over mock `.factory/` files, restarting on each edit (`PORT` picks the port; `-- idle` picks the scenario).
 
@@ -43,7 +43,7 @@ A `/grill-with-docs` session that settles hands off to `/to-spec`, then `/to-tic
 
 ### Issue tracker
 
-GitHub Issues (`nonameolsson/nightjar`) via `gh api` (REST); `gh issue` and `gh pr` fail in a cloud session. See `docs/agents/issue-tracker.md`.
+GitHub Issues (`nonameolsson/nightjar`) via `gh api` (REST); `gh issue` and `gh pr` fail in a cloud session. Before reading or writing an issue, see `docs/agents/issue-tracker.md`: it says how to tell whether a pull request already built it.
 
 ### Model and effort
 
