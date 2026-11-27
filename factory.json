@@ -8,5 +8,29 @@
 	},
 	"check": "npm run check",
 	"allowedCommands": ["npm run check", "npm test"],
-	"setup": "npm install"
+	"setup": "npm install",
+	"ports": { "count": 1, "env": ["PORT"] },
+	"workflows": {
+		"design-review": {
+			"prompt": "This Feature changes the nightjar ui page. Follow DESIGN.md and the surface brief in .impeccable/surfaces/src-ui-ts.md.",
+			"serve": "npm run ui:dev",
+			"localNetwork": true,
+			"steps": [
+				{
+					"name": "critique",
+					"prompt": "/impeccable critique the screens this Feature changed, on the page served on localhost at the port in the PORT environment variable. Write what is wrong, worst first, to the notes folder.",
+					"point": "afterAllTickets",
+					"model": "opus"
+				},
+				{
+					"name": "polish",
+					"prompt": "/impeccable polish the screens, fixing what the critique in the notes folder found. If the CSS changed, regenerate DESIGN.md and .impeccable/design.json from it.",
+					"point": "afterAllTickets",
+					"until": "the critique's list is empty or only things a person must decide remain",
+					"maxRounds": 3,
+					"budgetUsd": 8
+				}
+			]
+		}
+	}
 }
