@@ -3839,8 +3839,15 @@ describe('the Conflict fix in --watch', () => {
 		};
 	}
 
+	// the Conflicts section of the body, and what is in it
+	const RECORD_SECTION =
+		/\n\n<!-- nightjar-conflicts-section -->\n[\s\S]*?\n<!-- \/nightjar-conflicts-section -->/;
 	const pushesOf = (world: World) => world.host.pushes.filter((p) => p.branch === BRANCH).length;
 	const body = (world: World) => world.host.pulls[0]?.body ?? '';
+	const record = (world: World) =>
+		/<!-- nightjar-conflicts-section -->\n([\s\S]*?)\n<!-- \/nightjar-conflicts-section -->/.exec(
+			body(world)
+		)?.[1];
 	const lastSaid = (world: World) => world.tracker.said('1').at(-1) ?? '';
 	const conflictsLines = (world: World) =>
 		ledger(world)
@@ -3886,7 +3893,7 @@ describe('the Conflict fix in --watch', () => {
 		expect(askedOf(world, 'build').map((b) => b.ticket.id)).toEqual(['11']);
 	});
 
-	it('runs no Review and no Step after it, and leaves the pull request body, its publish mark too, as it was', async () => {
+	it('runs no Review and no Step after it, and keeps the pull request body, its publish mark too, as it was but for the Conflicts section', async () => {
 		const world = makeWorld();
 		const pull = await conflictingDraft(world);
 		await world.host.editBody(pull, markPublished(body(world)));
@@ -3898,7 +3905,8 @@ describe('the Conflict fix in --watch', () => {
 
 		const onIt = world.asked.filter((r) => r.at.branch === BRANCH);
 		expect(onIt.map((r) => r.kind)).toEqual(['conflicts']);
-		expect(body(world)).toBe(before);
+		expect(publishedByNightjar(body(world))).toBe(true);
+		expect(body(world).replace(RECORD_SECTION, '')).toBe(before);
 	});
 
 	it('holds working while it runs, and shows itself as the Conflict fix it is', async () => {
@@ -3929,6 +3937,137 @@ describe('the Conflict fix in --watch', () => {
 			feature: '1',
 			ticket: null,
 			branch: BRANCH
+		});
+	});
+
+	describe('the pull request body', () => {
+		// the Code host recomputes the draft's state once the merge is pushed
+		const resolvesOnPush = (world: World, pull: { id: number; url: string }) => {
+			const { conflictsAgent } = world;
+			world.conflictsAgent = (req) => {
+				world.host.setConflict(pull, 'no');
+				return conflictsAgent(req);
+			};
+		};
+		const conflictAgain = (world: World, pull: { id: number; url: string }) => {
+			world.trees.moveBase('main', 'ticket-2.txt', 'from the base, again\n');
+			world.host.setConflict(pull, 'yes');
+		};
+
+		it('gains a block for a Conflict fix that merged: its round, summary, resolved files and cost, with no notice', async () => {
+			const world = makeWorld();
+			const pull = await conflictingDraft(world);
+			resolvesOnPush(world, pull);
+			await queue(watch(world), false);
+
+			expect(record(world)).toBe(
+				'## Conflicts\n\n### Conflict fix 1: fixed, $2.00\n\nKept both sides.\n\nResolved files:\n\n- `ticket-2.txt`'
+			);
+			expect(body(world)).not.toContain('Conflicts with');
+			expect(body(world)).toMatch(/Built by Nightjar\._$/);
+		});
+
+		it('costs the block what the ledger says the Conflict fix spent, its check fix rounds in it', async () => {
+			const world = makeWorld();
+			const pull = await conflictingDraft(world);
+			resolvesOnPush(world, pull);
+			world.checkOk = false;
+			world.fixAgent = (req) => {
+				world.checkOk = true;
+				return { kind: 'fixed', summary: 'Fixed the lint.', sessionId: req.resume, costUsd: 1 };
+			};
+			await queue(watch(world), false);
+
+			const spent = ledger(world)
+				.filter((e) => e.step === 'conflicts')
+				.reduce((sum, e) => sum + e.costUsd, 0);
+			expect(spent).toBe(3);
+			expect(body(world)).toContain('### Conflict fix 1: fixed, $3.00\n\n');
+		});
+
+		it('keeps the notice, with the block, while the Code host still says the draft conflicts', async () => {
+			const world = makeWorld();
+			await conflictingDraft(world);
+			await queue(watch(world), false);
+
+			expect(body(world)).toContain(
+				'## Conflicts with main\n\nThis pull request conflicts with `main`'
+			);
+			expect(body(world)).toContain('### Conflict fix 1: fixed, $2.00');
+			expect(body(world).match(/## Conflicts/g)).toHaveLength(1);
+		});
+
+		it('tells a Conflict fix that gave up too: why, and the files the merge stopped on, under the notice and before the give-up mark', async () => {
+			const world = makeWorld();
+			const pull = await conflictingDraft(world);
+			world.conflictsAgent = (req) => ({
+				kind: 'blocked',
+				blocker: 'Both sides renamed it.',
+				sessionId: req.sessionId,
+				costUsd: 1
+			});
+			await queue(watch(world), false);
+
+			expect(record(world)).toBe(
+				'## Conflicts with main\n\nThis pull request conflicts with `main`: merge or rebase `main` before review.\n\n' +
+					'### Conflict fix 1: gave up, $1.00\n\nIt gave up: the Session is blocked: Both sides renamed it.\n\nFiles the merge stopped on:\n\n- `ticket-2.txt`'
+			);
+			expect(body(world).endsWith('\n\n<!-- nightjar-conflicts: handed to a person -->')).toBe(
+				true
+			);
+			expect(body(world).split('\n')[0]).toMatch(/^\*\*Waiting on you\*\*/);
+			expect(lastSaid(world)).toContain(`${pull.url}, in its “Conflicts” section`);
+		});
+
+		it('lists every Conflict fix of the branch in order, across runs, the first as it was', async () => {
+			const world = makeWorld();
+			const pull = await conflictingDraft(world);
+			resolvesOnPush(world, pull);
+			await queue(watch(world), false);
+
+			conflictAgain(world, pull);
+			world.conflictsAgent = (req) => ({
+				kind: 'resolved',
+				summary: 'Took the base.',
+				files: req.files,
+				sessionId: req.sessionId,
+				costUsd: 0.5
+			});
+			await queue(watch(world), false);
+
+			const text = record(world) ?? '';
+			expect(text.match(/^### Conflict fix /gm)).toHaveLength(2);
+			expect(text.indexOf('### Conflict fix 1: fixed, $2.00\n\nKept both sides.')).toBeGreaterThan(
+				0
+			);
+			expect(text.indexOf('### Conflict fix 1')).toBeLessThan(
+				text.indexOf('### Conflict fix 2: fixed, $0.50\n\nTook the base.')
+			);
+			expect(text.startsWith('## Conflicts with main')).toBe(true);
+		});
+
+		it('keeps the record, and adds the give-up mark, when the pull request is handed over at its limit', async () => {
+			const world = makeWorld();
+			const pull = await conflictingDraft(world);
+			const limits = { ...LIMITS, ...conflictsLimits({ fixRounds: 1 }) };
+			resolvesOnPush(world, pull);
+			await queue(watch(world, { setup: { limits } }), false);
+			conflictAgain(world, pull);
+			await queue(watch(world, { setup: { limits } }), false);
+
+			expect(body(world).match(/^### Conflict fix /gm)).toHaveLength(1);
+			expect(conflictsHandedOver(body(world))).toBe(true);
+			expect(lastSaid(world)).toContain(`${pull.url}, in its “Conflicts” section`);
+		});
+
+		it('points the comment to no section when no Conflict fix has been recorded', async () => {
+			const world = makeWorld();
+			await conflictingDraft(world);
+			await queue(watch(world, { setup: { limits: { ...LIMITS, conflictsRounds: 0 } } }), false);
+
+			expect(lastSaid(world)).toContain('it has had its 0 Conflict fixes.');
+			expect(lastSaid(world)).not.toContain('section');
+			expect(body(world)).not.toContain('### Conflict fix');
 		});
 	});
 

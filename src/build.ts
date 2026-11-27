@@ -34,7 +34,14 @@ import type { Env } from './git.js';
 import { noteFor, type Logbook, type Note } from './logbook.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { buildOrder, nextTicket, progress, waiting, type Waiting } from './plan.js';
-import { conflicts, withConflicts, withoutConflicts } from './conflicts-section.js';
+import {
+	conflicts,
+	type ConflictFix,
+	hasConflictFixes,
+	withConflictFix,
+	withConflicts,
+	withoutConflicts
+} from './conflicts-section.js';
 import { why } from './say.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
@@ -2207,7 +2214,7 @@ function handOverPullChecks(
 	);
 }
 
-// A conflicting draft handed to a person: the comment names the files the merge stopped on and the side branch what the Conflict fix tried is kept on.
+// A conflicting draft handed to a person: the comment names the files the merge stopped on and the side branch what the Conflict fix tried is kept on, and points to the Conflicts section when the body holds a Conflict fix.
 function handOverConflicts(
 	deps: Deps,
 	setup: Setup,
@@ -2237,6 +2244,7 @@ function handOverConflicts(
 			why,
 			sentence: `Nightjar could not resolve the conflicts of its pull request with ${code(of.base)}: ${why}.`,
 			cause,
+			...(hasConflictFixes(body) ? { section: 'Conflicts' } : {}),
 			next: conflictsStep(setup.signals, of.base)
 		},
 		markConflictsHandedOver(body)
@@ -2485,7 +2493,7 @@ export type ConflictFixOutcome =
 // What a Conflict fix that did not finish is kept on: the Feature's branch with this after `-attempt-`.
 const CONFLICTS_ATTEMPT = 'conflicts';
 
-// One Conflict fix on a draft that conflicts with its base (docs/adr/0011): Nightjar merges the base into the branch, a new Session resolves the conflicts the merge stopped on, the repo's check runs with the usual fix rounds in that Session, and one merge commit with a Factory-Conflicts trailer is pushed only when it is green. No Review and no Step runs after it, and the pull request body is left as it was.
+// One Conflict fix on a draft that conflicts with its base (docs/adr/0011): Nightjar merges the base into the branch, a new Session resolves the conflicts the merge stopped on, the repo's check runs with the usual fix rounds in that Session, and one merge commit with a Factory-Conflicts trailer is pushed only when it is green. No Review and no Step runs after it; the pull request body gains the fix's block in its Conflicts section, and that is all.
 // A fault that escapes it is thrown as a BuildFault that names the Conflict fix.
 export async function fixConflicts(
 	deps: Deps,
@@ -2563,10 +2571,31 @@ async function resolveConflicting(
 			note,
 			signals
 		});
-		if (got.kind === 'gaveUp') {
+		// every Conflict fix that ran says so in the body, the one that gave up too
+		const ran = (
+			f: Pick<ConflictFix, 'outcome' | 'summary' | 'files' | 'usd'>,
+			conflicting: boolean
+		) => withConflictFix(draft.body, setup.baseBranch, { round, ...f }, conflicting);
+		if (got.kind === 'fixed') {
+			const body = ran(
+				{ outcome: 'fixed', summary: got.summary, files: got.files, usd: got.usd },
+				false
+			);
+			await deps.codeHost.editBody(pull, body);
+			await noteConflicts(deps, setup, pull, body);
+		} else if (got.kind === 'gaveUp') {
 			const why = `Conflict fix ${String(round)} gave up: ${got.why}`;
 			const tried = { files: got.conflicting, side: got.side };
-			await handOverConflicts(deps, setup, await handing(session), pull, why, tried, draft.body);
+			const body = ran(
+				{
+					outcome: 'gave up',
+					summary: `It gave up: ${got.why}${got.why.endsWith('.') ? '' : '.'}`,
+					files: got.conflicting,
+					usd: got.usd
+				},
+				true
+			);
+			await handOverConflicts(deps, setup, await handing(session), pull, why, tried, body);
 		}
 		// a push that faulted ends the fix as any fault does: in the Logbook with its stack, naming the fix for the hand-back
 		return got.kind === 'faulted' ? { ...got, fault: faultAt(got.fault, where.run, note) } : got;
