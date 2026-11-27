@@ -361,7 +361,7 @@ const isConflicting = (draft: NightjarDraft) =>
 
 // The oldest draft a revisit pass may take: one `wanted` picks, no person engaged, not handed to a person, its body naming a Feature assigned to the person that holds no Signal.
 async function nextDraft(
-	deps: QueueDeps,
+	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>,
 	listed: readonly NightjarDraft[],
 	wanted: (draft: NightjarDraft) => boolean,
 	tried: ReadonlySet<string>,
@@ -1017,14 +1017,22 @@ export async function dryRun(
 		readonly codeHost?: CodeHost;
 		// when factory.json sets `publish`: the drafts it would publish are listed too
 		readonly publish?: PublishPass;
+		// when factory.json sets `conflicts`: the drafts the Conflict fix pass would take are listed too, ahead of those it would publish
+		readonly conflicts?: ConflictsPass;
 		readonly now?: () => Date;
 	}
 ): Promise<void> {
 	const features = await deps.tracker.assignedFeatures(deps.person);
 	const pulls = deps.codeHost === undefined ? null : openPullsOf(deps.codeHost);
 	const asked = pulls === null ? [] : await askedFeatures(deps, await pulls());
+	const resolving = deps.conflicts === undefined ? [] : await resolvable(deps, deps.conflicts);
 	const publishing = deps.publish === undefined ? [] : await publishable(deps, deps.publish);
-	if (features.length === 0 && asked.length === 0 && publishing.length === 0) {
+	if (
+		features.length === 0 &&
+		asked.length === 0 &&
+		resolving.length === 0 &&
+		publishing.length === 0
+	) {
 		deps.say(none(deps));
 	}
 	for (const f of features) {
@@ -1038,8 +1046,33 @@ export async function dryRun(
 			deps.say(`would hand #${id} ${title} to a person: ${limitWhy}`);
 		}
 	}
+	for (const { draft, feature, title } of resolving) {
+		deps.say(
+			`would resolve conflicts on #${feature}${title === '' ? '' : ` ${title}`}, on ${draft.pull.url}`
+		);
+	}
 	for (const { draft, feature, title } of publishing) {
 		deps.say(`would publish #${feature}${title === '' ? '' : ` ${title}`}, on ${draft.pull.url}`);
+	}
+}
+
+// The drafts a Conflict fix pass would take, oldest first, on the terms the pass takes them, each with its Feature and that Feature's title when the Tracker gives it.
+async function resolvable(
+	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>,
+	pass: ConflictsPass
+) {
+	const listed = await pass.drafts();
+	const taken = new Set<string>();
+	const found: { draft: NightjarDraft; feature: ItemId; title: string }[] = [];
+	for (;;) {
+		const next = await nextDraft(deps, listed, isConflicting, taken, new Set());
+		if (next === null) return found;
+		taken.add(triedKey(next.draft));
+		const title = await deps.tracker.feature(next.feature).then(
+			(f) => f.title,
+			() => ''
+		);
+		found.push({ ...next, title });
 	}
 }
 
