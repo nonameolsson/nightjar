@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FakeAzureDevOps } from './azure-devops/fake-azure-devops.js';
+import { FakeAzureDevOps, type FakeProcess } from './azure-devops/fake-azure-devops.js';
 import { loadConfig } from './config.js';
 import { oneEscape } from './fakes/github.js';
 import { machine, type Machine } from './fakes/machine.js';
@@ -1020,8 +1020,12 @@ describe('nightjar init on a terminal', () => {
 			note: (text) => void transcript.push(text)
 		};
 	}
-	const initUi = (picks: Picks, argv: string[] = ['init'], prompter = withUi(picks)) => {
-		const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+	const initUi = (
+		picks: Picks,
+		argv: string[] = ['init'],
+		prompter = withUi(picks),
+		ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com')
+	) => {
 		return runNightjar(argv, {
 			os: { platform: 'linux', kernel: '' },
 			cwd: m.root,
@@ -1310,5 +1314,249 @@ describe('nightjar init on a terminal', () => {
 		expect(await initUi([], ['init'], prompter)).toBe(2);
 		expect(err.join('\n')).toContain('cancelled');
 		expect(existsSync(written())).toBe(false);
+	});
+
+	describe('with an Azure DevOps origin', () => {
+		const FEATURE_QUESTION =
+			'Work item type that plays the Feature, such as Feature, Epic or Product Backlog Item';
+		const TICKET_QUESTION = 'Work item type of a Ticket, for `nightjar create`';
+		let ado: FakeAzureDevOps;
+		beforeEach(() => {
+			ado = azureProject();
+			setOrigin('https://dev.azure.com/contoso/Fabrikam/_git/fabrikam-app');
+			makefile('check');
+		});
+
+		it('asks one yes or no, and writes a factory.json with ticketType', async () => {
+			expect(await initUi([true], ['init'], undefined, ado)).toBe(0);
+			expect(err).toEqual([]);
+			expect(offered).toEqual([[SUMMARY_QUESTION, true]]);
+			expect(summary()).toEqual([
+				'nightjar: this is what init will do:',
+				'  Azure DevOps Boards + Azure Repos, repo contoso/Fabrikam/fabrikam-app',
+				'  check: make check',
+				'  commands the Coding agent may run: make check',
+				'  write:',
+				'    factory.json',
+				'    .gitignore, adding the line .factory/',
+				'  create no Signal labels: Azure DevOps shows Signals as tags on first use',
+				'  logins checked:',
+				'    Azure CLI for the Tracker, on contoso/Fabrikam',
+				'    Azure CLI for the Code host, on contoso/Fabrikam/fabrikam-app',
+				'    claude, signed in to your Claude plan',
+				'No asks each question, with these as the defaults. Any answer can be edited later in factory.json.',
+				SUMMARY_QUESTION
+			]);
+			expect(m.readConfig()).toEqual({
+				$schema: 'https://unpkg.com/@nonameolsson/nightjar/schema/factory.schema.json',
+				...azurePair('Feature', 'User Story'),
+				check: 'make check',
+				allowedCommands: ['make check']
+			});
+		});
+
+		it('asks for the two types of a custom process, then the one yes or no', async () => {
+			ado.process = { custom: 'Contoso XML' };
+			expect(await initUi(['Epic', 'Task', true], ['init'], undefined, ado)).toBe(0);
+			expect(offered).toEqual([
+				[FEATURE_QUESTION, 'Feature'],
+				[TICKET_QUESTION, undefined],
+				[SUMMARY_QUESTION, true]
+			]);
+			expect(out.join('\n')).toContain('the process of contoso/Fabrikam, Contoso XML, is not');
+			expect(m.readConfig()).toMatchObject(azurePair('Epic', 'Task'));
+		});
+
+		it('takes no empty Ticket type where the process names none', async () => {
+			ado.process = { custom: 'Contoso XML' };
+			expect(await initUi(['', '', 'Task', true], ['init'], undefined, ado)).toBe(0);
+			expect(transcript).toContain('name the work item type of a Ticket, such as User Story');
+			expect(m.readConfig()).toMatchObject(azurePair('Feature', 'Task'));
+		});
+
+		it('asks each question on no, with the guesses as the defaults', async () => {
+			ado.process = { system: 'Scrum' };
+			const azure = ['azure-devops', '', ''];
+			const picks = [false, ...azure, '', '', ...azure, '', '', ['make check'], '', true];
+			expect(await initUi(picks, ['init'], undefined, ado)).toBe(0);
+			expect(offered.slice(1, 10)).toEqual([
+				['Tracker', 'azure-devops'],
+				['Azure DevOps organization, as in dev.azure.com/<organization>', 'contoso'],
+				['Project that holds the Features', 'Fabrikam'],
+				[FEATURE_QUESTION, 'Feature'],
+				[TICKET_QUESTION, 'Product Backlog Item'],
+				['Code host', 'azure-devops'],
+				['Azure DevOps organization, as in dev.azure.com/<organization>', 'contoso'],
+				['Project that holds the repo', 'Fabrikam'],
+				['Git repo on Azure Repos, by name', 'fabrikam-app']
+			]);
+			expect(m.readConfig()).toMatchObject(azurePair('Feature', 'Product Backlog Item'));
+		});
+	});
+});
+
+// a project as the origins below name it, with its repo
+function azureProject() {
+	const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
+	ado.repository('fabrikam-app');
+	return ado;
+}
+
+const setOrigin = (url: string) =>
+	spawnSync('git', ['remote', 'set-url', 'origin', url], { cwd: m.root, env: m.env });
+
+const azurePair = (featureType: string, ticketType: string) => {
+	const where = { type: 'azure-devops', organization: 'contoso', project: 'Fabrikam' };
+	return {
+		tracker: { ...where, featureType, ticketType },
+		codeHost: { ...where, repo: 'fabrikam-app' }
+	};
+};
+
+describe('nightjar init from an Azure DevOps origin', () => {
+	let ado: FakeAzureDevOps;
+	beforeEach(() => {
+		ado = azureProject();
+		setOrigin('https://dev.azure.com/contoso/Fabrikam/_git/fabrikam-app');
+	});
+
+	const yes = (...flags: string[]) =>
+		runNightjar(['init', '--yes', '--check', 'make check', ...flags], {
+			os: { platform: 'linux', kernel: '' },
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			request: ado.request
+		});
+	const dryRun = () =>
+		runNightjar(['init', '--dry-run', '--check', 'make check'], {
+			os: { platform: 'linux', kernel: '' },
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			request: ado.request
+		});
+	const processReads = () => ado.asked.filter((c) => c.url.includes('/_apis/projects/'));
+
+	it.each([
+		'https://dev.azure.com/contoso/Fabrikam/_git/fabrikam-app',
+		'git@ssh.dev.azure.com:v3/contoso/Fabrikam/fabrikam-app',
+		'contoso@vs-ssh.visualstudio.com:v3/contoso/Fabrikam/fabrikam-app',
+		'https://contoso.visualstudio.com/Fabrikam/_git/fabrikam-app'
+	])('takes the organization, project and repo from %s', async (url) => {
+		setOrigin(url);
+		expect(await yes()).toBe(0);
+		expect(err).toEqual([]);
+		expect(m.readConfig()).toMatchObject(azurePair('Feature', 'User Story'));
+	});
+
+	it.each<[string, FakeProcess, string, string]>([
+		['Agile', { system: 'Agile' }, 'Feature', 'User Story'],
+		['Scrum', { system: 'Scrum' }, 'Feature', 'Product Backlog Item'],
+		['Basic', { system: 'Basic' }, 'Epic', 'Issue'],
+		['CMMI', { system: 'CMMI' }, 'Feature', 'Requirement'],
+		[
+			'one that inherits from Scrum',
+			{ inherited: 'Contoso Scrum', from: 'Scrum' },
+			'Feature',
+			'Product Backlog Item'
+		]
+	])('takes the types of the process: %s', async (_name, process, feature, ticket) => {
+		ado.process = process;
+		expect(await yes()).toBe(0);
+		expect(m.readConfig()).toMatchObject(azurePair(feature, ticket));
+	});
+
+	it('names both types as missing under --yes on a custom process, and writes nothing', async () => {
+		ado.process = { custom: 'Contoso XML' };
+		expect(await yes()).toBe(2);
+		expect(err.join('\n')).toContain('pass --tracker-feature-type');
+		expect(err.join('\n')).toContain('pass --tracker-ticket-type');
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('names only the type no flag gives on a custom process', async () => {
+		ado.process = { custom: 'Contoso XML' };
+		expect(await yes('--tracker-feature-type', 'Epic')).toBe(2);
+		expect(err.join('\n')).not.toContain('pass --tracker-feature-type');
+		expect(err.join('\n')).toContain('pass --tracker-ticket-type');
+	});
+
+	it('reads no process when flags name both types', async () => {
+		ado.process = { custom: 'Contoso XML' };
+		const types = ['--tracker-feature-type', 'Epic', '--tracker-ticket-type', 'Task'];
+		expect(await yes(...types)).toBe(0);
+		expect(m.readConfig()).toMatchObject(azurePair('Epic', 'Task'));
+		expect(processReads()).toEqual([]);
+	});
+
+	it('says why a process cannot be read, and takes it as one that names no types', async () => {
+		ado.failNext(/_apis\/projects\//, 403);
+		expect(await yes()).toBe(2);
+		expect(out.join('\n')).toContain('could not read the process of contoso/Fabrikam: ');
+		expect(err.join('\n')).toContain('pass --tracker-ticket-type');
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('lets field flags win over the guesses', async () => {
+		ado.repository('other-app');
+		const flags = ['--tracker-ticket-type', 'Bug', '--code-host-repo', 'other-app'];
+		expect(await yes(...flags)).toBe(0);
+		expect(m.readConfig()).toMatchObject({
+			tracker: { featureType: 'Feature', ticketType: 'Bug' },
+			codeHost: { repo: 'other-app' }
+		});
+	});
+
+	it('refuses an empty Ticket type, which is always written here', async () => {
+		expect(await yes('--tracker-ticket-type', '')).toBe(2);
+		expect(err.join('\n')).toContain('name the work item type of a Ticket');
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('keeps the mixed pair a flag names, with the other half from origin', async () => {
+		expect(await yes('--code-host', 'github', '--code-host-repo', 'o/r')).toBe(0);
+		expect(m.readConfig()).toMatchObject({
+			tracker: { organization: 'contoso', project: 'Fabrikam', featureType: 'Feature' },
+			codeHost: { type: 'github', repo: 'o/r' }
+		});
+		expect(JSON.stringify(m.readConfig())).not.toContain('ticketType');
+		expect(processReads()).toEqual([]);
+	});
+
+	it('reads no process before the sign-in is checked', async () => {
+		m.env.FAKE_AZ_SIGNED_OUT = '1';
+		expect(await yes()).toBe(2);
+		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*az login/);
+		expect(processReads()).toEqual([]);
+	});
+
+	it('shows the guesses in a dry run, and writes nothing', async () => {
+		ado.process = { system: 'Basic' };
+		expect(await dryRun()).toBe(0);
+		const shown = out.join('\n');
+		expect(shown).toContain(
+			'  Azure DevOps Boards + Azure Repos, repo contoso/Fabrikam/fabrikam-app'
+		);
+		expect(shown).toContain('"featureType": "Epic"');
+		expect(shown).toContain('"ticketType": "Issue"');
+		expect(shown).not.toContain('<missing>');
+		expect(existsSync(written())).toBe(false);
+	});
+
+	it('shows both types as missing in a dry run on a custom process', async () => {
+		ado.process = { custom: 'Contoso XML' };
+		expect(await dryRun()).toBe(0);
+		const shown = out.join('\n');
+		expect(shown).toContain('"featureType": "<missing>"');
+		expect(shown).toContain('"ticketType": "<missing>"');
+		expect(shown).toContain('pass --tracker-feature-type');
+		expect(shown).toContain('pass --tracker-ticket-type');
+	});
+
+	it('guesses nothing from it for piped answers', async () => {
+		expect(await init([])).toBe(2);
+		expect(asked).toEqual(['Tracker: github, azure-devops, module [github]: ']);
+		expect(processReads()).toEqual([]);
 	});
 });

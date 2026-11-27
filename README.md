@@ -71,9 +71,20 @@ In the repo you want built, run:
 nightjar init
 ```
 
-Before it asks or writes anything, `init` checks this machine with `doctor`'s own checks: the platform, the sandbox, Node, `ANTHROPIC_API_KEY` without `--use-api-key`, a git checkout with an `origin`, `claude` installed and signed in, and the logins of the Tracker and Code host that your flags and a GitHub `origin` name. It lists every check that fails with how to fix it, writes nothing and exits 2. When your answers choose the Tracker and Code host, it checks their logins too, before it writes.
+Before it asks or writes anything, `init` checks this machine with `doctor`'s own checks: the platform, the sandbox, Node, `ANTHROPIC_API_KEY` without `--use-api-key`, a git checkout with an `origin`, `claude` installed and signed in, and the logins of the Tracker and Code host that your flags and `origin` name (with answers piped in, a GitHub `origin` only). It lists every check that fails with how to fix it, writes nothing and exits 2. When your answers choose the Tracker and Code host, it checks their logins too, before it writes.
 
-**On a terminal**, in a repo with no `factory.json` and a `github.com` `origin`, `init` guesses the setup: GitHub Issues and GitHub on the repo `origin` names, the check command the repo names, and the commands the Coding agent may run. It asks for the check command only when the repo names none or several. One summary shows the guesses, the files it will write, the Signal labels it will create and the logins it checked, and asks one yes or no. On no it asks each question below, with the guesses as the defaults. With another `origin`, or flags that name another Tracker or Code host, it asks the questions straight away, then shows the same summary. On yes it writes `factory.json` and adds `.factory/` to `.gitignore` (creating the file when there is none), unless that already ignores it. It never commits. `--no-tour` asks `init` to stop once those files are written and the setup is checked.
+**On a terminal**, in a repo with no `factory.json` and an `origin` on GitHub or Azure DevOps, `init` guesses the setup: the Tracker and Code host on the repo `origin` names (GitHub Issues and GitHub, or Azure DevOps Boards and Azure Repos), the check command the repo names, and the commands the Coding agent may run. It asks for the check command only when the repo names none or several.
+
+An **Azure DevOps `origin`** is any of `https://dev.azure.com/<org>/<project>/_git/<repo>`, `git@ssh.dev.azure.com:v3/<org>/<project>/<repo>`, `<org>@vs-ssh.visualstudio.com:v3/<org>/<project>/<repo>` and `https://<org>.visualstudio.com/<project>/_git/<repo>`. It gives the organization, project and repo. Once the sign-in is checked, `init` reads the project's process and takes the work item types of a Feature and a Ticket from it, or from the system process it inherits from, and always writes both:
+
+| Process | Feature | Ticket               |
+| ------- | ------- | -------------------- |
+| Agile   | Feature | User Story           |
+| Scrum   | Feature | Product Backlog Item |
+| Basic   | Epic    | Issue                |
+| CMMI    | Feature | Requirement          |
+
+For any other process, or one it cannot read, it says so and asks for the two types; under `--yes` it stops, naming `--tracker-feature-type` and `--tracker-ticket-type`. A flag wins over what `origin` or the process says. A flag that pairs one of the two with another service leaves the types as asked below. Answers piped in take nothing from an Azure DevOps `origin`. One summary shows the guesses, the files it will write, the Signal labels it will create and the logins it checked, and asks one yes or no. On no it asks each question below, with the guesses as the defaults. With another `origin`, or flags that name a pair other than the one `origin`'s service gives, it asks the questions straight away, then shows the same summary. On yes it writes `factory.json` and adds `.factory/` to `.gitignore` (creating the file when there is none), unless that already ignores it. It never commits. `--no-tour` asks `init` to stop once those files are written and the setup is checked.
 
 Otherwise, with answers piped in, or to change a guess, it asks for:
 
@@ -95,6 +106,7 @@ Without a terminal it reads its answers from standard input, line by line, so a 
 
 ```bash
 nightjar init --yes --check 'make check'
+# only where origin does not already say it is on Azure DevOps
 nightjar init --yes --check 'make check' --tracker azure-devops --tracker-organization contoso \
   --tracker-project Fabrikam --code-host-repo fabrikam-app
 ```

@@ -3,7 +3,14 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { join } from 'node:path';
 import type { z } from 'zod';
 import { askOnStdin, type Ask } from './ask.js';
-import type { AzureDevOpsRequest } from './azure-devops/index.js';
+import {
+	azureRepoFromRemote,
+	openAzureDevOps,
+	projectProcess,
+	type AzureDevOpsRequest,
+	type AzureRepo,
+	type WorkItemTypes
+} from './azure-devops/index.js';
 import { runCheck } from './check.js';
 import {
 	checkLogins,
@@ -45,6 +52,10 @@ export interface InitOptions extends Answering {
 	readonly profile?: string;
 	readonly request?: AzureDevOpsRequest;
 	readonly gh?: GhRunner;
+	// what an Azure DevOps origin names, the default of each Azure DevOps question
+	readonly azure?: AzureRepo;
+	// set when that origin sets up Boards and Azure Repos: the Tracker project's types, null where its process names none
+	readonly process?: { readonly types: WorkItemTypes | null };
 }
 
 // stands in a dry run for a value nothing gives; the schema takes it as an organization or project, which the Code host takes from the Tracker
@@ -149,9 +160,9 @@ const probing = (
 		)
 });
 
-async function origin(root: string, env: Env): Promise<string | null> {
+async function originUrl(root: string, env: Env): Promise<string | null> {
 	const got = await run('git', ['remote', 'get-url', 'origin'], root, env);
-	return got.ok ? repoFromRemote(got.out) : null;
+	return got.ok ? got.out : null;
 }
 
 const kindOf = (text: string): string | null =>
@@ -212,12 +223,57 @@ async function askTicketType(o: Answering): Promise<string> {
 	return ticket.trim();
 }
 
+const FEATURE_TYPE_QUESTION =
+	'Work item type that plays the Feature, such as Feature, Epic or Product Backlog Item';
+const FEATURE_TYPE_HELP =
+	'The work item type Nightjar reads as a Feature; its children are the Tickets.';
+
+// The two types where an Azure DevOps origin sets up the pair: the process's as the defaults, and a Ticket's always written.
+async function processTypes(o: Answering, read: WorkItemTypes | null): Promise<WorkItemTypes> {
+	const lacking: string[] = [];
+	// --yes names every type it lacks at once, not the first alone
+	const asking =
+		o.yes && o.missing === undefined
+			? { ...o, missing: (line: string) => void lacking.push(line) }
+			: o;
+	const interview = probing(asking, 'tracker', ConfigSchema.shape.tracker, {
+		type: 'azure-devops',
+		organization: 'x',
+		project: 'x'
+	});
+	const featureType = await interview.field(
+		'featureType',
+		FEATURE_TYPE_QUESTION,
+		FEATURE_TYPE_HELP,
+		// --yes takes no type the process does not name
+		read?.featureType ?? (o.yes ? undefined : 'Feature')
+	);
+	const ticketType = await answer(
+		asking,
+		'tracker-ticket-type',
+		'Work item type of a Ticket, for `nightjar create`',
+		read?.ticketType,
+		(text) => (/\S/.test(text) ? null : 'name the work item type of a Ticket, such as User Story'),
+		{ short: 'The type `nightjar create` gives the Tickets it makes, such as User Story.' }
+	);
+	if (lacking.length > 0) throw new Refusal(lacking.join('\nnightjar: '));
+	return { featureType, ticketType };
+}
+
+// What a section's questions offer: its kind, and what is known of where it is.
+interface SectionGuess {
+	readonly kind: Kind;
+	readonly organization?: string;
+	readonly project?: string;
+	readonly repo?: string;
+}
+
 // One of Tracker and Code host: its type, then what that type needs.
 async function section(
 	o: InitOptions,
 	which: 'tracker' | 'codeHost',
 	fromOrigin: string | null,
-	guess: { kind: Kind; organization?: string; project?: string }
+	guess: SectionGuess
 ): Promise<{ section: Section; organization?: string; project?: string }> {
 	const schema = ConfigSchema.shape[which];
 	const label = which === 'tracker' ? 'Tracker' : 'Code host';
@@ -273,7 +329,8 @@ async function section(
 		const repo = await interview.field(
 			'repo',
 			'Git repo on Azure Repos, by name',
-			'The name of the repo in Azure Repos that the branch is pushed to.'
+			'The name of the repo in Azure Repos that the branch is pushed to.',
+			guess.repo
 		);
 		return {
 			section: { type: 'azure-devops', organization, project, repo },
@@ -281,13 +338,19 @@ async function section(
 			project
 		};
 	}
-	const featureType = await interview.field(
-		'featureType',
-		'Work item type that plays the Feature, such as Feature, Epic or Product Backlog Item',
-		'The work item type Nightjar reads as a Feature; its children are the Tickets.',
-		'Feature'
-	);
-	const ticketType = await askTicketType(o);
+	const types =
+		o.process === undefined
+			? {
+					featureType: await interview.field(
+						'featureType',
+						FEATURE_TYPE_QUESTION,
+						FEATURE_TYPE_HELP,
+						'Feature'
+					),
+					ticketType: await askTicketType(o)
+				}
+			: await processTypes(o, o.process.types);
+	const { featureType, ticketType } = types;
 	return {
 		section: {
 			type: 'azure-devops',
@@ -454,15 +517,22 @@ async function askAllowed(o: Answering, suggested: readonly string[]): Promise<s
 	return [...new Set([...picked, ...splitCommands(more)])];
 }
 
-// The Tracker, then the Code host, which is guessed to be on the Tracker's own service.
+// The Tracker, then the Code host. An Azure DevOps origin says where both are; else the Code host is guessed to be on the Tracker's own service.
 async function askPair(o: InitOptions, fromOrigin: string | null) {
-	const tracker = await section(o, 'tracker', fromOrigin, { kind: 'github' });
+	const azure: SectionGuess | undefined =
+		o.azure === undefined ? undefined : { kind: 'azure-devops', ...o.azure };
+	const tracker = await section(o, 'tracker', fromOrigin, azure ?? { kind: 'github' });
 	const kind = tracker.section.type as Kind;
-	const codeHost = await section(o, 'codeHost', fromOrigin, {
-		kind: kind === 'module' ? 'github' : kind,
-		...(tracker.organization === undefined ? {} : { organization: tracker.organization }),
-		...(tracker.project === undefined ? {} : { project: tracker.project })
-	});
+	const codeHost = await section(
+		o,
+		'codeHost',
+		fromOrigin,
+		azure ?? {
+			kind: kind === 'module' ? 'github' : kind,
+			...(tracker.organization === undefined ? {} : { organization: tracker.organization }),
+			...(tracker.project === undefined ? {} : { project: tracker.project })
+		}
+	);
 	return { tracker: tracker.section, codeHost: codeHost.section };
 }
 
@@ -478,6 +548,37 @@ async function knownPair(o: InitOptions, fromOrigin: string | null): Promise<Con
 		if (fault instanceof Refusal) return null;
 		throw fault;
 	}
+}
+
+// Where an Azure DevOps origin sets up Boards and Azure Repos, the options with the types the Tracker project's process names; else as they are.
+async function readProcess(o: InitOptions, known: Config | null): Promise<InitOptions> {
+	if (o.azure === undefined || known === null) return o;
+	const { tracker, codeHost } = known;
+	if (tracker.type !== 'azure-devops' || codeHost.type !== 'azure-devops') return o;
+	// flags that name both types leave nothing to read
+	if (o.flags.has('tracker-feature-type') && o.flags.has('tracker-ticket-type'))
+		return { ...o, process: { types: null } };
+	const { organization, project } = tracker;
+	const where = `${organization}/${project}`;
+	try {
+		const api = openAzureDevOps(organization, o.root, o.env, undefined, o.request);
+		const { name, types } = await projectProcess(api, project);
+		if (types === null) {
+			say(
+				`the process of ${where}, ${name}, is not Agile, Scrum, Basic or CMMI and inherits from none, so its work item types cannot be guessed`
+			);
+		}
+		return { ...o, process: { types } };
+	} catch (fault) {
+		say(`could not read the process of ${where}: ${why(fault)}`);
+		return { ...o, process: { types: null } };
+	}
+}
+
+// A process that names no types leaves its two questions, asked first; the answers are then guesses like the rest.
+async function askUnguessedTypes(o: InitOptions): Promise<InitOptions> {
+	if (o.process === undefined || o.process.types !== null) return o;
+	return { ...o, process: { types: await processTypes(o, null) } };
 }
 
 // The commands offered to the Coding agent: the check, then the tools the repo's files name.
@@ -528,7 +629,7 @@ async function interview(
 }
 
 // The setup taken from origin and the repo's files, asking for the check alone, and only when the repo names none or several.
-async function guessAnswers(o: InitOptions, fromOrigin: string): Promise<Answers> {
+async function guessAnswers(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
 	const pair = await askPair({ ...o, yes: true }, fromOrigin);
 	const found = detectChecks(o.root);
 	const only = found.length === 1 && !o.flags.has('check') ? found[0] : undefined;
@@ -729,13 +830,14 @@ async function settleByAnswers(o: InitOptions, fromOrigin: string | null): Promi
 	return (await confirm(o)) ? answers : declined();
 }
 
-// A person at a terminal says yes or no to what was guessed from a GitHub origin; on no, and where the pair is not GitHub's, each question is asked first.
+// A person at a terminal says yes or no to what was guessed from origin; on no, and where the pair is not the one origin's service gives, each question is asked first.
 async function settleAtTerminal(
-	o: InitOptions,
+	given: InitOptions,
 	prompter: Prompter,
 	fromOrigin: string | null,
 	known: Config | null
 ): Promise<Settled> {
+	let o = given;
 	const propose = async (answers: Answers, onNo: string) => {
 		if (stopsAt(await checkLogins(checkOptions(o), answers.parsed))) return 2;
 		printTerminalSummary(o, answers.parsed, fromOrigin, {
@@ -748,7 +850,10 @@ async function settleAtTerminal(
 		return orCancel(await prompter.confirm(question, true), question) ? answers : 'no';
 	};
 	let guessedCheck: string | undefined;
-	if (fromOrigin !== null && known?.tracker.type === 'github' && known.codeHost.type === 'github') {
+	const onGitHub =
+		fromOrigin !== null && known?.tracker.type === 'github' && known.codeHost.type === 'github';
+	if (onGitHub || o.process !== undefined) {
+		o = await askUnguessedTypes(o);
 		const guessed = await guessAnswers(o, fromOrigin);
 		const got = await propose(guessed, 'No asks each question, with these as the defaults.');
 		if (got !== 'no') return got;
@@ -802,12 +907,20 @@ async function showDryRun(
 	return 0;
 }
 
-export async function runInit(o: InitOptions): Promise<number> {
-	const file = join(o.root, CONFIG_FILE);
+export async function runInit(given: InitOptions): Promise<number> {
+	const file = join(given.root, CONFIG_FILE);
 	const wrote = !existsSync(file);
-	const fromOrigin = await origin(o.root, o.env);
-	const known = wrote ? await knownPair(o, fromOrigin) : null;
-	if (stopsAt(await checkPrerequisites(checkOptions(o), wrote ? known : CONFIG_FILE))) return 2;
+	const url = await originUrl(given.root, given.env);
+	const fromOrigin = url === null ? null : repoFromRemote(url);
+	// piped answers come in the order asked, so an Azure DevOps origin changes no default of theirs
+	const guesses = given.yes || given.dryRun || given.prompter !== undefined;
+	const azure = guesses && url !== null ? azureRepoFromRemote(url) : null;
+	const located = azure === null ? given : { ...given, azure };
+	const known = wrote ? await knownPair(located, fromOrigin) : null;
+	if (stopsAt(await checkPrerequisites(checkOptions(located), wrote ? known : CONFIG_FILE)))
+		return 2;
+	// read only now that the sign-in is checked
+	const o = await readProcess(located, known);
 	if (o.dryRun) return showDryRun(o, fromOrigin, wrote, known);
 	// a person at a terminal, as against piped answers and --yes
 	const terminal = o.yes ? undefined : o.prompter;

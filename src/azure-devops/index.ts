@@ -21,6 +21,8 @@ export {
 	type AzureDevOpsSignIn
 } from './sign-in.js';
 export { AzureBoardsTracker, type AzureBoardsSettings } from './tracker.js';
+export { azureRepoFromRemote, type AzureRepo } from './remote.js';
+export { projectProcess, type ProjectProcess, type WorkItemTypes } from './process.js';
 
 export {
 	AzureReposCodeHost,

@@ -168,6 +168,16 @@ interface Repository {
 	readonly name: string;
 }
 
+export type SystemProcess = 'Agile' | 'Scrum' | 'Basic' | 'CMMI';
+
+// The project's process: a system one, one that inherits from a system one, or one uploaded as XML.
+export type FakeProcess =
+	| { readonly system: SystemProcess }
+	| { readonly inherited: string; readonly from: SystemProcess }
+	| { readonly custom: string };
+
+const SYSTEM_PROCESSES: readonly SystemProcess[] = ['Agile', 'Scrum', 'Basic', 'CMMI'];
+
 export interface Asked {
 	readonly method: AzureDevOpsCall['method'];
 	readonly url: string;
@@ -228,6 +238,8 @@ export class FakeAzureDevOps {
 	private readonly statuses = new Map<number, StoredStatus[]>();
 	private readonly policies = new Map<number, NewPolicy[]>();
 	private readonly builds = new Map<number, StoredBuild>();
+	// Agile, as a new project has it, until a spec sets another
+	process: FakeProcess = { system: 'Agile' };
 
 	// What Azure Repos says of `mergeStatus` on a pull request: conflicts, succeeded, queued, notSet, rejectedByPolicy or failure.
 	setMergeStatus(pullRequestId: number, status: string): void {
@@ -587,6 +599,16 @@ export class FakeAzureDevOps {
 			if (call.method === 'GET') return this.comments(id, url.searchParams);
 			if (call.method === 'POST') return this.addComment(id, url.searchParams, body);
 		}
+		const named = `${org}/_apis/projects/${encodeURIComponent(this.project)}`;
+		if (call.method === 'GET' && path === named) {
+			this.query(url, { 'api-version': API, includeCapabilities: 'true' });
+			return this.renderProject();
+		}
+		const process = new RegExp(`^${org}/_apis/work/processes/([^/]+)$`).exec(path);
+		if (call.method === 'GET' && process) {
+			this.query(url, { 'api-version': API });
+			return this.renderProcess(process[1] ?? '');
+		}
 		const repos = this.reposAnswer(url, call, body, project);
 		if (repos !== null) return repos;
 		if (call.method === 'GET' && path === `${project}/_apis/policy/evaluations`) {
@@ -779,6 +801,35 @@ export class FakeAzureDevOps {
 		}
 		const who = { name: 'Test', email: 'test@example.com', date: found.date };
 		return json(200, { commitId: found.sha, author: who, committer: who, comment: found.message });
+	}
+
+	private renderProject(): AzureDevOpsReply {
+		const own = this.process;
+		const templateName =
+			'system' in own ? own.system : 'inherited' in own ? own.inherited : own.custom;
+		const processTemplate = { templateName, templateTypeId: processId(own) };
+		return json(200, { id: PROJECT_ID, name: this.project, capabilities: { processTemplate } });
+	}
+
+	// A process by id: the project's own, or a system one.
+	private renderProcess(id: string): AzureDevOpsReply {
+		const own = this.process;
+		const system = SYSTEM_PROCESSES.find((name) => processId({ system: name }) === id);
+		const found: FakeProcess | null =
+			system !== undefined ? { system } : processId(own) === id ? own : null;
+		if (found === null) return refusal(404, `VS402805: Cannot find process ${id}.`);
+		const none = '00000000-0000-0000-0000-000000000000';
+		const shown =
+			'system' in found
+				? { name: found.system, customizationType: 'system', parentProcessTypeId: none }
+				: 'inherited' in found
+					? {
+							name: found.inherited,
+							customizationType: 'inherited',
+							parentProcessTypeId: processId({ system: found.from })
+						}
+					: { name: found.custom, customizationType: 'custom', parentProcessTypeId: none };
+		return json(200, { typeId: id, ...shown });
 	}
 
 	// The policy evaluations on a pull request, named as Azure Repos names its code review.
@@ -1379,6 +1430,9 @@ const CONTRIBUTORS = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-1-contr
 const TEAM = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-2-team';
 const READERS = 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-3-readers';
 const PROJECT_ID = guid(4000);
+// a system process has an id of its own in every organization; any other has this fake's one
+const processId = (of: FakeProcess) =>
+	guid('system' in of ? 4100 + SYSTEM_PROCESSES.indexOf(of.system) : 4200);
 // the policy types, the same in every organization
 const POLICY_TYPES = {
 	build: '0609b952-1397-4640-95ec-e00a01b2c241',
