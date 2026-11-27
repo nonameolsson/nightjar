@@ -1,4 +1,5 @@
 // `nightjar doctor` by its output, over a machine of stand-ins for gh, az and claude.
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -110,6 +111,14 @@ describe('nightjar doctor', () => {
 		const said = err.join('\n');
 		expect(said).toMatch(/FAIL {2}Tracker: gh is not on the PATH.*https:\/\/cli\.github\.com/);
 		expect(said).toMatch(/FAIL {2}claude: claude is not on the PATH.*https:\/\/claude\.com/);
+	});
+
+	it('fails a checkout with no origin, which no build could fetch from', async () => {
+		m = machine();
+		m.writeConfig(GITHUB);
+		spawnSync('git', ['remote', 'remove', 'origin'], { cwd: m.root, env: m.env });
+		expect(await start()).toBe(2);
+		expect(err.join('\n')).toMatch(/FAIL {2}git origin: .*git remote add origin/);
 	});
 
 	it('does not ask a signed-in claude when the person chose the API key', async () => {

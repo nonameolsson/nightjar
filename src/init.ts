@@ -1,11 +1,18 @@
-// `nightjar init`: a repo with a factory.json is not asked again; else it asks, offering what the repo holds, and shows what it will write before it writes.
+// `nightjar init`: checks the machine first. A repo with a factory.json is not asked again; else it asks, offering what the repo holds, and shows what it will write before it writes.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { z } from 'zod';
 import { askOnStdin, type Ask } from './ask.js';
 import type { AzureDevOpsRequest } from './azure-devops/index.js';
 import { runCheck } from './check.js';
-import { checkMachine, Refusal } from './checks.js';
+import {
+	checkLogins,
+	checkMachine,
+	checkPrerequisites,
+	Refusal,
+	type CheckOptions,
+	type Line
+} from './checks.js';
 import { CONFIG_FILE, ConfigError, ConfigSchema, loadConfig, type Config } from './config.js';
 import { detectChecks, detectTools, type Detected } from './detect-check.js';
 import { dryRunReady, failures, printLines } from './doctor.js';
@@ -433,7 +440,8 @@ async function askAllowed(o: Answering, suggested: readonly string[]): Promise<s
 	return [...new Set([...picked, ...splitCommands(more)])];
 }
 
-async function interview(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
+// The Tracker, then the Code host, which is guessed to be on the Tracker's own service.
+async function askPair(o: InitOptions, fromOrigin: string | null) {
 	const tracker = await section(o, 'tracker', fromOrigin, { kind: 'github' });
 	const kind = tracker.section.type as Kind;
 	const codeHost = await section(o, 'codeHost', fromOrigin, {
@@ -441,14 +449,32 @@ async function interview(o: InitOptions, fromOrigin: string | null): Promise<Ans
 		...(tracker.organization === undefined ? {} : { organization: tracker.organization }),
 		...(tracker.project === undefined ? {} : { project: tracker.project })
 	});
+	return { tracker: tracker.section, codeHost: codeHost.section };
+}
+
+// The pair init knows before it asks anything: what --yes would take from the flags and origin; null when only a question or a flag can tell.
+async function knownPair(o: InitOptions, fromOrigin: string | null): Promise<Config | null> {
+	try {
+		const pair = await askPair({ ...o, yes: true }, fromOrigin);
+		// the logins read the pair alone, so the check stands in for the one asked later
+		const parsed = ConfigSchema.safeParse({ ...pair, check: 'true', allowedCommands: [] });
+		return parsed.success ? parsed.data : null;
+	} catch (fault) {
+		// the interview refuses the same value again, after the machine is checked
+		if (fault instanceof Refusal) return null;
+		throw fault;
+	}
+}
+
+async function interview(o: InitOptions, fromOrigin: string | null): Promise<Answers> {
+	const pair = await askPair(o, fromOrigin);
 	const check = await askCheck(o);
 	warnIfNeverFails(check);
 	const suggested = [...new Set([check, ...detectTools(o.root).map((d) => d.command)])];
 	const allowedCommands = await askAllowed(o, suggested);
 	const config = {
 		$schema: SCHEMA_URL,
-		tracker: tracker.section,
-		codeHost: codeHost.section,
+		...pair,
 		check,
 		allowedCommands
 	};
@@ -538,15 +564,40 @@ async function reportCheck(o: InitOptions): Promise<void> {
 const README_CONFIG = 'https://github.com/nonameolsson/nightjar#configure-factoryjson';
 const OPTIONAL_SETTINGS = `optional settings, left out by init: setup, ports, trusted, rules, model, review and workflows; see ${README_CONFIG}`;
 
+const checkOptions = (o: InitOptions): Omit<CheckOptions, 'failFast'> => ({
+	os: o.os,
+	useApiKey: o.useApiKey,
+	...(o.profile === undefined ? {} : { profile: o.profile }),
+	env: o.env,
+	cwd: o.root,
+	...(o.request === undefined ? {} : { request: o.request }),
+	...(o.gh === undefined ? {} : { gh: o.gh })
+});
+
+const problemCount = (count: number) => (count === 1 ? '1 problem' : `${String(count)} problems`);
+
+// Lists each check that failed, with its fix; true when one did, and init is to write nothing.
+function stopsAt(lines: readonly Line[]): boolean {
+	const failed = lines.filter((l) => l.status === 'fail');
+	if (failed.length === 0) return false;
+	printLines(failed);
+	console.error(
+		`nightjar: ${problemCount(failed.length)} above, and nothing was written; fix it, then run \`nightjar init\` again.`
+	);
+	return true;
+}
+
 export async function runInit(o: InitOptions): Promise<number> {
 	const file = join(o.root, CONFIG_FILE);
 	const wrote = !existsSync(file);
+	const fromOrigin = await origin(o.root, o.env);
+	const pair = wrote ? await knownPair(o, fromOrigin) : CONFIG_FILE;
+	if (stopsAt(await checkPrerequisites(checkOptions(o), pair))) return 2;
 	if (!wrote) {
-		loadConfig(o.root);
 		say(`${CONFIG_FILE} is there already; keeping it`);
 	} else {
-		const fromOrigin = await origin(o.root, o.env);
 		const answers = await interview(o, fromOrigin);
+		if (stopsAt(await checkLogins(checkOptions(o), answers.parsed))) return 2;
 		printSummary(o, answers, fromOrigin);
 		if (!(await confirm(o))) {
 			say(`wrote nothing; run \`nightjar init\` again to start over`);
@@ -559,16 +610,7 @@ export async function runInit(o: InitOptions): Promise<number> {
 	if (!ignoresFactory(o.root))
 		say('add `.factory/` to .gitignore: Nightjar keeps its status and logs there');
 
-	const checked = await checkMachine({
-		os: o.os,
-		useApiKey: o.useApiKey,
-		...(o.profile === undefined ? {} : { profile: o.profile }),
-		env: o.env,
-		cwd: o.root,
-		failFast: false,
-		...(o.request === undefined ? {} : { request: o.request }),
-		...(o.gh === undefined ? {} : { gh: o.gh })
-	});
+	const checked = await checkMachine({ ...checkOptions(o), failFast: false });
 	printLines(checked.lines);
 	let problems = failures(checked.lines);
 	if (checked.adapters !== null && checked.trackerOk) {
@@ -586,8 +628,9 @@ export async function runInit(o: InitOptions): Promise<number> {
 	// a kept file's check was reported when it was written, and a re-run after a login fix needs none
 	if (wrote) await reportCheck(o);
 	if (problems > 0) {
-		const count = problems === 1 ? '1 problem' : `${String(problems)} problems`;
-		console.error(`nightjar: ${count} above; fix it, then run \`nightjar init\` again.`);
+		console.error(
+			`nightjar: ${problemCount(problems)} above; fix it, then run \`nightjar init\` again.`
+		);
 		return 2;
 	}
 	say(`ready. Commit ${CONFIG_FILE}, then:`);
@@ -711,12 +754,9 @@ export async function runInitCommand(argv: readonly string[], host: InitHost): P
 	const asker = host.ask === undefined && !yes && prompter === undefined ? askOnStdin() : null;
 	try {
 		const top = await run('git', ['rev-parse', '--show-toplevel'], host.cwd, env);
-		if (!top.ok) {
-			console.error('nightjar: not inside a git checkout; run init at the root of the repo.');
-			return 2;
-		}
 		return await runInit({
-			root: top.out.trim(),
+			// outside a checkout the machine check refuses, and lists that with whatever else is missing
+			root: top.ok ? top.out.trim() : host.cwd,
 			env,
 			os: host.os,
 			useApiKey: parsed.useApiKey,

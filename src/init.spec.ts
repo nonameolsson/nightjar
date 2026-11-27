@@ -1,4 +1,5 @@
 // `nightjar init` over a machine of stand-ins and scripted answers, so it needs no terminal.
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,16 +37,22 @@ afterEach(() => {
 });
 
 // The answers in order; once they run out the input has ended.
-function init(answers: string[], env: Record<string, string> = {}, argv: string[] = ['init']) {
+function init(
+	answers: string[],
+	env: Record<string, string> = {},
+	argv: string[] = ['init'],
+	// a machine without gh has none to answer, so `realGh` leaves the fake GitHub out
+	over: { kernel?: string; cwd?: string; realGh?: boolean } = {}
+) {
 	const left = [...answers];
 	const ado = new FakeAzureDevOps('contoso', 'Fabrikam', 'ann@contoso.com');
 	ado.repository('fabrikam-app');
 	return runNightjar(argv, {
-		os: { platform: 'linux', kernel: '' },
-		cwd: m.root,
+		os: { platform: 'linux', kernel: over.kernel ?? '' },
+		cwd: over.cwd ?? m.root,
 		env: { ...m.env, ...env },
 		request: ado.request,
-		gh: github.gh,
+		...(over.realGh === true ? {} : { gh: github.gh }),
 		ask: (question) => {
 			asked.push(question);
 			const next = left.shift() ?? null;
@@ -56,6 +63,172 @@ function init(answers: string[], env: Record<string, string> = {}, argv: string[
 }
 
 const written = () => join(m.root, 'factory.json');
+
+// A module Tracker that has every method, and answers only who is signed in.
+function writeTrackerModule() {
+	const methods = [
+		'me',
+		'assignedFeatures',
+		'feature',
+		'standing',
+		'tickets',
+		'comments',
+		'addSignal',
+		'removeSignal',
+		'comment',
+		'reference'
+	];
+	const body = methods
+		.map((name) => (name === 'me' ? "me: async () => 'zed'" : `${name}: () => {}`))
+		.join(', ');
+	writeFileSync(join(m.root, 'tracker.mjs'), `export const createTracker = () => ({ ${body} });`);
+}
+
+describe('nightjar init checks the machine before it writes', () => {
+	const lacking = (without: Parameters<typeof machine>[0]) => {
+		m.remove();
+		m = machine(without);
+	};
+	const failed = () => err.filter((l) => l.startsWith('  FAIL  '));
+	const expectNothingDone = () => {
+		expect(asked).toEqual([]);
+		expect(existsSync(written())).toBe(false);
+		expect(existsSync(join(m.root, '.gitignore'))).toBe(false);
+		expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+	};
+
+	it.each([
+		['with piped answers', ['init']],
+		['under --yes', ['init', '--yes', '--check', 'make check']],
+		['under --yes with a value missing', ['init', '--yes']]
+	])('lists every failing check with its fix, and writes nothing, %s', async (_how, argv) => {
+		lacking(['bwrap', 'socat']);
+		github.signOut();
+		const env = { ANTHROPIC_API_KEY: 'sk-test', FAKE_CLAUDE_SIGNED_OUT: '1' };
+		expect(await init(['github', '', 'github', '', 'make check', '', ''], env, argv)).toBe(2);
+		const said = failed().join('\n');
+		expect(said).toMatch(/FAIL {2}API key: .*Unset it, or pass --use-api-key/);
+		expect(said).toMatch(/FAIL {2}sandbox: bubblewrap and socat .*sudo apt-get install/);
+		expect(said).toMatch(/FAIL {2}Tracker: .*run `gh auth login`/);
+		expect(said).toMatch(/FAIL {2}Code host: .*run `gh auth login`/);
+		expect(said).toMatch(/FAIL {2}claude: .*not signed in.*type \/login/);
+		expect(failed()).toHaveLength(5);
+		expect(err.at(-1)).toBe(
+			'nightjar: 5 problems above, and nothing was written; fix it, then run `nightjar init` again.'
+		);
+		expectNothingDone();
+	});
+
+	it('puts no prompt on a terminal', async () => {
+		lacking(['bwrap']);
+		const prompted = () => Promise.reject(new Error('a prompt was shown'));
+		const code = await runNightjar(['init'], {
+			os: { platform: 'linux', kernel: '' },
+			cwd: m.root,
+			env: m.env,
+			gh: github.gh,
+			prompter: {
+				text: prompted,
+				select: prompted,
+				multiselect: prompted,
+				confirm: prompted,
+				note: () => {
+					throw new Error('a note was shown');
+				}
+			}
+		});
+		expect(code).toBe(2);
+		expect(failed()).toHaveLength(1);
+		expectNothingDone();
+	});
+
+	it('says where to get gh and claude when they are not installed', async () => {
+		lacking(['gh', 'claude']);
+		expect(await init([], {}, ['init'], { realGh: true })).toBe(2);
+		const said = failed().join('\n');
+		expect(said).toMatch(/FAIL {2}Tracker: gh is not on the PATH.*https:\/\/cli\.github\.com/);
+		expect(said).toMatch(/FAIL {2}claude: claude is not on the PATH.*https:\/\/claude\.com/);
+		expectNothingDone();
+	});
+
+	it('stops on WSL1, which cannot sandbox', async () => {
+		expect(await init([], {}, ['init'], { kernel: '4.4.0-19041-Microsoft' })).toBe(2);
+		expect(failed().join('\n')).toMatch(/FAIL {2}sandbox: .*move the distribution to WSL2/);
+		expectNothingDone();
+	});
+
+	it('stops in a checkout with no origin, and says how to add one', async () => {
+		spawnSync('git', ['remote', 'remove', 'origin'], { cwd: m.root, env: m.env });
+		expect(await init([])).toBe(2);
+		expect(failed().join('\n')).toMatch(/FAIL {2}git origin: .*git remote add origin/);
+		expectNothingDone();
+	});
+
+	it('lists a missing checkout with whatever else is missing', async () => {
+		const code = await init([], { FAKE_CLAUDE_SIGNED_OUT: '1' }, ['init'], { cwd: m.base });
+		expect(code).toBe(2);
+		const said = failed().join('\n');
+		expect(said).toMatch(/FAIL {2}git checkout: not inside a git checkout; run Nightjar in/);
+		expect(said).toMatch(/FAIL {2}claude: .*not signed in/);
+		expectNothingDone();
+	});
+
+	it('says to install git when there is none', async () => {
+		expect(await init([], { PATH: join(m.base, 'nothing') })).toBe(2);
+		expect(failed().join('\n')).toMatch(/FAIL {2}git checkout: git is not on the PATH\. Install/);
+		expectNothingDone();
+	});
+
+	it('checks the logins of the pair its flags name, under --yes', async () => {
+		const argv = ['init', '--yes', '--check', 'make check', '--tracker', 'azure-devops'];
+		const where = ['--tracker-organization', 'contoso', '--tracker-project', 'Fabrikam'];
+		const repo = ['--code-host-repo', 'fabrikam-app'];
+		const env = { FAKE_AZ_SIGNED_OUT: '1' };
+		expect(await init([], env, [...argv, ...where, ...repo])).toBe(2);
+		const said = failed().join('\n');
+		expect(said).toMatch(/FAIL {2}Tracker: .*az login/);
+		expect(said).toMatch(/FAIL {2}Code host: .*az login/);
+		expectNothingDone();
+	});
+
+	it.each([
+		['a new repo', false],
+		['a repo that has a factory.json', true]
+	])('reports what doctor reports on the same machine, in %s', async (_where, kept) => {
+		lacking(['bwrap']);
+		github.signOut();
+		const env = { FAKE_CLAUDE_SIGNED_OUT: '1' };
+		const config = {
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: []
+		};
+		if (kept) m.writeConfig(config);
+		expect(await init([], env)).toBe(2);
+		const fromInit = failed();
+		expect(fromInit).toHaveLength(4);
+		err.length = 0;
+		m.writeConfig(config);
+		expect(await init([], env, ['doctor'])).toBe(2);
+		expect(failed()).toEqual(fromInit);
+	});
+
+	it('keeps a factory.json and creates no label when a check fails', async () => {
+		m.writeConfig({
+			tracker: { type: 'github' },
+			codeHost: { type: 'github' },
+			check: 'make check',
+			allowedCommands: []
+		});
+		const before = readFileSync(written(), 'utf8');
+		expect(await init([], { FAKE_CLAUDE_SIGNED_OUT: '1' })).toBe(2);
+		expect(failed().join('\n')).toMatch(/FAIL {2}claude: .*not signed in/);
+		expect(readFileSync(written(), 'utf8')).toBe(before);
+		expect(github.repoLabelNames()).toEqual([]);
+		expect(out.join('\n')).not.toContain('keeping it');
+	});
+});
 
 describe('nightjar init on GitHub', () => {
 	it('writes a factory.json that passes the schema, from the answers', async () => {
@@ -110,22 +283,6 @@ describe('nightjar init on GitHub', () => {
 		expect(out).toContain(
 			`  ok    claude: 2.1.314 (Claude Code), ann@x.io, Acme, max plan, claude.ai login, config ${m.env.HOME}/.claude`
 		);
-	});
-
-	it('says how to fix a login that is missing, and creates no label with it', async () => {
-		github.signOut();
-		const code = await init(['github', '', 'github', '', 'make check', '', ''], {
-			FAKE_CLAUDE_SIGNED_OUT: '1'
-		});
-		expect(code).toBe(2);
-		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*run `gh auth login`/);
-		expect(err.join('\n')).toMatch(
-			/FAIL {2}claude: .*not signed in.*type \/login, or pass another --profile/
-		);
-		expect(out.join('\n')).toContain('Signal labels not created');
-		expect(github.repoLabelNames()).toEqual([]);
-		// the file is written all the same, and init can be run again
-		expect(existsSync(written())).toBe(true);
 	});
 
 	it('says what to do when the labels cannot be created', async () => {
@@ -293,7 +450,8 @@ describe('nightjar init on Azure DevOps', () => {
 		expect(out).toContain(
 			'nightjar: Azure DevOps shows Signals as tags, which appear on first use: there is nothing to create.'
 		);
-		expect(github.calls).toEqual([]);
+		// the gh login origin points to is read before the first question; nothing is made there
+		expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
 		expect(out).toContain(
 			'  ok    Tracker: Azure DevOps as ann@contoso.com on contoso/Fabrikam, Azure Repos contoso/Fabrikam/fabrikam-app'
 		);
@@ -305,30 +463,18 @@ describe('nightjar init on Azure DevOps', () => {
 		expect(JSON.stringify(m.readConfig())).not.toContain('ticketType');
 	});
 
-	it('says to run az login when the Azure CLI is signed out', async () => {
+	it('checks the logins of the pair the answers choose before it writes', async () => {
 		expect(await init(answers, { FAKE_AZ_SIGNED_OUT: '1' })).toBe(2);
 		expect(err.join('\n')).toMatch(/FAIL {2}Tracker: .*az login/);
+		expect(err.at(-1)).toContain('nothing was written');
+		expect(out.join('\n')).not.toContain('this is what init will do');
+		expect(existsSync(written())).toBe(false);
 	});
 });
 
 describe('nightjar init with a module', () => {
 	it('asks for the module path, and leaves the Signals to it', async () => {
-		const methods = [
-			'me',
-			'assignedFeatures',
-			'feature',
-			'standing',
-			'tickets',
-			'comments',
-			'addSignal',
-			'removeSignal',
-			'comment',
-			'reference'
-		];
-		const body = methods
-			.map((name) => (name === 'me' ? "me: async () => 'zed'" : `${name}: () => {}`))
-			.join(', ');
-		writeFileSync(join(m.root, 'tracker.mjs'), `export const createTracker = () => ({ ${body} });`);
+		writeTrackerModule();
 		await init(['module', './tracker.mjs', 'github', '', 'make check', '', '']);
 		expect(m.readConfig()).toMatchObject({ tracker: { type: 'module', path: './tracker.mjs' } });
 		expect(out).toContain(
@@ -371,8 +517,8 @@ describe('nightjar init explains each prompt', () => {
 	});
 
 	it('prints help before the module path prompt', async () => {
-		writeFileSync(join(m.root, 'tracker.mjs'), 'export const createTracker = () => ({});');
-		await init(['module', './tracker.mjs', 'github', '', 'make check', '', '']);
+		writeTrackerModule();
+		await init(['module', './tracker.mjs', 'github', '', 'make check', '', 'y', 'n']);
 		expect(promptsOnly().join('\n')).toMatchSnapshot();
 	});
 
@@ -435,10 +581,10 @@ describe('nightjar init shows what it will do, and asks before it writes', () =>
 		expect(shown).toContain('    claude, billing ANTHROPIC_API_KEY');
 	});
 
-	it('writes nothing, creates no label and checks no login on no', async () => {
+	it('writes nothing and creates no label on no', async () => {
 		expect(await init(['github', '', 'github', '', 'make check', '', 'n'])).toBe(1);
 		expect(existsSync(written())).toBe(false);
-		expect(m.calls('gh')).not.toContain('POST');
+		expect(github.calls.filter((c) => c.method !== 'GET')).toEqual([]);
 		expect(out).toContain('nightjar: wrote nothing; run `nightjar init` again to start over');
 		expect(out.join('\n')).not.toContain('Tracker: gh as');
 	});

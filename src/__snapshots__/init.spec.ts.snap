@@ -79,5 +79,7 @@ Command that checks the work, run after each Ticket (? for more): make check
   A pattern ends in \`*\` to take any arguments. Examples: \`make lint *\`, \`npm test\`.
 Commands the Coding agent may run, separated by commas, or none (? for more) [make check]: 
   Any answer can be edited later in factory.json.
-Write factory.json and go on, y or n [y]: "
+Write factory.json and go on, y or n [y]: y
+  Doctor reads the Tracker and lists the Features it would build; it changes nothing.
+Run \`nightjar doctor\` now, y or n [y]: n"
 `;

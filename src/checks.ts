@@ -1,4 +1,4 @@
-// `doctor` and `init` run every check and list each; a build stops at the first that fails. Each failure says how to fix it.
+// `doctor` and `init` run their checks and list each failure; a build stops at the first. Each failure says how to fix it.
 import { join } from 'node:path';
 import { makeAdapters, type Adapters } from './adapters.js';
 import { accountLine, parseAccount, profileEnv } from './account.js';
@@ -97,13 +97,6 @@ const check = checksOver<Found, CheckOptions>();
 const sessionEnv = (o: CheckOptions, person: PersonConfig | undefined) =>
 	profileEnv(o.profile ?? person?.profile, o.env);
 
-async function need(command: string, args: readonly string[], cwd: string, env: Env, what: string) {
-	const got = await run(command, args, cwd, env);
-	if (got.missing) throw new Refusal(`${command} is not on the PATH.`);
-	if (!got.ok) throw new Refusal(`${what}: ${firstLine(got.err) || firstLine(got.out)}`);
-	return got.out.trim();
-}
-
 async function claudeVersion(root: string, env: Env, useApiKey: boolean) {
 	const got = await run('claude', ['--version'], root, env);
 	if (got.missing) {
@@ -153,7 +146,9 @@ const nodeCheck = check({
 	run: () => {
 		const node = process.versions.node;
 		if (Number(node.split('.')[0]) < 24) {
-			throw new Refusal(`Node 24 or later is needed, and this is ${node}.`);
+			throw new Refusal(
+				`Node 24 or later is needed, and this is ${node}. Install it from https://nodejs.org/ or with your version manager.`
+			);
 		}
 		return { detail: node, summary: `Node ${node}` };
 	}
@@ -174,14 +169,34 @@ const checkoutCheck = check({
 	name: 'git checkout',
 	needs: [],
 	run: async (_found, o) => {
-		const root = await need(
-			'git',
-			['rev-parse', '--show-toplevel'],
-			o.cwd,
-			o.env,
-			'not inside a git checkout'
-		);
+		const got = await run('git', ['rev-parse', '--show-toplevel'], o.cwd, o.env);
+		if (got.missing) {
+			throw new Refusal(
+				'git is not on the PATH. Install it from https://git-scm.com/downloads, then run again.'
+			);
+		}
+		if (!got.ok) {
+			throw new Refusal(
+				`not inside a git checkout; run Nightjar in the repo it is to build (${firstLine(got.err) || firstLine(got.out)})`
+			);
+		}
+		const root = got.out.trim();
 		return { found: { root }, detail: root, summary: null };
+	}
+});
+
+// every build fetches its base branch from origin; it says no line when there is one
+const originCheck = check({
+	name: 'git origin',
+	needs: ['root'],
+	run: async ({ root }, o) => {
+		const got = await run('git', ['remote', 'get-url', 'origin'], root, o.env);
+		if (!got.ok) {
+			throw new Refusal(
+				"this checkout has no remote named origin, which every build fetches from; add it with `git remote add origin <URL of the Code host's repo>`."
+			);
+		}
+		return {};
 	}
 });
 
@@ -369,12 +384,13 @@ export const leftWorkingCheck = check({
 	}
 });
 
+// runs outside a checkout too, so a machine missing both hears of both at once
 const claudeCheck = check({
 	name: 'claude',
-	needs: ['root'],
+	needs: [],
 	run: async ({ root, person }, o) => {
 		const { version, detail, login } = await claudeVersion(
-			root,
+			root ?? o.cwd,
 			sessionEnv(o, person),
 			o.useApiKey
 		);
@@ -539,6 +555,7 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	nodeCheck,
 	sandboxCheck,
 	checkoutCheck,
+	originCheck,
 	factoryCheck,
 	personCheck,
 	adaptersCheck,
@@ -553,6 +570,46 @@ export const CHECKS: readonly Check<Found, CheckOptions>[] = [
 	workflowsCheck,
 	sourcesCheck
 ];
+
+// what reaches the Tracker and the Code host with the person's logins
+const LOGINS: readonly Check<Found, CheckOptions>[] = [adaptersCheck, trackerCheck, codeHostCheck];
+
+// those of CHECKS that no build goes without, which init runs before it asks or writes anything
+const PREREQUISITES = new Set<Check<Found, CheckOptions>>([
+	apiKeyCheck,
+	nodeCheck,
+	sandboxCheck,
+	checkoutCheck,
+	originCheck,
+	factoryCheck,
+	personCheck,
+	...LOGINS,
+	claudeCheck
+]);
+
+// a config init has not written yet, as the checks after factory.json read it
+const unwritten = (config: Config): Partial<Found> => ({ loaded: { config, rules: null } });
+
+// The prerequisites, with the logins of `pair`: the repo's own factory.json, one init may write, or null while it knows none.
+export async function checkPrerequisites(
+	o: Omit<CheckOptions, 'failFast'>,
+	pair: 'factory.json' | Config | null
+): Promise<readonly Line[]> {
+	const checks = CHECKS.filter(
+		(c) => PREREQUISITES.has(c) && (pair === 'factory.json' || c !== factoryCheck)
+	);
+	const given = pair === 'factory.json' || pair === null ? {} : unwritten(pair);
+	return (await runChecks(checks, { ...o, failFast: false }, false, given)).lines;
+}
+
+// The logins alone, for the pair the answers chose, which may be another than the one checked before them.
+export async function checkLogins(
+	o: Omit<CheckOptions, 'failFast'>,
+	pair: Config
+): Promise<readonly Line[]> {
+	const checks = [checkoutCheck, ...LOGINS];
+	return (await runChecks(checks, { ...o, failFast: false }, false, unwritten(pair))).lines;
+}
 
 export async function checkMachine(o: CheckOptions): Promise<Checked> {
 	const { lines, found, failed } = await runChecks(CHECKS, o, o.failFast);

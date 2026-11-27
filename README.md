@@ -71,6 +71,8 @@ In the repo you want built, run:
 nightjar init
 ```
 
+Before it asks or writes anything, `init` checks this machine with `doctor`'s own checks: the platform, the sandbox, Node, `ANTHROPIC_API_KEY` without `--use-api-key`, a git checkout with an `origin`, `claude` installed and signed in, and the logins of the Tracker and Code host that your flags and a GitHub `origin` name. It lists every check that fails with how to fix it, writes nothing and exits 2. When your answers choose the Tracker and Code host, it checks their logins too, before it writes.
+
 It asks for:
 
 - the Tracker: `github`, `azure-devops` or `module` (your own, see [Another Tracker or Code host](#another-tracker-or-code-host)), and what that one needs: the `owner/name` repo on GitHub (it offers the one `origin` names), the organization, project and Feature type on Azure DevOps (and the type of a Ticket, which `nightjar create` needs), or the module's path;
@@ -82,7 +84,7 @@ Each question prints a line of help, and `?` prints more. Before it writes, `ini
 
 - **on GitHub** creates the Signal labels (`factory-go`, `ready-for-agent`, `agent-working`, `needs-info`, `ready-for-human`, or the names `factory.json` gives them), leaving any that exist as they are;
 - **on Azure DevOps** says tags appear on first use, so there is nothing to create;
-- checks every login it needs and says how to fix each one that is missing: `gh auth login`, `az login` or a token in `AZURE_DEVOPS_EXT_PAT`, and `claude auth login`;
+- lists every check `doctor` makes, now with that file, so commit signing, Workflows and Sources are checked too;
 - runs the check once on this checkout and says whether it passes: one that fails now will stop every Ticket.
 
 It ends with the next step, run `nightjar doctor`, then assign a Feature to yourself and give it the Go, and offers to run `doctor` straight away.
@@ -95,7 +97,7 @@ nightjar init --yes --check 'make check' --tracker azure-devops --tracker-organi
   --tracker-project Fabrikam --code-host-repo fabrikam-app
 ```
 
-Each answer has its flag: `--check`, `--allowed-commands` (comma separated, or `none`), `--tracker` and `--code-host` (the type), and a field of either, as `--tracker-` or `--code-host-` then the field: `repo`, `organization`, `project`, `path`, and on the Tracker `feature-type` and `ticket-type`. Under `--yes`, a value with no default and no flag stops `init` before it writes anything, naming the flag to pass. If `factory.json` is already there, `init` keeps it, asks nothing, runs no check, and only creates the labels and checks the logins: run it that way after you have fixed a login, or when you join a repo that has one.
+Each answer has its flag: `--check`, `--allowed-commands` (comma separated, or `none`), `--tracker` and `--code-host` (the type), and a field of either, as `--tracker-` or `--code-host-` then the field: `repo`, `organization`, `project`, `path`, and on the Tracker `feature-type` and `ticket-type`. Under `--yes`, a value with no default and no flag stops `init` before it writes anything, naming the flag to pass. If `factory.json` is already there, `init` checks the machine first, with the logins that file names, then keeps it, asks nothing, does not run your check command, and only creates the labels and lists the checks: run it that way when you join a repo that has one.
 
 ## Configure: `factory.json`
 
