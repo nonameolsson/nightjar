@@ -441,6 +441,36 @@ describe('nightjar ui page', () => {
 		expect(page).toContain('$1.50');
 	});
 
+	it('shows a Conflict fix while it runs, and what it has cost so far', async () => {
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/r',
+			feature: '272',
+			ticket: null,
+			branch: 'b',
+			step: 'conflicts',
+			session: 'sess',
+			costUsd: 1.25,
+			outcome: 'conflicts 1'
+		});
+		status().doing({
+			kind: 'building',
+			feature: '272',
+			title: 'Custom views',
+			ticket: null,
+			step: 'conflicts',
+			round: 1,
+			rounds: 3,
+			session: 'sess',
+			startedAt: '2026-10-30T06:48:00.000Z'
+		});
+		await open();
+		const page = (await get('/')).text;
+		expect(page).toContain('Conflict fix, round 1 of 3');
+		expect(page).not.toContain('>conflicts<');
+		expect(page).toContain('$1.25');
+	});
+
 	it("counts the Feature's elapsed time from its start, not the step's", async () => {
 		status().doing({
 			kind: 'building',

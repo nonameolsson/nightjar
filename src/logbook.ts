@@ -74,6 +74,15 @@ const DecisionSchema = z.discriminatedUnion('kind', [
 		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped', 'diverged', 'faulted']),
 		why: z.string().optional()
 	}),
+	// Conflict fix `round` of `rounds` on the draft pull request, its merge stopped on the files `conflicting` (none for a merge with no conflict), ending as a Pull-check fix round does
+	z.object({
+		kind: z.literal('conflictFix'),
+		round: z.number(),
+		rounds: z.number(),
+		conflicting: z.array(z.string()),
+		end: z.enum(['pushed', 'gaveUp', 'paused', 'stopped', 'diverged', 'faulted']),
+		why: z.string().optional()
+	}),
 	// the Feature was made by the Source `source` through `nightjar intake`; `key` is what the Source calls the event, when it has one
 	z.object({ kind: z.literal('madeBySource'), source: z.string(), key: z.string().optional() }),
 	// the Source's event came again while the Feature was open, and intake said so on it: the count of events since its last comment

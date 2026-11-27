@@ -114,6 +114,14 @@ describe('readyToPublish', () => {
 		expect(readyToPublish(none, at(NO_CHECKS_WAIT_MS / 60_000))).toBe(true);
 	});
 
+	it('waits on a draft the Code host says conflicts while the Conflict fix is on, and only then', () => {
+		const on = { conflicts: true };
+		expect(readyToPublish(draft({ conflicts: 'yes' }), at(1), on)).toBe(false);
+		expect(readyToPublish(draft({ conflicts: 'no' }), at(1), on)).toBe(true);
+		expect(readyToPublish(draft({ conflicts: 'unknown' }), at(1), on)).toBe(true);
+		expect(readyToPublish(draft({ conflicts: 'yes' }), at(1))).toBe(true);
+	});
+
 	it('is never ready again once Nightjar published it', () => {
 		const published = draft();
 		expect(readyToPublish({ ...published, body: markPublished(published.body) }, at(1))).toBe(

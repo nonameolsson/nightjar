@@ -19,6 +19,7 @@ const EntrySchema = z.looseObject({
 		'review',
 		'step',
 		'pullChecks',
+		'conflicts',
 		'feedback',
 		'reviewRound',
 		'retro'

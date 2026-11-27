@@ -1,15 +1,16 @@
 // The build loop: one Feature from the Go to a draft pull request, through the Tracker and Code host seams alone.
-import type { RunCheck } from './check.js';
+import type { CheckResult, RunCheck } from './check.js';
 import type { CodeHost, NightjarDraft, Pull } from './code-host.js';
 import {
 	envOf,
 	resetOf,
 	type BuildOutcome,
 	type CodingAgent,
+	type Fixing,
 	type FixOutcome,
 	type ReviewOutcome
 } from './coding-agent.js';
-import { DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
+import { DEFAULT_CONFLICTS, DEFAULT_PULL_CHECKS, DEFAULT_REVIEW_FIX_ROUNDS } from './config.js';
 import {
 	BuildFault,
 	passingFault,
@@ -34,7 +35,14 @@ import type { Env } from './git.js';
 import { noteFor, type Logbook, type Note } from './logbook.js';
 import { DEFAULT_DAILY_USD } from './person-config.js';
 import { buildOrder, nextTicket, progress, waiting, type Waiting } from './plan.js';
-import { conflicts, withConflicts, withoutConflicts } from './conflicts-section.js';
+import {
+	conflicts,
+	type ConflictFix,
+	hasConflictFixes,
+	withConflictFix,
+	withConflicts,
+	withoutConflicts
+} from './conflicts-section.js';
 import { why } from './say.js';
 import { failingLine, withPullRound, type PullRound } from './pull-checks-section.js';
 import {
@@ -50,6 +58,7 @@ import type { Serve } from './serve.js';
 import type { Failure } from './session.js';
 import { NOTES_FOLDER } from './settings.js';
 import {
+	conflictsStep,
 	draftStep,
 	featureAfterRunStep,
 	featureStopStep,
@@ -129,6 +138,11 @@ export interface Limits {
 	// the most one Pull-check fix round may cost and run, its check's fix rounds too
 	readonly pullFixUsd: number;
 	readonly pullFixMinutes: number;
+	// how many Conflict fixes one pull request may get, counted from its branch's trailers
+	readonly conflictFixRounds: number;
+	// the most one Conflict fix may cost and run, its check's fix rounds too
+	readonly conflictFixUsd: number;
+	readonly conflictFixMinutes: number;
 }
 
 export const LIMITS: Limits = {
@@ -141,11 +155,14 @@ export const LIMITS: Limits = {
 	dailyUsd: DEFAULT_DAILY_USD,
 	pullFixRounds: DEFAULT_PULL_CHECKS.fixRounds,
 	pullFixUsd: DEFAULT_PULL_CHECKS.fixUsd,
-	pullFixMinutes: DEFAULT_PULL_CHECKS.fixMinutes
+	pullFixMinutes: DEFAULT_PULL_CHECKS.fixMinutes,
+	conflictFixRounds: DEFAULT_CONFLICTS.fixRounds,
+	conflictFixUsd: DEFAULT_CONFLICTS.fixUsd,
+	conflictFixMinutes: DEFAULT_CONFLICTS.fixMinutes
 };
 
-// What factory.json's pullChecks says of the pass's limits.
-interface PullFixSettings {
+// What factory.json's pullChecks, or its conflicts block, says of a pass's limits.
+interface FixSettings {
 	readonly fixRounds?: number | undefined;
 	readonly fixUsd?: number | undefined;
 	readonly fixMinutes?: number | undefined;
@@ -153,12 +170,23 @@ interface PullFixSettings {
 
 // The Pull-check limits factory.json sets, each one it leaves out at its default.
 export function pullFixLimits(
-	pullChecks: PullFixSettings | undefined
+	pullChecks: FixSettings | undefined
 ): Pick<Limits, 'pullFixRounds' | 'pullFixUsd' | 'pullFixMinutes'> {
 	return {
 		pullFixRounds: pullChecks?.fixRounds ?? LIMITS.pullFixRounds,
 		pullFixUsd: pullChecks?.fixUsd ?? LIMITS.pullFixUsd,
 		pullFixMinutes: pullChecks?.fixMinutes ?? LIMITS.pullFixMinutes
+	};
+}
+
+// The Conflict fix limits factory.json's conflicts block sets, each one it leaves out at its default.
+export function conflictFixLimits(
+	conflicts: FixSettings | undefined
+): Pick<Limits, 'conflictFixRounds' | 'conflictFixUsd' | 'conflictFixMinutes'> {
+	return {
+		conflictFixRounds: conflicts?.fixRounds ?? LIMITS.conflictFixRounds,
+		conflictFixUsd: conflicts?.fixUsd ?? LIMITS.conflictFixUsd,
+		conflictFixMinutes: conflicts?.fixMinutes ?? LIMITS.conflictFixMinutes
 	};
 }
 
@@ -259,7 +287,8 @@ const allowanceOf =
 const hash = (id: ItemId) => `#${id}`;
 
 // The kind of work a Session's cost is split under in the pull request; a Step's fix rounds belong to 'steps', a Feedback round's to 'feedback', a Review round's to 'reviewRound'.
-type Work = 'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'feedback' | 'reviewRound';
+type Work =
+	'build' | 'fix' | 'steps' | 'review' | 'pullChecks' | 'conflicts' | 'feedback' | 'reviewRound';
 
 // What this run spent on one kind of work, after one Ticket or, with no Ticket, after all of them.
 interface Cost {
@@ -1398,7 +1427,7 @@ class FeatureRun {
 			})
 		});
 		const pull = await this.openDraft(body);
-		await noteConflicts(this.deps, this.setup, pull, body);
+		await noteConflicts(this.deps, this.setup, pull, body, featureBase(this.feature, this.setup));
 		// a lone issue is its own Ticket, so it is named once
 		const linked = [...new Set([...(complete ? [id] : []), ...done.map((t) => t.id)])];
 		await codeHost.placeReferences(
@@ -1882,31 +1911,35 @@ async function fixUntilGreen(ctx: FixContext, o: FixWork): Promise<FixEnd> {
 const minutesLeft = (now: () => Date, deadline: number | undefined) =>
 	deadline === undefined ? undefined : (deadline - now().getTime()) / 60_000;
 
-// A draft pull request the revisit pass takes: red, finished, unengaged, and on a Feature of the person's that holds no Signal.
-export interface RedDraft {
+// A draft pull request a revisit pass takes: unengaged, and on a Feature of the person's that holds no Signal.
+export interface RevisitedDraft {
 	readonly draft: NightjarDraft;
 	// the Feature its body's marker names
 	readonly feature: ItemId;
 }
 
-export type PullFixOutcome =
-	// a green fix pushed to the branch as its `round`th Pull-check fix, which cost `usd`
-	| {
+// One the Pull-check pass takes: its Pull checks finished, and one red.
+export type RedDraft = RevisitedDraft;
+
+// How a revisit pass's fix ended, whichever pass it is; `Pushed` and `GaveUp` are what one pass adds to its own pushed and given-up ends.
+type RevisitOutcome<Pushed extends object, GaveUp extends object> =
+	// a green fix pushed to the branch as its `round`th, which cost `usd`
+	| ({
 			readonly kind: 'fixed';
 			readonly pull: Pull;
 			readonly round: number;
 			readonly summary: string;
 			readonly usd: number;
-	  }
+	  } & Pushed)
 	// nothing pushed: the work, if any, is kept on an attempt branch, and the Feature is handed to a person
-	| {
+	| ({
 			readonly kind: 'gaveUp';
 			readonly pull: Pull;
 			readonly round: number;
 			readonly why: string;
 			readonly usd: number;
-	  }
-	// the pull request has had its `rounds` fix rounds: no Session, and the Feature is handed to a person
+	  } & GaveUp)
+	// the pull request has had its `rounds` fixes: no Session, and the Feature is handed to a person
 	| { readonly kind: 'atLimit'; readonly pull: Pull; readonly rounds: number }
 	// a green fix whose push was rejected because a person pushed to the branch: it waits on `side`, and the Feature is handed to a person
 	| {
@@ -1930,64 +1963,54 @@ export type PullFixOutcome =
 	| ({ readonly kind: 'paused' } & Pause)
 	| { readonly kind: 'stopped' };
 
-// How a Pull-check fix round that ran ended: the outcomes that are not about a round that never began.
-type PullFixRound = Exclude<PullFixOutcome, { readonly kind: 'atLimit' | 'skipped' }>;
+export type PullFixOutcome = RevisitOutcome<object, object>;
 
-// One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
-// A fault that escapes it is thrown as a BuildFault that names the round.
-export async function fixPullChecks(
-	deps: Deps,
-	setup: Setup,
-	red: RedDraft
-): Promise<PullFixOutcome> {
-	const where: { run: FaultRun; note: Note | null } = {
-		run: {
-			place: { kind: 'pullFix', round: null },
-			tickets: [],
-			session: null,
-			pull: red.draft.pull.url
-		},
+// How a fix that ran ended: the outcomes that are not about one that never began.
+type RoundEnd<O> = Exclude<O, { readonly kind: 'atLimit' | 'skipped' }>;
+
+type PullFixRound = RoundEnd<PullFixOutcome>;
+
+// Where a revisit pass's fix is, for a fault that escapes it: what the run names, and the Feature's Logbook once it is open.
+interface Where {
+	run: FaultRun;
+	note: Note | null;
+}
+
+// One fix of a revisit pass; a fault that escapes it is thrown as a BuildFault that names the fix, and its round once counted.
+async function revisiting<O>(
+	kind: 'pullFix' | 'conflictFix',
+	{ draft }: RevisitedDraft,
+	fix: (where: Where) => Promise<O>
+): Promise<O> {
+	const where: Where = {
+		run: { place: { kind, round: null }, tickets: [], session: null, pull: draft.pull.url },
 		note: null
 	};
 	try {
-		return await fixRedDraft(deps, setup, red, where);
+		return await fix(where);
 	} catch (fault) {
 		throw faultAt(fault, where.run, where.note);
 	}
+}
+
+// One Pull-check fix round on a red draft pull request: a Session that resumes the head commit's, or a new one where this machine lacks it, the repo's check with the usual fix rounds, and a new commit pushed only when it is green. No review and no Step runs after it.
+// A fault that escapes it is thrown as a BuildFault that names the round.
+export function fixPullChecks(deps: Deps, setup: Setup, red: RedDraft): Promise<PullFixOutcome> {
+	return revisiting('pullFix', red, (where) => fixRedDraft(deps, setup, red, where));
 }
 
 async function fixRedDraft(
 	deps: Deps,
 	setup: Setup,
 	red: RedDraft,
-	where: { run: FaultRun; note: Note | null }
+	where: Where
 ): Promise<PullFixOutcome> {
-	const { tracker } = deps;
 	const { draft } = red;
 	const { pull } = draft;
-	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
-	if (day !== null) return { kind: 'paused', why: day };
-	const feature = await tracker.feature(red.feature);
-	const note = noteFor(deps.logbook, feature.id, deps.now);
-	where.note = note;
-	const signals = signalsOf(tracker, feature.id, note);
-	const base = baseOf(feature.body);
-	const tree = await deps.openWorktree(
-		setup.root,
-		setup.worktrees,
-		draft.branch,
-		base !== null && 'branch' in base ? base.branch : setup.baseBranch,
-		setup.env
-	);
-	const skip = (why: string): PullFixOutcome => {
-		deps.say(`${pull.url}: left alone, ${why}`);
-		return { kind: 'skipped', why };
-	};
-	if (!(await tree.toRemote())) return skip('its branch here holds commits the Code host lacks');
+	const opened = await openRevisit(deps, setup, red, where);
+	if (opened.kind !== 'open') return opened;
+	const { feature, note, signals, tree } = opened;
 	const trailers = await tree.headTrailers();
-	if (![...trailers.keys()].some((k) => k.startsWith(TRAILER_PREFIX))) {
-		return skip("its head commit is not Nightjar's");
-	}
 	const headSession = trailers.get(SESSION_TRAILER);
 	// counted from the branch, so neither a new run nor taking needs a person off resets it
 	const used = await tree.pullFixes();
@@ -1995,7 +2018,7 @@ async function fixRedDraft(
 	if (used >= rounds) {
 		const why = `it has had its ${String(rounds)} Pull-check fix round${rounds === 1 ? '' : 's'}`;
 		deps.say(`${hash(feature.id)}: the Pull checks of ${pull.url} fail, and ${why}`);
-		await handOver(
+		await handOverPullChecks(
 			deps,
 			setup,
 			{ feature, note, signals, built: await tree.built(), session: headSession ?? null },
@@ -2021,18 +2044,22 @@ async function fixRedDraft(
 	await signals.on('working');
 	let got: PullFixRound;
 	try {
-		got = await pullFixRound(deps, setup, { feature, tree, draft, session, round, note, signals });
+		got = await pullFixRound(deps, setup, {
+			feature,
+			tree,
+			pull,
+			draft,
+			session,
+			round,
+			note,
+			signals
+		});
 		note({
 			kind: 'pullFix',
 			round,
 			rounds: setup.limits.pullFixRounds,
 			failing: draft.checks.failed.map((f) => ({ check: f.check, job: f.job, step: f.step })),
-			end: pullFixEnd(got),
-			...(got.kind === 'gaveUp' || got.kind === 'paused' ? { why: got.why } : {}),
-			...(got.kind === 'diverged'
-				? { why: `a person pushed to the branch first; the fix is kept on ${got.side}` }
-				: {}),
-			...(got.kind === 'faulted' ? { why: why(got.fault) } : {}),
+			...revisitEnd(got),
 			session: session.id
 		});
 		// a push that faulted ends the round as any fault does: in the Logbook with its stack, naming the round for the hand-back
@@ -2043,11 +2070,11 @@ async function fixRedDraft(
 		if (got.kind === 'fixed') {
 			const body = ran({ outcome: 'pushed', summary: got.summary, usd: got.usd });
 			await deps.codeHost.editBody(pull, body);
-			await noteConflicts(deps, setup, pull, body);
+			await noteConflicts(deps, setup, pull, body, featureBase(feature, setup));
 		} else if (got.kind === 'gaveUp') {
 			const why = `Pull-check fix ${String(round)} gave up: ${got.why}`;
 			const body = ran({ outcome: 'gave up', summary: `It gave up: ${got.why}.`, usd: got.usd });
-			await handOver(
+			await handOverPullChecks(
 				deps,
 				setup,
 				{ feature, note, signals, built: await tree.built(), session: session.id },
@@ -2062,38 +2089,45 @@ async function fixRedDraft(
 	return got;
 }
 
-// How a Pull-check fix round that ran ended, as its Logbook entry says.
-function pullFixEnd(got: PullFixRound) {
+// How a revisit pass's fix that ran ended, as its Logbook entry says, with why for one that stopped short of a push.
+function revisitEnd(got: RoundEnd<RevisitOutcome<object, object>>) {
 	switch (got.kind) {
 		case 'fixed':
-			return 'pushed';
+			return { end: 'pushed' as const };
 		case 'gaveUp':
-			return 'gaveUp';
+			return { end: 'gaveUp' as const, why: got.why };
 		case 'paused':
-			return 'paused';
+			return { end: 'paused' as const, why: got.why };
 		case 'stopped':
-			return 'stopped';
+			return { end: 'stopped' as const };
 		case 'diverged':
-			return 'diverged';
+			return {
+				end: 'diverged' as const,
+				why: `a person pushed to the branch first; the fix is kept on ${got.side}`
+			};
 		case 'faulted':
-			return 'faulted';
+			return { end: 'faulted' as const, why: why(got.fault) };
 	}
 }
 
-// Says in the pull request body whether it conflicts with the base branch: the section is added when it does and dropped when it does not. Nothing else happens, no Signal and no comment.
-async function noteConflicts(deps: Deps, setup: Setup, pull: Pull, body: string): Promise<void> {
+// Says in the pull request body whether it conflicts with `base`, the branch its Feature is built on: the section is added when it does and dropped when it does not. Nothing else happens, no Signal and no comment.
+async function noteConflicts(
+	deps: Deps,
+	setup: Setup,
+	pull: Pull,
+	body: string,
+	base: string
+): Promise<void> {
 	const { codeHost } = deps;
 	let conflicting: boolean;
 	try {
 		conflicting = await conflicts(codeHost, pull, deps.sleep, setup.signal);
 	} catch (fault) {
 		// the note is advice for a reviewer, so a read that fails leaves the body as it is and never stops the build
-		deps.say(
-			`could not read whether ${pull.url} conflicts with ${setup.baseBranch}: ${why(fault)}`
-		);
+		deps.say(`could not read whether ${pull.url} conflicts with ${base}: ${why(fault)}`);
 		return;
 	}
-	const wanted = conflicting ? withConflicts(body, setup.baseBranch) : withoutConflicts(body);
+	const wanted = conflicting ? withConflicts(body, base) : withoutConflicts(body);
 	if (wanted !== body) await codeHost.editBody(pull, wanted);
 }
 
@@ -2109,83 +2143,223 @@ export function markHandedOver(body: string): string {
 	return handedOver(body) ? body : `${body}\n\n${HANDED_OVER}`;
 }
 
-// The Feature is a person's now: needs a person on it, a comment naming the pull request and its failing Pull checks, the Status note saying Waiting on you, and a mark in the body so the pass leaves it alone once the Signal comes off.
+const CONFLICTS_HANDED_OVER = '<!-- nightjar-conflicts: handed to a person -->';
+
+// Whether the Conflict fix pass handed this pull request to a person, which keeps that pass off it; the Pull-check pass reads its own mark. A normal build rewrites the body, and so takes the mark off.
+export function conflictsHandedOver(body: string): boolean {
+	return body.includes(CONFLICTS_HANDED_OVER);
+}
+
+// The body with the hidden mark that the Conflict fix pass handed the pull request to a person.
+export function markConflictsHandedOver(body: string): string {
+	return conflictsHandedOver(body) ? body : `${body}\n\n${CONFLICTS_HANDED_OVER}`;
+}
+
+// A Feature a revisit pass hands to a person, and what its Status note shows.
+interface HandingOver {
+	readonly feature: Feature;
+	readonly note: Note;
+	readonly signals: FeatureSignals;
+	// the Tickets the branch built
+	readonly built: ReadonlySet<ItemId>;
+	// the Session the round ran in, when one did
+	readonly session: string | null;
+}
+
+// What a person handed a pull request is told: `why` is what the Logbook and the run say; the comment pointing at the pull request, and at its `section` when one holds the full report.
+interface HandOverAsk {
+	readonly why: string;
+	readonly sentence: string;
+	readonly cause: string;
+	readonly section?: string;
+	readonly next: NextStep;
+}
+
+// The Feature is a person's now: needs a person on it, a comment saying why and naming the pull request, the Status note saying Waiting on you, and the body as given, which carries the pass's mark so it leaves the pull request alone once the Signal comes off, under the same headline.
 async function handOver(
 	deps: Deps,
-	setup: Setup,
-	of: {
-		readonly feature: Feature;
-		readonly note: Note;
-		readonly signals: FeatureSignals;
-		// the Tickets the branch built
-		readonly built: ReadonlySet<ItemId>;
-		// the Session the round ran in, when one did
-		readonly session: string | null;
-	},
-	draft: NightjarDraft,
-	why: string,
-	// the pull request body as it is to stay, before the mark
+	of: HandingOver,
+	pull: Pull,
+	ask: HandOverAsk,
+	// the pull request body as it is to stay, its mark in it
 	body: string
 ): Promise<void> {
 	const { feature, note, signals } = of;
-	const { pull } = draft;
+	const { why, sentence, cause, section, next } = ask;
 	note({ kind: 'handed', to: 'human', why });
 	await signals.on('human');
-	const failing = draft.checks.failed.map(failingLine);
 	const tickets = await deps.tracker.tickets(feature.id);
-	const sentence = `Nightjar could not make the Pull checks of its pull request green: ${why}.`;
 	await askAPerson(deps, feature, {
 		ask: {
 			sentence,
-			cause: `Failing Pull checks:\n\n${failing.join('\n')}`,
-			// the pull request body holds each round and the checks it left failing
-			pull: { url: pull.url, section: 'Pull checks' },
-			next: pullChecksStep(setup.signals)
+			cause,
+			pull: section === undefined ? { url: pull.url } : { url: pull.url, section },
+			next
 		},
 		tickets: noteTickets(feature, tickets, of.built),
 		session: of.session
 	});
 	// the body says what the Status note now says
-	await deps.codeHost.editBody(
-		pull,
-		withHeadline(markHandedOver(body), headline('waiting', sentence))
-	);
+	await deps.codeHost.editBody(pull, withHeadline(body, headline('waiting', sentence)));
 	deps.say(`${hash(feature.id)}: handed to a person, ${why}`);
+}
+
+// A red draft handed to a person: the comment names its failing Pull checks, and the body holds each round in its Pull checks section.
+function handOverPullChecks(
+	deps: Deps,
+	setup: Setup,
+	of: HandingOver,
+	draft: NightjarDraft,
+	why: string,
+	// the pull request body as it is to stay, before the mark
+	body: string
+): Promise<void> {
+	const failing = draft.checks.failed.map(failingLine);
+	return handOver(
+		deps,
+		of,
+		draft.pull,
+		{
+			why,
+			sentence: `Nightjar could not make the Pull checks of its pull request green: ${why}.`,
+			cause: `Failing Pull checks:\n\n${failing.join('\n')}`,
+			section: 'Pull checks',
+			next: pullChecksStep(setup.signals)
+		},
+		markHandedOver(body)
+	);
+}
+
+// A conflicting draft handed to a person: the comment names the files the merge stopped on and the side branch what the Conflict fix tried is kept on, and points to the Conflicts section when the body holds a Conflict fix.
+function handOverConflicts(
+	deps: Deps,
+	setup: Setup,
+	of: HandingOver & { readonly base: string },
+	pull: Pull,
+	why: string,
+	tried: { readonly files: readonly string[]; readonly side: string | null },
+	// the pull request body as it is to stay, before the mark
+	body: string
+): Promise<void> {
+	const code = (s: string) => `\`${s}\``;
+	const cause = [
+		tried.files.length === 0
+			? `The merge of ${code(of.base)} had no conflict to resolve.`
+			: `The merge of ${code(of.base)} stopped on conflicts in ${tried.files.map(code).join(', ')}.`,
+		...(tried.side === null
+			? []
+			: [
+					`What the Conflict fix tried is kept on ${code(tried.side)}, a local branch in the checkout Nightjar runs in.`
+				])
+	].join(' ');
+	return handOver(
+		deps,
+		of,
+		pull,
+		{
+			why,
+			sentence: `Nightjar could not resolve the conflicts of its pull request with ${code(of.base)}: ${why}.`,
+			cause,
+			...(hasConflictFixes(body) ? { section: 'Conflicts' } : {}),
+			next: conflictsStep(setup.signals, of.base)
+		},
+		markConflictsHandedOver(body)
+	);
 }
 
 // The Session a Pull-check fix round runs in: the head commit's, resumed, or a new one when this machine has none.
 type PullFixSession = { readonly kind: 'resume' | 'fresh'; readonly id: string };
 
-async function pullFixRound(
+// The branch a Feature is built on: the one its **Base:** line names, else the base branch.
+function featureBase(feature: Feature, setup: Setup): string {
+	const base = baseOf(feature.body);
+	return base !== null && 'branch' in base ? base.branch : setup.baseBranch;
+}
+
+// The worktree of a draft's branch, on the base its Feature is built on.
+function openDraft(deps: Deps, setup: Setup, feature: Feature, draft: NightjarDraft) {
+	return deps.openWorktree(
+		setup.root,
+		setup.worktrees,
+		draft.branch,
+		featureBase(feature, setup),
+		setup.env
+	);
+}
+
+// A draft a revisit pass leaves alone after all, said so.
+function leftAlone(deps: Deps, pull: Pull, why: string) {
+	deps.say(`${pull.url}: left alone, ${why}`);
+	return { kind: 'skipped' as const, why };
+}
+
+// A revisit pass's fix as it opens: the Feature with its Logbook and Signals, and the worktree of the draft's branch moved on to the remote's. Or why it goes no further: the day has spent its limit, or the draft is left alone, as one whose branch here holds commits the Code host lacks or whose head commit is not Nightjar's.
+async function openRevisit(
 	deps: Deps,
 	setup: Setup,
-	o: {
-		feature: Feature;
-		tree: Worktree;
-		draft: NightjarDraft;
-		session: PullFixSession;
-		round: number;
-		note: Note;
-		signals: FeatureSignals;
+	{ draft, feature: id }: RevisitedDraft,
+	where: Where
+): Promise<
+	| ({ readonly kind: 'paused' } & Pause)
+	| { readonly kind: 'skipped'; readonly why: string }
+	| {
+			readonly kind: 'open';
+			readonly feature: Feature;
+			readonly note: Note;
+			readonly signals: FeatureSignals;
+			readonly tree: Worktree;
+	  }
+> {
+	const day = deps.spend.dayOver(deps.now(), setup.limits.dailyUsd);
+	if (day !== null) return { kind: 'paused', why: day };
+	const feature = await deps.tracker.feature(id);
+	const note = noteFor(deps.logbook, feature.id, deps.now);
+	where.note = note;
+	const signals = signalsOf(deps.tracker, feature.id, note);
+	const tree = await openDraft(deps, setup, feature, draft);
+	if (!(await tree.toRemote())) {
+		return leftAlone(deps, draft.pull, 'its branch here holds commits the Code host lacks');
 	}
-): Promise<PullFixRound> {
-	const { feature, note, tree, draft, round } = o;
-	const session = o.session.id;
-	const { pull } = draft;
+	const trailers = await tree.headTrailers();
+	if (![...trailers.keys()].some((k) => k.startsWith(TRAILER_PREFIX))) {
+		return leftAlone(deps, draft.pull, "its head commit is not Nightjar's");
+	}
+	return { kind: 'open', feature, note, signals, tree };
+}
+
+// A round of a revisit pass's fix: the Feature, the worktree of its draft's branch, the pull request, and the Session the round runs in.
+interface RevisitRun {
+	readonly feature: Feature;
+	readonly tree: Worktree;
+	readonly pull: Pull;
+	readonly session: string;
+	readonly round: number;
+	readonly note: Note;
+	readonly signals: FeatureSignals;
+}
+
+// What one pass's rounds are: the ledger step they are logged under and shown as, their limits, and the attempt branch a round that does not finish is kept on.
+interface RevisitPass {
+	readonly step: 'pullChecks' | 'conflicts';
+	// how the run names the round, such as "Pull-check fix 1"
+	readonly name: string;
+	readonly rounds: number;
+	readonly cap: number;
+	readonly minutes: number;
+	// what the attempt branch's name ends in, after `-attempt-`
+	readonly attempt: string;
+	readonly carries: 'pullFix' | 'conflictFix';
+}
+
+// What a round of either revisit pass does alike, from its start: it shows itself, its check's fix rounds too, as its pass's round; logs each Session to the ledger under its pass's step; keeps to its pass's dollars and minutes; throws what it left away onto its attempt branch when it does not finish; and pushes a fix that is green and committed.
+async function revisitRound(deps: Deps, setup: Setup, o: RevisitRun, pass: RevisitPass) {
+	const { feature, tree, pull, session, round, note } = o;
+	const { name, cap, minutes } = pass;
 	const show = buildingOf(feature, deps.now);
 	let sessionStartedAt = deps.now();
-	// the whole round, the check's own fix rounds too, shows as the Pull-check fix it is
 	const building = () => {
 		sessionStartedAt = deps.now();
-		deps.status.doing(
-			show({
-				ticket: null,
-				step: 'pullChecks',
-				round,
-				rounds: setup.limits.pullFixRounds,
-				session
-			})
-		);
+		deps.status.doing(show({ ticket: null, step: pass.step, round, rounds: pass.rounds, session }));
 	};
 	const log = (entry: LogEntry) => {
 		const at = deps.now();
@@ -2196,43 +2370,93 @@ async function pullFixRound(
 			branch: tree.at.branch,
 			durationMs: Math.max(0, at.getTime() - sessionStartedAt.getTime()),
 			...entry,
-			step: 'pullChecks'
+			step: pass.step
 		});
 		sessionStartedAt = at;
 	};
-	const name = `Pull-check fix ${String(round)}`;
 	const before = await tree.head();
-	// Takes the branch back to `before`; what the round left is kept on an attempt branch, which the Logbook names with `why`.
+	// Takes the branch back to `before`; what the round left is kept on its attempt branch, which the Logbook names with `why`.
 	const throwAway = async (why: string): Promise<string | null> => {
-		const side = await tree.discard(before, `pull-fix-${String(round)}`);
+		const side = await tree.discard(before, pass.attempt);
 		if (side !== null) note({ kind: 'thrownAway', branch: side, why, session });
 		return side;
 	};
-	const gaveUp = async (why: string, usd: number): Promise<PullFixRound> => {
-		const side = await throwAway(why);
-		deps.say(
-			`${hash(feature.id)}: ${name} gave up: ${why}${side ? `; the attempt is kept on ${side}` : ''}`
-		);
-		return { kind: 'gaveUp', pull, round, why, usd };
-	};
-	const halted = async (halt: Halt): Promise<PullFixRound> => {
-		await throwAway(haltWhy(halt));
-		return halt.kind === 'paused'
-			? { kind: 'paused', why: halt.why, ...resetOf(halt) }
-			: { kind: 'stopped' };
-	};
-
 	building();
-	const { pullFixUsd: cap, pullFixMinutes: minutes } = setup.limits;
 	const deadline = deps.now().getTime() + minutes * 60_000;
-	// why the round stopped short of a green check: one of its own caps, else the fix rounds ran out
-	const stillRed = (spent: number) => {
-		if (!allowanceOf(deps)(cap, spent).enough) {
-			return `it reached its cap of ${dollars(cap)}`;
+	return {
+		log,
+		// The round given up, what it left thrown away; the attempt branch that keeps it, if any, is in the end.
+		gaveUp: async (why: string, usd: number) => {
+			const side = await throwAway(why);
+			deps.say(
+				`${hash(feature.id)}: ${name} gave up: ${why}${side === null ? '' : `; the attempt is kept on ${side}`}`
+			);
+			return { kind: 'gaveUp' as const, pull, round, why, usd, side };
+		},
+		// The round a pause or a person stopped, what it left thrown away.
+		halted: async (halt: Halt) => {
+			await throwAway(haltWhy(halt));
+			return halt.kind === 'paused'
+				? { kind: 'paused' as const, why: halt.why, ...resetOf(halt) }
+				: { kind: 'stopped' as const };
+		},
+		// The repo's check's usual fix rounds, in the round's Session, within what is left of its dollars and minutes.
+		fixRounds: (spent: number, check: CheckResult, of: Fixing) =>
+			fixUntilGreen(
+				{ deps, setup, tree, building, log: (e) => log(e), note },
+				{ ticket: null, name, sessionId: session, cap, spent, check, of, deadline }
+			),
+		// Why the fix rounds stopped short of a green check: one of the round's own caps, else they ran out.
+		stillRed: (spent: number) => {
+			if (!allowanceOf(deps)(cap, spent).enough) return `it reached its cap of ${dollars(cap)}`;
+			if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
+			return `\`${setup.check}\` still fails after the fix rounds`;
+		},
+		// The green fix, committed, pushed: on the Code host, set aside because a person pushed first, or failed on a fault.
+		push: async (summary: string, usd: number) => {
+			const of = { feature: feature.id, note, signals: o.signals };
+			const pushed = await pushBranch(deps, setup, tree, of, pass.carries);
+			if (pushed.kind === 'diverged') {
+				return { kind: 'diverged' as const, pull, round, side: pushed.side, usd };
+			}
+			if (pushed.kind === 'fault') {
+				const { fault } = pushed;
+				return { kind: 'faulted' as const, pull, round, fault, title: feature.title, usd };
+			}
+			deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
+			return { kind: 'fixed' as const, pull, round, summary, usd };
 		}
-		if (deps.now().getTime() >= deadline) return `it ran past its ${String(minutes)} minutes`;
-		return `\`${setup.check}\` still fails after the fix rounds`;
 	};
+}
+
+type Round = Awaited<ReturnType<typeof revisitRound>>;
+
+async function pullFixRound(
+	deps: Deps,
+	setup: Setup,
+	o: Omit<RevisitRun, 'session'> & {
+		readonly draft: NightjarDraft;
+		readonly session: PullFixSession;
+	}
+): Promise<PullFixRound> {
+	const { feature, tree, draft, round } = o;
+	const session = o.session.id;
+	const { pullFixUsd: cap, pullFixMinutes: minutes } = setup.limits;
+	// the whole round, the check's own fix rounds too, shows as the Pull-check fix it is
+	const r = await revisitRound(
+		deps,
+		setup,
+		{ ...o, session },
+		{
+			step: 'pullChecks',
+			name: `Pull-check fix ${String(round)}`,
+			rounds: setup.limits.pullFixRounds,
+			cap,
+			minutes,
+			attempt: `pull-fix-${String(round)}`,
+			carries: 'pullFix'
+		}
+	);
 	// a new Session knows nothing of the work: it is given the Feature and the branch's diff as it stands
 	const fresh =
 		o.session.kind === 'fresh' ? { feature, diff: await tree.diff(DIFF_CHARS) } : undefined;
@@ -2255,68 +2479,275 @@ async function pullFixRound(
 	};
 	switch (got.kind) {
 		case 'paused':
-			log({ ...entry, outcome: `paused: ${got.why}` });
-			return halted(got);
+			r.log({ ...entry, outcome: `paused: ${got.why}` });
+			return r.halted(got);
 		case 'aborted':
-			log({ ...entry, outcome: 'stopped by a person' });
-			return halted(got);
+			r.log({ ...entry, outcome: 'stopped by a person' });
+			return r.halted(got);
 		case 'failed':
-			log({
+			r.log({
 				...entry,
 				outcome: `pull checks ${String(round)} failed: ${got.why}`,
 				failure: got.failure
 			});
-			return gaveUp(got.why, got.costUsd);
+			return r.gaveUp(got.why, got.costUsd);
 		case 'gaveUp':
-			log({ ...entry, outcome: `pull checks ${String(round)} gave up` });
-			return gaveUp('the Session could not fix the Pull checks', got.costUsd);
+			r.log({ ...entry, outcome: `pull checks ${String(round)} gave up` });
+			return r.gaveUp('the Session could not fix the Pull checks', got.costUsd);
 		case 'fixed':
-			log({ ...entry, outcome: `pull checks ${String(round)}` });
+			r.log({ ...entry, outcome: `pull checks ${String(round)}` });
 	}
 	const first = await deps.runCheck(setup.check, tree.at.folder, envOf(setup));
-	const fixed = await fixUntilGreen(
-		{
-			deps,
-			setup,
-			tree,
-			building,
-			log: (e) => log(e),
-			note
-		},
-		{
-			ticket: null,
-			name,
-			sessionId: session,
-			cap,
-			spent: got.costUsd,
-			check: first,
-			of: { kind: 'build' },
-			deadline
-		}
-	);
-	if (fixed.halt !== undefined) return halted(fixed.halt);
-	if (!fixed.check.ok) return gaveUp(stillRed(fixed.spent), fixed.spent);
+	const fixed = await r.fixRounds(got.costUsd, first, { kind: 'build' });
+	if (fixed.halt !== undefined) return r.halted(fixed.halt);
+	if (!fixed.check.ok) return r.gaveUp(r.stillRed(fixed.spent), fixed.spent);
 	const summary = [got.summary, ...fixed.summaries].join('\n\n');
 	if (!(await tree.commitPullFix(round, summary, session))) {
-		return gaveUp('the Session changed no file', fixed.spent);
+		return r.gaveUp('the Session changed no file', fixed.spent);
 	}
-	const of = { feature: feature.id, note: o.note, signals: o.signals };
-	const pushed = await pushBranch(deps, setup, tree, of, 'pullFix');
-	if (pushed.kind === 'diverged') {
-		return { kind: 'diverged', pull, round, side: pushed.side, usd: fixed.spent };
+	return r.push(summary, fixed.spent);
+}
+
+// One the Conflict fix pass takes: the Code host says it conflicts with its base.
+export type ConflictingDraft = RevisitedDraft;
+
+export type ConflictFixOutcome = RevisitOutcome<
+	// the files the Session resolved
+	{ readonly files: readonly string[] },
+	// the merge and what the Session left are kept on the -attempt-conflicts side branch `side`; `conflicting` are the files the merge stopped on
+	{ readonly side: string | null; readonly conflicting: readonly string[] }
+>;
+
+type ConflictFixRound = RoundEnd<ConflictFixOutcome>;
+
+// What a Conflict fix that did not finish is kept on: the Feature's branch with this after `-attempt-`.
+const CONFLICTS_ATTEMPT = 'conflicts';
+
+// One Conflict fix on a draft that conflicts with its base (docs/adr/0011): Nightjar merges the base into the branch, a new Session resolves the conflicts the merge stopped on, or fixes the check that fails on a merge that stopped on none, the repo's check runs with the usual fix rounds in that Session, and one merge commit with a Factory-Conflicts trailer is pushed only when it is green. No Review and no Step runs after it; the pull request body gains the fix's block in its Conflicts section, and that is all.
+// A fault that escapes it is thrown as a BuildFault that names the Conflict fix.
+export function fixConflicts(
+	deps: Deps,
+	setup: Setup,
+	conflicting: ConflictingDraft
+): Promise<ConflictFixOutcome> {
+	return revisiting('conflictFix', conflicting, (where) =>
+		resolveConflicting(deps, setup, conflicting, where)
+	);
+}
+
+async function resolveConflicting(
+	deps: Deps,
+	setup: Setup,
+	conflicting: ConflictingDraft,
+	where: Where
+): Promise<ConflictFixOutcome> {
+	const { draft } = conflicting;
+	const { pull } = draft;
+	const opened = await openRevisit(deps, setup, conflicting, where);
+	if (opened.kind !== 'open') return opened;
+	const { feature, note, signals, tree } = opened;
+	// the Code host's word was stale: there is nothing to merge
+	if (!(await tree.behindBase())) return leftAlone(deps, pull, `its branch holds ${tree.at.base}`);
+	const base = tree.at.base;
+	const handing = (session: string | null) =>
+		tree.built().then((built) => ({ feature, note, signals, built, session, base }));
+	// counted from the branch, so neither a new run nor taking needs a person off resets it
+	const used = await tree.conflictFixes();
+	const rounds = setup.limits.conflictFixRounds;
+	if (used >= rounds) {
+		const why = `it has had its ${String(rounds)} Conflict fix${rounds === 1 ? '' : 'es'}`;
+		deps.say(`${hash(feature.id)}: ${pull.url} conflicts with ${base}, and ${why}`);
+		const trailers = await tree.headTrailers();
+		const of = await handing(trailers.get(SESSION_TRAILER) ?? null);
+		await handOverConflicts(deps, setup, of, pull, why, { files: [], side: null }, draft.body);
+		return { kind: 'atLimit', pull, rounds };
 	}
-	if (pushed.kind === 'fault') {
-		return {
-			kind: 'faulted',
+	const round = used + 1;
+	// a new Session, as the head commit's knows nothing of the base's changes
+	const session = deps.newId();
+	where.run = { ...where.run, place: { kind: 'conflictFix', round }, session };
+	deps.say(
+		`${hash(feature.id)}: ${pull.url} conflicts with ${base}, Conflict fix ${String(round)}`
+	);
+	await signals.on('working');
+	try {
+		const got = await conflictFixRound(deps, setup, {
+			feature,
+			tree,
 			pull,
+			session,
 			round,
-			fault: pushed.fault,
-			title: feature.title,
-			usd: fixed.spent
-		};
+			note,
+			signals
+		});
+		// every Conflict fix that ran says so in the body, the one that gave up too
+		const ran = (
+			f: Pick<ConflictFix, 'outcome' | 'summary' | 'files' | 'usd'>,
+			conflicting: boolean
+		) => withConflictFix(draft.body, featureBase(feature, setup), { round, ...f }, conflicting);
+		if (got.kind === 'fixed') {
+			const body = ran(
+				{ outcome: 'fixed', summary: got.summary, files: got.files, usd: got.usd },
+				false
+			);
+			await deps.codeHost.editBody(pull, body);
+			await noteConflicts(deps, setup, pull, body, featureBase(feature, setup));
+		} else if (got.kind === 'gaveUp') {
+			const why = `Conflict fix ${String(round)} gave up: ${got.why}`;
+			const tried = { files: got.conflicting, side: got.side };
+			const body = ran(
+				{
+					outcome: 'gave up',
+					summary: `It gave up: ${got.why}${got.why.endsWith('.') ? '' : '.'}`,
+					files: got.conflicting,
+					usd: got.usd
+				},
+				true
+			);
+			await handOverConflicts(deps, setup, await handing(session), pull, why, tried, body);
+		}
+		// a push that faulted ends the fix as any fault does: in the Logbook with its stack, naming the fix for the hand-back
+		return got.kind === 'faulted' ? { ...got, fault: faultAt(got.fault, where.run, note) } : got;
+	} finally {
+		await signals.off('working');
 	}
-	deps.say(`${hash(feature.id)}: ${name} pushed to ${pull.url}`);
-	return { kind: 'fixed', pull, round, summary, usd: fixed.spent };
+}
+
+// One Conflict fix from its start: the merge of the base, what came of it, and its Logbook entry.
+async function conflictFixRound(
+	deps: Deps,
+	setup: Setup,
+	o: RevisitRun
+): Promise<ConflictFixRound> {
+	const { round } = o;
+	// the whole Conflict fix, the check's own fix rounds too, shows as the Conflict fix it is
+	const r = await revisitRound(deps, setup, o, {
+		step: 'conflicts',
+		name: `Conflict fix ${String(round)}`,
+		rounds: setup.limits.conflictFixRounds,
+		cap: setup.limits.conflictFixUsd,
+		minutes: setup.limits.conflictFixMinutes,
+		attempt: CONFLICTS_ATTEMPT,
+		carries: 'conflictFix'
+	});
+	const merged = await o.tree.mergeBase();
+	const conflicting = merged.kind === 'conflicts' ? merged.files : [];
+	const got = await resolveMerge(deps, setup, o, r, conflicting);
+	o.note({
+		kind: 'conflictFix',
+		round,
+		rounds: setup.limits.conflictFixRounds,
+		conflicting: [...conflicting],
+		...revisitEnd(got),
+		session: o.session
+	});
+	return got;
+}
+
+// A merge that stopped on the files `conflicting`, or on none, resolved: a new Session for the conflicts, or for a check that fails on a merge with none; the repo's check with the usual fix rounds in that Session; and one merge commit pushed only when it is green and holds no conflict marker.
+async function resolveMerge(
+	deps: Deps,
+	setup: Setup,
+	o: RevisitRun,
+	r: Round,
+	conflicting: readonly string[]
+): Promise<ConflictFixRound> {
+	const { feature, tree, session, round } = o;
+	const { conflictFixUsd: cap, conflictFixMinutes: minutes } = setup.limits;
+	const gaveUp = async (why: string, usd: number): Promise<ConflictFixRound> => ({
+		...(await r.gaveUp(why, usd)),
+		conflicting
+	});
+	// a resolution that leaves a conflict marker in any file it changes resolved nothing there
+	const markers = async (): Promise<string | null> => {
+		const marked = await withMarkers(tree, await tree.changed());
+		return marked.length === 0
+			? null
+			: `it left conflict markers in ${marked.map((f) => `\`${f}\``).join(', ')}`;
+	};
+	const runCheck = () => deps.runCheck(setup.check, tree.at.folder, envOf(setup));
+	const stopped = conflicting.length > 0;
+	// a merge with no conflict to resolve goes straight to the check
+	let first = stopped ? null : await runCheck();
+	let summary = `Merged ${tree.at.base}, which had no conflict to resolve.`;
+	let files: readonly string[] = [];
+	let spent = 0;
+	// a new Session resolves the conflicts the merge stopped on, or fixes a check that fails on a merge with none; the usual fix rounds resume it
+	if (first === null || !first.ok) {
+		if (stopped) deps.say(`${hash(feature.id)}: the merge stopped on ${conflicting.join(', ')}`);
+		const got = await deps.codingAgent.conflicts({
+			kind: 'conflicts',
+			at: tree.at,
+			sessionId: session,
+			feature,
+			files: conflicting,
+			baseCommits: await tree.baseCommits(DIFF_CHARS),
+			...(first === null ? {} : { report: first.tail }),
+			budgetUsd: cap,
+			minutes
+		});
+		const entry = {
+			ticket: null,
+			step: 'conflicts' as const,
+			session,
+			costUsd: got.costUsd,
+			...modelsOf(got)
+		};
+		switch (got.kind) {
+			case 'paused':
+				r.log({ ...entry, outcome: `paused: ${got.why}` });
+				return r.halted(got);
+			case 'aborted':
+				r.log({ ...entry, outcome: STOPPED });
+				return r.halted(got);
+			case 'failed':
+				r.log({
+					...entry,
+					outcome: `conflicts ${String(round)} failed: ${got.why}`,
+					failure: got.failure
+				});
+				return gaveUp(got.why, got.costUsd);
+			case 'blocked':
+				r.log({ ...entry, outcome: `conflicts ${String(round)} blocked` });
+				return gaveUp(`the Session is blocked: ${got.blocker}`, got.costUsd);
+			case 'resolved':
+				r.log({ ...entry, outcome: `conflicts ${String(round)}` });
+				summary = got.summary;
+				files = got.files;
+				spent = got.costUsd;
+		}
+		if (stopped) {
+			if (files.length === 0) return gaveUp('the Session resolved no file', spent);
+			const marked = await markers();
+			if (marked !== null) return gaveUp(marked, spent);
+		}
+		first = await runCheck();
+	}
+	const fixed = await r.fixRounds(spent, first, { kind: 'conflicts' });
+	if (fixed.halt !== undefined) return r.halted(fixed.halt);
+	if (!fixed.check.ok) return gaveUp(r.stillRed(fixed.spent), fixed.spent);
+	// the check's fix rounds may have written a marker back
+	const marked = await markers();
+	if (marked !== null) return gaveUp(marked, fixed.spent);
+	const all = [summary, ...fixed.summaries].join('\n\n');
+	if (!(await tree.commitConflictFix(round, all, session))) {
+		return gaveUp('no merge was left to commit', fixed.spent);
+	}
+	const pushed = await r.push(all, fixed.spent);
+	return pushed.kind === 'fixed' ? { ...pushed, files } : pushed;
+}
+
+// A line git writes to mark a conflict: the start of our side or the end of theirs.
+const CONFLICT_MARKER = /^(?:<{7}|>{7})(?: |$)/m;
+
+// Those of `files` that still hold a conflict marker.
+async function withMarkers(tree: Worktree, files: readonly string[]): Promise<string[]> {
+	const marked: string[] = [];
+	for (const file of files) {
+		const text = await tree.read(file);
+		if (text !== null && CONFLICT_MARKER.test(text)) marked.push(file);
+	}
+	return marked.sort();
 }
 
 // How a push ended: on the Code host; set aside on `side` because a person pushed first; or failed on a fault.
@@ -2325,8 +2756,8 @@ export type PushEnd =
 	| { readonly kind: 'diverged'; readonly side: string }
 	| { readonly kind: 'fault'; readonly fault: unknown };
 
-// What a push carries: on a fault a Pull-check fix is set aside, and a Feedback round's commit too unless an unpushed Ticket's commit lies under it.
-type Carries = 'build' | 'feedbackRound' | 'pullFix';
+// What a push carries: on a fault a Pull-check fix or a Conflict fix is set aside, and a Feedback round's commit too unless an unpushed Ticket's commit lies under it.
+type Carries = 'build' | 'feedbackRound' | 'pullFix' | 'conflictFix';
 
 // Every push of a Feature's branch; a failure is sorted by git, never by the message (ADR 0010).
 async function pushBranch(

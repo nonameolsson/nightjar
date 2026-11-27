@@ -33,6 +33,12 @@ const PULL_FIX_END = {
 	faulted: 'could not push'
 } as const;
 
+const CONFLICT_FIX_END = {
+	...PULL_FIX_END,
+	pushed: 'pushed its merge',
+	diverged: 'set its merge aside'
+} as const;
+
 const why = (text: string | undefined) => (text === undefined || text === '' ? '' : `: ${text}`);
 
 export function decisionText(entry: LogbookEntry, signals: SignalNames): DecisionText {
@@ -108,6 +114,18 @@ export function decisionText(entry: LogbookEntry, signals: SignalNames): Decisio
 			return text === ''
 				? { line }
 				: { line, more: { label: count(entry.failing.length, 'failing Pull check'), text } };
+		}
+		case 'conflictFix': {
+			const line = `Conflict fix ${String(entry.round)} of ${String(entry.rounds)} ${CONFLICT_FIX_END[entry.end]}${why(entry.why)}`;
+			return entry.conflicting.length === 0
+				? { line }
+				: {
+						line,
+						more: {
+							label: count(entry.conflicting.length, 'conflicting file'),
+							text: entry.conflicting.join('\n')
+						}
+					};
 		}
 		case 'madeBySource':
 			return {

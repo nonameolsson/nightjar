@@ -1,3 +1,4 @@
+import { revisitFix, type FaultPlace } from './fault.js';
 import type { SignalNames } from './signals.js';
 
 const tag = (name: string) => `\`${name}\``;
@@ -83,6 +84,12 @@ export const pullChecksStep = (n: SignalNames): NextStep => [
 	`${HAND_BACK} to have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Pull-check fix rounds it had still count.`
 ];
 
+// A draft pull request whose conflicts with its base Nightjar could not resolve: the person's now, and its Conflict fixes still count.
+export const conflictsStep = (n: SignalNames, base: string): NextStep => [
+	`Merge ${tag(base)} into the branch and resolve the conflicts yourself, or review the pull request: Nightjar leaves a pull request alone for good once a person pushes to it, reviews it or comments on it.`,
+	`${HAND_BACK} to have Nightjar build the Feature on its branch again, remove ${tag(n.human)} and add ${tag(n.go)} on this Feature ${KEEP}. The Conflict fixes it had still count.`
+];
+
 // A Feature whose Review still asks for changes after Nightjar's Review rounds: the issues are the person's now.
 export const reviewStep = (n: SignalNames): NextStep => [
 	"Read the issues above and fix the ones that are right on the branch, or review the pull request: the Review is Nightjar's own and can be wrong.",
@@ -114,17 +121,20 @@ export const pausedStep = (retries: boolean): NextStep => [
 		: 'Nothing to do now: the Go stays on this Feature, and Nightjar goes on from the branch the next time it runs.'
 ];
 
-// A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix is handed back by taking needs-info off alone, as no Go starts that pass.
+// A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix or a Conflict fix is handed back by taking needs-info off alone, as no Go starts those passes.
 export function faultStep(
 	n: SignalNames,
-	o: { readonly passing: boolean; readonly pullFix: boolean }
+	// `place`: where the fault happened, when it is known
+	o: { readonly passing: boolean; readonly place?: FaultPlace['kind'] }
 ): NextStep {
 	const task = o.passing
 		? 'Nothing to fix first: this kind of fault usually goes away by itself.'
 		: 'Fix what the fault above names first: in the repo, in its setup, or on the machine that ran Nightjar.';
-	const back = o.pullFix
-		? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries a Pull-check fix again the next time it runs.`
-		: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
+	const fix = revisitFix(o.place);
+	const back =
+		fix !== null
+			? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries a ${fix} again the next time it runs.`
+			: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
 	return [task, back];
 }
 

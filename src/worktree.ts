@@ -208,6 +208,12 @@ export interface Worktree {
 	commitConflictFix(round: number, summary: string, session: string): Promise<boolean>;
 	// How many Conflict fixes the branch's own commits hold, from their trailers.
 	conflictFixes(): Promise<number>;
+	// The base's commits the branch lacks, the ones since it forked or was last merged, each naming the files it writes, as a log cut at `limit` characters; the same while a merge of them is pending.
+	baseCommits(limit: number): Promise<{ text: string; truncated: boolean }>;
+	// Whether the base holds commits the branch lacks, as the worktree last fetched it.
+	behindBase(): Promise<boolean>;
+	// The files the worktree now changes against the branch's head commit, a pending merge's and those not yet added too, sorted.
+	changed(): Promise<string[]>;
 }
 
 // The trailers of a commit message: the `Key: value` lines of its last paragraph, by key.
@@ -575,6 +581,24 @@ export class GitWorktree implements Worktree {
 			`${this.at.base}..HEAD`
 		]);
 		return out.split('\n').filter((l) => l.trim() !== '').length;
+	}
+
+	async baseCommits(limit: number): Promise<{ text: string; truncated: boolean }> {
+		const text = await this.git(['log', '--stat', '--format=%h %s%n%n%b', `HEAD..${this.at.base}`]);
+		return text.length > limit
+			? { text: text.slice(0, limit), truncated: true }
+			: { text, truncated: false };
+	}
+
+	async behindBase(): Promise<boolean> {
+		return (await this.git(['rev-list', '--count', `HEAD..${this.at.base}`])).trim() !== '0';
+	}
+
+	async changed(): Promise<string[]> {
+		const tracked = await this.git(['diff', '--name-only', 'HEAD']);
+		const untracked = await this.git(['ls-files', '--others', '--exclude-standard']);
+		const files = `${tracked}\n${untracked}`.split('\n').filter((l) => l !== '');
+		return [...new Set(files)].sort();
 	}
 }
 

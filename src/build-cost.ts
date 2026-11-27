@@ -32,6 +32,8 @@ const OWN: Readonly<Record<Exclude<Entry['step'], 'fix'>, Stage>> = {
 	review: 'review',
 	reviewRound: 'reviewRounds',
 	pullChecks: 'pullChecks',
+	// a Conflict fix, like a Pull-check fix, fixes the draft after the pull request opens
+	conflicts: 'pullChecks',
 	feedback: 'feedback',
 	// a Retro works on no Feature, so no build's lines hold one; the entry only keeps the table total
 	retro: 'tickets'

@@ -277,6 +277,26 @@ describe('renderBlock', () => {
 		expect(fix.find((l) => l.startsWith('● '))).toMatch(/^● #272 Custom views\s+.*\$1\.00$/);
 	});
 
+	it('shows a Conflict fix as one, with its round of the limit, and no Ticket progress', () => {
+		const fix = render(
+			view(
+				status(
+					building({
+						ticket: null,
+						step: 'conflicts',
+						round: 1,
+						rounds: 3,
+						session: 's2',
+						tickets: undefined
+					})
+				),
+				{ featureCostUsd: 1 }
+			)
+		);
+		expect(fix).toContain('  Conflict fix, round 1/3');
+		expect(fix.join('\n')).not.toContain('conflicts');
+	});
+
 	it('shows a Feedback round as one, with its fix round', () => {
 		const round = (r: number | null) =>
 			render(

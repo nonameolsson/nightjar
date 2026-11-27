@@ -9,6 +9,7 @@ import type { Adapters } from './adapters.js';
 import { FakeTracker } from './fakes/tracker.js';
 import {
 	checkMachine,
+	conflictsCheck,
 	leftWorkingCheck,
 	publishCheck,
 	pullChecksCheck,
@@ -16,7 +17,10 @@ import {
 } from './checks.js';
 import type { PersonConfig } from './person-config.js';
 import { loadConfig, type Config } from './config.js';
-import { failures, printLines } from './doctor.js';
+import { dryRunReady, failures, printLines } from './doctor.js';
+import { featureMarker } from './build.js';
+import { publishMark } from './publish.js';
+import { FakeCodeHost } from './fakes/code-host.js';
 import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
 import type { Os } from './sandbox.js';
@@ -878,5 +882,112 @@ describe('the sandbox every Session runs in', () => {
 		expect(await start({ argv: ['--once'] })).toBe(2);
 		expect(err.join('\n')).toMatch(/nightjar: bubblewrap is not installed/);
 		expect(m.calls('claude')).not.toMatch(/^-p /m);
+	});
+});
+
+describe('nightjar doctor over the Conflict fix pass', () => {
+	const run = (adapters: Adapters, config: Config) =>
+		conflictsCheck.run({ adapters, loaded: { config, rules: null } }, {} as CheckOptions);
+	const on = () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, conflicts: { enabled: true } });
+		return loadConfig(m.root);
+	};
+	const reports = {
+		nightjarDrafts: () => Promise.resolve([]),
+		conflicts: () => Promise.resolve('no')
+	};
+
+	it('says nothing with the pass off, or a Code host that lists drafts and reports conflicts', async () => {
+		expect(await doctor()).toBe(0);
+		expect(out.join('\n')).not.toContain('Conflict');
+		out = [];
+		m.writeConfig({ ...GITHUB, conflicts: { enabled: true } });
+		expect(await start()).toBe(0);
+		expect(out.join('\n')).not.toContain('Conflict');
+		expect(err).toEqual([]);
+		expect(
+			(await run({ codeHost: reports } as unknown as Adapters, loadConfig(m.root))).lines ?? []
+		).toEqual([]);
+		m.writeConfig(GITHUB);
+		const off = loadConfig(m.root);
+		expect((await run({ codeHost: {} } as unknown as Adapters, off)).lines ?? []).toEqual([]);
+	});
+
+	it("warns, without failing, when the pass is on and the Code host cannot list Nightjar's drafts", async () => {
+		const config = on();
+		const lines =
+			(await run({ codeHost: { conflicts: reports.conflicts } } as unknown as Adapters, config))
+				.lines ?? [];
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.status).toBe('warn');
+		expect(lines[0]?.detail).toMatch(/no nightjarDrafts.*will not run/);
+		expect(failures(lines)).toBe(0);
+		printLines(lines);
+		expect(err).toEqual([]);
+		expect(out.join('\n')).toMatch(/warn {2}Conflict fix: .*will not run/);
+	});
+
+	it('warns when the Code host does not report whether a pull request conflicts', async () => {
+		const config = on();
+		const lines =
+			(
+				await run(
+					{ codeHost: { nightjarDrafts: reports.nightjarDrafts } } as unknown as Adapters,
+					config
+				)
+			).lines ?? [];
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.status).toBe('warn');
+		expect(lines[0]?.detail).toMatch(/no conflicts.*will not run/);
+		const both = (await run({ codeHost: {} } as unknown as Adapters, config)).lines ?? [];
+		expect(both[0]?.detail).toMatch(/no nightjarDrafts and no conflicts/);
+	});
+
+	it('lists a conflicting draft as would resolve conflicts, and resolves nothing', async () => {
+		const config = on();
+		const tracker = new FakeTracker('ann');
+		tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const host = new FakeCodeHost();
+		await host.push('/work/20', 'factory/20-done');
+		const body = `Nightjar built all of it.\n\n${featureMarker('20')}`;
+		const pull = await host.createDraft({
+			title: 'Done',
+			head: 'factory/20-done',
+			base: 'main',
+			body
+		});
+		host.setConflict(pull, 'yes');
+		const adapters = { tracker, codeHost: host } as unknown as Adapters;
+		await dryRunReady({ adapters, assignee: 'ann', config });
+		expect(out).toEqual([`nightjar: would resolve conflicts on #20 Done 20, on ${pull.url}`]);
+		expect(host.pulls.map((p) => p.draft)).toEqual([true]);
+		// the pass off: the draft is left out
+		out = [];
+		m.writeConfig(GITHUB);
+		await dryRunReady({ adapters, assignee: 'ann', config: loadConfig(m.root) });
+		expect(out.join('\n')).not.toContain('would resolve');
+	});
+
+	it('lists a ready draft that conflicts as one it would resolve, not one it would publish', async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, publish: true, conflicts: { enabled: true } });
+		const config = loadConfig(m.root);
+		const tracker = new FakeTracker('ann');
+		tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const host = new FakeCodeHost();
+		await host.push('/work/20', 'factory/20-done');
+		const body = `Nightjar built all of it.\n\n${featureMarker('20')}\n${publishMark({ complete: true, approved: true })}`;
+		const pull = await host.createDraft({
+			title: 'Done',
+			head: 'factory/20-done',
+			base: 'main',
+			body
+		});
+		host.setChecks(pull, { pending: false, failed: [] });
+		host.setConflict(pull, 'yes');
+		const adapters = { tracker, codeHost: host } as unknown as Adapters;
+		await dryRunReady({ adapters, assignee: 'ann', config });
+		expect(out).toEqual([`nightjar: would resolve conflicts on #20 Done 20, on ${pull.url}`]);
 	});
 });

@@ -363,6 +363,24 @@ class MemoryWorktree implements Worktree {
 			this.folder.commits.filter((c) => trailersOf(c.message).has(CONFLICTS_TRAILER)).length
 		);
 
+	// Each base commit the branch lacks, by its place on the base and the files it writes: the model's base commits have no message.
+	baseCommits(limit: number) {
+		const held = this.holdsOfBase();
+		const text = this.base
+			.slice(held, this.seen)
+			.map((c, i) => `base commit ${String(held + i + 1)}: writes ${[...c.keys()].join(', ')}`)
+			.join('\n');
+		return Promise.resolve(
+			text.length > limit
+				? { text: text.slice(0, limit), truncated: true }
+				: { text, truncated: false }
+		);
+	}
+
+	behindBase = () => Promise.resolve(this.seen > this.holdsOfBase());
+
+	changed = () => Promise.resolve([...this.folder.dirty.keys()].sort());
+
 	discard(before: string, ticket: string) {
 		const kept = [
 			...this.folder.commits.slice(Number(before)).flatMap((c) => [...c.files.keys()]),

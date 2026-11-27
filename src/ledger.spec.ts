@@ -61,6 +61,22 @@ describe('fileSpend', () => {
 		expect(builtOn(path, morning)).toBe(0);
 	});
 
+	it('reads back a Conflict fix as its own kind of work, and counts it in the day', () => {
+		const path = join(dir, 'runs.jsonl');
+		const morning = new Date(2026, 9, 30, 8, 0);
+		const fix: Entry = {
+			...entry(morning, 2.5),
+			ticket: null,
+			step: 'conflicts',
+			session: 'session-4',
+			outcome: 'conflicts 1'
+		};
+		fileSpend(path).record(fix);
+		expect(fileSpend(path).entries()).toEqual([fix]);
+		expect(fileSpend(path).today(morning)).toBe(2.5);
+		expect(builtOn(path, morning)).toBe(0);
+	});
+
 	it('reads back a Feedback round as its own kind of work, and counts it in the day', () => {
 		const path = join(dir, 'runs.jsonl');
 		const morning = new Date(2026, 9, 30, 8, 0);

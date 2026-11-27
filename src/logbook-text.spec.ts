@@ -122,6 +122,28 @@ describe('decisionText', () => {
 				'1 failing Pull check: ci / test / npm test'
 			],
 			[
+				{
+					kind: 'conflictFix',
+					round: 1,
+					rounds: 2,
+					conflicting: ['src/a.ts', 'src/b.ts'],
+					end: 'pushed'
+				},
+				'Conflict fix 1 of 2 pushed its merge',
+				'2 conflicting files: src/a.ts\nsrc/b.ts'
+			],
+			[
+				{
+					kind: 'conflictFix',
+					round: 2,
+					rounds: 2,
+					conflicting: [],
+					end: 'gaveUp',
+					why: '`make check` still fails after the fix rounds'
+				},
+				'Conflict fix 2 of 2 gave up: `make check` still fails after the fix rounds'
+			],
+			[
 				{ kind: 'madeBySource', source: 'sentry', key: 'ISSUE-1' },
 				'Made by the Source sentry for ISSUE-1'
 			],

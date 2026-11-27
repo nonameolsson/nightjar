@@ -513,6 +513,55 @@ describe.each(adapters)('the %s worktree', (_name, make) => {
 		expect(await tree.mergeBase()).toEqual({ kind: 'conflicts', files: ['shared.txt'] });
 	});
 
+	it('reads the base commits the branch lacks, naming the files each writes, and cuts them at the limit', async () => {
+		const { reopen, moveBase } = await forked();
+		moveBase('early.txt', 'from the base\n');
+		const tree = await reopen();
+		await tree.mergeBase();
+		await tree.commitConflictFix(1, 'Took it.', 's5');
+		moveBase('later.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const merging = await reopen();
+
+		const got = await merging.baseCommits(10_000);
+		expect(got.truncated).toBe(false);
+		expect(got.text).toContain('later.txt');
+		expect(got.text).toContain('shared.txt');
+		expect(got.text).not.toContain('early.txt');
+		// what a Session is given while the merge is pending, as before it
+		await merging.mergeBase();
+		expect(await merging.baseCommits(10_000)).toEqual(got);
+		expect(await merging.baseCommits(5)).toEqual({ text: got.text.slice(0, 5), truncated: true });
+	});
+
+	it('says the branch is behind its base while the base holds commits it lacks, and not once they are merged', async () => {
+		const { reopen, moveBase } = await forked();
+		expect(await (await reopen()).behindBase()).toBe(false);
+		moveBase('base.txt', 'from the base\n');
+		const tree = await reopen();
+		expect(await tree.behindBase()).toBe(true);
+		await tree.mergeBase();
+		await tree.commitConflictFix(1, 'Took it.', 's5');
+		expect(await tree.behindBase()).toBe(false);
+	});
+
+	it('lists every file a pending merge and what was written after it change against the head commit', async () => {
+		const { world, reopen, moveBase } = await forked();
+		const tree = await reopen();
+		expect(await tree.changed()).toEqual([]);
+		moveBase('base.txt', 'from the base\n');
+		moveBase('shared.txt', 'from the base\n');
+		const merging = await reopen();
+		await merging.mergeBase();
+		world.write(merging, 'new.txt');
+		expect(await merging.changed()).toEqual(['base.txt', 'new.txt', 'shared.txt']);
+	});
+
+	it('reads no base commits when the branch holds the base', async () => {
+		const { reopen } = await forked();
+		expect(await (await reopen()).baseCommits(10_000)).toEqual({ text: '', truncated: false });
+	});
+
 	it('keeps the merge pending when a fix round restores a snapshot of what the Session left', async () => {
 		const { world, reopen, moveBase } = await forked();
 		moveBase('shared.txt', 'from the base\n');

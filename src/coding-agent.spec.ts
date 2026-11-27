@@ -4,6 +4,7 @@ import {
 	codingAgent,
 	type AgentSetup,
 	type CodingAgent,
+	type ConflictsRequest,
 	type FeedbackRequest,
 	type FixRequest,
 	type RetroRequest,
@@ -745,6 +746,117 @@ describe('a Feedback round', () => {
 	});
 });
 
+const conflictsRequest = (): ConflictsRequest => ({
+	kind: 'conflicts',
+	at,
+	sessionId: 's-13',
+	feature,
+	files: ['src/marks.ts', 'README.md'],
+	baseCommits: { text: 'abc123 Rename escape\n\n src/marks.ts | 2 +-', truncated: true },
+	budgetUsd: 5,
+	minutes: 30
+});
+
+const resolved = {
+	outcome: 'resolved',
+	summary: 'Kept both renames.',
+	files: ['src/marks.ts', 'README.md'],
+	blocker: ''
+};
+
+describe('a Conflict fix', () => {
+	it("starts a new Session given the conflicting files, the Feature and the base's commits since the fork", async () => {
+		const { sent, session } = fakeSession(done(resolved));
+		await codingAgent({ ...SETUP, rules: 'Tabs.' }, session).conflicts(conflictsRequest());
+		const req = sent[0];
+		expect(req?.cwd).toBe('/w/1-one-escape');
+		expect(req?.sessionId).toBe('s-13');
+		expect(req?.resume).toBeUndefined();
+		expect(req?.prompt).toContain('- `src/marks.ts`\n- `README.md`');
+		expect(req?.prompt).toContain('# The Feature: #1 One escape\n\nEscape once.');
+		expect(req?.prompt).toContain("# The base's commits since the branch forked");
+		expect(req?.prompt).toContain('abc123 Rename escape');
+		expect(req?.prompt).toContain('It is cut here; the rest is in git.');
+		expect(req?.prompt).toContain('`origin/main`');
+		expect(req?.prompt).toContain('# Rules of this repo\n\nTabs.');
+		expect(req?.tools).toEqual(BUILD_TOOLS);
+		expect(req?.settings).toEqual(buildSettings(SETUP.allowedCommands));
+		expect(req?.schema).toHaveProperty('properties.files');
+		expect([req?.budgetUsd, req?.minutes]).toEqual([5, 30]);
+	});
+
+	it("hands on the check's output for a merge that stopped on no conflict", async () => {
+		const { sent, session } = fakeSession(done(resolved));
+		await codingAgent(SETUP, session).conflicts({
+			...conflictsRequest(),
+			files: [],
+			report: 'lint: 1 problem'
+		});
+		expect(sent[0]?.prompt).toContain('lint: 1 problem');
+		expect(sent[0]?.prompt).not.toContain('# The files the merge stopped on');
+		expect(sent[0]?.resume).toBeUndefined();
+	});
+
+	it("runs on the repo's defaults, as a Ticket with no lines of its own, and the CLI flag's over them", async () => {
+		const { sent, session } = fakeSession(done(resolved));
+		const defaults = { model: 'haiku', effort: 'low' };
+		await codingAgent({ ...SETUP, defaults }, session).conflicts(conflictsRequest());
+		await codingAgent({ ...SETUP, defaults, model: 'opus' }, session).conflicts(conflictsRequest());
+		expect([sent[0]?.model, sent[0]?.effort]).toEqual(['haiku', 'low']);
+		expect([sent[1]?.model, sent[1]?.effort]).toEqual(['opus', 'low']);
+	});
+
+	it('reads what it resolved: its summary and the files', async () => {
+		const { session } = fakeSession(done(resolved));
+		expect(await codingAgent(SETUP, session).conflicts(conflictsRequest())).toEqual({
+			kind: 'resolved',
+			summary: 'Kept both renames.',
+			files: ['src/marks.ts', 'README.md'],
+			sessionId: 's-13',
+			costUsd: 2.5
+		});
+	});
+
+	it('reads a Conflict fix that reported itself blocked', async () => {
+		const blocked = {
+			outcome: 'blocked',
+			summary: '',
+			files: [],
+			blocker: 'Both sides rename it.'
+		};
+		const { session } = fakeSession(done(blocked));
+		expect(await codingAgent(SETUP, session).conflicts(conflictsRequest())).toMatchObject({
+			kind: 'blocked',
+			blocker: 'Both sides rename it.'
+		});
+	});
+
+	it('fails on an answer in a shape not known', async () => {
+		const { session } = fakeSession(done({ outcome: 'built', summary: 'x', questions: [] }));
+		expect(await codingAgent(SETUP, session).conflicts(conflictsRequest())).toMatchObject({
+			kind: 'failed',
+			why: 'it answered in a shape not known'
+		});
+	});
+
+	it('resumes its Session for a fix round, keeping its answer shape', async () => {
+		const { sent, session } = fakeSession(done(resolved));
+		const got = await codingAgent(SETUP, session).fix({
+			kind: 'fix',
+			at,
+			of: { kind: 'conflicts' },
+			resume: 's-13',
+			round: 1,
+			tail: 'lint: 1 problem',
+			budgetUsd: 3
+		});
+		expect(got).toMatchObject({ kind: 'fixed', summary: 'Kept both renames.' });
+		expect(sent[0]?.resume).toBe('s-13');
+		expect(sent[0]?.prompt).toContain('This is fix round 1 of 3.');
+		expect(sent[0]?.schema).toHaveProperty('properties.files');
+	});
+});
+
 const reviewRoundRequest = (over: Partial<ReviewRoundRequest> = {}): ReviewRoundRequest => ({
 	kind: 'reviewRound',
 	at,
@@ -1022,6 +1134,8 @@ const kinds: [string, Call, string][] = [
 	["a Feedback round's fix round", (agent) => agent.fix(fixRequest({ kind: 'feedback' })), 's-1'],
 	['the review', (agent) => agent.review(reviewRequest()), 's-9'],
 	['a Review round', (agent) => agent.reviewRound(reviewRoundRequest()), 's-11'],
+	['a Conflict fix', (agent) => agent.conflicts(conflictsRequest()), 's-13'],
+	["a Conflict fix's fix round", (agent) => agent.fix(fixRequest({ kind: 'conflicts' })), 's-1'],
 	["a Review round's fix round", (agent) => agent.fix(fixRequest({ kind: 'reviewRound' })), 's-1']
 ];
 

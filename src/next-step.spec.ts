@@ -111,6 +111,7 @@ describe('next steps', () => {
 				'Fix the failing check'
 			],
 			['Pull checks', next.pullChecksStep(names), 'Read the failing Pull checks above'],
+			['conflicts', next.conflictsStep(names, 'main'), 'Merge `main` into the branch'],
 			['Review left open', next.reviewStep(names), 'Read the issues above'],
 			['a thrown-away Feedback round', next.feedbackStep(names), 'Read why above'],
 			['the Feedback limit', next.feedbackLimitStep(names), 'Answer the requests for changes'],
@@ -118,17 +119,13 @@ describe('next steps', () => {
 			['stopped by a person', next.stoppedStep(names), 'Settle whatever made you stop'],
 			[
 				'a lasting fault',
-				next.faultStep(names, { passing: false, pullFix: false }),
+				next.faultStep(names, { passing: false }),
 				'Fix what the fault above names first'
 			],
-			[
-				'a passing fault',
-				next.faultStep(names, { passing: true, pullFix: false }),
-				'Nothing to fix first'
-			],
+			['a passing fault', next.faultStep(names, { passing: true }), 'Nothing to fix first'],
 			[
 				'a fault in a Pull-check fix',
-				next.faultStep(names, { passing: false, pullFix: true }),
+				next.faultStep(names, { passing: false, place: 'pullFix' }),
 				'Fix what the fault above names first'
 			]
 		];
@@ -150,12 +147,21 @@ describe('next steps', () => {
 	});
 
 	it('gives the Go back after a fault in a build, and only takes needs-info off after one in a Pull-check fix', () => {
-		const build = next.faultStep(renamed, { passing: true, pullFix: false }).at(-1) ?? '';
+		const build = next.faultStep(renamed, { passing: true }).at(-1) ?? '';
 		expect(build).toContain('remove `stuck` and add `run-it`');
-		const pullFix = next.faultStep(renamed, { passing: true, pullFix: true }).at(-1) ?? '';
+		const pullFix = next.faultStep(renamed, { passing: true, place: 'pullFix' }).at(-1) ?? '';
 		expect(pullFix).toContain('remove `stuck`');
 		expect(pullFix).not.toContain('run-it');
 		expect(pullFix).toContain('Nightjar tries a Pull-check fix again');
+	});
+
+	it('only takes needs-info off after a fault in a Conflict fix, which no Go starts either', () => {
+		const step = next.faultStep(renamed, { passing: true, place: 'conflictFix' });
+		const back = step.at(-1) ?? '';
+		expect(back).toMatch(new RegExp(`^${next.HAND_BACK}`));
+		expect(back).toContain('remove `stuck`');
+		expect(back).not.toContain('run-it');
+		expect(back).toContain('Nightjar tries a Conflict fix again');
 	});
 
 	it('tells a person a pause asks nothing of them, and when Nightjar goes on', () => {

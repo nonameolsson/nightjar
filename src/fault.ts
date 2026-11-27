@@ -17,7 +17,19 @@ export type FaultPlace =
 	// after the last Session: the push of the branch and the draft pull request
 	| { readonly kind: 'pull' }
 	// null before the round is counted
-	| { readonly kind: 'pullFix'; readonly round: number | null };
+	| { readonly kind: 'pullFix'; readonly round: number | null }
+	// null before the round is counted
+	| { readonly kind: 'conflictFix'; readonly round: number | null };
+
+// The places that are a revisit pass's fix, by what a person reads them as: no Go starts these passes, so another of the fix follows a fault in one.
+const REVISIT_FIXES: Partial<Record<FaultPlace['kind'], string>> = {
+	pullFix: 'Pull-check fix',
+	conflictFix: 'Conflict fix'
+};
+
+// The revisit pass's fix a place is, such as "Pull-check fix", or null for a place in a build.
+export const revisitFix = (kind: FaultPlace['kind'] | undefined): string | null =>
+	kind === undefined ? null : (REVISIT_FIXES[kind] ?? null);
 
 // Where a fault happened, as the words after "Nightjar stopped on a fault".
 export function placeText(place: FaultPlace): string {
@@ -40,9 +52,10 @@ export function placeText(place: FaultPlace): string {
 		case 'pull':
 			return 'while pushing the branch and opening the draft pull request';
 		case 'pullFix':
-			return place.round === null
-				? 'in a Pull-check fix'
-				: `in Pull-check fix ${String(place.round)}`;
+		case 'conflictFix': {
+			const fix = revisitFix(place.kind) ?? '';
+			return place.round === null ? `in a ${fix}` : `in ${fix} ${String(place.round)}`;
+		}
 	}
 }
 
@@ -111,7 +124,8 @@ export function faultAsk(o: {
 	const [first = '', ...more] = withoutStack(why(o.fault)).trim().split('\n');
 	const reason = short(first.trim().replace(/\.$/, ''));
 	const where = o.place === null ? '' : ` ${placeText(o.place)}`;
-	const again = o.place?.kind === 'pullFix' ? 'another Pull-check fix' : 'giving the Go again';
+	const fix = revisitFix(o.place?.kind);
+	const again = fix === null ? 'giving the Go again' : `another ${fix}`;
 	const cause = passingFault(o.fault)
 		? `This looks like a passing fault, such as the network or a service being down for a moment, so ${again} is likely to work.`
 		: `This fault will probably happen again, so fix what it names before ${again}.`;

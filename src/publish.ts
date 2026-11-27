@@ -45,9 +45,14 @@ export const NO_CHECKS_WAIT_MS = 10 * 60_000;
 export const hasTrailer = (message: string) =>
 	[...trailersOf(message).keys()].some((k) => k.startsWith(TRAILER_PREFIX));
 
-// Whether a draft meets the four conditions of Publish: the Feature was complete and the last Review approved (the body's mark), the Pull checks on the head commit finished green, and no person has engaged by reviewing, commenting or pushing. One Nightjar published already is no draft to publish.
-export function readyToPublish(draft: NightjarDraft, now: Date): boolean {
+// Whether a draft meets the four conditions of Publish: the Feature was complete and the last Review approved (the body's mark), the Pull checks on the head commit finished green, and no person has engaged by reviewing, commenting or pushing. One Nightjar published already is no draft to publish; with the Conflict fix on (`conflicts`), neither is one the Code host says conflicts, which waits for that fix.
+export function readyToPublish(
+	draft: NightjarDraft,
+	now: Date,
+	o: { readonly conflicts?: boolean } = {}
+): boolean {
 	if (publishedByNightjar(draft.body)) return false;
+	if (o.conflicts === true && draft.conflicts === 'yes') return false;
 	const mark = publishMarkOf(draft.body);
 	if (mark === null || !mark.complete || !mark.approved) return false;
 	if (draft.personEngaged) return false;

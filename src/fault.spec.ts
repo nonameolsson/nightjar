@@ -12,7 +12,7 @@ import { faultStep } from './next-step.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { waitingCommentText } from './status-note.js';
 
-const NEXT = faultStep(DEFAULT_SIGNAL_NAMES, { passing: false, pullFix: false });
+const NEXT = faultStep(DEFAULT_SIGNAL_NAMES, { passing: false });
 
 describe('placeText', () => {
 	const places: [FaultPlace, string][] = [
@@ -25,7 +25,9 @@ describe('placeText', () => {
 		[{ kind: 'feedback' }, 'in a Feedback round'],
 		[{ kind: 'pull' }, 'while pushing the branch and opening the draft pull request'],
 		[{ kind: 'pullFix', round: 1 }, 'in Pull-check fix 1'],
-		[{ kind: 'pullFix', round: null }, 'in a Pull-check fix']
+		[{ kind: 'pullFix', round: null }, 'in a Pull-check fix'],
+		[{ kind: 'conflictFix', round: 1 }, 'in Conflict fix 1'],
+		[{ kind: 'conflictFix', round: null }, 'in a Conflict fix']
 	];
 
 	it.each(places)('names %j as "%s"', (place, text) => {
@@ -112,6 +114,12 @@ describe('faultAsk', () => {
 		const text = comment({ place: { kind: 'pullFix', round: 2 } });
 		expect(text).toContain('in Pull-check fix 2: the disk is full.');
 		expect(text).toContain('fix what it names before another Pull-check fix.');
+	});
+
+	it('speaks of another Conflict fix, not the Go, after a fault in one', () => {
+		const text = comment({ place: { kind: 'conflictFix', round: 1 } });
+		expect(text).toContain('in Conflict fix 1: the disk is full.');
+		expect(text).toContain('fix what it names before another Conflict fix.');
 	});
 
 	it('names no place for a fault that escaped from outside a build', () => {
