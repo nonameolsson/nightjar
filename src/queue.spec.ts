@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	featureMarker,
 	featureOfBody,
+	markConflictsHandedOver,
 	markHandedOver,
 	type ConflictFixOutcome,
 	type ConflictingDraft,
@@ -652,6 +653,19 @@ describe('queue --watch with the Conflict fix pass', () => {
 		await queue(w.deps, false);
 		expect(c.resolved).toEqual([]);
 		expect(w.built).toEqual(['2', '4']);
+	});
+
+	it('leaves alone a draft whose body carries the Conflict fix give-up mark, and still fixes it for its Pull checks', async () => {
+		const w = world();
+		const c = withConflicts(w);
+		c.done('20');
+		const pull = await c.conflicting('20');
+		const body = c.host.pulls.find((p) => p.id === pull.id)?.body ?? '';
+		await c.host.editBody(pull, markConflictsHandedOver(body));
+		c.host.setChecks(pull, { pending: false, failed: [FAILURE] });
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual([]);
+		expect(c.fixed).toEqual(['20']);
 	});
 
 	it('leaves alone a draft the Code host lists with no conflict state', async () => {
@@ -1828,6 +1842,21 @@ describe('dryRun with the Conflict fix', () => {
 		const conflicting = await c.conflicting('20');
 		await dry(w);
 		expect(w.lines).toEqual([`would resolve conflicts on #20 Done 20, on ${conflicting.url}`]);
+	});
+
+	it('leaves out a draft whose body carries the Conflict fix give-up mark', async () => {
+		const w = world();
+		await w.tracker.removeSignal('2', 'go');
+		await w.tracker.removeSignal('4', 'go');
+		const c = withConflicts(w);
+		c.done('20');
+		c.done('22');
+		const given = await c.conflicting('20');
+		const body = c.host.pulls.find((p) => p.id === given.id)?.body ?? '';
+		await c.host.editBody(given, markConflictsHandedOver(body));
+		const conflicting = await c.conflicting('22');
+		await dry(w);
+		expect(w.lines).toEqual([`would resolve conflicts on #22 Done 22, on ${conflicting.url}`]);
 	});
 
 	it('leaves out a draft that does not conflict, or whose state is unknown, and one a person engaged', async () => {
