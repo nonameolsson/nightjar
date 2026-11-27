@@ -19,6 +19,7 @@ import type { PersonConfig } from './person-config.js';
 import { loadConfig, type Config } from './config.js';
 import { dryRunReady, failures, printLines } from './doctor.js';
 import { featureMarker } from './build.js';
+import { publishMark } from './publish.js';
 import { FakeCodeHost } from './fakes/code-host.js';
 import type { FakeGitHub } from './github/fake-github.js';
 import { runNightjar } from './main.js';
@@ -966,5 +967,27 @@ describe('nightjar doctor over the Conflict fix pass', () => {
 		m.writeConfig(GITHUB);
 		await dryRunReady({ adapters, assignee: 'ann', config: loadConfig(m.root) });
 		expect(out.join('\n')).not.toContain('would resolve');
+	});
+
+	it('lists a ready draft that conflicts as one it would resolve, not one it would publish', async () => {
+		m = machine();
+		m.writeConfig({ ...GITHUB, publish: true, conflicts: { enabled: true } });
+		const config = loadConfig(m.root);
+		const tracker = new FakeTracker('ann');
+		tracker.add({ id: '20', title: 'Done 20', assignees: ['ann'] });
+		const host = new FakeCodeHost();
+		await host.push('/work/20', 'factory/20-done');
+		const body = `Nightjar built all of it.\n\n${featureMarker('20')}\n${publishMark({ complete: true, approved: true })}`;
+		const pull = await host.createDraft({
+			title: 'Done',
+			head: 'factory/20-done',
+			base: 'main',
+			body
+		});
+		host.setChecks(pull, { pending: false, failed: [] });
+		host.setConflict(pull, 'yes');
+		const adapters = { tracker, codeHost: host } as unknown as Adapters;
+		await dryRunReady({ adapters, assignee: 'ann', config });
+		expect(out).toEqual([`nightjar: would resolve conflicts on #20 Done 20, on ${pull.url}`]);
 	});
 });

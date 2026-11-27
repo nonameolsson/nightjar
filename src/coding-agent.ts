@@ -184,7 +184,7 @@ export interface ReviewRoundRequest extends Work {
 	readonly output?: 'note';
 }
 
-// A Conflict fix: Nightjar's merge of the base into the branch stopped on `files`, which a new Session resolves.
+// A Conflict fix: Nightjar's merge of the base into the branch stopped on `files`, which a new Session resolves, or stopped on none and the repo's check fails on it, which the Session fixes.
 export interface ConflictsRequest extends Work {
 	readonly kind: 'conflicts';
 	readonly sessionId: string;
@@ -192,6 +192,8 @@ export interface ConflictsRequest extends Work {
 	readonly files: readonly string[];
 	// the base's commits since the branch forked or was last merged
 	readonly baseCommits: { readonly text: string; readonly truncated: boolean };
+	// for a merge that stopped on no conflict, with `files` empty: the output of the repo's check, which fails on it
+	readonly report?: string;
 	// the most minutes the Session may run
 	readonly minutes: number;
 }
@@ -562,6 +564,7 @@ export function codingAgent(setup: AgentSetup, session: Session): CodingAgent {
 					base: req.at.base,
 					files: req.files,
 					baseCommits: req.baseCommits,
+					...(req.report === undefined ? {} : { report: req.report }),
 					allowed: setup.allowedCommands,
 					check: setup.check,
 					...(setup.rules === undefined ? {} : { rules: setup.rules })

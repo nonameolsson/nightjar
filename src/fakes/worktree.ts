@@ -377,6 +377,10 @@ class MemoryWorktree implements Worktree {
 		);
 	}
 
+	behindBase = () => Promise.resolve(this.seen > this.holdsOfBase());
+
+	changed = () => Promise.resolve([...this.folder.dirty.keys()].sort());
+
 	discard(before: string, ticket: string) {
 		const kept = [
 			...this.folder.commits.slice(Number(before)).flatMap((c) => [...c.files.keys()]),

@@ -6,15 +6,14 @@ import {
 	handedOver,
 	noteTickets,
 	type ConflictFixOutcome,
-	type ConflictingDraft,
 	type FeatureOutcome,
 	type Pause,
 	type PullFixOutcome,
-	type RedDraft
+	type RevisitedDraft
 } from './build.js';
 import type { ChangeRequest, CodeHost, NightjarDraft, OpenPull } from './code-host.js';
 import { AUTOMATIC_ROUNDS, feedbackHistory, newRequest } from './feedback-round.js';
-import { BuildFault, faultAsk, passingFault } from './fault.js';
+import { BuildFault, faultAsk, passingFault, revisitFix } from './fault.js';
 import { FOOTER } from './footer.js';
 import { faultStep, feedbackLimitStep } from './next-step.js';
 import { NEEDS_A_PERSON, NEEDS_INFO } from './plan.js';
@@ -80,14 +79,21 @@ export interface PublishPass {
 	readonly drafts: () => Promise<NightjarDraft[]>;
 	// takes one draft out of draft, and marks its body so the Pull-check pass keeps to it
 	readonly publish: (draft: NightjarDraft) => Promise<void>;
+	// with the Conflict fix on, a draft the Code host says conflicts waits for it
+	readonly conflicts?: boolean;
 }
 
-// The pass, or null when factory.json leaves `publish` off or the Code host cannot publish or list Nightjar's drafts.
-export function publishPass(publish: boolean | undefined, codeHost: CodeHost): PublishPass | null {
+// The pass, or null when factory.json leaves `publish` off or the Code host cannot publish or list Nightjar's drafts; `conflicts` is factory.json's conflicts block.
+export function publishPass(
+	publish: boolean | undefined,
+	codeHost: CodeHost,
+	conflicts?: { readonly enabled?: boolean | undefined }
+): PublishPass | null {
 	const list = codeHost.nightjarDrafts?.bind(codeHost);
 	const take = codeHost.publish?.bind(codeHost);
 	if (publish !== true || list === undefined || take === undefined) return null;
 	return {
+		conflicts: conflicts?.enabled === true,
 		// only Publish reads the commits, to see that no person pushed
 		drafts: () => list({ commits: true }),
 		publish: async (draft) => {
@@ -128,49 +134,48 @@ export function feedbackPass(
 	return pulls === null ? null : { pulls, answer };
 }
 
-export interface PullChecksPass {
-	// the Code host's open drafts on Nightjar's branches
+// A revisit pass: the Code host's open drafts on Nightjar's branches, and one fix of a draft it takes.
+interface DraftsPass<O> {
 	readonly drafts: () => Promise<NightjarDraft[]>;
-	// one Pull-check fix round on a red draft
-	readonly fix: (red: RedDraft, say: Say, portEnv?: PortEnv) => Promise<PullFixOutcome>;
+	readonly fix: (taken: RevisitedDraft, say: Say, portEnv?: PortEnv) => Promise<O>;
 }
 
-// The revisit pass, or null when factory.json leaves it off or the Code host cannot list Nightjar's drafts.
-export function pullChecksPass(
+// The Pull-check pass: one Pull-check fix round on a red draft.
+export type PullChecksPass = DraftsPass<PullFixOutcome>;
+
+// The Conflict fix pass: one Conflict fix on a draft that conflicts with its base.
+export type ConflictsPass = DraftsPass<ConflictFixOutcome>;
+
+// A revisit pass, or null when its block of factory.json leaves it off or the Code host cannot list Nightjar's drafts.
+function draftsPass<O>(
+	block: { readonly enabled?: boolean | undefined } | undefined,
+	codeHost: CodeHost,
+	fix: DraftsPass<O>['fix']
+): DraftsPass<O> | null {
+	const list = codeHost.nightjarDrafts?.bind(codeHost);
+	if (block?.enabled !== true || list === undefined) return null;
+	return { drafts: list, fix };
+}
+
+// The Pull-check pass, as factory.json's pullChecks sets it.
+export const pullChecksPass = (
 	pullChecks: { readonly enabled?: boolean | undefined } | undefined,
 	codeHost: CodeHost,
 	fix: PullChecksPass['fix']
-): PullChecksPass | null {
-	const list = codeHost.nightjarDrafts?.bind(codeHost);
-	if (pullChecks?.enabled !== true || list === undefined) return null;
-	return { drafts: list, fix };
-}
+): PullChecksPass | null => draftsPass(pullChecks, codeHost, fix);
 
-export interface ConflictsPass {
-	// the Code host's open drafts on Nightjar's branches
-	readonly drafts: () => Promise<NightjarDraft[]>;
-	// one Conflict fix on a draft that conflicts with its base
-	readonly fix: (
-		conflicting: ConflictingDraft,
-		say: Say,
-		portEnv?: PortEnv
-	) => Promise<ConflictFixOutcome>;
-}
-
-// The Conflict fix pass, or null when factory.json leaves `conflicts` off or the Code host cannot list Nightjar's drafts.
-export function conflictsPass(
+// The Conflict fix pass, as factory.json's conflicts sets it.
+export const conflictsPass = (
 	conflicts: { readonly enabled?: boolean | undefined } | undefined,
 	codeHost: CodeHost,
 	fix: ConflictsPass['fix']
-): ConflictsPass | null {
-	const list = codeHost.nightjarDrafts?.bind(codeHost);
-	if (conflicts?.enabled !== true || list === undefined) return null;
-	return { drafts: list, fix };
-}
+): ConflictsPass | null => draftsPass(conflicts, codeHost, fix);
 
-// The drafts that meet the four conditions of Publish, oldest first.
-const readyDrafts = (drafts: readonly NightjarDraft[], now: Date) =>
-	drafts.filter((d) => readyToPublish(d, now)).sort((a, b) => a.pull.id - b.pull.id);
+// The drafts the pass would publish, oldest first.
+const readyDrafts = (pass: PublishPass, drafts: readonly NightjarDraft[], now: Date) =>
+	drafts
+		.filter((d) => readyToPublish(d, now, { conflicts: pass.conflicts === true }))
+		.sort((a, b) => a.pull.id - b.pull.id);
 
 // One draft Publish takes out of draft, the oldest that meets its four conditions, or null when none does. A pull request whose publishing failed is not tried again in this run.
 async function publishNext(
@@ -185,7 +190,7 @@ async function publishNext(
 		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
 		return null;
 	}
-	const next = readyDrafts(drafts, deps.now()).find((d) => !failed.has(d.pull.id));
+	const next = readyDrafts(pass, drafts, deps.now()).find((d) => !failed.has(d.pull.id));
 	if (next === undefined) return null;
 	try {
 		await pass.publish(next);
@@ -215,8 +220,7 @@ export async function handBack(
 			? undefined
 			: faultStep(deps.signals, {
 					passing: passingFault(fault),
-					pullFix: at?.place.kind === 'pullFix',
-					conflictFix: at?.place.kind === 'conflictFix'
+					...(at === null ? {} : { place: at.place.kind })
 				});
 	deps.say(`#${id} failed: ${reason}`);
 	deps.status.happened({
@@ -352,14 +356,15 @@ const named = ({ id, title }: Named): Named => ({ id, title });
 // A draft is taken once per head commit in a run: a new commit, such as a pushed fix, makes it new again.
 const triedKey = (d: NightjarDraft) => `${String(d.pull.id)} ${d.headCommit}`;
 
-// A draft the Pull-check pass fixes: its Pull checks done and one red.
-const isRed = ({ checks }: NightjarDraft) => !checks.pending && checks.failed.length > 0;
+// A draft the Pull-check pass fixes: its Pull checks done and one red, and the pass has not handed it to a person, which it stays with once they take needs a person off. The Conflict fix pass's mark does not keep it off.
+const isRed = ({ checks, body }: NightjarDraft) =>
+	!checks.pending && checks.failed.length > 0 && !handedOver(body);
 
-// A draft the Conflict fix pass takes: the Code host says it conflicts with its base, and the pass has not handed it to a person. One it cannot say of, or one only behind its base, is left alone.
+// A draft the Conflict fix pass takes: the Code host says it conflicts with its base, and the pass has not handed it to a person; the Pull-check pass's mark does not keep it off. One it cannot say of, or one only behind its base, is left alone.
 const isConflicting = (draft: NightjarDraft) =>
 	draft.conflicts === 'yes' && !conflictsHandedOver(draft.body);
 
-// The oldest draft a revisit pass may take: one `wanted` picks, no person engaged, not handed to a person, its body naming a Feature assigned to the person that holds no Signal.
+// The oldest draft a revisit pass may take: one `wanted` picks, no person engaged, its body naming a Feature assigned to the person that holds no Signal.
 async function nextDraft(
 	deps: Pick<QueueDeps, 'tracker' | 'person' | 'say'>,
 	listed: readonly NightjarDraft[],
@@ -369,13 +374,11 @@ async function nextDraft(
 	busy: ReadonlySet<ItemId>,
 	// `nightjar <id>`: only this Feature's draft
 	only?: ItemId
-): Promise<RedDraft | null> {
+): Promise<RevisitedDraft | null> {
 	const drafts = [...listed].sort((a, b) => a.pull.id - b.pull.id);
 	for (const draft of drafts) {
 		if (!wanted(draft) || draft.personEngaged) continue;
 		if (tried.has(triedKey(draft))) continue;
-		// handed to a person once, it stays theirs when they take needs a person off
-		if (handedOver(draft.body)) continue;
 		const feature = featureOfBody(draft.body);
 		if (feature === undefined || (only !== undefined && feature !== only)) continue;
 		if (busy.has(feature)) continue;
@@ -391,114 +394,62 @@ async function nextDraft(
 	return null;
 }
 
-// The red draft the revisit pass takes next, or null when none waits; a fault is said, and the Queue goes on.
-async function findRed(
+// The draft a revisit pass takes next, one `wanted` picks, or null when none waits; a fault is said, and the Queue goes on.
+async function findDraft(
 	deps: QueueDeps,
-	pass: PullChecksPass,
+	pass: DraftsPass<unknown>,
+	wanted: (draft: NightjarDraft) => boolean,
 	tried: ReadonlySet<string>,
 	busy: ReadonlySet<ItemId>,
 	only?: ItemId
-): Promise<RedDraft | null> {
+): Promise<RevisitedDraft | null> {
 	try {
-		return await nextDraft(deps, await pass.drafts(), isRed, tried, busy, only);
+		return await nextDraft(deps, await pass.drafts(), wanted, tried, busy, only);
 	} catch (fault) {
 		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
 		return null;
 	}
 }
 
-// The conflicting draft the Conflict fix pass takes next, or null when none waits; a fault is said, and the Queue goes on.
-async function findConflicting(
+// One fix of a draft a revisit pass took, the fix `kind` names; a fault is said, the Feature is handed back naming the fix, and the fix is skipped.
+async function fixDraft<O extends PullFixOutcome | ConflictFixOutcome>(
 	deps: QueueDeps,
-	pass: ConflictsPass,
-	tried: ReadonlySet<string>,
-	busy: ReadonlySet<ItemId>
-): Promise<ConflictingDraft | null> {
-	try {
-		return await nextDraft(deps, await pass.drafts(), isConflicting, tried, busy);
-	} catch (fault) {
-		deps.say(`could not read Nightjar's draft pull requests: ${why(fault)}`);
-		return null;
-	}
-}
-
-// One conflicting draft's Conflict fix; a fault is said, the Feature is handed back naming the Conflict fix, and the fix is skipped.
-async function fixConflicting(
-	deps: QueueDeps,
-	pass: ConflictsPass,
+	pass: DraftsPass<O>,
 	tried: Set<string>,
-	conflicting: ConflictingDraft,
+	taken: RevisitedDraft,
+	kind: 'pullFix' | 'conflictFix',
 	say: Say,
 	portEnv?: PortEnv
-): Promise<ConflictFixOutcome> {
+): Promise<O | { readonly kind: 'skipped'; readonly why: string }> {
 	try {
-		const got = await pass.fix(conflicting, say, portEnv);
+		const got = await pass.fix(taken, say, portEnv);
+		const ended: PullFixOutcome | ConflictFixOutcome = got;
 		// the day's limit holds it back, so it is taken once the day is over
-		if (got.kind !== 'paused') tried.add(triedKey(conflicting.draft));
-		if (got.kind === 'faulted') {
-			await handBack(deps, { id: conflicting.feature, title: got.title }, got.fault);
-		}
-		return got;
-	} catch (fault) {
-		tried.add(triedKey(conflicting.draft));
-		const reason = why(fault);
-		say(`the Conflict fix of ${conflicting.draft.pull.url} stopped on a fault: ${reason}`);
-		// a fault from before the fix named itself is still the Conflict fix's
-		const at =
-			fault instanceof BuildFault
-				? fault
-				: new BuildFault(fault, {
-						place: { kind: 'conflictFix', round: null },
-						tickets: [],
-						session: null,
-						pull: conflicting.draft.pull.url
-					});
-		const title = await deps.tracker.feature(conflicting.feature).then(
-			(f) => f.title,
-			() => ''
-		);
-		await handBack(deps, { id: conflicting.feature, title }, at);
-		return { kind: 'skipped', why: reason };
-	}
-}
-
-// One red draft's Pull-check fix round; a fault is said, and the round is skipped.
-async function fixRed(
-	deps: QueueDeps,
-	pass: PullChecksPass,
-	tried: Set<string>,
-	red: RedDraft,
-	say: Say,
-	portEnv?: PortEnv
-): Promise<PullFixOutcome> {
-	try {
-		const got = await pass.fix(red, say, portEnv);
-		// the day's limit holds it back, so it is taken once the day is over
-		if (got.kind !== 'paused') tried.add(triedKey(red.draft));
+		if (ended.kind !== 'paused') tried.add(triedKey(taken.draft));
 		// a fix whose push failed on a fault is handed back as a build is, so the Feature carries a Signal and a comment
-		if (got.kind === 'faulted') {
-			await handBack(deps, { id: red.feature, title: got.title }, got.fault);
+		if (ended.kind === 'faulted') {
+			await handBack(deps, { id: taken.feature, title: ended.title }, ended.fault);
 		}
 		return got;
 	} catch (fault) {
-		tried.add(triedKey(red.draft));
+		tried.add(triedKey(taken.draft));
 		const reason = why(fault);
-		say(`the Pull-check fix of ${red.draft.pull.url} stopped on a fault: ${reason}`);
-		// a fault from before the round named itself is still the Pull-check fix's
+		say(`the ${revisitFix(kind) ?? ''} of ${taken.draft.pull.url} stopped on a fault: ${reason}`);
+		// a fault from before the fix named itself is still the fix's
 		const at =
 			fault instanceof BuildFault
 				? fault
 				: new BuildFault(fault, {
-						place: { kind: 'pullFix', round: null },
+						place: { kind, round: null },
 						tickets: [],
 						session: null,
-						pull: red.draft.pull.url
+						pull: taken.draft.pull.url
 					});
-		const title = await deps.tracker.feature(red.feature).then(
+		const title = await deps.tracker.feature(taken.feature).then(
 			(f) => f.title,
 			() => ''
 		);
-		await handBack(deps, { id: red.feature, title }, at);
+		await handBack(deps, { id: taken.feature, title }, at);
 		return { kind: 'skipped', why: reason };
 	}
 }
@@ -511,24 +462,24 @@ async function revisit(
 	only?: ItemId,
 	portEnv?: PortEnv
 ): Promise<PullFixOutcome | null> {
-	const red = await findRed(deps, pass, tried, new Set(), only);
-	return red === null ? null : fixRed(deps, pass, tried, red, deps.say, portEnv);
+	const red = await findDraft(deps, pass, isRed, tried, new Set(), only);
+	return red === null ? null : fixDraft(deps, pass, tried, red, 'pullFix', deps.say, portEnv);
 }
 
 // Whether a round did a piece of work; a skipped one left the pull request alone, so the Queue's next work is still due.
 const didWork = (got: PullFixOutcome | null): got is PullFixOutcome =>
 	got !== null && got.kind !== 'skipped';
 
-const PULL_FIX_GOOD_ENDS: readonly PullFixOutcome['kind'][] = [
+const REVISIT_GOOD_ENDS: readonly (PullFixOutcome | ConflictFixOutcome)['kind'][] = [
 	'fixed',
 	'gaveUp',
 	'atLimit',
 	'diverged'
 ];
 
-// The exit code of a run that ended on a Pull-check fix round: a fix pushed, or the Feature handed to a person, is a good end.
-export function pullFixExit(got: PullFixOutcome): number {
-	return PULL_FIX_GOOD_ENDS.includes(got.kind) ? 0 : 1;
+// The exit code of a run that ended on a revisit pass's fix: a fix pushed, or the Feature handed to a person, is a good end.
+export function revisitExit(got: PullFixOutcome | ConflictFixOutcome): number {
+	return REVISIT_GOOD_ENDS.includes(got.kind) ? 0 : 1;
 }
 
 const FEATURE_GOOD_ENDS: readonly FeatureOutcome['kind'][] = ['pull', 'nothing', 'diverged'];
@@ -694,26 +645,11 @@ const builtEnd = (feature: Named, outcome: FeatureOutcome | null): Ended => ({
 	built: { feature, outcome }
 });
 
-const fixEnd = (got: PullFixOutcome): Ended =>
+// How a Slot's revisit fix ended: one that left the draft alone did no work, so the Slot takes the next.
+const revisitEnd = (got: PullFixOutcome | ConflictFixOutcome): Ended =>
 	got.kind === 'skipped'
 		? { code: null }
-		: { code: pullFixExit(got), ...(got.kind === 'paused' ? { paused: pauseOf(got) } : {}) };
-
-const CONFLICT_FIX_GOOD_ENDS: readonly ConflictFixOutcome['kind'][] = [
-	'fixed',
-	'gaveUp',
-	'atLimit',
-	'diverged'
-];
-
-// How a Slot's Conflict fix ended: one that left the draft alone did no work, so the Slot takes the next.
-const conflictFixEnd = (got: ConflictFixOutcome): Ended => {
-	if (got.kind === 'skipped') return { code: null };
-	return {
-		code: CONFLICT_FIX_GOOD_ENDS.includes(got.kind) ? 0 : 1,
-		...(got.kind === 'paused' ? { paused: pauseOf(got) } : {})
-	};
-};
+		: { code: revisitExit(got), ...(got.kind === 'paused' ? { paused: pauseOf(got) } : {}) };
 
 // Up to `slots` pieces of work at once, one per Slot and a Feature in one Slot at most. A free Slot takes, in order, the oldest conflicting draft (--watch only), the oldest red draft, the oldest Feature assigned to the person with the Go, then a Feedback round; it looks on each tick and whenever another Slot frees up. --once takes up to `slots` and returns when they end; 130 once stopped.
 export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
@@ -765,25 +701,25 @@ export async function queue(deps: QueueDeps, once: boolean): Promise<number> {
 		// --watch only: a conflicting draft is resolved before any red one, as its Pull checks may not run at all until it is
 		const conflicts = deps.conflicts;
 		if (!once && conflicts !== undefined) {
-			const found = await findConflicting(deps, conflicts, tried, busy);
+			const found = await findDraft(deps, conflicts, isConflicting, tried, busy);
 			if (found !== null) {
 				return {
 					feature: found.feature,
 					run: async (say, portEnv) =>
-						conflictFixEnd(await fixConflicting(deps, conflicts, tried, found, say, portEnv))
+						revisitEnd(await fixDraft(deps, conflicts, tried, found, 'conflictFix', say, portEnv))
 				};
 			}
 		}
 		const pass = deps.pullChecks;
 		if (pass !== undefined) {
-			const red = await findRed(deps, pass, tried, busy);
+			const red = await findDraft(deps, pass, isRed, tried, busy);
 			if (red !== null) {
 				return {
 					feature: red.feature,
 					run: async (say, portEnv) => {
-						const got = await fixRed(deps, pass, tried, red, say, portEnv);
+						const got = await fixDraft(deps, pass, tried, red, 'pullFix', say, portEnv);
 						if (once && got.kind === 'paused') say(got.why);
-						return fixEnd(got);
+						return revisitEnd(got);
 					}
 				};
 			}
@@ -1082,7 +1018,7 @@ async function publishable(
 	pass: PublishPass
 ) {
 	const found: { draft: NightjarDraft; feature: ItemId; title: string }[] = [];
-	for (const draft of readyDrafts(await pass.drafts(), deps.now?.() ?? new Date())) {
+	for (const draft of readyDrafts(pass, await pass.drafts(), deps.now?.() ?? new Date())) {
 		const feature = featureOfBody(draft.body);
 		if (feature === undefined) continue;
 		const title = await deps.tracker.feature(feature).then(

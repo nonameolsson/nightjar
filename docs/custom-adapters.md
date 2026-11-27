@@ -169,7 +169,7 @@ To let Nightjar say in a draft pull request's body that it conflicts with its ba
 		conflicts: todo('conflicts'),
 ```
 
-After Nightjar opens a draft or updates its body, it calls `conflicts(pull)`. While the answer is `'unknown'` it asks again every second for about ten seconds, then leaves the body as it is. A draft that conflicts gets a `## Conflicts with main` section (naming the real base branch) saying to merge or rebase it before review; a draft that does not, or whose state stays unknown, has no such section, and one from an earlier run is dropped. Nightjar never merges or rebases the base into a draft ([ADR 0007](adr/0007-a-feature-never-builds-on-another-features-unmerged-branch.md)), sets no Signal and writes no Tracker comment for a conflict.
+After Nightjar opens a draft or updates its body, it calls `conflicts(pull)`. While the answer is `'unknown'` it asks again every second for about ten seconds, then leaves the body as it is. A draft that conflicts gets a `## Conflicts with main` section (naming the branch the Feature is built on: the base branch, unless its `**Base:**` line names another) saying to merge or rebase it before review; a draft that does not, or whose state stays unknown, has no such section, and one from an earlier run is dropped. Nightjar never merges or rebases the base into a draft ([ADR 0007](adr/0007-a-feature-never-builds-on-another-features-unmerged-branch.md)), sets no Signal and writes no Tracker comment for a conflict.
 
 To let Nightjar answer feedback on a draft pull request, give the Code host two more optional methods. A Code host without them builds as before and gets no Feedback rounds; one with only one of them is refused at start.
 

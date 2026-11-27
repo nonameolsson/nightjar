@@ -12,7 +12,7 @@ import { faultStep } from './next-step.js';
 import { DEFAULT_SIGNAL_NAMES } from './signals.js';
 import { waitingCommentText } from './status-note.js';
 
-const NEXT = faultStep(DEFAULT_SIGNAL_NAMES, { passing: false, pullFix: false });
+const NEXT = faultStep(DEFAULT_SIGNAL_NAMES, { passing: false });
 
 describe('placeText', () => {
 	const places: [FaultPlace, string][] = [

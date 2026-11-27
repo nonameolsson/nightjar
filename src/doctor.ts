@@ -20,7 +20,7 @@ export const failures = (lines: readonly Line[]) => lines.filter((l) => l.status
 // What it would build, answer feedback on, resolve conflicts on and publish, over the Adapters the checks made ready.
 export async function dryRunReady(ready: Pick<Ready, 'adapters' | 'assignee' | 'config'>) {
 	const { adapters, assignee, config } = ready;
-	const publish = publishPass(config.publish, adapters.codeHost);
+	const publish = publishPass(config.publish, adapters.codeHost, config.conflicts);
 	// the pass's own fix never runs in a dry run; only its drafts are listed
 	const conflicts = conflictsPass(config.conflicts, adapters.codeHost, () =>
 		Promise.reject(new Error('a dry run resolves nothing'))

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, platformProblem, USAGE, type Args } from './args.js';
 import {
 	buildFeature,
-	conflictsLimits,
+	conflictFixLimits,
 	fixConflicts,
 	fixPullChecks,
 	LIMITS,
@@ -46,7 +46,7 @@ import {
 	PAUSE_MS,
 	publishPass,
 	pullChecksPass,
-	pullFixExit,
+	revisitExit,
 	queue,
 	type PortEnv,
 	type QueueDeps,
@@ -260,7 +260,7 @@ export async function runNightjar(
 			...LIMITS,
 			dailyUsd: ready.person.dailyUsd,
 			...pullFixLimits(config.pullChecks),
-			...conflictsLimits(config.conflicts)
+			...conflictFixLimits(config.conflicts)
 		},
 		signal: stop.signal
 	};
@@ -316,7 +316,7 @@ export async function runNightjar(
 			return fixConflicts(work.deps, work.setup, conflicting);
 		}
 	);
-	const publish = publishPass(config.publish, adapters.codeHost);
+	const publish = publishPass(config.publish, adapters.codeHost, config.conflicts);
 	// the build of one Feature, with the request for changes that started it when it has no Go
 	const build = async (feature: Named, say: Say, portEnv?: PortEnv, started?: Asked) => {
 		building.add(feature);
@@ -387,7 +387,7 @@ export async function runNightjar(
 			try {
 				// a Feature with a red draft is fixed, not built: it holds no Go by now
 				const fixed = await fixNamed(queueDeps, args.feature, lease?.env);
-				if (fixed !== null) return pullFixExit(fixed);
+				if (fixed !== null) return revisitExit(fixed);
 				let refusal: string | null;
 				try {
 					refusal = await cannotClaim(queueDeps, args.feature);

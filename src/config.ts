@@ -106,7 +106,7 @@ const oneLine = (what: string) => z.string().regex(/^[^\r\n]*\S[^\r\n]*$/, `${wh
 export const DEFAULT_PULL_CHECKS = { fixRounds: 2, fixUsd: 5, fixMinutes: 30 } as const;
 
 // The Conflict fix's limits when factory.json names none: the Pull-check pass's.
-export const DEFAULT_CONFLICTS = { fixRounds: 2, fixUsd: 5, fixMinutes: 30 } as const;
+export const DEFAULT_CONFLICTS = DEFAULT_PULL_CHECKS;
 
 // How many Review rounds a build gets when factory.json names none.
 export const DEFAULT_REVIEW_FIX_ROUNDS = 2;

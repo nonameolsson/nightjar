@@ -785,6 +785,18 @@ describe('a Conflict fix', () => {
 		expect([req?.budgetUsd, req?.minutes]).toEqual([5, 30]);
 	});
 
+	it("hands on the check's output for a merge that stopped on no conflict", async () => {
+		const { sent, session } = fakeSession(done(resolved));
+		await codingAgent(SETUP, session).conflicts({
+			...conflictsRequest(),
+			files: [],
+			report: 'lint: 1 problem'
+		});
+		expect(sent[0]?.prompt).toContain('lint: 1 problem');
+		expect(sent[0]?.prompt).not.toContain('# The files the merge stopped on');
+		expect(sent[0]?.resume).toBeUndefined();
+	});
+
 	it("runs on the repo's defaults, as a Ticket with no lines of its own, and the CLI flag's over them", async () => {
 		const { sent, session } = fakeSession(done(resolved));
 		const defaults = { model: 'haiku', effort: 'low' };

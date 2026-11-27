@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
 	BUILD_SCHEMA,
+	CONFLICTS_SCHEMA,
 	QUESTIONS_MARK,
 	REVIEW_SCHEMA,
 	STEP_SCHEMA,
 	buildPrompt,
+	conflictsPrompt,
 	fixPrompt,
 	questionList,
 	questionRounds,
 	readBuildAnswer,
+	readConflictsAnswer,
 	readReview,
 	reviewPrompt
 } from './prompt.js';
@@ -180,6 +183,103 @@ describe('fixPrompt', () => {
 	});
 });
 
+describe('readConflictsAnswer', () => {
+	it('reads a resolved answer with the files it names, and a blocked one', () => {
+		expect(
+			readConflictsAnswer({
+				outcome: 'resolved',
+				summary: 'Kept both.',
+				files: ['a.ts', 7, 'b.ts'],
+				blocker: ''
+			})
+		).toEqual({ outcome: 'resolved', summary: 'Kept both.', files: ['a.ts', 'b.ts'] });
+		expect(
+			readConflictsAnswer({
+				outcome: 'blocked',
+				summary: '',
+				files: [],
+				blocker: 'Both renamed it.'
+			})
+		).toEqual({ outcome: 'blocked', summary: '', blocker: 'Both renamed it.' });
+		expect(readConflictsAnswer({ outcome: 'blocked', summary: '' })).toEqual({
+			outcome: 'blocked',
+			summary: '',
+			blocker: ''
+		});
+	});
+
+	it('refuses an answer of another shape', () => {
+		expect(readConflictsAnswer({ outcome: 'resolved', summary: 'Kept both.' })).toBeNull();
+		expect(readConflictsAnswer({ outcome: 'resolved', files: [] })).toBeNull();
+		expect(readConflictsAnswer({ outcome: 'built', summary: 'x', files: [] })).toBeNull();
+		expect(readConflictsAnswer('resolved')).toBeNull();
+	});
+});
+
+describe('conflictsPrompt', () => {
+	const context = {
+		feature,
+		base: 'origin/main',
+		files: ['src/a.ts', 'src/b.ts'],
+		baseCommits: { text: 'abc1234 Rename the flag\n\n src/a.ts | 2 +-', truncated: false },
+		allowed: ['make test', 'make lint *'],
+		check: 'make check'
+	};
+	const prompt = conflictsPrompt(context);
+	const rules = prompt.slice(0, prompt.indexOf(feature.body));
+
+	it("sets the rules before the Feature, the files and the commits, and names a Source's payload as data", () => {
+		expect(prompt.indexOf('Nobody is at the keyboard')).toBe(0);
+		expect(prompt.indexOf('the rules win')).toBeLessThan(prompt.indexOf(feature.body));
+		expect(rules).toContain(`"${PAYLOAD_HEADING}"`);
+	});
+
+	it("hands on the files the merge stopped on and the base's commits, under the base it merges", () => {
+		expect(rules).toContain("merging `origin/main` into the Feature's branch");
+		expect(prompt).toContain('# The files the merge stopped on\n\n- `src/a.ts`\n- `src/b.ts`');
+		expect(prompt).toContain('abc1234 Rename the flag');
+		expect(prompt).not.toContain('It is cut here');
+	});
+
+	it('leaves the git work to Nightjar and asks for both sides kept, with no marker left', () => {
+		expect(rules).toMatch(/do not commit, push, merge, rebase, reset, abort the merge/i);
+		expect(rules).toContain('rather than picking one side');
+		expect(rules).toContain('Leave no conflict marker in any file');
+		expect(rules).toContain('in "files" the files you resolved');
+	});
+
+	it('lists the allowed commands, names the check, and assumes no toolchain', () => {
+		expect(rules).toContain('`make test`, `make lint *`');
+		expect(rules).toContain('`make check`');
+		expect(prompt).not.toMatch(/\b(npm|npx|vitest|eslint|prettier)\b/i);
+	});
+
+	it("says when the base's commits are cut, or that none are listed", () => {
+		const cut = conflictsPrompt({ ...context, baseCommits: { text: 'abc', truncated: true } });
+		expect(cut).toContain('It is cut here; the rest is in git.');
+		const none = conflictsPrompt({ ...context, baseCommits: { text: '', truncated: false } });
+		expect(none).toContain('(none listed)');
+	});
+
+	it("adds the repo's rules file after the built-in rules and before the Feature", () => {
+		const text = 'Name every variable after a bird.';
+		const withRules = conflictsPrompt({ ...context, rules: text });
+		expect(withRules.indexOf('the rules win')).toBeLessThan(withRules.indexOf(text));
+		expect(withRules.indexOf(text)).toBeLessThan(withRules.indexOf(feature.body));
+		expect(prompt).not.toContain('bird');
+	});
+
+	it("for a merge that stopped on no conflict, hands on the check's output in place of the files", () => {
+		const red = conflictsPrompt({ ...context, files: [], report: 'lint: 1 problem' });
+		expect(red).toContain(
+			"The merge had no conflict to resolve, but the repo's check, `make check`, fails on it"
+		);
+		expect(red).toContain('# The output of `make check`\n\nlint: 1 problem');
+		expect(red).not.toContain('# The files the merge stopped on');
+		expect(red).toContain('in "files" the files you changed');
+	});
+});
+
 describe('plain-language comments', () => {
 	const capped = (schema: { properties: Record<string, unknown> }, key: string) =>
 		(schema.properties[key] as { maxLength?: number }).maxLength;
@@ -188,6 +288,7 @@ describe('plain-language comments', () => {
 		expect(capped(BUILD_SCHEMA, 'summary')).toBe(600);
 		expect(capped(STEP_SCHEMA, 'summary')).toBe(600);
 		expect(capped(REVIEW_SCHEMA, 'summary')).toBe(400);
+		expect(capped(CONFLICTS_SCHEMA, 'summary')).toBe(600);
 		const question = BUILD_SCHEMA.properties.questions.items.properties.question;
 		expect((question as { maxLength?: number }).maxLength).toBe(300);
 		const problem = REVIEW_SCHEMA.properties.issues.items.properties.problem;
@@ -207,5 +308,15 @@ describe('plain-language comments', () => {
 		};
 		expect(buildPrompt(base)).toContain(marker);
 		expect(reviewPrompt(feature, 'main', [])).toContain(marker);
+		expect(
+			conflictsPrompt({
+				feature,
+				base: 'origin/main',
+				files: ['a.ts'],
+				baseCommits: { text: '', truncated: false },
+				allowed: [],
+				check: 'c'
+			})
+		).toContain(marker);
 	});
 });

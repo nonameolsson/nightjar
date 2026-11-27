@@ -1,3 +1,4 @@
+import { revisitFix, type FaultPlace } from './fault.js';
 import type { SignalNames } from './signals.js';
 
 const tag = (name: string) => `\`${name}\``;
@@ -123,15 +124,16 @@ export const pausedStep = (retries: boolean): NextStep => [
 // A run that stopped on a fault: when the fault is a passing one there is nothing to fix first, else the person fixes what it names. A fault in a Pull-check fix or a Conflict fix is handed back by taking needs-info off alone, as no Go starts those passes.
 export function faultStep(
 	n: SignalNames,
-	o: { readonly passing: boolean; readonly pullFix: boolean; readonly conflictFix?: boolean }
+	// `place`: where the fault happened, when it is known
+	o: { readonly passing: boolean; readonly place?: FaultPlace['kind'] }
 ): NextStep {
 	const task = o.passing
 		? 'Nothing to fix first: this kind of fault usually goes away by itself.'
 		: 'Fix what the fault above names first: in the repo, in its setup, or on the machine that ran Nightjar.';
-	const pass = o.pullFix ? 'a Pull-check fix' : o.conflictFix === true ? 'a Conflict fix' : null;
+	const fix = revisitFix(o.place);
 	const back =
-		pass !== null
-			? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries ${pass} again the next time it runs.`
+		fix !== null
+			? `${HAND_BACK} on this Feature, remove ${tag(n.needsInfo)} ${KEEP}. Nightjar tries a ${fix} again the next time it runs.`
 			: `${HAND_BACK} ${featureGo(n)} Nightjar builds the Feature again, going on from the branch.`;
 	return [task, back];
 }

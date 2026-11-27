@@ -27,7 +27,7 @@ import {
 	PAUSE_MS,
 	publishPass,
 	pullChecksPass,
-	pullFixExit,
+	revisitExit,
 	queue,
 	slotSay,
 	type PortEnv,
@@ -172,7 +172,7 @@ describe('queue --once', () => {
 		w.failWith(new Error('the network went away'));
 		await queue({ ...w.deps, signals: DEFAULT_SIGNAL_NAMES }, true);
 		// the network is a passing fault, so there is nothing to fix before the Go
-		const next = faultStep(DEFAULT_SIGNAL_NAMES, { passing: true, pullFix: false });
+		const next = faultStep(DEFAULT_SIGNAL_NAMES, { passing: true });
 		expect(w.tracker.said('2')[0]).toContain(nextStepText(next));
 		expect(w.tracker.note('2')).toContain(nextStepText(next));
 		expect(w.happened[0]).toMatchObject({ kind: 'failed', next });
@@ -618,6 +618,42 @@ describe('queue --watch with the Conflict fix pass', () => {
 		]);
 	});
 
+	it('publishes no draft the Code host says conflicts, though it is ready otherwise', async () => {
+		const w = world();
+		const c = withConflicts(w);
+		c.done('20');
+		const pull = await c.conflicting('20');
+		const body = c.host.pulls.find((p) => p.id === pull.id)?.body ?? '';
+		await c.host.editBody(pull, `${body}\n${publishMark({ complete: true, approved: true })}`);
+		const pass = publishPass(true, c.host, { enabled: true });
+		if (pass === null) throw new Error('the fake Code host cannot publish');
+		const published: string[] = [];
+		w.deps = {
+			...w.deps,
+			publish: {
+				...pass,
+				publish: async (draft) => {
+					published.push(draft.pull.url);
+					await pass.publish(draft);
+				}
+			}
+		};
+		c.resolveWith((d) =>
+			Promise.resolve({
+				kind: 'gaveUp',
+				pull: d.draft.pull,
+				round: 1,
+				why: 'a spec',
+				usd: 0,
+				side: null,
+				conflicting: ['a.ts']
+			})
+		);
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual(['20']);
+		expect(published).toEqual([]);
+	});
+
 	it('hands the fix the draft and the Feature its body names', async () => {
 		const w = world();
 		const c = withConflicts(w);
@@ -666,6 +702,19 @@ describe('queue --watch with the Conflict fix pass', () => {
 		await queue(w.deps, false);
 		expect(c.resolved).toEqual([]);
 		expect(c.fixed).toEqual(['20']);
+	});
+
+	it('still resolves a draft whose body carries the Pull-check give-up mark, which keeps only the Pull-check pass off', async () => {
+		const w = world();
+		const c = withConflicts(w);
+		c.done('20');
+		const pull = await c.conflicting('20');
+		const body = c.host.pulls.find((p) => p.id === pull.id)?.body ?? '';
+		await c.host.editBody(pull, markHandedOver(body));
+		c.host.setChecks(pull, { pending: false, failed: [FAILURE] });
+		await queue(w.deps, false);
+		expect(c.resolved).toEqual(['20']);
+		expect(c.fixed).toEqual([]);
 	});
 
 	it('leaves alone a draft the Code host lists with no conflict state', async () => {
@@ -1810,7 +1859,7 @@ describe('dryRun with the Conflict fix', () => {
 		const conflicting = await c.conflicting('20');
 		const pass = publishPass(true, c.host);
 		if (pass === null) throw new Error('the fake Code host cannot publish');
-		w.deps = { ...w.deps, publish: pass, now: () => new Date(Date.now() + 3_600_000) };
+		w.deps = { ...w.deps, publish: pass };
 		const body = `Nightjar built all of it.\n\n${featureMarker('22')}\n${publishMark({ complete: true, approved: true })}`;
 		const ready = await c.host.createDraft({
 			title: 'Done',
@@ -1905,7 +1954,7 @@ describe('the exit code of nightjar <id>', () => {
 	it('is 0 for a Feature handed to a person after a push a person beat', () => {
 		expect(featureExit({ kind: 'diverged', side: 'factory/4-x-attempt-push' })).toBe(0);
 		expect(
-			pullFixExit({ kind: 'diverged', pull, round: 1, side: 'factory/4-x-attempt-push', usd: 1 })
+			revisitExit({ kind: 'diverged', pull, round: 1, side: 'factory/4-x-attempt-push', usd: 1 })
 		).toBe(0);
 	});
 
@@ -1925,7 +1974,7 @@ describe('the exit code of nightjar <id>', () => {
 			title: 'T',
 			usd: 1
 		};
-		expect(pullFixExit(faulted)).toBe(1);
+		expect(revisitExit(faulted)).toBe(1);
 	});
 });
 
@@ -1941,7 +1990,7 @@ describe('nightjar <id> with the Pull-check pass', () => {
 		expect(got).toMatchObject({ kind: 'fixed' });
 		expect(d.fixed).toEqual(['22']);
 		expect(w.built).toEqual([]);
-		expect(got === null ? 1 : pullFixExit(got)).toBe(0);
+		expect(got === null ? 1 : revisitExit(got)).toBe(0);
 	});
 
 	it('leaves the Feature to be built as today when it has no red draft', async () => {
@@ -1972,7 +2021,7 @@ describe('nightjar <id> with the Pull-check pass', () => {
 		await d.open('20');
 		d.fixWith(() => Promise.resolve({ kind: 'paused', why: 'the daily limit was reached' }));
 		const got = await fixNamed(w.deps, '20');
-		expect(got === null ? 0 : pullFixExit(got)).toBe(1);
+		expect(got === null ? 0 : revisitExit(got)).toBe(1);
 		expect(w.lines).toContain('the daily limit was reached');
 	});
 
