@@ -407,6 +407,12 @@ mkdir -p .claude/skills
 cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-feature" .claude/skills/
 ```
 
+The package ships a second skill, `nightjar-setup`, that finds the answers `nightjar init` needs from the repo, runs it with them as flags and walks the person through any login left to fix, ending on a green `nightjar doctor`. Copy it the same way:
+
+```bash
+cp -R "$(npm root -g)/@nonameolsson/nightjar/skills/nightjar-setup" .claude/skills/
+```
+
 With Nightjar as a dev dependency, the package is at `node_modules/@nonameolsson/nightjar` instead, here and below.
 
 ## Make Features from Sources
