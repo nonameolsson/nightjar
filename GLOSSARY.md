@@ -88,6 +88,10 @@ _Avoid_: dot, pip, bar
 A row of segments beside a Feature's Eggs, on its Board card and its Table row: one per stage of its latest build, in the loop's order (Tickets, Steps, Review, Review rounds, Pull checks, Feedback), each marked passed, passed after a retry or a round, failed, running, not reached or not needed. It is read from the ledger lines of that build, so a hard build shows without opening it.
 _Avoid_: pipeline, progress bar, timeline, stepper
 
+**Workflow map**:
+A picture of what one build will do under one Workflow, read from `factory.json` and never from a build: Nightjar's fixed build loop in the order a build reaches it, with the Workflow's Steps at their points, each round's cap on its return line, the stages the repo turns off shown as off, and where a person comes in: the Go and a request for changes going in, needs info and needs a person coming out. One per Workflow, and one for a build with no Workflow when no default is set. It starts nothing.
+_Avoid_: pipeline, flowchart, diagram, catalog, timeline, build plan
+
 ### Where things are
 
 **Tracker**:
