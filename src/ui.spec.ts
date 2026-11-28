@@ -15,7 +15,7 @@ import { statusNoteText } from './status-note.js';
 import { readFactory } from './status-reader.js';
 import { logbookPage, logbookSection, renderPanels, sessionPage, startUi, type Ui } from './ui.js';
 import { NO_LINKS } from './ui-links.js';
-import { PAPER_STYLE, THEMES, type Theme } from './ui-theme.js';
+import { STYLE } from './ui-style.js';
 import {
 	detailFrom,
 	listsFrom,
@@ -1436,12 +1436,11 @@ describe('nightjar ui board', () => {
 		expect(board.match(/class="took"/g)).toHaveLength(2);
 	});
 
-	it('labels the ledger columns, inlines the banner under a CSP that allows only data images, and says when a count is unknown', async () => {
+	it('labels the ledger columns under a CSP that allows only data images, and says when a count is unknown', async () => {
 		await open();
 		const got = await fetch(`http://127.0.0.1:${String(ui?.port)}/`);
 		const page = await got.text();
 		expect(got.headers.get('content-security-policy')).toContain('img-src data:');
-		expect(page).toContain('.banner { background-image: url(data:image/webp;base64,');
 		expect(page).toContain('<span>Tickets</span><span>State</span>');
 		expect(page).not.toContain('>?<');
 	});
@@ -2075,15 +2074,12 @@ describe('nightjar ui last seven days', () => {
 		expect(renderPanels(root, view)).toContain('<li><b>$0.00</b> spent</li>');
 	});
 
-	it('has a style for the counts and the filter in both themes, and keeps their targets large on a phone', async () => {
+	it('has a style for the counts and the filter, and keeps their targets large on a phone', async () => {
 		await open();
 		const page = (await get('/')).text;
 		expect(page).toMatch(/@media \(pointer: coarse\) \{[^}]*a\.count[^}]*min-height: 44px/);
-		expect(PAPER_STYLE).toMatch(/@media \(pointer: coarse\) \{[^}]*a\.count[^}]*min-height: 44px/);
-		for (const style of [page, PAPER_STYLE]) {
-			expect(style).toContain('.week {');
-			expect(style).toContain('.filters {');
-		}
+		expect(page).toContain('.week {');
+		expect(page).toContain('.filters {');
 	});
 });
 
@@ -2146,14 +2142,13 @@ describe('nightjar ui page, more', () => {
 			expect(page).not.toContain('<i class="egg waiting"></i>waiting');
 		});
 
-		it('lets a keyboard scroll the Table and names the banner once', async () => {
+		it('lets a keyboard scroll the Table', async () => {
 			building();
 			await open();
 			const page = (await get('/')).text;
 			expect(page).toContain(
 				'<div class="scroll" tabindex="0" role="region" aria-label="Feature table">'
 			);
-			expect(page).toContain('<div class="banner" aria-hidden="true">');
 			expect(page).toContain("'aria-pressed'");
 			expect(page).not.toContain("'aria-current'");
 		});
@@ -2161,24 +2156,21 @@ describe('nightjar ui page, more', () => {
 });
 
 describe('nightjar ui audit fixes', () => {
-	// a theme's own stylesheet; each theme is a whole sheet, so the rules every page needs are checked in each
-	const css = async (theme: Theme = 'nightjar') => {
+	// the page's one stylesheet, as a browser gets it
+	const css = async () => {
 		await open();
 		const page = (await get('/')).text;
-		const style =
-			page.split(new RegExp(`<style data-theme="${theme}"[^>]*>`))[1]?.split('</style>')[0] ?? '';
+		const style = page.split('<style>')[1]?.split('</style>')[0] ?? '';
 		return { page, style };
 	};
 	const rule = (style: string, selector: string) =>
 		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
 
 	it('has a status region outside the panels that stays out of sight', async () => {
-		for (const theme of THEMES) {
-			const { page, style } = await css(theme);
-			expect(page).toContain('<p id="live" class="sr" role="status"></p>');
-			expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
-			expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
-		}
+		const { page, style } = await css();
+		expect(page).toContain('<p id="live" class="sr" role="status"></p>');
+		expect(page.indexOf('id="live"')).toBeLessThan(page.indexOf('<main id="panels"'));
+		expect(style.split('\n').find((l) => l.startsWith('.sr,'))).toContain('clip');
 	});
 
 	it('announces only when the waiting or failed count rises', async () => {
@@ -2241,72 +2233,33 @@ describe('nightjar ui audit fixes', () => {
 		expect(live.textContent).toBe('1 failed');
 	});
 
-	const BUTTONS = [
-		'th button',
-		'#views button',
-		'#themes button',
-		'.chips button',
-		'button.copy',
-		'a.act',
-		'a.open'
-	];
-	it.each(THEMES)(
-		'gives sort buttons, view and theme tabs, chips, copy buttons and links a 24px hit area, 44px on touch (%s)',
-		async (theme) => {
-			const { style } = await css(theme);
-			for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
-			const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-			for (const s of BUTTONS) expect(coarse, s).toContain(s);
-			expect(coarse).toContain('min-height: 44px');
-		}
-	);
-	it("gives the Session page's folded results the same hit area in the Nightjar stylesheet", async () => {
-		const { style } = await css('nightjar');
-		expect(rule(style, '.log summary')).toContain('min-height: 24px');
-		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
-		expect(coarse).toContain('.log summary');
-	});
-
-	it('keeps every font size on the documented ramp, none under 0.75rem', async () => {
+	const BUTTONS = ['th button', '#views button', '.chips button', 'button.copy', 'a.act', 'a.open'];
+	it('gives sort buttons, view tabs, chips, copy buttons and links a 24px hit area, 44px on touch', async () => {
 		const { style } = await css();
-		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(rem|px)/g)].map((m) =>
-			m[2] === 'px' ? `${m[1] ?? ''}px` : Number(m[1])
-		);
-		const ramp = [0.75, 0.85, 1, 1.05, 1.2, 1.6, '15px'];
-		expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
+		for (const s of BUTTONS) expect(rule(style, s), s).toContain('min-height: 24px');
+		const coarse = style.split('@media (pointer: coarse)')[1] ?? '';
+		for (const s of BUTTONS) expect(coarse, s).toContain(s);
+		expect(coarse).toContain('min-height: 44px');
 	});
 
-	it("keeps Paper's font sizes on its 11.5px to 16px ramp", async () => {
-		const { style } = await css('paper');
+	it('keeps every font size on the 11.5px to 16px ramp', async () => {
+		const { style } = await css();
 		const sizes = [...style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)px/g)].map((m) => m[1]);
 		expect(sizes.length).toBeGreaterThan(0);
 		const ramp = ['11.5', '12', '12.5', '13', '13.5', '14', '16'];
 		expect(sizes.filter((s) => !ramp.includes(s ?? ''))).toEqual([]);
 	});
 
-	it("lays a Board entry out by the Board's own width, not the window's (nightjar)", async () => {
-		const { style } = await css('nightjar');
-		expect(style).toContain('container: board / inline-size');
-		expect(style).not.toContain('@media (min-width: 1261px) and (max-width: 1400px)');
-		// narrow: two columns; middling: three, the name over its eggs; wide: the four the head names
-		const wide = [...style.matchAll(/@container board \(min-width: (\d+)px\)/g)].map((m) =>
-			Number(m[1])
-		);
-		expect(wide).toHaveLength(2);
-		const block = style.split(`@container board (min-width: ${String(wide[1])}px)`)[1] ?? '';
-		expect(block.split('\n}')[0]).toContain('.head { display: grid; }');
-	});
-
-	it("lays Paper's Board out as cards, each state's in a grid that fills the Board's width, with no head row", async () => {
-		const { style } = await css('paper');
+	it("lays the Board out as cards, each state's in a grid that fills the Board's width, with no head row", async () => {
+		const { style } = await css();
 		expect(rule(style, '.head')).toContain('display: none');
 		expect(rule(style, '.lines')).toContain('grid-template-columns: repeat(auto-fill');
 		expect(rule(style, '.entry')).toContain('border: 1px solid var(--line)');
 		expect(style).not.toContain('@container board');
 	});
 
-	it("keeps Paper's Table to one line per Feature, cutting the title and outcome short but never the action", async () => {
-		const { style } = await css('paper');
+	it('keeps the Table to one line per Feature, cutting the title and outcome short but never the action', async () => {
+		const { style } = await css();
 		expect(rule(style, 'th, td')).toContain('white-space: nowrap');
 		expect(rule(style, '.clip')).toContain('text-overflow: ellipsis');
 		expect(rule(style, 'td.col-outcome a.act')).toContain('flex: none');
@@ -2357,8 +2310,8 @@ describe('nightjar ui audit fixes', () => {
 		expect(rule(style, '.egg.need::before, .egg.need::after')).not.toContain('border-radius');
 	});
 
-	it.each(THEMES)('draws colours from tokens: no literals outside :root (%s)', async (theme) => {
-		const { style } = await css(theme);
+	it('draws colours from tokens: no literals outside :root', async () => {
+		const { style } = await css();
 		const rest = style
 			.split('\n')
 			.filter((l) => !l.startsWith(':root'))
@@ -2367,17 +2320,27 @@ describe('nightjar ui audit fixes', () => {
 		expect(rest).not.toContain('rgba(');
 	});
 
-	it('keeps the Nightjar tokens for its sockets, mats and shading', async () => {
-		const { style } = await css('nightjar');
-		for (const t of ['--socket-dash', '--socket-border', '--panel-overlay', '--shade-soft'])
-			expect(style).toContain(`${t}:`);
+	it('follows the machine for light and dark: light tokens on :root, dark ones under the media query', async () => {
+		const { style } = await css();
+		expect(style).toContain(':root { color-scheme: light;');
+		expect(style).toContain('@media (prefers-color-scheme: dark) {\n:root { color-scheme: dark;');
 	});
 
-	it('sets the body background once', async () => {
+	it('has one stylesheet and no theme: no switch, no data-theme, no theme script or kept choice, no banner', async () => {
+		const { page } = await css();
+		expect(page.match(/<style/g)).toHaveLength(1);
+		for (const gone of ['data-theme', 'id="themes"', 'nightjar-theme', 'banner', 'THEMES'])
+			expect(page, gone).not.toContain(gone);
+		expect(page).not.toContain('background-image');
+		expect(page).not.toContain('data:image/webp');
+	});
+
+	it('sets the body background once, to a token and no image', async () => {
 		const { style } = await css();
 		const body = rule(style, 'body');
-		expect(body).not.toContain('background:');
-		expect(body.match(/linear-gradient/g)).toHaveLength(2);
+		expect(body).toContain('background-color: var(--bg)');
+		expect(body).not.toContain('gradient');
+		expect(body).not.toContain('url(');
 	});
 
 	it('has no hover tooltip or shadow: the help button opens the panel', async () => {
@@ -2388,16 +2351,13 @@ describe('nightjar ui audit fixes', () => {
 		expect(page).not.toContain('data-tip');
 	});
 
-	it.each(THEMES)(
-		'lets the whole page scroll on a short or narrow viewport (%s)',
-		async (theme) => {
-			const { style } = await css(theme);
-			const block =
-				style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
-			expect(block).toContain('height: auto');
-			expect(block).toContain('overflow: visible');
-		}
-	);
+	it('lets the whole page scroll on a short or narrow viewport', async () => {
+		const { style } = await css();
+		const block =
+			style.split('@media (max-height: 480px), (max-width: 400px)')[1]?.split('\n}')[0] ?? '';
+		expect(block).toContain('height: auto');
+		expect(block).toContain('overflow: visible');
+	});
 
 	it('puts focus back on a copy button or link after a live swap', async () => {
 		await open();
@@ -3133,6 +3093,228 @@ describe('nightjar ui Logbook page', () => {
 	});
 });
 
+describe("nightjar ui Session and Logbook pages in the Board's stylesheet", () => {
+	const styleOf = (page: string) => page.split('<style>')[1]?.split('</style>')[0] ?? '';
+	const rule = (style: string, selector: string) =>
+		style.split('\n').find((l) => l.startsWith(`${selector} {`)) ?? '';
+
+	// a Session with a folded result, and a Logbook with a decision, a Session, a hand-over and its build in flight
+	const seed = () => {
+		const logs = join(root, '.factory', 'logs');
+		mkdirSync(logs, { recursive: true });
+		const lines = [
+			{ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading' }] } },
+			{
+				type: 'assistant',
+				message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] }
+			},
+			{
+				type: 'user',
+				message: { content: [{ type: 'tool_result', tool_use_id: 't', content: '3 passed' }] }
+			}
+		];
+		writeFileSync(join(logs, 'sess-1.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n'));
+		record(ledgerFile(), {
+			at: at.toISOString(),
+			repo: 'o/app',
+			feature: '261',
+			ticket: '266',
+			branch: 'factory/261-logbook',
+			step: 'build',
+			session: 'sess-1',
+			costUsd: 1.5,
+			outcome: 'built',
+			durationMs: 125_000
+		});
+		const book = fileLogbook(root);
+		book.write({ at: at.toISOString(), feature: '261', kind: 'ticketStarted', ticket: '266' });
+		book.write({
+			at: at.toISOString(),
+			feature: '261',
+			kind: 'handed',
+			to: 'needsInfo',
+			why: 'the check stayed red',
+			ticket: '266'
+		});
+		status().doing({
+			kind: 'building',
+			feature: '261',
+			title: 'Logbook',
+			ticket: '267',
+			step: 'build',
+			round: null,
+			rounds: null,
+			session: 'sess-1',
+			startedAt: at.toISOString(),
+			tickets: [{ id: '267', title: 'Logbook page', state: 'building' }]
+		});
+	};
+	// the pages as the server answers them, drawn in this process
+	const pages = () => {
+		seed();
+		const session = readSession(root, 'sess-1');
+		if (session === null) throw new Error('no transcript for sess-1');
+		return {
+			found: {
+				session: sessionPage(session),
+				logbook: logbookPage(readLogbook(root, '261'), readFactory(root, { alive: () => true }))
+			}
+		};
+	};
+
+	it('serves every page in the one stylesheet, one of it, and nothing of the banner', async () => {
+		seed();
+		await open();
+		const served = (await get('/')).text;
+		const board = served.split('<style>')[1]?.split('</style>')[0];
+		expect(board).toBe(STYLE);
+		const found = {
+			session: (await get('/sessions/sess-1')).text,
+			logbook: (await get('/features/261')).text
+		};
+		expect(found.session).toContain('<li class="result"><details>');
+		expect(found.logbook).toContain('<li class="decision handed">');
+		expect(found.logbook).toContain('<li class="live">');
+		for (const page of Object.values(found)) {
+			expect(page.match(/<style[\s>]/g)).toHaveLength(1);
+			expect(styleOf(page)).toBe(board);
+			expect(page).not.toContain('class="banner"');
+			expect(page).not.toContain('data:image/webp');
+			expect(page).not.toContain('--void');
+			expect(page).not.toContain('--drift');
+		}
+	});
+
+	it('has a rule for each class the pages draw, but those their list or parent draws', () => {
+		const { found } = pages();
+		// a transcript's text and a decision are drawn by their list's rules, and of a decision's kinds only a hand-over has a mark of its own
+		const byParent = ['text', 'decision'];
+		for (const page of Object.values(found)) {
+			const body = page.split('<body>')[1] ?? '';
+			const classes = new Set(
+				[...body.matchAll(/class="([^"]+)"/g)].flatMap((m) => {
+					const names = (m[1] ?? '').split(' ');
+					return names[0] === 'decision' ? names.filter((n) => n === 'handed') : names;
+				})
+			);
+			expect(classes).toContain(page === found.logbook ? 'handed' : 'result');
+			for (const c of classes) {
+				if (byParent.includes(c)) continue;
+				expect(styleOf(page), c).toMatch(new RegExp(`\\.${c}(?![\\w-])`));
+			}
+		}
+	});
+
+	const TARGETS = [
+		'a.open',
+		'a.act',
+		'button.copy',
+		'button.open',
+		'.log summary',
+		'.book summary',
+		'.cost summary',
+		'.criteria summary'
+	];
+	it('gives links, folds and copy buttons a 24px hit area, 44px on touch', () => {
+		const { found } = pages();
+		for (const page of Object.values(found)) {
+			const style = styleOf(page);
+			for (const s of TARGETS) expect(rule(style, s), s).toContain('min-height: 24px');
+			const coarse = style.split('@media (pointer: coarse) {')[1]?.split('\n}')[0] ?? '';
+			expect(coarse).toContain('min-height: 44px');
+			for (const s of TARGETS) expect(coarse, s).toContain(s);
+		}
+	});
+
+	it('draws colours from tokens and keeps font sizes on the 11.5px to 16px ramp', () => {
+		const { found } = pages();
+		for (const page of Object.values(found)) {
+			const style = styleOf(page);
+			const rest = style
+				.split('\n')
+				.filter((l) => !l.startsWith(':root'))
+				.join('\n');
+			expect(rest).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+			expect(rest).not.toContain('rgba(');
+			const fonts = style.matchAll(/font(?:-size)?:[^;}]*?(\d*\.?\d+)(px|rem|em)\b/g);
+			const sizes = [...fonts].map((m) => `${m[1] ?? ''}${m[2] ?? ''}`);
+			// 1em is the headings' reset to their parent's size, which the ramp then sets
+			const ramp = ['11.5px', '12px', '12.5px', '13px', '13.5px', '14px', '16px', '1em'];
+			expect(sizes.filter((s) => !ramp.includes(s))).toEqual([]);
+		}
+	});
+
+	it('tells a Session, a decision, a hand-over and the build in flight apart by the shape of their mark, not a coloured rule', () => {
+		const { found } = pages();
+		const style = styleOf(found.logbook);
+		const mark = (s: string) => rule(style, `.book > li${s}::before`);
+		const marks = ['', '.session', '.handed', '.live'].map(mark);
+		for (const m of marks) {
+			expect(m).toMatch(/var\(--/);
+			expect(m).not.toMatch(/#[0-9a-f]{3,8}\b|rgba\(/i);
+		}
+		const forms = marks.map((r) => r.replace(/var\(--[a-z0-9-]+\)/g, 'C'));
+		expect(new Set(forms).size).toBe(marks.length);
+		// the hand-over a filled mark with a bar and a dot, the build in flight half filled, as the Board's eggs are
+		expect(marks[2]).toContain('var(--ask)');
+		expect(marks[3]).toContain('conic-gradient(var(--blue) 0 50%');
+		expect(style).not.toMatch(/^\.book[^\n]*border-left/m);
+		// and in words
+		expect(found.logbook).toContain('Handed to a person');
+		expect(found.logbook).toContain('<span class="label">Building now</span>');
+	});
+
+	it('meets WCAG AA contrast for text and marks in the light and the dark scheme', () => {
+		const { found } = pages();
+		const style = styleOf(found.logbook);
+		const schemes = ['light', 'dark'].map((scheme) => {
+			const head = `:root { color-scheme: ${scheme};`;
+			const line = style.split('\n').find((l) => l.startsWith(head));
+			const tokens: Record<string, string> = {};
+			for (const m of (line ?? '').matchAll(/--([a-z0-9-]+): (#[0-9a-f]{6});/gi))
+				tokens[m[1] ?? ''] = m[2] ?? '';
+			return tokens;
+		});
+		const lum = (hex: string) => {
+			const [r = 0, g = 0, b = 0] = [1, 3, 5].map((i) => {
+				const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+				return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+			});
+			return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		};
+		const ratio = (a = '', b = '') => {
+			const [hi = 0, lo = 0] = [lum(a), lum(b)].sort((x, y) => y - x);
+			return (hi + 0.05) / (lo + 0.05);
+		};
+		for (const t of schemes) {
+			expect(Object.keys(t).length).toBeGreaterThan(10);
+			for (const ink of ['ink', 'muted', 'ask', 'blue-ink', 'built', 'fault'])
+				expect(ratio(t[ink], t.bg), ink).toBeGreaterThanOrEqual(4.5);
+			for (const ink of ['ink', 'muted'])
+				expect(ratio(t[ink], t['surface-2']), ink).toBeGreaterThanOrEqual(4.5);
+			for (const mark of ['gray', 'blue', 'ask'])
+				expect(ratio(t[mark], t.bg), mark).toBeGreaterThanOrEqual(3);
+			expect(ratio(t['on-fill'], t.ask), 'the hand-over mark').toBeGreaterThanOrEqual(3);
+		}
+	});
+
+	it('stops any motion under prefers-reduced-motion and carries no scroll drift', () => {
+		const { found } = pages();
+		for (const page of Object.values(found)) {
+			const style = styleOf(page);
+			const moving = style
+				.split('\n')
+				.filter((l) => /animation: (?!none)/.test(l) && !l.startsWith('@'))
+				.map((l) => l.split(' {')[0] ?? '');
+			expect(moving.length).toBeGreaterThan(0);
+			const reduce = '@media (prefers-reduced-motion: reduce)';
+			const still = style.split(reduce)[1]?.split('\n')[0] ?? '';
+			for (const s of moving) expect(still, s).toContain(`${s} { animation: none`);
+			expect(page).not.toContain('scrollTop || scrollY');
+		}
+	});
+});
+
 describe('nightjar ui cost by stage and model', () => {
 	const models = [
 		{
@@ -3427,15 +3609,20 @@ describe('nightjar ui Steps bar', () => {
 		expect(boardOf(page).split(legend)).toHaveLength(2);
 	});
 
-	it.each(THEMES)(
+	const styleOf = (page: string) => page.split('<style>')[1]?.split('</style>')[0] ?? '';
+	it.each(['Board', 'Logbook page', 'Session page'])(
 		'draws each state from tokens, each with its own shape as well as its hue (%s)',
-		(theme) => {
-			const style =
-				theme === 'paper'
-					? PAPER_STYLE
-					: (logbookPage(readLogbook(root, '7'), readFactory(root, { alive: () => true }))
-							.split('<style>')[1]
-							?.split('</style>')[0] ?? '');
+		async (on) => {
+			let style: string;
+			if (on === 'Logbook page') {
+				const view = readFactory(root, { alive: () => true });
+				style = styleOf(logbookPage(readLogbook(root, '7'), view));
+			} else if (on === 'Session page') {
+				style = styleOf(sessionPage({ id: 's', runs: [], lines: [] }));
+			} else {
+				await open();
+				style = styleOf((await get('/')).text);
+			}
 			const rules = ['passed', 'retried', 'failed', 'running', 'notReached', 'notNeeded'].map(
 				(s) => style.split('\n').find((l) => l.startsWith(`.seg.${s} {`)) ?? ''
 			);

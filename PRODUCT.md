@@ -24,7 +24,7 @@ Local, single-person tool: runs on macOS, Linux or WSL2 with the person's own `g
 - Hosted/team-wide oversight of many people's Queues is not a goal confirmed here.
 
 ## Brand Commitments
-- The page follows `DESIGN.md`: Paper, a light list on warm paper greys that follows the light or dark scheme, by default, and the night-shift teal and amber on near-black as the Nightjar theme. `docs/design/color-scheme.md` is the brand palette for the icon and other assets, not the page.
+- The page follows `DESIGN.md`: a light list on warm paper greys that follows the machine's light or dark scheme. `docs/design/color-scheme.md` is the brand palette for the icon and other assets, not the page.
 - Brand assets: `docs/design/assets/` (banner, icon, wordmark).
 
 ## Evidence on Hand
@@ -37,4 +37,4 @@ Real run data comes from the tool itself; no testimonials, customers or benchmar
 - Quiet by default, loud only when a human is needed.
 
 ## Accessibility & Inclusion
-WCAG AA: sufficient contrast (including neon accents on dark surfaces) and full keyboard operation.
+WCAG AA: sufficient contrast in both the light and the dark scheme, and full keyboard operation.

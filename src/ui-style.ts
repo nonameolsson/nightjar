@@ -1,57 +1,9 @@
-// The page's themes. Paper, the default, is a light list on warm paper greys that follows the machine's light or dark scheme;
-// Nightjar is the night-shift HUD in `ui.ts`. Each is a whole stylesheet of its own, so neither bends to fit the other,
-// and the page turns the one not chosen off with `media="not all"`. The choice is the person's own, kept in local storage.
-
-export const THEMES = ['paper', 'nightjar'] as const;
-export type Theme = (typeof THEMES)[number];
-export const DEFAULT_THEME: Theme = 'paper';
-
-const NAMES: Record<Theme, string> = { paper: 'Paper', nightjar: 'Nightjar' };
-
-// The bar's switch: one button per theme, pressed for the one shown.
-export const THEME_SWITCH = `<nav id="themes" aria-label="Theme">${THEMES.map(
-	(t) => `<button type="button" data-theme="${t}">${NAMES[t]}</button>`
-).join('')}</nav>`;
-
-// Each theme's stylesheet, the default one on and the others off until the head script reads the person's choice.
-export const themeStyles = (styles: Record<Theme, string>): string =>
-	THEMES.map(
-		(t) =>
-			`<style data-theme="${t}"${t === DEFAULT_THEME ? '' : ' media="not all"'}>${styles[t]}</style>`
-	).join('\n');
-
-// Runs in the head, after the stylesheets and before the body is drawn, so a kept choice shows without a flash of the default.
-// Its own script element with an id, so it is never the page's first bare <script>.
-export const THEME_SCRIPT = `(() => {
-const THEMES = ${JSON.stringify(THEMES)};
-let theme = null;
-try { theme = localStorage.getItem('nightjar-theme'); } catch {}
-if (!THEMES.includes(theme)) theme = ${JSON.stringify(DEFAULT_THEME)};
-const apply = () => {
-	document.documentElement.dataset.theme = theme;
-	for (const s of document.querySelectorAll('style[data-theme]')) s.media = s.dataset.theme === theme ? 'all' : 'not all';
-	for (const b of document.querySelectorAll('button[data-theme]')) {
-		b.dataset.on = String(b.dataset.theme === theme);
-		b.setAttribute('aria-pressed', b.dataset.on);
-	}
-};
-apply();
-addEventListener('DOMContentLoaded', () => {
-	apply();
-	for (const b of document.querySelectorAll('button[data-theme]')) {
-		b.onclick = () => {
-			theme = b.dataset.theme;
-			try { localStorage.setItem('nightjar-theme', theme); } catch {}
-			apply();
-		};
-	}
-});
-})();`;
-
-// Paper: a Board of cards under each state, a Table of one line per Feature, a 13px platform face with tabular figures, warm paper greys and one hairline for every rule.
+// The page's one stylesheet, inlined by the Board, the Session page and the Logbook page.
+// A Board of cards under each state, a Table of one line per Feature, a 13px platform face with tabular figures, warm paper greys and one hairline for every rule.
 // Hue lives in small objects (a status icon, a group's dot, a state's words), never in a field; one blue for focus and selection.
-// Every colour is a token on :root, light first and dark second, so a line outside :root holds no literal.
-export const PAPER_STYLE = `
+// Every colour is a token on :root, light first and dark second by the machine's scheme, so a line outside :root holds no literal.
+// A Logbook's entries sit on hairlines, each with a small mark whose shape tells its kind.
+export const STYLE = `
 :root { color-scheme: light; --bg: #ffffff; --surface-2: #f7f7f5; --surface-3: #efeeec; --ink: #37352f; --muted: #66655f; --line: #e9e9e7; --accent: #1d76cf; --built: #1d7f52; --fault: #c93a3f; --ask: #956a0a; --pending: #a3a29e; --blue: #337ea9; --blue-ink: #306e92; --purple: #9065b0; --gray: #787774; --on-fill: #ffffff; --tint: 8%; --scrim: rgba(15, 15, 15, 0.25); --shadow-pop: 0 0 0 1px rgba(15, 15, 15, 0.05), 0 3px 6px rgba(15, 15, 15, 0.1), 0 9px 24px rgba(15, 15, 15, 0.2); --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Helvetica, Arial, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 @media (prefers-color-scheme: dark) {
 :root { color-scheme: dark; --bg: #191919; --surface-2: #202020; --surface-3: #2c2c2c; --ink: #d4d4d2; --muted: #a3a3a1; --line: #2f2f2f; --accent: #2a7fd8; --built: #4cc38a; --fault: #ff6369; --ask: #e2b93d; --pending: #5f5e5b; --blue: #5e9fd1; --blue-ink: #71abd7; --purple: #9d68d3; --gray: #9b9b9b; --on-fill: #191919; --tint: 12%; --scrim: rgba(0, 0, 0, 0.5); --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 3px 6px rgba(0, 0, 0, 0.3), 0 9px 24px rgba(0, 0, 0, 0.45); }
@@ -62,19 +14,16 @@ body { background-color: var(--bg); color: var(--ink); font: 13px/1.4 var(--sans
 ::selection { background: var(--accent-bg); }
 a { color: inherit; text-underline-offset: 2px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.banner { display: none; }
 .bar { align-items: center; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; flex: none; gap: 4px; min-height: 40px; padding: 6px var(--gut); }
 #top { background: var(--bg); border-bottom: 1px solid var(--line); flex: none; padding: 0 var(--gut); }
 #scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 #scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .elsewhere { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .mark { font-size: 13px; font-weight: 600; margin: 0 16px 0 0; }
-#views, #themes { display: flex; gap: 2px; }
-#themes { border-left: 1px solid var(--line); margin-left: 8px; padding-left: 8px; }
+#views { display: flex; gap: 2px; }
 #views button { background: none; border: 0; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; min-height: 24px; height: 28px; padding: 0 10px; }
-#themes button { background: none; border: 0; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; font-size: 12.5px; min-height: 24px; height: 28px; padding: 0 10px; }
-#views button:hover, #themes button:hover { background: var(--surface-2); color: var(--ink); }
-#views button[data-on="true"], #themes button[data-on="true"] { background: var(--surface-3); color: var(--ink); font-weight: 500; }
+#views button:hover { background: var(--surface-2); color: var(--ink); }
+#views button[data-on="true"] { background: var(--surface-3); color: var(--ink); font-weight: 500; }
 #panels { margin: 0 auto; max-width: 1380px; min-width: 0; padding: 16px 24px 48px; }
 h1, h2 { font-size: 1em; margin: 0; }
 header { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 12px 0 2px; }
@@ -87,6 +36,7 @@ header .stale { color: var(--ask); }
 .empty, small, .meta { color: var(--muted); }
 small { font-size: 12px; }
 .empty { margin: 8px 0; }
+.note { font-size: 12.5px; }
 ul, ol { list-style: none; margin: 4px 0; padding: 0; }
 pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 12px/1.5 var(--mono); margin: 8px 0 0; max-height: 14rem; overflow: auto; padding: 8px 10px; white-space: pre-wrap; }
 #panels[data-view="board"] :is(.overview, .table), #panels[data-view="table"] :is(.overview, .board), #panels[data-view="overview"] :is(.board, .table) { display: none; }
@@ -308,14 +258,46 @@ td.cost .split { text-align: left; white-space: normal; width: 22rem; }
 .seg.running { background: linear-gradient(90deg, var(--blue) 0 50%, transparent 50%); border: 1px solid var(--blue); }
 .seg.notReached { border: 1px dashed var(--pending); }
 .seg.notNeeded { background: linear-gradient(var(--pending), var(--pending)) center / 100% 2px no-repeat; }
+.bar a.open { border-radius: 6px; color: var(--muted); font-size: 12.5px; height: 28px; padding: 0 10px; text-decoration: none; }
+.bar a.open:hover { background: var(--surface-2); color: var(--ink); }
+.part { border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 500; margin: 20px 0 4px; padding-top: 10px; }
+.run { border: 1px solid var(--line); border-radius: 6px; margin: 12px 0; padding: 10px 14px; }
+.run dl { display: grid; gap: 6px 20px; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin: 0; }
+.run dt { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.run dd { margin: 0; overflow-wrap: anywhere; }
+.run .more { margin: 8px 0 0; padding: 0; }
+.log { margin: 8px 0 0; }
+.log li { overflow-wrap: anywhere; padding: 4px 0; }
+.log p { margin: 0; }
+.log .tool { background: var(--surface-2); border-radius: 6px; color: var(--muted); font: 12px/1.5 var(--mono); padding: 3px 10px; }
+.log .result { padding-left: 10px; }
+.log summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 2px 0; }
+.log summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.log pre { max-height: 24rem; }
+.book { margin: 12px 0 0; }
+.book > li { border-top: 1px solid var(--line); overflow-wrap: anywhere; padding: 8px 0 8px 24px; position: relative; }
+.book > li:first-child { border-top: 0; }
+.book > li::before { background: var(--gray); border-radius: 50%; box-sizing: border-box; content: ""; height: 6px; left: 4px; position: absolute; top: 14px; width: 6px; }
+.book > li.session::before { background: none; border: 1.5px solid var(--gray); height: 10px; left: 2px; top: 15px; width: 10px; }
+.book > li.handed::before { background: linear-gradient(var(--on-fill), var(--on-fill)) 6px 3px / 2px 5px no-repeat, linear-gradient(var(--on-fill), var(--on-fill)) 6px 9px / 2px 2px no-repeat, var(--ask); height: 14px; left: 0; top: 10px; width: 14px; }
+.book > li.live::before { background: conic-gradient(var(--blue) 0 50%, transparent 0); border: 1.5px solid var(--blue); box-shadow: inset 0 0 0 1.5px var(--bg); height: 14px; left: 0; top: 13px; width: 14px; }
+.book > li > p { font-size: 12.5px; margin: 0; }
+.book time { color: var(--muted); font-size: 12px; margin-right: 8px; }
+.book .when { margin: 0 0 6px; }
+.book .run { border: 0; border-radius: 0; margin: 0; padding: 0; }
+#feature .book .run { border-top: 0; margin-top: 0; padding-top: 0; }
+.book .label { color: var(--blue-ink); font-weight: 600; margin-right: 6px; }
+.book summary { color: var(--muted); cursor: pointer; font-size: 12px; min-height: 24px; padding: 4px 0 2px; }
+.book summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.book pre { max-height: 24rem; }
 @media (prefers-reduced-motion: reduce) { .dk i { animation: none; } }
 @media (max-width: 1260px) {
 	.cols.has-detail { grid-template-columns: 1fr; }
 	.detail { order: -1; position: static; }
 }
 @media (pointer: coarse) {
-	th button, #views button, #themes button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .cost summary { min-height: 44px; }
-	#views button, #themes button, .chips button { padding-inline: 14px; }
+	th button, #views button, .chips button, button.copy, a.act, a.open, a.count, button.open, button.close, .criteria summary, .cost summary, .log summary, .book summary { min-height: 44px; }
+	#views button, .chips button { padding-inline: 14px; }
 	.tab { height: 40px; }
 }
 @media (max-height: 480px), (max-width: 400px) {

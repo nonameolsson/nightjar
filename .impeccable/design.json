@@ -1,324 +1,268 @@
 {
 	"schemaVersion": 2,
-	"generatedAt": "2026-11-04T12:55:00+00:00",
+	"generatedAt": "2026-11-27T10:21:44Z",
 	"title": "Design System: Nightjar UI",
 	"extensions": {
 		"colorMeta": {
-			"void": {
+			"light.bg": {
 				"role": "neutral",
-				"displayName": "Night Void",
-				"canonical": "#04070b",
+				"displayName": "Paper",
+				"canonical": "#ffffff",
 				"tonalRamp": [
-					"#04070b",
-					"#08101a",
-					"#0b131b",
-					"#10202a",
-					"#1b3a42",
-					"#2f5a63",
-					"#5d7e86",
-					"#9db5b8"
+					"#262626",
+					"#434343",
+					"#616161",
+					"#7e7e7e",
+					"#9b9b9b",
+					"#b8b8b8",
+					"#d5d5d5",
+					"#f2f2f2"
 				]
 			},
-			"panel": {
+			"light.surface-2": {
 				"role": "neutral",
-				"displayName": "Panel Slate",
-				"canonical": "#0b131b",
+				"displayName": "Paper Wash",
+				"canonical": "#f7f7f5",
 				"tonalRamp": [
-					"#04070b",
-					"#070d13",
-					"#0b131b",
-					"#0f1a24",
-					"#14222d",
-					"#1b3a42",
-					"#264a54",
-					"#2f5a63"
+					"#292923",
+					"#49493e",
+					"#696958",
+					"#898972",
+					"#a4a491",
+					"#bfbfb1",
+					"#dadad1",
+					"#f4f4f1"
 				]
 			},
-			"line": {
+			"light.surface-3": {
 				"role": "neutral",
-				"displayName": "Circuit Line",
-				"canonical": "#1b3a42",
+				"displayName": "Paper Shade",
+				"canonical": "#efeeec",
 				"tonalRamp": [
-					"#0b181c",
-					"#10262c",
-					"#1b3a42",
-					"#24505a",
-					"#2f5a63",
-					"#3f7480",
-					"#5d98a3",
-					"#8fc0c8"
+					"#282724",
+					"#48453f",
+					"#67635a",
+					"#868175",
+					"#a29d93",
+					"#bebab2",
+					"#d9d6d2",
+					"#f3f3f1"
 				]
 			},
-			"teal": {
-				"role": "primary",
-				"displayName": "Signal Teal",
-				"canonical": "#22e3d2",
-				"tonalRamp": [
-					"#073b37",
-					"#0b625b",
-					"#0f8a80",
-					"#14a89c",
-					"#22e3d2",
-					"#62efe2",
-					"#a0f6ee",
-					"#d9fcf9"
-				]
-			},
-			"teal-deep": {
-				"role": "primary",
-				"displayName": "Deep Teal",
-				"canonical": "#14a89c",
-				"tonalRamp": [
-					"#05302c",
-					"#0a4f48",
-					"#0e7a70",
-					"#14a89c",
-					"#30c6ba",
-					"#6adbd1",
-					"#a4ece6",
-					"#d6f8f5"
-				]
-			},
-			"amber": {
-				"role": "secondary",
-				"displayName": "Needs-Person Amber",
-				"canonical": "#ff9a1f",
-				"tonalRamp": [
-					"#4a2a00",
-					"#7a4600",
-					"#a85f00",
-					"#d97f0a",
-					"#ff9a1f",
-					"#ffb554",
-					"#ffd08f",
-					"#ffead0"
-				]
-			},
-			"slate-violet": {
-				"role": "tertiary",
-				"displayName": "Queue Slate Violet",
-				"canonical": "#8f98e0",
-				"tonalRamp": [
-					"#1f2350",
-					"#313877",
-					"#474f9f",
-					"#6069c4",
-					"#8f98e0",
-					"#aab1ea",
-					"#c7ccf2",
-					"#e4e6f9"
-				]
-			},
-			"ok-green": {
-				"role": "tertiary",
-				"displayName": "Completed Green",
-				"canonical": "#3fd17f",
-				"tonalRamp": [
-					"#0c3b22",
-					"#145c35",
-					"#1d8049",
-					"#2aa862",
-					"#3fd17f",
-					"#76e0a3",
-					"#a9edc5",
-					"#d8f8e6"
-				]
-			},
-			"ink": {
+			"light.ink": {
 				"role": "neutral",
 				"displayName": "Ink",
-				"canonical": "#e6f1f2",
+				"canonical": "#37352f",
 				"tonalRamp": [
-					"#2b3a3c",
-					"#4a5f62",
-					"#6a8286",
-					"#8aa3a6",
-					"#a9bdc0",
-					"#c4d4d6",
-					"#e6f1f2",
-					"#f6fafa"
+					"#292824",
+					"#48463f",
+					"#67645a",
+					"#858176",
+					"#a19e95",
+					"#bcbab4",
+					"#d7d6d3",
+					"#f3f3f2"
 				]
 			},
-			"ink-soft": {
+			"light.muted": {
 				"role": "neutral",
-				"displayName": "Soft Ink",
-				"canonical": "#9db5b8",
+				"displayName": "Muted",
+				"canonical": "#66655f",
 				"tonalRamp": [
-					"#2b3a3c",
-					"#44585b",
-					"#5d7679",
-					"#7f979b",
-					"#9db5b8",
-					"#b6c9cb",
-					"#d0dddf",
-					"#e6eeef"
+					"#272725",
+					"#454541",
+					"#64635d",
+					"#82817a",
+					"#9e9d98",
+					"#bab9b6",
+					"#d6d6d4",
+					"#f3f2f2"
 				]
 			},
-			"muted": {
+			"light.line": {
 				"role": "neutral",
-				"displayName": "Muted Mist",
-				"canonical": "#7f979b",
+				"displayName": "Hairline",
+				"canonical": "#e9e9e7",
 				"tonalRamp": [
-					"#1f2b2d",
-					"#35474a",
-					"#4e6366",
-					"#657c80",
-					"#7f979b",
-					"#9bb0b3",
-					"#b9c9cb",
-					"#d8e2e3"
+					"#272725",
+					"#454541",
+					"#64645d",
+					"#828279",
+					"#9f9f97",
+					"#bbbbb5",
+					"#d7d7d3",
+					"#f3f3f2"
 				]
 			},
-			"err": {
+			"light.accent": {
+				"role": "primary",
+				"displayName": "Focus Blue",
+				"canonical": "#1d76cf",
+				"tonalRamp": [
+					"#11263b",
+					"#19436e",
+					"#1d61a4",
+					"#217eda",
+					"#569bdf",
+					"#8ab8e6",
+					"#bbd5ef",
+					"#ebf2fa"
+				]
+			},
+			"light.ask": {
+				"role": "secondary",
+				"displayName": "Needs-Person Amber",
+				"canonical": "#956a0a",
+				"tonalRamp": [
+					"#41300c",
+					"#7b580c",
+					"#af7e12",
+					"#dba120",
+					"#e1b654",
+					"#e8ca88",
+					"#f1e0ba",
+					"#faf5ea"
+				]
+			},
+			"light.blue": {
+				"role": "tertiary",
+				"displayName": "Building Blue",
+				"canonical": "#337ea9",
+				"tonalRamp": [
+					"#172a35",
+					"#254c62",
+					"#2f6e92",
+					"#3e8fbe",
+					"#6ba8ca",
+					"#98c1d8",
+					"#c3dae7",
+					"#edf4f8"
+				]
+			},
+			"light.built": {
+				"role": "tertiary",
+				"displayName": "Built Green",
+				"canonical": "#1d7f52",
+				"tonalRamp": [
+					"#133928",
+					"#1b6b47",
+					"#299965",
+					"#3bc183",
+					"#68cd9f",
+					"#96dabb",
+					"#c1e9d7",
+					"#ecf8f3"
+				]
+			},
+			"light.purple": {
+				"role": "tertiary",
+				"displayName": "Queue Violet",
+				"canonical": "#9065b0",
+				"tonalRamp": [
+					"#281e2f",
+					"#463255",
+					"#65457c",
+					"#8357a5",
+					"#9f7cba",
+					"#bba3cd",
+					"#d7cae1",
+					"#f3eff6"
+				]
+			},
+			"light.gray": {
+				"role": "tertiary",
+				"displayName": "Shelf Grey",
+				"canonical": "#787774",
+				"tonalRamp": [
+					"#272626",
+					"#444442",
+					"#62615f",
+					"#807f7c",
+					"#9c9c99",
+					"#b9b8b7",
+					"#d6d5d5",
+					"#f2f2f2"
+				]
+			},
+			"light.fault": {
 				"role": "tertiary",
 				"displayName": "Fault Red",
-				"canonical": "#ff5a5f",
+				"canonical": "#c93a3f",
 				"tonalRamp": [
-					"#4a0d10",
-					"#7a1a1e",
-					"#a82a2f",
-					"#d43f44",
-					"#ff5a5f",
-					"#ff8286",
-					"#ffadb0",
-					"#ffd6d7"
+					"#361718",
+					"#622427",
+					"#922f33",
+					"#c4373c",
+					"#d06569",
+					"#dc9497",
+					"#e9c1c2",
+					"#f8eced"
 				]
 			},
-			"socket-dash": {
+			"light.pending": {
 				"role": "neutral",
-				"displayName": "Socket Dash",
-				"canonical": "#2f5a63",
+				"displayName": "Pending",
+				"canonical": "#a3a29e",
 				"tonalRamp": [
-					"#0f1f23",
-					"#17323a",
-					"#1f434b",
-					"#2f5a63",
-					"#3f7480",
-					"#5896a2",
-					"#85b8c1",
-					"#b8d6db"
+					"#272726",
+					"#454442",
+					"#63625e",
+					"#81807b",
+					"#9d9c98",
+					"#bab9b6",
+					"#d6d6d4",
+					"#f3f2f2"
 				]
-			},
-			"socket-border": {
-				"role": "neutral",
-				"displayName": "Socket Border",
-				"canonical": "#3f7078",
-				"tonalRamp": [
-					"#142226",
-					"#1f373d",
-					"#2b4f57",
-					"#3f7078",
-					"#5b919b",
-					"#82b0b8",
-					"#add0d5",
-					"#d4e6e9"
-				]
-			},
-			"bar-overlay": {
-				"role": "neutral",
-				"displayName": "Bar Overlay",
-				"canonical": "rgba(4, 7, 11, 0.94)",
-				"tonalRamp": ["rgba(4, 7, 11, 0.94)"]
-			},
-			"panel-overlay": {
-				"role": "neutral",
-				"displayName": "Panel Overlay",
-				"canonical": "rgba(8, 13, 19, 0.85)",
-				"tonalRamp": ["rgba(8, 13, 19, 0.85)"]
-			},
-			"panel-overlay-strong": {
-				"role": "neutral",
-				"displayName": "Panel Overlay Strong",
-				"canonical": "rgba(8, 13, 19, 0.92)",
-				"tonalRamp": ["rgba(8, 13, 19, 0.92)"]
-			},
-			"teal-wash": {
-				"role": "neutral",
-				"displayName": "Teal Wash",
-				"canonical": "rgba(34, 227, 210, 0.07)",
-				"tonalRamp": ["rgba(34, 227, 210, 0.07)"]
-			},
-			"shade-soft": {
-				"role": "neutral",
-				"displayName": "Shade Soft",
-				"canonical": "rgba(0, 0, 0, 0.3)",
-				"tonalRamp": ["rgba(0, 0, 0, 0.3)"]
-			},
-			"shade-mid": {
-				"role": "neutral",
-				"displayName": "Shade Mid",
-				"canonical": "rgba(0, 0, 0, 0.35)",
-				"tonalRamp": ["rgba(0, 0, 0, 0.35)"]
-			},
-			"shade-deep": {
-				"role": "neutral",
-				"displayName": "Shade Deep",
-				"canonical": "rgba(0, 0, 0, 0.45)",
-				"tonalRamp": ["rgba(0, 0, 0, 0.45)"]
 			}
 		},
 		"typographyMeta": {
-			"heading-mono": {
-				"displayName": "Heading (mono)",
-				"purpose": "Run title; stands in for an unshipped display face."
+			"title": {
+				"displayName": "Title",
+				"purpose": "Run header and detail panel title."
 			},
-			"panel-title": {
-				"displayName": "Panel Title",
-				"purpose": "Building-now Ticket name."
-			},
-			"entry-name": {
-				"displayName": "Entry Name",
-				"purpose": "Ticket and run names on mats."
+			"name": {
+				"displayName": "Name",
+				"purpose": "A Feature's title on a card."
 			},
 			"body": {
 				"displayName": "Body",
-				"purpose": "Prose and descriptions."
-			},
-			"data": {
-				"displayName": "Data",
-				"purpose": "Stats, meta, clocks, lists, log."
+				"purpose": "Everything else, with tabular figures."
 			},
 			"label": {
 				"displayName": "Label",
-				"purpose": "Mat tabs, column heads, meter captions."
+				"purpose": "Section heads, group names, meter captions; sentence case."
+			},
+			"code": {
+				"displayName": "Code",
+				"purpose": "Signals, commands, tool calls and logs."
 			}
 		},
 		"shadows": [
 			{
-				"name": "egg-inset",
-				"value": "inset -3px -3px 0 rgba(0,0,0,0.3)",
-				"purpose": "Form shading inside an egg; not elevation."
-			},
-			{
-				"name": "blip-ring",
-				"value": "0 0 0 9px transparent (from 0 0 0 0 rgba(34,227,210,0.6))",
-				"purpose": "Expanding ring on the live dot."
+				"name": "drawer",
+				"value": "0 0 0 1px rgba(15,15,15,0.05), 0 3px 6px rgba(15,15,15,0.1), 0 9px 24px rgba(15,15,15,0.2)",
+				"purpose": "Only the modal Feature drawer is lifted (dark scheme uses white 7% and black 30/45%)."
 			}
 		],
 		"motion": [
 			{
-				"name": "incubate",
-				"value": "2.4s ease-in-out infinite",
-				"purpose": "Building egg ring fades to 25% and back."
-			},
-			{
 				"name": "blip",
 				"value": "2s ease-out infinite",
-				"purpose": "Live dot in the Building-now caption."
+				"purpose": "The live dot's expanding ring; off under prefers-reduced-motion."
 			}
 		],
 		"breakpoints": [
 			{
-				"name": "panel-stack",
+				"name": "stack-detail",
 				"value": "1260px"
-			},
-			{
-				"name": "entry-stack",
-				"value": "900px"
 			},
 			{
 				"name": "phone",
 				"value": "760px"
+			},
+			{
+				"name": "flat-bar",
+				"value": "400px"
 			}
 		]
 	},
@@ -326,106 +270,122 @@
 		{
 			"name": "View Tab",
 			"kind": "nav",
-			"refersTo": "nav-tab",
-			"description": "Square view switcher button on the sticky bar.",
+			"refersTo": "view-tab",
+			"description": "28px text button on the bar; the active view sits on Paper Shade.",
 			"html": "<button class=\"ds-tab\">Table</button> <button class=\"ds-tab\" data-on=\"true\">Board</button>",
-			"css": ".ds-tab{background:none;border:1px solid transparent;color:#9db5b8;font:inherit;font-size:.9rem;padding:5px 16px;cursor:pointer}.ds-tab:hover{color:#e6f1f2}.ds-tab[data-on=true]{background:rgba(34,227,210,.07);border-color:#14a89c;color:#22e3d2}.ds-tab:focus-visible{outline:2px solid #22e3d2;outline-offset:2px}"
+			"css": ".ds-tab{background:none;border:0;border-radius:6px;color:#66655f;cursor:pointer;font:inherit;height:28px;padding:0 10px}.ds-tab:hover{background:#f7f7f5;color:#37352f}.ds-tab[data-on=true]{background:#efeeec;color:#37352f;font-weight:500}.ds-tab:focus-visible{outline:2px solid #1d76cf;outline-offset:1px}"
 		},
 		{
 			"name": "Filter Chip",
 			"kind": "chip",
 			"refersTo": "chip",
-			"description": "Pill filter, outline at rest and teal-filled when on.",
-			"html": "<button class=\"ds-chip\">all</button> <button class=\"ds-chip\" data-on=\"true\">building</button>",
-			"css": ".ds-chip{background:none;border:1px solid #14a89c;border-radius:999px;color:#22e3d2;font:inherit;font-size:.9rem;padding:3px 14px;cursor:pointer}.ds-chip[data-on=true]{background:#22e3d2;border-color:#22e3d2;color:#04070b}.ds-chip:focus-visible{outline:2px solid #22e3d2;outline-offset:2px}"
+			"description": "Pill filter; the pressed chip is on Paper Shade.",
+			"html": "<button class=\"ds-chip\">Building</button> <button class=\"ds-chip\" data-on=\"true\">Needs a person</button>",
+			"css": ".ds-chip{background:none;border:1px solid #e9e9e7;border-radius:9999px;color:#66655f;cursor:pointer;font:inherit;font-size:12.5px;padding:2px 12px}.ds-chip:hover{background:#f7f7f5}.ds-chip[data-on=true]{background:#efeeec;border-color:#efeeec;color:#37352f;font-weight:500}.ds-chip:focus-visible{outline:2px solid #1d76cf;outline-offset:1px}"
 		},
 		{
-			"name": "Eggs in Sockets",
+			"name": "Action Link",
+			"kind": "button",
+			"refersTo": "action-link",
+			"description": "Bordered link out to the Tracker or a pull request.",
+			"html": "<a class=\"ds-act\" href=\"#\">Pull request</a>",
+			"css": ".ds-act{align-items:center;border:1px solid #e9e9e7;border-radius:6px;color:#37352f;display:inline-flex;font:12.5px/1.4 ui-sans-serif,-apple-system,'Segoe UI',sans-serif;height:28px;padding:0 10px;text-decoration:none}.ds-act:hover{background:#f7f7f5}.ds-act:focus-visible{outline:2px solid #1d76cf;outline-offset:1px}"
+		},
+		{
+			"name": "Status Marks",
 			"kind": "custom",
-			"refersTo": "nest-socket",
-			"description": "Ticket states: built, building, needs a person, waiting (empty socket).",
-			"html": "<span class=\"ds-eggs\"><span class=\"ds-slot\"><i class=\"ds-egg\"></i></span><span class=\"ds-slot\"><i class=\"ds-egg b\"></i></span><span class=\"ds-slot\"><i class=\"ds-egg n\"></i></span><span class=\"ds-slot\"></span></span>",
-			"css": ".ds-egg{display:inline-block;width:.95rem;height:1.2rem;border-radius:50% 50% 50% 50%/62% 62% 38% 38%;box-shadow:inset -3px -3px 0 rgba(0,0,0,.3);position:relative;background:#14a89c}.ds-egg.b{background:#22e3d2;outline:2px solid #22e3d2;outline-offset:3px}.ds-egg.n{background:#ff9a1f;margin:0 .65rem}.ds-egg.n:before,.ds-egg.n:after{content:'';position:absolute;top:.45rem;width:.5rem;height:3px;border-radius:2px;background:#ff9a1f}.ds-egg.n:before{left:-.65rem;transform:rotate(-20deg)}.ds-egg.n:after{right:-.65rem;transform:rotate(20deg)}.ds-egg.w{background:none;border:2px dashed #2f5a63;box-shadow:none}.ds-eggs{display:flex;gap:7px;align-items:center}.ds-slot{display:inline-grid;place-items:center;width:1.75rem;height:1.75rem;border-radius:50%;background:rgba(0,0,0,.35);border:1px solid #3f7078}"
+			"refersTo": "status-mark",
+			"description": "The four Ticket marks: built, building, needs a person, waiting; shape plus hue.",
+			"html": "<span class=\"ds-m ds-built\"></span> <span class=\"ds-m ds-building\"></span> <span class=\"ds-m ds-need\"></span> <span class=\"ds-m ds-wait\"></span>",
+			"css": ".ds-m{border-radius:50%;display:inline-block;height:14px;position:relative;vertical-align:middle;width:14px;margin-right:6px}.ds-built{background:#1d7f52}.ds-built:after{border:solid #fff;border-width:0 1.5px 1.5px 0;content:'';height:6px;left:5px;position:absolute;top:2.5px;transform:rotate(45deg);width:3px}.ds-building{background:conic-gradient(#337ea9 0 50%,transparent 0);border:1.5px solid #337ea9;box-shadow:inset 0 0 0 1.5px #fff}.ds-need{background:#956a0a}.ds-need:before,.ds-need:after{background:#fff;content:'';left:6px;position:absolute;width:2px}.ds-need:before{height:5px;top:3px}.ds-need:after{height:2px;top:9px}.ds-wait{border:1.5px dashed #a3a29e}"
 		},
 		{
-			"name": "Habitat Mat",
+			"name": "Feature Card",
 			"kind": "card",
-			"refersTo": "mat",
-			"description": "State mat with vertical label tab, hexagon tally, corner brackets and entries (shown: building).",
-			"html": "<section class=\"ds-mat\"><div class=\"ds-tab-rail\"><h2>Building</h2><em class=\"ds-tally\">2</em></div><div class=\"ds-lines\"><p><b>#12</b> Add retry</p></div></section>",
-			"css": ".ds-mat{--h:#22e3d2;position:relative;display:grid;grid-template-columns:88px 1fr;background:linear-gradient(90deg,color-mix(in srgb,var(--h) 12%,transparent),transparent 45%),rgba(8,13,19,.85);border:1px solid #1b3a42;color:#e6f1f2;font:15px/1.5 system-ui,sans-serif;min-height:100px}.ds-mat:before,.ds-mat:after{content:'';position:absolute;right:-1px;width:16px;height:16px;border:2px solid var(--h)}.ds-mat:before{top:-1px;border-bottom:0;border-left:0}.ds-mat:after{bottom:-1px;border-top:0;border-left:0}.ds-tab-rail{display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:10px;padding:14px 6px;border-right:2px solid var(--h);color:var(--h)}.ds-tab-rail h2{margin:0;font:600 .72rem ui-monospace,Menlo,monospace;letter-spacing:.14em;text-transform:uppercase;writing-mode:vertical-rl;transform:rotate(180deg)}.ds-tally{display:grid;place-items:center;width:2.3rem;height:2.3rem;background:var(--h);color:#04070b;font:700 1.1rem ui-monospace,Menlo,monospace;font-style:normal;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)}.ds-lines{padding:4px 18px}.ds-lines p{margin:14px 0;font-weight:600}.ds-lines b{color:#9db5b8;font:500 .9rem ui-monospace,Menlo,monospace;margin-right:10px}"
+			"refersTo": "card",
+			"description": "One Feature on the Board: id over title, state in words, then Tickets past a hairline.",
+			"html": "<div class=\"ds-card\"><p class=\"ds-who\"><b>#379</b>One design, Paper</p><p class=\"ds-now\"><span class=\"ds-d\"></span>Needs a person</p></div>",
+			"css": ".ds-card{background:#fff;border:1px solid #e9e9e7;border-radius:8px;color:#37352f;font:13px/1.4 ui-sans-serif,-apple-system,'Segoe UI',sans-serif;padding:12px 14px;width:280px}.ds-card:hover{border-color:#a3a29e}.ds-card p{margin:0}.ds-who{font-size:14px;font-weight:600}.ds-who b{color:#66655f;display:block;font-size:12px;font-weight:400}.ds-now{color:#956a0a;font-size:12.5px;font-weight:500;margin-top:8px!important}.ds-d{background:#956a0a;border-radius:50%;display:inline-block;height:8px;margin-right:6px;width:8px}"
 		},
 		{
-			"name": "Building-Now Panel",
+			"name": "Steps Bar",
 			"kind": "custom",
-			"refersTo": "detail-panel",
-			"description": "Sticky detail panel: caption, Ticket, hexagon stepper, meters.",
-			"html": "<aside class=\"ds-detail\"><p class=\"ds-dk\"><i></i>Building now</p><h3><b>#12</b>Add retry</h3><ul class=\"ds-steps\"><li class=\"built\">Plan</li><li class=\"building\">Build</li><li>Review</li></ul><div class=\"ds-meters\"><div><small>Elapsed</small><b>04:12</b></div><div><small>Cost</small><b>$0.84</b></div></div></aside>",
-			"css": ".ds-detail{position:relative;width:300px;padding:18px;font-family:ui-monospace,Menlo,monospace;color:#e6f1f2;background:linear-gradient(180deg,rgba(34,227,210,.07),transparent 40%),rgba(8,13,19,.92);border:1px solid #14a89c}.ds-detail:before,.ds-detail:after{content:'';position:absolute;width:16px;height:16px;border:2px solid #22e3d2}.ds-detail:before{left:-1px;top:-1px;border-bottom:0;border-right:0}.ds-detail:after{right:-1px;bottom:-1px;border-left:0;border-top:0}.ds-dk{display:flex;align-items:center;gap:8px;margin:0;color:#22e3d2;font-size:.72rem;letter-spacing:.18em;text-transform:uppercase}.ds-dk i{width:8px;height:8px;border-radius:50%;background:#22e3d2;animation:ds-blip 2s ease-out infinite}@keyframes ds-blip{0%{box-shadow:0 0 0 0 rgba(34,227,210,.6)}100%{box-shadow:0 0 0 9px transparent}}.ds-detail h3{font:700 1.2rem system-ui,sans-serif;margin:8px 0}.ds-detail h3 b{color:#9db5b8;font:500 .9rem ui-monospace,Menlo,monospace;margin-right:8px}.ds-steps{list-style:none;margin:16px 0;padding:0;position:relative}.ds-steps:before{content:'';position:absolute;left:8px;top:8px;bottom:8px;width:1px;background:#1b3a42}.ds-steps li{position:relative;padding:4px 0 4px 30px;color:#9db5b8;font-size:.85rem}.ds-steps li:before{content:'';position:absolute;left:2px;top:8px;width:13px;height:13px;background:#04070b;border:1.5px solid #7f979b;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)}.ds-steps .built{color:#7f979b}.ds-steps .built:before{background:#14a89c;border-color:#14a89c}.ds-steps .building{color:#e6f1f2;font-weight:700}.ds-steps .building:before{background:#22e3d2;border-color:#22e3d2}.ds-meters{display:grid;grid-template-columns:1fr 1fr;gap:8px}.ds-meters div{background:rgba(0,0,0,.3);border:1px solid #1b3a42;padding:6px 10px}.ds-meters small{display:block;color:#7f979b;font-size:.66rem;letter-spacing:.14em;text-transform:uppercase}.ds-meters b{font-size:1rem}"
+			"refersTo": "status-mark",
+			"description": "One segment per build stage; each form differs by shape as well as hue.",
+			"html": "<ol class=\"ds-bar\"><li class=\"ds-s ds-p\"></li><li class=\"ds-s ds-r\"></li><li class=\"ds-s ds-f\"></li><li class=\"ds-s ds-u\"></li><li class=\"ds-s ds-n\"></li></ol>",
+			"css": ".ds-bar{display:flex;gap:2px;list-style:none;margin:0;padding:0}.ds-s{border-radius:2px;display:inline-block;height:8px;width:18px}.ds-p{background:#1d7f52}.ds-r{background:linear-gradient(90deg,#337ea9 0 50%,transparent 50%);border:1px solid #337ea9}.ds-f{background:linear-gradient(90deg,#c93a3f 0 40%,transparent 40% 60%,#c93a3f 60%)}.ds-u{border:1px dashed #a3a29e}.ds-n{background:linear-gradient(#a3a29e,#a3a29e) center/100% 2px no-repeat}"
 		},
 		{
-			"name": "Session Log",
+			"name": "Logbook Entry",
 			"kind": "custom",
-			"refersTo": "detail-panel",
-			"description": "Scrolling monospace log inside the panel.",
-			"html": "<pre class=\"ds-log\">12:01 start build\n12:03 tests pass</pre>",
-			"css": ".ds-log{margin:0;max-height:14rem;overflow:auto;padding:10px 12px;background:rgba(0,0,0,.45);border:1px solid #1b3a42;color:#9db5b8;font:12px/1.7 ui-monospace,Menlo,monospace;white-space:pre-wrap}"
+			"refersTo": "status-mark",
+			"description": "A Logbook list entry on hairlines; a ring marks a Session, a bang a hand-over.",
+			"html": "<ul class=\"ds-book\"><li class=\"ds-ses\"><time>09:14</time><a href=\"#\">Session 57c06cd5</a></li><li class=\"ds-hand\"><time>09:33</time>Handed to a person</li></ul>",
+			"css": ".ds-book{font:12.5px/1.4 ui-sans-serif,-apple-system,'Segoe UI',sans-serif;list-style:none;margin:0;padding:0;color:#37352f}.ds-book li{border-top:1px solid #e9e9e7;padding:8px 0 8px 24px;position:relative}.ds-book li:first-child{border-top:0}.ds-book time{color:#66655f;font-size:12px;margin-right:8px}.ds-ses:before{border:1.5px solid #787774;border-radius:50%;content:'';height:10px;left:2px;position:absolute;top:11px;width:10px;box-sizing:border-box}.ds-hand:before{background:#956a0a;border-radius:50%;content:'';height:14px;left:0;position:absolute;top:9px;width:14px}"
 		},
 		{
-			"name": "Sortable Table Head",
+			"name": "Cost Fold",
 			"kind": "custom",
-			"refersTo": "chip",
-			"description": "Tracked mono column header buttons; teal when sorted.",
-			"html": "<table class=\"ds-table\"><tr><th><button data-on=\"true\" data-dir=\"asc\">Ticket</button></th><th><button>State</button></th></tr><tr><td>#12</td><td>building</td></tr></table>",
-			"css": ".ds-table{border-collapse:collapse;width:100%;color:#e6f1f2;font:15px/1.5 system-ui,sans-serif}.ds-table th,.ds-table td{border-bottom:1px solid #1b3a42;padding:10px 12px;text-align:left}.ds-table th button{background:none;border:0;padding:0;color:#7f979b;cursor:pointer;font:600 .75rem ui-monospace,Menlo,monospace;letter-spacing:.16em;text-transform:uppercase}.ds-table th button[data-on=true]{color:#22e3d2}.ds-table th button[data-dir]:after{content:'';display:inline-block;width:.4em;height:.4em;margin-left:.6em;border:solid currentColor;border-width:0 2px 2px 0;transform:rotate(45deg) translateY(-.2em)}"
+			"refersTo": "card",
+			"description": "A native details fold of cost by stage and model.",
+			"html": "<details class=\"ds-fold\"><summary>cost by stage and model</summary><p>Build $3.16 · Review $0.57</p></details>",
+			"css": ".ds-fold{color:#37352f;font:12px/1.4 ui-sans-serif,-apple-system,'Segoe UI',sans-serif}.ds-fold summary{color:#66655f;cursor:pointer;min-height:24px;padding:2px 0}.ds-fold summary:focus-visible{outline:2px solid #1d76cf;outline-offset:1px}.ds-fold p{border-top:1px solid #e9e9e7;margin:4px 0;padding-top:4px}"
 		}
 	],
 	"narrative": {
-		"northStar": "The Night Shift Mat",
-		"overview": "A cyberpunk HUD runs over a field-guide's habitat boards. A nightjar banner (teal and amber line art) sits over a dark void with a faint teal grid. Below it, one mat per state holds Tickets as eggs resting in round nest sockets. A person glancing at the board reads state from egg and mat colour alone; the text is there to confirm.\n\nThe page is dense and instrument-like: system sans for names and prose, ui-monospace for labels, counts, clocks and anything that is data. Colour is semantic (teal builds, amber needs a person, slate violet queues, green completes, red fails) and always paired with a shape change, so state never rests on hue alone. Frames are hard-edged and square, finished with corner brackets rather than rounded cards.",
+		"northStar": "The Quiet Ledger",
+		"overview": "The page is one design, drawn on warm paper greys and light or dark by the machine's own scheme: there is no theme to pick and no switch in the bar. It reads like a ledger: one line or one card per Feature, a hairline for every rule, the platform sans at 13px with tabular figures so clocks and tallies hold still on a live update. A person glancing at it learns what is done, what is building and what needs them from small status marks and a state's words, then reads the text to confirm.\n\nHue lives only in small objects: a Ticket's 14px status mark, a group's dot, a state's words. It never fills a field. Blue is kept for focus and selection. The page is calm, dense and glanceable, close to a document in a notes app and far from a dashboard: it rejects the removed night-shift HUD look, so no banner image, no glow, no corner brackets, no uppercase tracked labels and no coloured left edge.\n\nThe same stylesheet draws every page: the Board, the Table and the Overview, the Feature detail panel, the Session page and the Logbook page. A person who moves from the Board to a Logbook stays in one tool.",
 		"keyCharacteristics": [
-			"Dark void ground (#04070b) with a 32px teal grid at 3.5% alpha",
-			"One accent colour per state, carried by the mat's tab, tally, brackets and tint",
-			"Eggs are the unit of state; sockets are round, everything else is square or hexagonal",
-			"Mono for data and labels, sans for names and prose",
-			"No shadows for depth; borders and corner brackets build structure"
+			"White ground in the light scheme and near-black (#191919) in the dark one, with warm grey surfaces, one hairline colour for every rule",
+			"State is a small mark plus the state's words; hue never travels alone",
+			"The platform sans at 13px with tabular figures; monospace only for code, commands and transcripts",
+			"A 6px radius on controls, 8px on cards and panels, pills for chips and the state tag",
+			"Flat: depth is a hairline border, with one shadow only under the modal drawer"
 		],
 		"rules": [
 			{
 				"name": "The Hue-Plus-Shape Rule",
-				"body": "State colour never travels alone: built, building, needs-a-person and waiting each differ in egg form (solid, ringed pulse, wing-flash, dashed empty) as well as colour.",
+				"body": "State colour never travels alone. A Ticket's mark is a green disc with a check (built), a blue half-filled ring (building), an amber disc with a bang (needs a person) or a dashed ring (waiting). A Steps-bar segment is solid (passed), hatched (passed after a retry), broken by a gap (failed), half-filled with a ring (running), dashed (not reached) or a thin line (not needed). A state's words always come with its mark.",
 				"section": "colors"
 			},
 			{
-				"name": "The One Hue Per Mat Rule",
-				"body": "A mat sets a single `--h` and derives its tab, tally, brackets and tint from it. Do not mix state hues inside one mat.",
+				"name": "The Small Objects Rule",
+				"body": "Hue lives in a mark, a dot or a state's words, never in a field or a rule. A card, a row and a panel stay on Paper and Hairline.",
 				"section": "colors"
 			},
 			{
-				"name": "The Mono Means Measured Rule",
-				"body": "Monospace marks counts, ids, times, costs, and column or tab labels. Names and sentences stay in sans.",
+				"name": "The Both Schemes Rule",
+				"body": "Every text and state mark meets WCAG AA contrast in the light scheme and in the dark one. A new colour is added to both `:root` blocks, never to one.",
+				"section": "colors"
+			},
+			{
+				"name": "The Mono Means Code Rule",
+				"body": "Monospace marks what is typed or logged: a Signal's name, a command, a tool call, a log. Names, counts, times and costs stay in the sans with tabular figures.",
 				"section": "typography"
 			},
 			{
-				"name": "The Flat Frame Rule",
-				"body": "Surfaces are separated by border and tint, never by shadow. A new surface gets a Line border and, if it is a primary frame, corner brackets.",
+				"name": "The Flat Page Rule",
+				"body": "A card, a panel, a row and a fold sit on the page with a Hairline and no shadow. Only a modal drawer is lifted.",
 				"section": "elevation"
 			}
 		],
 		"dos": [
-			"Do draw state with an egg form plus the state hue (Hue-Plus-Shape).",
-			"Do put the state hue on a mat through `--h` only and derive tab, tally, brackets and tint from it.",
-			"Do use Signal Teal for live or active, amber only for \"needs a person\".",
-			"Do set counts, ids, times and costs in mono with tabular numerals.",
-			"Do end primary frames with corner brackets in their hue.",
-			"Do honour `prefers-reduced-motion`: pulse and blip animations switch off."
+			"Do draw state with a mark's shape plus its hue, and say the state in words (Hue-Plus-Shape).",
+			"Do keep hue in small objects: a mark, a dot, a state's words.",
+			"Do add every colour as a token to both `:root` blocks, and use it as `var(--token)` elsewhere.",
+			"Do keep every text and state mark at WCAG AA contrast in the light scheme and the dark one.",
+			"Do set sizes from the ramp (11.5, 12, 12.5, 13, 13.5, 14, 16px) and keep tabular figures.",
+			"Do make every control at least 24px tall, 44px under `pointer: coarse`, and show Focus Blue's 2px ring on keyboard focus.",
+			"Do honour `prefers-reduced-motion`: the live blip switches off."
 		],
 		"donts": [
-			"Don't use drop or glow shadows for elevation; build depth with borders and tints.",
-			"Don't round frames, mats or buttons; only sockets (50%), eggs and chips (999px) are round.",
-			"Don't use amber, violet or green for decoration; each is a state.",
+			"Don't add a banner, a glow, corner brackets, a grid texture or any HUD framing; that look is removed.",
+			"Don't fill a card, a row or a panel with a state hue, or draw a coloured left edge.",
+			"Don't use uppercase or tracked labels.",
+			"Don't shadow a card or a panel; only the modal drawer is lifted.",
 			"Don't rely on colour alone for state.",
-			"Don't add a new accent hue outside the state set."
+			"Don't add a theme, a toggle or a stored preference: the page follows the machine's scheme and nothing else.",
+			"Don't add a hue outside the set of the five states plus Focus Blue."
 		]
 	}
 }
